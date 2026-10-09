@@ -2599,6 +2599,11 @@ impl StatePeer {
             OpClass::Splice,
             now,
             seq,
+        )
+        // A change something other than the executor wrote names no action:
+        // its op carries no claims, which a receiver deciding claims refuses.
+        .with_claims(
+            collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap_or_default(),
         );
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {

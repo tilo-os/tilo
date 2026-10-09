@@ -31,10 +31,14 @@ const MAX_KIND_ROWS: usize = 256;
 const MAX_APP_ROWS: usize = 128;
 
 /// The person's default apps, as their settings hold them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub struct DefaultApps {
+    /// The app each kind of file or link opens with, by the kind's id
+    /// (`ext:pdf`, `mime:text/html`, `scheme:https`).
     #[serde(default)]
-    pub handlers: BTreeMap<ResourceKind, String>,
+    pub handlers: BTreeMap<String, String>,
 }
 
 impl ui::storage::SettingsSchema for DefaultApps {
@@ -42,10 +46,17 @@ impl ui::storage::SettingsSchema for DefaultApps {
         ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
 }
 
+#[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
+impl DefaultApps {}
+
 impl DefaultApps {
     fn personal(&self) -> PersonalDefaults {
         PersonalDefaults {
-            handlers: self.handlers.clone(),
+            handlers: self
+                .handlers
+                .iter()
+                .filter_map(|(kind, app)| Some((stored_kind(kind)?, app.clone())))
+                .collect(),
         }
     }
 }
@@ -80,8 +91,17 @@ pub(crate) fn answer(
         .set(resource, package, &resolver)
         .map_err(|error| error.to_string())?;
     app.host().update(|stored: &mut DefaultApps| {
-        stored.handlers = defaults.handlers;
+        stored.handlers = defaults
+            .handlers
+            .into_iter()
+            .map(|(kind, app)| (kind.as_str().to_owned(), app))
+            .collect();
     })
+}
+
+/// The kind a stored handler names.
+fn stored_kind(kind: &str) -> Option<ResourceKind> {
+    serde_json::from_value(serde_json::Value::String(kind.to_owned())).ok()
 }
 
 /// The kind a published id names: `ext:pdf`, `mime:text/html`,
@@ -533,7 +553,8 @@ mod tests {
         assert_eq!(pane.shown[&pdf].get(), "so.tilo.a — so.tilo.a");
         cx.settings::<DefaultApps>()
             .update(|apps| {
-                apps.handlers.insert(pdf.clone(), "so.tilo.b".into());
+                apps.handlers
+                    .insert(pdf.as_str().to_owned(), "so.tilo.b".into());
             })
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();

@@ -5,11 +5,13 @@ use super::{
     caption, card, effect, rows, setting_row, setting_row_described, t, t_args,
 };
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{self, Effect};
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct SharedDisplayPrefs {
+pub struct SharedDisplayPrefs {
     pub arrangement: Arrangement,
 }
 
@@ -17,15 +19,26 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
+impl SharedDisplayPrefs {}
+
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct AutomaticDisplayPrefs {
+pub struct AutomaticDisplayPrefs {
     pub automatic_display_input: bool,
 }
 
 impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
 }
+
+#[ui::tilo_resource::resource(
+    kind = "settings.automatic-display",
+    label = "Automatic display input"
+)]
+impl AutomaticDisplayPrefs {}
 
 impl DisplayModel {
     pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {

@@ -70,6 +70,9 @@ impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
+impl AudioPrefs {}
+
 /// What Sound changes: this device's outputs, inputs and app streams, and
 /// the person's audio preferences.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -105,9 +108,6 @@ pub enum AudioEffect {
     /// Give calls an echo-cancelled microphone.
     #[effect(idempotent)]
     SetEchoCancellation { on: bool },
-    /// Let system events make a sound.
-    #[effect(idempotent)]
-    SetSystemSounds { on: bool },
     /// How loud system sounds are, from 0 to 1.
     #[effect(idempotent)]
     SetSystemSoundVolume { volume: f64 },
@@ -895,10 +895,6 @@ impl AudioModel {
                     "sound-notice-echo-off"
                 }))
             }
-            AudioEffect::SetSystemSounds { on } => {
-                let on = *on;
-                self.save_sounds(|sounds| sounds.enabled = on)
-            }
             AudioEffect::SetSystemSoundVolume { volume } => {
                 let volume = volume.clamp(0.0, 1.0);
                 self.save_sounds(|sounds| sounds.volume = volume)
@@ -1493,9 +1489,9 @@ impl AudioModel {
         }
         let mut sound_rows = vec![setting_row(
             &t("sound-system"),
-            Box::new(self.cx.bind(
+            Box::new(self.cx.bind_field(
                 Toggle::from_state(&LocalState::new(sounds.enabled)).with_id("audio.system_sounds"),
-                effect(AudioEffect::SET_SYSTEM_SOUNDS),
+                crate::prefs::AudioPrefs::paths().system_sounds.enabled,
             )),
         )];
         if !sounds.enabled {
@@ -2273,7 +2269,9 @@ Video
             })
             .unwrap();
         model
-            .apply(&AudioEffect::SetSystemSounds { on: false })
+            .cx
+            .settings::<AudioPrefs>()
+            .update(|prefs| prefs.system_sounds.enabled = false)
             .unwrap();
         let saved = model.cx.settings::<AudioPrefs>().get().system_sounds;
         assert!(!saved.enabled);

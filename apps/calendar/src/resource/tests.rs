@@ -51,8 +51,8 @@ fn entries_nest_under_the_declared_scopes() {
     }
 }
 
-/// A search hit opens the item it names; one whose item is gone is refused
-/// with the reason.
+/// A search hit opens the item it names, one whose item is gone is refused
+/// with the reason, and every item offers to open itself.
 #[test]
 fn a_search_hit_opens_its_item_and_a_gone_one_is_refused() {
     let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
@@ -84,6 +84,20 @@ fn a_search_hit_opens_its_item_and_a_gone_one_is_refused() {
         app.call("open", serde_json::json!({ "anchor": gone }))
             .is_err()
     );
+
+    // Every task, like every event and project, offers to open itself.
+    let task = state_of(&app).tasks[0].id;
+    app.call_on(
+        &crate::actions::task_resource_id(task),
+        "open",
+        serde_json::json!({}),
+    )
+    .expect("the task opens");
+    app.settle();
+    let opened = app
+        .with_widget(|calendar: &mut CalendarApp| calendar.selected_task())
+        .expect("the calendar");
+    assert_eq!(opened, Some(task));
 }
 
 /// Typing in an open event's notes edits them at their path, a word per

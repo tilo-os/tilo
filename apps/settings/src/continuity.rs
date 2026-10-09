@@ -5,11 +5,12 @@
 //! which facets may leave or control it, plus a small non-secret audit trail.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
 
 pub(crate) const AUDIT_LIMIT: usize = 24;
 
 /// A separately revocable Continuity facet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Capability {
     Clipboard,
@@ -80,7 +81,7 @@ impl Capability {
 }
 
 /// One bounded, deliberately low-detail local record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuditEntry {
     pub(crate) recorded_at_secs: u64,
@@ -106,29 +107,45 @@ impl AuditEntry {
 }
 
 /// The release policy, the person's `continuity` settings.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently revocable, serialized privacy capability"
 )]
-pub(crate) struct ContinuityPrivacy {
+pub struct ContinuityPrivacy {
+    #[model(readonly)]
     pub(crate) enabled: bool,
+    #[model(readonly)]
     pub(crate) clipboard: bool,
+    #[model(readonly)]
     pub(crate) notifications: bool,
+    #[model(readonly)]
     pub(crate) wifi_settings: bool,
+    #[model(readonly)]
     pub(crate) media: bool,
+    #[model(readonly)]
     pub(crate) display_input: bool,
+    #[model(readonly)]
     pub(crate) file_transfer: bool,
+    #[model(readonly)]
     pub(crate) realtime_sessions: bool,
+    #[model(readonly)]
     pub(crate) typed_gamepad: bool,
+    #[model(readonly)]
     pub(crate) app_continuations: bool,
+    #[model(readonly)]
     pub(crate) audit: Vec<AuditEntry>,
 }
 
 impl ui::storage::SettingsSchema for ContinuityPrivacy {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.continuity", label = "Continuity")]
+impl ContinuityPrivacy {}
 
 impl ContinuityPrivacy {
     pub(crate) const fn allowed(&self, capability: Capability) -> bool {

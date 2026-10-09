@@ -483,9 +483,6 @@ pub enum PowerEffect {
         #[param("The cap, in percent")]
         percent: u32,
     },
-    /// Suspend when idle, or never.
-    #[effect(idempotent)]
-    SetAutoSuspend { on: bool },
     /// Set how long the device waits before suspending.
     #[effect(idempotent)]
     SetSuspendAfter {
@@ -544,9 +541,6 @@ pub(crate) fn answer(
     };
     let action = |label: &str| action_from_label(label).ok_or_else(|| not(label));
     match effect {
-        PowerEffect::SetAutoSuspend { on } => {
-            host.update(|power: &mut PowerPrefs| power.auto_suspend = on)
-        }
         PowerEffect::SetSuspendAfter { profile, after } => {
             let minutes = duration(SUSPEND_OPTIONS, &after)?;
             host.update(|power: &mut PowerPrefs| match profile.as_str() {
@@ -906,10 +900,10 @@ impl PowerPane {
                 setting_row(
                     &t("power-suspend-idle"),
                     Box::new(
-                        self.cx.bind(
+                        self.cx.bind_field(
                             Toggle::from_state(&LocalState::new(prefs.auto_suspend))
                                 .with_id("power.auto_suspend"),
-                            effect(PowerEffect::SET_AUTO_SUSPEND),
+                            PowerPrefs::paths().auto_suspend,
                         ),
                     ),
                 ),
@@ -1222,8 +1216,14 @@ mod tests {
     #[test]
     fn idle_and_button_preferences_write_the_power_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            false,
+        )
+        .unwrap();
         for effect in [
-            PowerEffect::SetAutoSuspend { on: false },
             PowerEffect::SetBlankAfter {
                 after: "30 minutes".into(),
             },

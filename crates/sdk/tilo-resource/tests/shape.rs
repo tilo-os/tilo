@@ -47,6 +47,7 @@ fn a_derived_record_lists_its_stored_fields() {
             unit: false,
             readonly: false,
             label: false,
+            label_part: 0,
             quiet_remove: false,
         },
         FieldShape {
@@ -60,6 +61,7 @@ fn a_derived_record_lists_its_stored_fields() {
             unit: false,
             readonly: false,
             label: false,
+            label_part: 0,
             quiet_remove: false,
         },
     ]);
@@ -74,6 +76,7 @@ fn a_derived_record_lists_its_stored_fields() {
         unit: false,
         readonly: false,
         label: false,
+        label_part: 0,
         quiet_remove: false,
     }]);
     assert_eq!(
@@ -90,6 +93,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                label_part: 0,
                 quiet_remove: false,
             },
             FieldShape {
@@ -103,6 +107,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                label_part: 0,
                 quiet_remove: false,
             },
             FieldShape {
@@ -116,6 +121,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                label_part: 0,
                 quiet_remove: false,
             },
             FieldShape {
@@ -129,6 +135,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                label_part: 0,
                 quiet_remove: false,
             },
         ])),

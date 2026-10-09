@@ -144,27 +144,6 @@ fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'sta
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NotificationEffect {
-    /// Turn Do Not Disturb on or off.
-    #[effect(idempotent)]
-    SetDoNotDisturb { on: bool },
-    /// Show notification banners, or stop.
-    #[effect(idempotent)]
-    SetBanners { on: bool },
-    /// Show message previews in notifications, or only the app's name.
-    #[effect(idempotent)]
-    SetPreviews { on: bool },
-    /// Play a sound when a notification arrives, or stop.
-    #[effect(idempotent)]
-    SetSounds { on: bool },
-    /// Show notifications on the lock screen, or stop.
-    #[effect(idempotent)]
-    SetLockScreen { on: bool },
-    /// Show notification badges on app icons, or stop.
-    #[effect(idempotent)]
-    SetBadges { on: bool },
-    /// Turn the scheduled focus period on or off.
-    #[effect(idempotent)]
-    SetFocus { on: bool },
     /// Set when the focus period begins.
     #[effect(idempotent)]
     SetFocusStart {
@@ -257,15 +236,6 @@ pub(crate) fn answer(
     use NotificationEffect as E;
     let host = app.host();
     match effect {
-        E::SetDoNotDisturb { on } => host.update(|p: &mut NotificationPrefs| p.do_not_disturb = on),
-        E::SetBanners { on } => host.update(|p: &mut NotificationPrefs| p.show_banners = on),
-        E::SetPreviews { on } => host.update(|p: &mut NotificationPrefs| p.show_previews = on),
-        E::SetSounds { on } => host.update(|p: &mut NotificationPrefs| p.play_sounds = on),
-        E::SetLockScreen { on } => {
-            host.update(|p: &mut NotificationPrefs| p.show_on_lock_screen = on)
-        }
-        E::SetBadges { on } => host.update(|p: &mut NotificationPrefs| p.show_badges = on),
-        E::SetFocus { on } => host.update(|p: &mut NotificationPrefs| p.focus.enabled = on),
         E::SetFocusStart { time } => {
             let minute =
                 focus_time_minutes(&time).ok_or_else(|| format!("`{time}` is not offered"))?;
@@ -705,11 +675,11 @@ impl NotificationsPane {
         &self,
         id: &str,
         state: &LocalState<bool>,
-        on: ActionRef<NotificationEffect, bool>,
+        field: ui::tilo_resource::Path<NotificationPrefs, bool>,
     ) -> El {
         Box::new(
             self.cx
-                .bind(Toggle::from_state(state).with_id(id), effect(on)),
+                .bind_field(Toggle::from_state(state).with_id(id), field),
         )
     }
 
@@ -780,7 +750,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.dnd",
                         &self.shown.do_not_disturb,
-                        NotificationEffect::SET_DO_NOT_DISTURB,
+                        NotificationPrefs::paths().do_not_disturb,
                     ),
                 ),
             ]),
@@ -797,7 +767,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.banners",
                         &self.shown.banners,
-                        NotificationEffect::SET_BANNERS,
+                        NotificationPrefs::paths().show_banners,
                     ),
                 ),
                 setting_row_described(
@@ -806,7 +776,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.previews",
                         &self.shown.previews,
-                        NotificationEffect::SET_PREVIEWS,
+                        NotificationPrefs::paths().show_previews,
                     ),
                 ),
             ]),
@@ -838,7 +808,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.lock_screen",
                         &self.shown.lock_screen,
-                        NotificationEffect::SET_LOCK_SCREEN,
+                        NotificationPrefs::paths().show_on_lock_screen,
                     ),
                 ),
                 sounds_row,
@@ -848,7 +818,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.sounds",
                         &self.shown.sounds,
-                        NotificationEffect::SET_SOUNDS,
+                        NotificationPrefs::paths().play_sounds,
                     ),
                 ),
                 setting_row_described(
@@ -857,7 +827,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.badges",
                         &self.shown.badges,
-                        NotificationEffect::SET_BADGES,
+                        NotificationPrefs::paths().show_badges,
                     ),
                 ),
             ]),
@@ -876,7 +846,7 @@ impl NotificationsPane {
                     self.toggle(
                         "notifications.focus.enabled",
                         &self.shown.focus,
-                        NotificationEffect::SET_FOCUS,
+                        NotificationPrefs::paths().focus.enabled,
                     ),
                 ),
                 choice_row(
@@ -1072,6 +1042,7 @@ impl Widget for NotificationsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
@@ -1127,9 +1098,9 @@ mod tests {
     #[test]
     fn notification_effects_write_the_policy() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(&mut app, NotificationEffect::SetDoNotDisturb { on: true });
-        set(&mut app, NotificationEffect::SetBanners { on: false });
-        set(&mut app, NotificationEffect::SetFocus { on: true });
+        edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
+        edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
         set(
             &mut app,
             NotificationEffect::SetFocusStart {

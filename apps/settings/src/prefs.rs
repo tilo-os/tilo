@@ -54,10 +54,12 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AudioPrefs::valid)]
 pub struct AudioPrefs {
     /// "System sounds": master switch, volume, theme and per-event choices.
     /// The compositor plays them; see [`settings_store::system_sounds`].
@@ -101,7 +103,8 @@ impl Default for AudioPrefs {
 }
 
 /// Display comfort preferences applied by the compositor's output layer.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = DisplayPrefs::valid)]
 pub struct DisplayPrefs {
     pub auto_brightness: bool,
     pub night_light: bool,
@@ -145,7 +148,8 @@ impl Default for DisplayPrefs {
 
 /// Pointer + keyboard behaviour the compositor's libinput/xkb configuration
 /// reads at session start.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = InputPrefs::valid)]
 #[serde(default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -154,6 +158,7 @@ impl Default for DisplayPrefs {
 )]
 pub struct InputPrefs {
     /// Compatibility fallback for pre per-device input documents.
+    #[model(readonly)]
     pub natural_scroll: bool,
     pub touchpad_natural_scroll: Option<bool>,
     pub mouse_natural_scroll: Option<bool>,
@@ -165,7 +170,9 @@ pub struct InputPrefs {
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
     /// Exact host-imported repeat pair. A Tilo slider selection clears both.
+    #[model(readonly)]
     pub key_repeat_delay_ms: Option<u32>,
+    #[model(readonly)]
     pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
@@ -204,12 +211,16 @@ pub struct InputPrefs {
     pub keyboard_assignments:
         std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
+    #[model(readonly)]
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
+    #[model(readonly)]
     pub keyboard_preview_extra_levels: bool,
     /// Ordered native level inspected without changing the live seat.
+    #[model(readonly)]
     pub keyboard_preview_level: usize,
     /// Explicit physical position inspected; never follows or records key presses.
+    #[model(readonly)]
     pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
@@ -263,6 +274,9 @@ impl Default for InputPrefs {
 impl ui::storage::SettingsSchema for InputPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
+impl InputPrefs {}
 
 impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling
@@ -342,7 +356,7 @@ impl InputPrefs {
 /// battery). Serialises to the lowercase labels the compositor's power policy
 /// parses (`"suspend"` / `"lock"` / `"ignore"`) — the on-disk JSON is the
 /// contract shared with `tilo-power-mgmt`, not a code dependency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(rename_all = "lowercase")]
 pub enum PowerActionPref {
     Suspend,
@@ -404,7 +418,8 @@ fn default_critical_action() -> PowerActionPref {
 /// (`powerprofilesctl`), not stored here. Every field added after the initial
 /// two carries `#[serde(default)]` so a config written before it existed still
 /// loads. The keys mirror `tilo_power_mgmt::config`'s reader exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = PowerPrefs::valid)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
     /// [`Self::suspend_minutes`].
@@ -450,6 +465,9 @@ impl ui::storage::SettingsSchema for PowerPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.power", label = "Power")]
+impl PowerPrefs {}
+
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
@@ -470,13 +488,15 @@ impl Default for PowerPrefs {
 }
 
 /// System-update policy the update timer/service reads.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 pub struct UpdatePrefs {
     pub auto: bool,
     /// Legacy serialized field. The actual image reference is managed by
     /// bootc; Settings never treats this string as an actionable channel.
+    #[model(readonly)]
     pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
+    #[model(readonly)]
     pub last_checked: String,
 }
 
@@ -484,6 +504,9 @@ pub struct UpdatePrefs {
 impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.updates", label = "Updates")]
+impl UpdatePrefs {}
 
 impl Default for UpdatePrefs {
     fn default() -> Self {
@@ -500,12 +523,20 @@ impl Default for UpdatePrefs {
 /// (see [`AppearancePrefs::THEMES`]); `high_contrast` overrides the palette
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
+/// A theme document Theme Studio wrote, kept as it is.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CustomTheme(pub serde_json::Value);
+
+tilo_resource::json_model!(CustomTheme);
+
 /// same way it reads the display/input comfort sections.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent appearance switch, not one combined state"
 )]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AppearancePrefs::valid)]
 pub struct AppearancePrefs {
     /// Legacy preset selector retained for imported settings and the published `SetTheme` action.
     #[serde(default = "default_legacy_theme")]
@@ -522,7 +553,8 @@ pub struct AppearancePrefs {
     /// The theme documents a `custom:<id>` names. Theme Studio writes them;
     /// Settings keeps them intact and resolves them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub custom_themes: Vec<serde_json::Value>,
+    #[model(readonly)]
+    pub custom_themes: Vec<CustomTheme>,
     /// Spacing density over whichever theme is shown: one of
     /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `ROOMY`.
     #[serde(default = "default_density")]
@@ -569,6 +601,7 @@ pub struct AppearancePrefs {
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(readonly)]
     pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
@@ -682,7 +715,12 @@ impl AppearancePrefs {
         if let Some(section) = appearance.as_object_mut() {
             section.insert(
                 ui::theme::CUSTOM_THEMES_KEY.into(),
-                serde_json::Value::Array(self.custom_themes.clone()),
+                serde_json::Value::Array(
+                    self.custom_themes
+                        .iter()
+                        .map(|theme| theme.0.clone())
+                        .collect(),
+                ),
             );
         }
         serde_json::json!({ "appearance": appearance })
@@ -704,7 +742,7 @@ impl AppearancePrefs {
                 name: preset.name().to_string(),
             })
             .collect();
-        for value in &self.custom_themes {
+        for CustomTheme(value) in &self.custom_themes {
             let Ok(document) = serde_json::from_value::<ui::theme::ThemeDocument>(value.clone())
             else {
                 continue;
@@ -825,6 +863,28 @@ impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
+impl AppearancePrefs {
+    /// Set the theme every app draws with; Automatic is light by day and
+    /// dark by night.
+    #[action]
+    pub fn choose_theme(
+        &mut self,
+        #[param(
+            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
+        )]
+        theme: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !Self::THEMES.contains(&theme.as_str()) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{theme}` is not a theme"
+            )));
+        }
+        self.choose_legacy_theme(theme);
+        Ok(())
+    }
+}
+
 impl AppearancePrefs {
     pub const THEMES: &'static [&'static str] = &[
         "Automatic",
@@ -877,7 +937,8 @@ pub fn theme_by_name(name: &str) -> ui::Theme {
 /// when it decides whether to raise a banner, reveal its contents, sound it,
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = NotificationPrefs::valid)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
@@ -927,6 +988,9 @@ impl ui::storage::SettingsSchema for NotificationPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
+impl NotificationPrefs {}
+
 impl Default for NotificationPrefs {
     fn default() -> Self {
         Self {
@@ -949,7 +1013,8 @@ impl Default for NotificationPrefs {
 /// carries the pointer, typing, hearing, and screen-reader assists that do
 /// not belong to the theme. Every field is `#[serde(default)]` so older
 /// configs load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(check = AccessibilityPrefs::valid)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
@@ -1023,7 +1088,9 @@ pub struct AccessibilityPrefs {
     pub screen_reader_voice: ScreenReaderVoice,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorFilter {
     #[default]
@@ -1060,7 +1127,9 @@ impl ColorFilter {
 /// When the compositor runs the on-screen keyboard. `Auto` follows the
 /// hardware in use: a touchscreen with no physical typing since the last
 /// touch, or a convertible folded into tablet mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OnScreenKeyboard {
     #[default]
@@ -1090,7 +1159,9 @@ impl OnScreenKeyboard {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenReaderVoice {
     #[default]
@@ -1102,7 +1173,9 @@ pub enum ScreenReaderVoice {
     Spanish,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SwitchKeyPair {
     #[default]
@@ -1227,6 +1300,9 @@ impl Default for AccessibilityPrefs {
 impl ui::storage::SettingsSchema for AccessibilityPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.accessibility", label = "Accessibility")]
+impl AccessibilityPrefs {}
 
 impl AccessibilityPrefs {
     /// The offered bounce-keys windows as `(display label, milliseconds)`.
@@ -1912,5 +1988,191 @@ mod tests {
         let root: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(root["accessibility"]["magnifier_last_zoom"], 4);
         assert_eq!(root["accessibility"]["sticky_keys"], true);
+    }
+}
+
+/// Refused unless `value` is a finite number within `range`, naming `what`.
+fn within(
+    value: f64,
+    range: std::ops::RangeInclusive<f64>,
+    what: &str,
+) -> Result<(), ui::tilo_resource::Refusal> {
+    if value.is_finite() && range.contains(&value) {
+        Ok(())
+    } else {
+        Err(ui::tilo_resource::Refusal::new(format!(
+            "{what} is between {} and {}",
+            range.start(),
+            range.end()
+        )))
+    }
+}
+
+/// Refused unless `value` is one of `known`, naming `what`.
+fn one_of(value: &str, known: &[&str], what: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    if known.contains(&value) {
+        Ok(())
+    } else {
+        Err(ui::tilo_resource::Refusal::new(format!(
+            "{what} is one of {}",
+            known.join(", ")
+        )))
+    }
+}
+
+/// Refused unless `time` is a time of day, `HH:MM`.
+fn time_of_day(time: &str, what: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    settings_store::day_schedule::parse_hhmm(time)
+        .map(drop)
+        .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("{what} is a time of day, HH:MM")))
+}
+
+const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
+
+impl AppearancePrefs {
+    /// What the appearance section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(self.ui_scale, 0.5..=3.0, "the interface scale")?;
+        within(self.text_scale, 0.5..=3.0, "the text scale")?;
+        within(self.density, 0.5..=2.0, "the density")?;
+        one_of(
+            &self.schedule,
+            &["sun", "custom"],
+            "the day and night schedule",
+        )?;
+        time_of_day(&self.sunrise, "the start of day")?;
+        time_of_day(&self.sunset, "the start of night")?;
+        one_of(
+            &self.wallpaper_scope,
+            &crate::panes::appearance::WALLPAPER_SCOPES.map(|(_, value)| value),
+            "where a new wallpaper applies",
+        )?;
+        one_of(
+            &self.wallpaper_target,
+            &crate::panes::appearance::WALLPAPER_TARGETS.map(|(_, value)| value),
+            "where a new wallpaper shows",
+        )
+    }
+}
+
+impl AccessibilityPrefs {
+    /// What the accessibility section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(f64::from(self.cursor_size), 16.0..=256.0, "the cursor size")?;
+        within(
+            f64::from(self.bounce_keys_delay_ms),
+            0.0..=5_000.0,
+            "the bounce keys delay",
+        )?;
+        within(
+            f64::from(self.magnifier_zoom),
+            1.0..=16.0,
+            "the magnifier zoom",
+        )?;
+        within(
+            f64::from(self.switch_scan_ms),
+            0.0..=10_000.0,
+            "the switch scan interval",
+        )?;
+        within(
+            f64::from(self.screen_reader_rate),
+            0.0..=1_000.0,
+            "the speech rate",
+        )
+    }
+}
+
+impl NotificationPrefs {
+    /// What the notification section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(
+            f64::from(self.focus.start_minute),
+            0.0..=MINUTES_PER_DAY - 1.0,
+            "the start of focus",
+        )?;
+        within(
+            f64::from(self.focus.end_minute),
+            0.0..=MINUTES_PER_DAY - 1.0,
+            "the end of focus",
+        )?;
+        within(
+            f64::from(self.focus.weekdays),
+            0.0..=127.0,
+            "the focus days",
+        )
+    }
+}
+
+impl PowerPrefs {
+    /// What the power section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        for (minutes, what) in [
+            (self.suspend_minutes, "the suspend delay"),
+            (self.saver_suspend_minutes, "the power saver suspend delay"),
+            (self.balanced_suspend_minutes, "the balanced suspend delay"),
+            (
+                self.performance_suspend_minutes,
+                "the performance suspend delay",
+            ),
+            (self.blank_minutes, "the blank delay"),
+            (self.lock_minutes, "the lock delay"),
+        ] {
+            within(f64::from(minutes), 0.0..=MINUTES_PER_DAY, what)?;
+        }
+        within(
+            f64::from(self.low_battery_percent),
+            0.0..=100.0,
+            "the low battery level",
+        )?;
+        within(
+            f64::from(self.critical_battery_percent),
+            0.0..=f64::from(self.low_battery_percent),
+            "the critical battery level",
+        )
+    }
+}
+
+impl DisplayPrefs {
+    /// What the display section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(self.scale, 0.5..=4.0, "the display scale")?;
+        within(
+            f64::from(self.night_light_temperature),
+            1_000.0..=10_000.0,
+            "the night light temperature",
+        )
+    }
+}
+
+impl AudioPrefs {
+    /// What the sound section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        within(f64::from(self.balance), 0.0..=1.0, "the balance")?;
+        within(
+            self.system_sounds.volume,
+            0.0..=1.0,
+            "the system sound volume",
+        )
+    }
+}
+
+impl InputPrefs {
+    /// What the input section holds, however it was changed.
+    fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
+        for (speed, what) in [
+            (Some(self.pointer_speed), "the pointer speed"),
+            (self.touchpad_pointer_speed, "the touchpad pointer speed"),
+            (self.mouse_pointer_speed, "the mouse pointer speed"),
+            (Some(self.key_repeat), "the key repeat"),
+        ] {
+            if let Some(speed) = speed {
+                within(speed, 0.0..=1.0, what)?;
+            }
+        }
+        within(
+            self.scroll_speed,
+            settings_store::hardware::SCROLL_SPEED_MIN..=settings_store::hardware::SCROLL_SPEED_MAX,
+            "the scroll speed",
+        )
     }
 }

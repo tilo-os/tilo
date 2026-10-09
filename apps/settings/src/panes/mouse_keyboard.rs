@@ -11,7 +11,7 @@
 //! - **Spell checking** is the `text_assistance` section every app's text
 //!   fields follow.
 
-mod keyboard_editor;
+pub(crate) mod keyboard_editor;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -52,6 +52,16 @@ trait BindEffect<I>: ActionControl<I> {
         I: 'static,
     {
         cx.bind(self, effect)
+    }
+
+    /// Bound to the field at `path` of section `T`.
+    fn bound_field<T>(self, cx: &PaneCx, path: tilo_resource::Path<T, I>) -> Self
+    where
+        T: crate::host::Section,
+        I: tilo_resource::Model + tilo_resource::Settable + 'static,
+        Self: Sized,
+    {
+        cx.bind_field(self, path)
     }
 }
 
@@ -736,12 +746,6 @@ pub enum InputEffect {
         query: Option<String>,
         page: Option<u32>,
     },
-    /// Turn the touchpad on or off on this device.
-    #[effect(idempotent)]
-    SetTouchpadEnabled { on: bool },
-    /// Turn the touchpad off while a mouse is plugged in, or stop.
-    #[effect(idempotent)]
-    SetTouchpadOffWithMouse { on: bool },
     /// Set how fast the pointer moves with the touchpad.
     #[effect(idempotent)]
     SetTouchpadSpeed {
@@ -760,21 +764,6 @@ pub enum InputEffect {
     /// Scroll the content with the mouse wheel, or the view.
     #[effect(idempotent)]
     SetMouseNaturalScroll { on: bool },
-    /// Click with a tap on the touchpad, or only with a press.
-    #[effect(idempotent)]
-    SetTapToClick { on: bool },
-    /// Drag with a double tap on the touchpad, or stop.
-    #[effect(idempotent)]
-    SetTapDrag { on: bool },
-    /// Keep a tap drag going after lifting the finger, or stop.
-    #[effect(idempotent)]
-    SetTapDragLock { on: bool },
-    /// Ignore the touchpad while typing, or stop.
-    #[effect(idempotent)]
-    SetDisableWhileTyping { on: bool },
-    /// Use touchpad gestures, or stop.
-    #[effect(idempotent)]
-    SetTouchpadGestures { on: bool },
     /// Set how a touchpad press becomes a click.
     #[effect(idempotent)]
     SetTouchpadClickMethod {
@@ -787,12 +776,6 @@ pub enum InputEffect {
         #[param("The method", choices = ids(&SCROLL_METHOD_CHOICES))]
         method: String,
     },
-    /// Swap the pointer's buttons for the left hand, or back.
-    #[effect(idempotent)]
-    SetLeftHanded { on: bool },
-    /// Middle-click by pressing both buttons, or stop.
-    #[effect(idempotent)]
-    SetMiddleEmulation { on: bool },
     /// Set how the pointer speeds up with faster movement.
     #[effect(idempotent)]
     SetAccelerationProfile {
@@ -907,12 +890,6 @@ pub enum InputEffect {
         #[param("The source's id")]
         source: String,
     },
-    /// Check spelling while typing, or stop.
-    #[effect(idempotent)]
-    SetSpellChecking { on: bool },
-    /// Correct misspellings while typing, or stop.
-    #[effect(idempotent)]
-    SetAutoCorrect { on: bool },
     /// Add an explicit word to this person's shared local dictionary.
     AddDictionaryWord {
         #[param("The spelling, including its intended capitalization")]
@@ -1055,17 +1032,10 @@ fn apply(
     use InputEffect as E;
     let installed = |source: &str| catalog.iter().any(|entry| entry.id == source);
     match effect {
-        E::SetTouchpadEnabled { on } => input.touchpad_enabled = on,
-        E::SetTouchpadOffWithMouse { on } => input.touchpad_disabled_on_external_mouse = on,
         E::SetTouchpadSpeed { speed } => input.touchpad_pointer_speed = Some(fraction(speed)?),
         E::SetMouseSpeed { speed } => input.mouse_pointer_speed = Some(fraction(speed)?),
         E::SetTouchpadNaturalScroll { on } => input.touchpad_natural_scroll = Some(on),
         E::SetMouseNaturalScroll { on } => input.mouse_natural_scroll = Some(on),
-        E::SetTapToClick { on } => input.tap_to_click = on,
-        E::SetTapDrag { on } => input.tap_drag = on,
-        E::SetTapDragLock { on } => input.tap_drag_lock = on,
-        E::SetDisableWhileTyping { on } => input.disable_while_typing = on,
-        E::SetTouchpadGestures { on } => input.touchpad_gestures = on,
         E::SetTouchpadClickMethod { method } => {
             input.touchpad_click_method = click_method_for_id(&method)
                 .ok_or_else(|| format!("`{method}` is not a click method"))?;
@@ -1074,8 +1044,6 @@ fn apply(
             input.touchpad_scroll_method = scroll_method_for_id(&method)
                 .ok_or_else(|| format!("`{method}` is not a scroll method"))?;
         }
-        E::SetLeftHanded { on } => input.left_handed = on,
-        E::SetMiddleEmulation { on } => input.middle_emulation = on,
         E::SetAccelerationProfile { profile } => {
             accel_from_label(&profile)
                 .or_else(|| {
@@ -1311,8 +1279,6 @@ fn apply(
         }
         E::InspectInputSources { .. }
         | E::InspectKeyboardMap
-        | E::SetSpellChecking { .. }
-        | E::SetAutoCorrect { .. }
         | E::SetSpellingLanguage { .. }
         | E::AddDictionaryWord { .. }
         | E::EditDictionaryWord { .. }
@@ -1407,12 +1373,6 @@ pub(crate) fn answer(
             return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
                 .map(|()| Effected::done())
                 .map_err(|error| error.to_string());
-        }
-        InputEffect::SetSpellChecking { on } => {
-            return host.update(|text: &mut TextAssistancePrefs| text.check_spelling = on);
-        }
-        InputEffect::SetAutoCorrect { on } => {
-            return host.update(|text: &mut TextAssistancePrefs| text.auto_correct = on);
         }
         InputEffect::SetSpellingLanguage { language } => {
             if !SPELLING_LANGUAGES.iter().any(|(id, _)| *id == language) {
@@ -1955,6 +1915,25 @@ impl MouseKeyboardPane {
         }
     }
 
+    fn field_row(
+        &self,
+        label: &str,
+        description: &str,
+        field: tilo_resource::Path<InputPrefs, bool>,
+        id: &str,
+        on: bool,
+    ) -> El {
+        setting_row_described(
+            &t(label),
+            &t(description),
+            Box::new(
+                Toggle::from_state(&ui::LocalState::new(on))
+                    .with_id(id)
+                    .bound_field(&self.cx, field),
+            ),
+        )
+    }
+
     fn bool_row(
         &self,
         label: &str,
@@ -2071,17 +2050,17 @@ impl MouseKeyboardPane {
         card(
             &t("input-touchpad-title"),
             rows(vec![
-                self.bool_row(
+                self.field_row(
                     "input-touchpad-enabled",
                     "input-touchpad-enabled-description",
-                    InputEffect::SET_TOUCHPAD_ENABLED,
+                    InputPrefs::paths().touchpad_enabled,
                     "input.touchpad_enabled",
                     last.touchpad_enabled,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-touchpad-disable-with-mouse",
                     "input-touchpad-disable-with-mouse-description",
-                    InputEffect::SET_TOUCHPAD_OFF_WITH_MOUSE,
+                    InputPrefs::paths().touchpad_disabled_on_external_mouse,
                     "input.touchpad_disabled_on_external_mouse",
                     last.touchpad_disabled_on_external_mouse,
                 ),
@@ -2103,38 +2082,38 @@ impl MouseKeyboardPane {
                     "input.touchpad_natural_scroll",
                     last.touchpad_natural_scroll.unwrap_or(last.natural_scroll),
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-tap-to-click",
                     "input-tap-to-click-description",
-                    InputEffect::SET_TAP_TO_CLICK,
+                    InputPrefs::paths().tap_to_click,
                     "input.tap_click",
                     last.tap_to_click,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-tap-drag",
                     "input-tap-drag-description",
-                    InputEffect::SET_TAP_DRAG,
+                    InputPrefs::paths().tap_drag,
                     "input.tap_drag",
                     last.tap_drag,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-tap-drag-lock",
                     "input-tap-drag-lock-description",
-                    InputEffect::SET_TAP_DRAG_LOCK,
+                    InputPrefs::paths().tap_drag_lock,
                     "input.tap_drag_lock",
                     last.tap_drag_lock,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-disable-while-typing",
                     "input-disable-while-typing-description",
-                    InputEffect::SET_DISABLE_WHILE_TYPING,
+                    InputPrefs::paths().disable_while_typing,
                     "input.disable_while_typing",
                     last.disable_while_typing,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-touchpad-gestures",
                     "input-touchpad-gestures-description",
-                    InputEffect::SET_TOUCHPAD_GESTURES,
+                    InputPrefs::paths().touchpad_gestures,
                     "input.touchpad_gestures",
                     last.touchpad_gestures,
                 ),
@@ -2214,17 +2193,17 @@ impl MouseKeyboardPane {
         card(
             &t("input-pointer-title"),
             rows(vec![
-                self.bool_row(
+                self.field_row(
                     "input-left-handed",
                     "input-left-handed-description",
-                    InputEffect::SET_LEFT_HANDED,
+                    InputPrefs::paths().left_handed,
                     "input.left_handed",
                     self.last.left_handed,
                 ),
-                self.bool_row(
+                self.field_row(
                     "input-middle-emulation",
                     "input-middle-emulation-description",
-                    InputEffect::SET_MIDDLE_EMULATION,
+                    InputPrefs::paths().middle_emulation,
                     "input.middle_emulation",
                     self.last.middle_emulation,
                 ),
@@ -2322,7 +2301,7 @@ impl MouseKeyboardPane {
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.text.get().check_spelling))
                             .with_id("text.check_spelling")
-                            .bound(&self.cx, effect(InputEffect::SET_SPELL_CHECKING)),
+                            .bound_field(&self.cx, TextAssistancePrefs::paths().check_spelling),
                     ),
                 ),
                 setting_row_described(
@@ -2331,7 +2310,7 @@ impl MouseKeyboardPane {
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.text.get().auto_correct))
                             .with_id("text.auto_correct")
-                            .bound(&self.cx, effect(InputEffect::SET_AUTO_CORRECT)),
+                            .bound_field(&self.cx, TextAssistancePrefs::paths().auto_correct),
                     ),
                 ),
                 choice_row(
@@ -2785,6 +2764,7 @@ impl Widget for MouseKeyboardPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::testing::{INPUT, TEXT_ASSISTANCE, edit_field};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
     use winit::event::WindowEvent;
@@ -3639,7 +3619,7 @@ mod tests {
             &mut app,
             InputEffect::SetMouseNaturalScroll { on: true }
         ));
-        assert!(set(&mut app, InputEffect::SetTouchpadEnabled { on: false }));
+        edit_field(&mut app, INPUT, "touchpad_enabled", false).unwrap();
         assert!(set(
             &mut app,
             InputEffect::SetComposeKey { key: "ralt".into() }
@@ -3656,7 +3636,7 @@ mod tests {
                 method: "areas".into()
             }
         ));
-        assert!(set(&mut app, InputEffect::SetSpellChecking { on: false }));
+        edit_field(&mut app, TEXT_ASSISTANCE, "check_spelling", false).unwrap();
         let input = app.settings::<InputPrefs>().get();
         assert_eq!(input.touchpad_pointer_speed, Some(0.9));
         assert_eq!(input.mouse_natural_scroll, Some(true));

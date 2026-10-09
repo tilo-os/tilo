@@ -102,7 +102,8 @@ pub use channel::{
     DocumentHandle, MemberRef,
 };
 pub use claim::{
-    ChangeClaim, ClaimError, ClaimedAction, FrameworkChange, UnitPath, claims_of, parse_changes,
+    ChangeClaim, ClaimError, ClaimedAction, FrameworkChange, UnitPath, claims_of, mutation_claims,
+    parse_changes, record_unit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,

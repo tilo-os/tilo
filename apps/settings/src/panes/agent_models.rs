@@ -35,7 +35,9 @@ use crate::widgets::{
 
 /// The person's agent providers, as their settings hold them: the hosted
 /// ones roam with the person, those on this device or its network stay.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(from = "StoredProviders", into = "StoredProviders")]
 pub struct AgentProviders {
     pub config: ProviderConfig,
@@ -68,6 +70,9 @@ impl ui::storage::SettingsSchema for AgentProviders {
     const SCOPE: ui::storage::Scope =
         ui::storage::Scope::Shared(agent_provider_config::SETTINGS_SECTION);
 }
+
+#[ui::tilo_resource::resource(kind = "settings.agent-providers", label = "Agent model providers")]
+impl AgentProviders {}
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]

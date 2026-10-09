@@ -164,6 +164,10 @@ impl SystemSoundEvent {
     clippy::struct_excessive_bools,
     reason = "one independent, serialised on/off choice per event"
 )]
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemSoundEvents {
@@ -223,6 +227,10 @@ impl SystemSoundEvents {
 }
 
 /// The "System sounds" preference.
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemSoundPrefs {

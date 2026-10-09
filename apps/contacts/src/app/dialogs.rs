@@ -21,7 +21,6 @@ use crate::view::{DialogChoice, Request, Shared, queue};
 /// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DialogKey {
-    Delete(ContactId),
     Unsaved(ContactId),
     ImportConflict(uuid::Uuid),
     Duplicate(ContactId, ContactId),
@@ -223,10 +222,7 @@ impl ContactsApp {
         if self.export.is_some() {
             return Some(DialogKey::Export);
         }
-        if let Some(target) = self.pending_switch {
-            return Some(DialogKey::Unsaved(target));
-        }
-        self.confirm_delete.map(DialogKey::Delete)
+        self.pending_switch.map(DialogKey::Unsaved)
     }
 
     fn name_of(&self, id: ContactId) -> String {
@@ -239,17 +235,6 @@ impl ContactsApp {
     pub(super) fn build_dialog(&self, key: &DialogKey) -> Option<Element> {
         let shared = &self.shared;
         let element: Element = match key {
-            DialogKey::Delete(id) => Box::new(
-                dialog(
-                    &format!("Delete {}?", self.name_of(*id)),
-                    body("The contact is removed from your address book."),
-                    shared,
-                    "Delete contact",
-                    "Cancel",
-                )
-                .with_destructive(true)
-                .with_test_id("contacts.delete-dialog"),
-            ),
             DialogKey::Unsaved(_) => {
                 let name = self
                     .form
@@ -440,8 +425,6 @@ impl ContactsApp {
             return;
         };
         match (key, choice) {
-            (DialogKey::Delete(id), DialogChoice::Primary) => self.delete_selected(doc, id),
-            (DialogKey::Delete(_), _) => self.confirm_delete = None,
             (DialogKey::Unsaved(target), DialogChoice::Primary) => {
                 self.pending_switch = None;
                 self.save_edit(doc);
@@ -528,8 +511,11 @@ impl ContactsApp {
         Ok(())
     }
 
+    /// Merge as reviewed. The host asks the person to confirm; the review
+    /// stays up behind its question and closes once the book no longer
+    /// holds the merged-away contact, so a cancelled merge returns to it.
     pub(super) fn merge_duplicate_review(&mut self, state: &mut ui::widget::Edits<'_>) {
-        let Some(review) = self.duplicate_review.take() else {
+        let Some(review) = &self.duplicate_review else {
             return;
         };
         let merge = crate::resource::Contacts::merge(
@@ -537,18 +523,9 @@ impl ContactsApp {
             review.source.id,
             review.take_from_source(),
         );
-        match self.try_perform_action(state, merge) {
-            Ok(()) => {
-                self.selected = Some(review.survivor.id);
-                self.show_toast(format!(
-                    "Merged {} into {}",
-                    review.source.display_name(),
-                    review.survivor.display_name()
-                ));
-            }
-            Err(error) => self.show_toast(format!("Couldn't merge contacts: {error}")),
+        if let Err(error) = self.try_perform_action(state, merge) {
+            self.show_toast(format!("Couldn't merge contacts: {error}"));
         }
-        self.list_stale = true;
         self.dirty = true;
     }
 }

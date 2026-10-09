@@ -3,6 +3,7 @@
 use super::*;
 use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK, SourceOptions};
 use ui::reorder::DropPlacement;
+use ui::tilo_resource;
 use ui::widget::{ListRow, VirtualList};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -902,9 +903,9 @@ impl MouseKeyboardPane {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
-struct OskSourceSettings {
+pub struct OskSourceSettings {
     layout: String,
     layouts: Vec<String>,
 }
@@ -921,6 +922,9 @@ impl Default for OskSourceSettings {
 impl ui::storage::SettingsSchema for OskSourceSettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
+
+#[ui::tilo_resource::resource(kind = "settings.osk-sources", label = "On-screen keyboard layouts")]
+impl OskSourceSettings {}
 
 fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
     let stored = ui::storage::Settings::<OskSourceSettings>::for_app("so.tilo.osk")

@@ -56,6 +56,11 @@ pub struct FieldShape {
     pub readonly: bool,
     /// `#[model(label)]`: the field names the record.
     pub label: bool,
+    /// Where the field stands among those whose texts, joined by spaces,
+    /// name the record before its `label` field does
+    /// (`#[model(label = "first last")]` on the type): 1 for the first, 0
+    /// when it is not one of them.
+    pub label_part: u8,
     /// `#[model(remove = "quiet")]` on a collection: removing an item by
     /// field edit asks no confirmation. Otherwise it is destructive, as a
     /// delete verb is, so the generic edit is never a quieter way around it.

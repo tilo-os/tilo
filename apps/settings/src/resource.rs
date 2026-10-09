@@ -132,6 +132,30 @@ impl ResourceApp for SettingsShell {
         crate::scenarios::viewport(scenario)
     }
 
+    /// Every section of the person's settings Settings edits: each is a
+    /// record of the person's own, published with its field edits, so the
+    /// palette, agents and assistive technology change it by path.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records
+            .settings::<crate::prefs::AppearancePrefs>()
+            .settings::<crate::prefs::AccessibilityPrefs>()
+            .settings::<crate::prefs::InputPrefs>()
+            .settings::<ui::text_assistance::TextAssistancePrefs>()
+            .settings::<crate::prefs::PowerPrefs>()
+            .settings::<crate::prefs::UpdatePrefs>()
+            .settings::<crate::prefs::NotificationPrefs>()
+            .settings::<crate::prefs::AudioPrefs>()
+            .settings::<crate::prefs::DisplayPrefs>()
+            .settings::<crate::region::Locale>()
+            .settings::<crate::continuity::ContinuityPrivacy>()
+            .settings::<crate::panes::keyboard_shortcuts::DesktopControls>()
+            .settings::<crate::panes::agent_models::AgentProviders>()
+            .settings::<crate::panes::personal_apps::DefaultApps>()
+            .settings::<crate::panes::display::shared_displays::SharedDisplayPrefs>()
+            .settings::<crate::panes::display::shared_displays::AutomaticDisplayPrefs>()
+            .settings::<crate::panes::mouse_keyboard::keyboard_editor::OskSourceSettings>();
+    }
+
     fn fixture(fixture: &mut Fixture<Settings>) {
         crate::scenarios::prepare(fixture);
     }

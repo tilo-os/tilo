@@ -4974,9 +4974,11 @@ async fn send_document_mutation(
             ));
         }
     };
+    let claims = origin_claims(&mutation);
     let count = frames.len();
     for (index, frame) in frames.into_iter().enumerate() {
-        if let Err(error) = send_document_frame(route, signer, frame, &inbound.state).await {
+        if let Err(error) = send_document_frame(route, signer, frame, &claims, &inbound.state).await
+        {
             if count > 1 {
                 tracing::warn!(
                     segment = index,
@@ -4988,6 +4990,17 @@ async fn send_document_mutation(
         }
     }
     Ok(())
+}
+
+/// The claims a mutation's op carries: what each of its changes is, read
+/// from the history entry the executor wrote into it. A change something
+/// other than the executor wrote cannot be claimed; its op then carries no
+/// claims, which a receiver deciding claims refuses.
+fn origin_claims(mutation: &collab_types::DocumentMutation) -> Vec<collab_types::ChangeClaim> {
+    collab_types::mutation_claims(mutation, collab_types::record_unit).unwrap_or_else(|error| {
+        tracing::warn!(%error, "collab: a document change carries no claim");
+        Vec::new()
+    })
 }
 
 /// Encrypt, sign and send one typed document frame, or hold it on the
@@ -5003,16 +5016,17 @@ async fn send_document_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> Result<(), DocumentPublicationError> {
-    match try_send_frame(route, signer, cleartext.clone(), state).await {
+    match try_send_frame(route, signer, cleartext.clone(), claims, state).await {
         FrameSend::Sent | FrameSend::Held => Ok(()),
         FrameSend::Failed(error) => Err(error),
         FrameSend::Refused(refusal) => {
             if !refresh_route_keys(route, signer).await {
                 return Err(state.publication_failed("document commit RPC", refusal, true));
             }
-            match try_send_frame(route, signer, cleartext, state).await {
+            match try_send_frame(route, signer, cleartext, claims, state).await {
                 FrameSend::Sent | FrameSend::Held => Ok(()),
                 FrameSend::Failed(error) => Err(error),
                 FrameSend::Refused(refusal) => {
@@ -5032,13 +5046,14 @@ async fn try_send_frame(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
     state: &BridgeState,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let artifact = collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, record_id);
     let (payload, encryption_metadata) =
-        match prepare_document_payload(&route.encryption, artifact, cleartext) {
+        match prepare_document_payload(&route.encryption, artifact, cleartext, claims) {
             PreparedFrame::Ready(payload, metadata) => (payload, metadata),
             PreparedFrame::Held => return FrameSend::Held,
             PreparedFrame::Failed => {
@@ -5093,6 +5108,7 @@ async fn try_send_frame(
             seq,
         ),
     };
+    op = op.with_claims(claims.to_vec());
     let unsigned_op = match postcard::to_stdvec(&op) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -5203,6 +5219,7 @@ fn prepare_document_payload(
     encryption: &SharedRouteKeys,
     artifact: collab_types::ArtifactId,
     cleartext: Vec<u8>,
+    claims: &[collab_types::ChangeClaim],
 ) -> PreparedFrame {
     let Ok(mut keys) = encryption.lock() else {
         tracing::warn!("collab: route key state lock poisoned; dropping mutation");
@@ -5214,7 +5231,7 @@ fn prepare_document_payload(
             PreparedFrame::Ready(payload, metadata)
         }
         super::route_keys::Sealed::Hold => {
-            if keys.hold_outbound(cleartext) {
+            if keys.hold_outbound(cleartext, claims.to_vec()) {
                 PreparedFrame::Held
             } else {
                 tracing::warn!("collab: too many edits waiting for channel access; dropping");
@@ -5488,8 +5505,8 @@ async fn deliver_waiting(
     {
         return false;
     }
-    for frame in outbound {
-        if send_document_frame(route, signer, frame, &inbound_tx.state)
+    for (frame, claims) in outbound {
+        if send_document_frame(route, signer, frame, &claims, &inbound_tx.state)
             .await
             .is_err()
         {
@@ -10888,7 +10905,7 @@ mod tests {
                 .unwrap();
             let alice_endpoint = group_route_keys(alice);
             let PreparedFrame::Ready(ciphertext, metadata) =
-                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone())
+                prepare_document_payload(&alice_endpoint, artifact, plaintext.clone(), &[])
             else {
                 panic!("a provisioned endpoint seals at once");
             };

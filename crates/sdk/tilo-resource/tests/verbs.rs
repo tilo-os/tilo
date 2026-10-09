@@ -483,3 +483,119 @@ fn content_inputs_nested_derived_places_and_edit_effects() {
         .collect();
     assert_eq!(kinds, [ActionKind::Undoable, ActionKind::Read]);
 }
+
+/// A card's id, as the app names it.
+pub type CardKey = uuid::Uuid;
+
+/// Something with no schema of its own.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Opaque {
+    pub raw: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.cards")]
+pub enum CardEffect {
+    /// Show a card.
+    Show {
+        card: CardKey,
+        colour: Option<Colour>,
+        opaque: Opaque,
+    },
+}
+
+#[test]
+fn an_effect_parameter_publishes_what_its_type_is_written_as() {
+    use tilo_resource::Effect as _;
+    let spec = CardEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "show")
+        .unwrap();
+    let kinds: Vec<(String, tilo_actions::ParamType)> = spec
+        .params()
+        .iter()
+        .map(|param| (param.name.to_string(), param.ty))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("card".to_owned(), tilo_actions::ParamType::Text),
+            ("colour".to_owned(), tilo_actions::ParamType::Object),
+            ("opaque".to_owned(), tilo_actions::ParamType::Object),
+        ]
+    );
+}
+
+/// A card in an address book: named by first and last name, else its
+/// organization.
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+#[model(label = "first last")]
+pub struct Person {
+    pub first: String,
+    pub last: String,
+    #[model(label)]
+    pub organization: String,
+}
+
+#[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
+pub struct Book {
+    pub people: Collection<Person>,
+}
+
+#[resource(kind = "test.book", label = "Book", params = book)]
+impl Book {
+    /// Add a card.
+    #[action]
+    pub fn add(&mut self, cx: &mut ActionCx, first: String, last: String, organization: String) {
+        self.people.push(
+            cx.id(),
+            Person {
+                first,
+                last,
+                organization,
+            },
+        );
+    }
+
+    /// Remove a card.
+    #[action]
+    pub fn remove(&mut self, people: &Id) {
+        self.people.remove(people);
+    }
+}
+
+#[test]
+fn an_item_label_is_made_of_several_fields() {
+    let mut book = Replica::<Book>::new();
+    book.apply(Book::ADD.with(("Ada".to_owned(), "Lovelace".to_owned(), String::new())))
+        .unwrap();
+    book.apply(Book::ADD.with((
+        String::new(),
+        String::new(),
+        "Analytical Engines".to_owned(),
+    )))
+    .unwrap();
+    let state = book.state().unwrap();
+    let labels: Vec<Option<String>> = state.people.values().map(Model::label).collect();
+    assert_eq!(
+        labels,
+        [
+            Some("Ada Lovelace".to_owned()),
+            Some("Analytical Engines".to_owned())
+        ]
+    );
+    let tree = book.published().unwrap();
+    let mut items: Vec<&str> = tree
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect();
+    items.sort_unstable();
+    assert_eq!(items, ["Ada Lovelace", "Analytical Engines"]);
+
+    // History names the item the same way.
+    let (ada, _) = state.people.iter().next().unwrap();
+    let edit = Book::edit_action(Book::paths().people.item(ada).last.replace("Byron")).unwrap();
+    let entry = book.apply_action(&edit).unwrap().context.clone().unwrap();
+    assert_eq!(entry.item.unwrap().label, "Ada Lovelace");
+}
