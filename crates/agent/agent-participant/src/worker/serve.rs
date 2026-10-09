@@ -28,6 +28,10 @@ pub(super) fn serve(mode: Mode) -> i32 {
     // stdin.
     let socket = UnixStream::from(unsafe { OwnedFd::from_raw_fd(0) });
     let mut worker = Worker::new(mode);
+    // The app's view lays out text once the filesystem is gone.
+    if !ui::text_render::hold_catalog_fonts_in_memory() {
+        tracing::warn!("app worker: no font catalog; views will lay out no text");
+    }
     if let Err(reason) = super::confine::confine() {
         let _ = FRAMING.write_value(&mut &socket, &Reply::Unconfined(reason));
         return 1;

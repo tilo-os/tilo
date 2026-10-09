@@ -708,18 +708,18 @@ impl Browser {
 }
 
 fn sheet_names(app: &Replica) -> Vec<String> {
-    let body: serde_json::Value = app
-        .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap();
-    body["wb"]["sheets"]
-        .as_array()
-        .map(|sheets| {
-            sheets
-                .iter()
-                .map(|sheet| sheet["name"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
+    app.read(|doc| {
+        <sheets::Workbook as ui::tilo_resource::Resource>::read(doc)
+            .map(|workbook| {
+                workbook
+                    .sheets
+                    .values()
+                    .map(|sheet| sheet.name.0.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
 }
 
 /// The argument of Sheets' New sheet: the sheet's name.

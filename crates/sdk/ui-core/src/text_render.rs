@@ -223,6 +223,27 @@ pub fn configured_font_system() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
 
+/// Read the product font catalog into memory and set every renderer this
+/// process makes in it from now on: for a process about to lose the
+/// filesystem (a confined app worker) whose views still lay out text.
+/// Returns whether a catalog loaded.
+#[cfg(not(test))]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    let Some(font_system) =
+        crate::font_catalog::catalog_in_memory(&crate::i18n::I18nManager::current_locale())
+    else {
+        return false;
+    };
+    share_host_font_database(&font_system);
+    true
+}
+
+/// Unit tests already set text in the fixture catalog, held in memory.
+#[cfg(test)]
+pub fn hold_catalog_fonts_in_memory() -> bool {
+    true
+}
+
 /// The system's fonts, scanned once per process. A scan parses every
 /// installed font file, and each renderer would otherwise repeat it.
 #[cfg(not(test))]

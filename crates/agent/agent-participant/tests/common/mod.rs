@@ -188,6 +188,26 @@ pub fn find_edit(app: &mut impl Driveable, limit: usize) -> (Option<Edit>, Vec<S
 /// reveals before it plans.
 pub struct KeywordModel;
 
+/// Scratchpad's note field edit: the body replaced by `text`, as the door
+/// takes it (`field-edit` with the edit as JSON).
+pub fn scratchpad_body(
+    text: &str,
+) -> (
+    tilo_actions::door::ActionAddress,
+    serde_json::Map<String, serde_json::Value>,
+) {
+    let edit = scratchpad::Note::paths().body.replace(text.to_owned());
+    let mut arguments = serde_json::Map::new();
+    arguments.insert(
+        ui::tilo_resource::EDIT_PARAM.into(),
+        serde_json::to_value(&edit).expect("a field edit is JSON"),
+    );
+    (
+        tilo_actions::door::ActionAddress::new("scratchpad.note", ui::tilo_resource::FIELD_EDIT),
+        arguments,
+    )
+}
+
 impl PlanModel for KeywordModel {
     fn choose(
         &mut self,

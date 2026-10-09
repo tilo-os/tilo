@@ -52,6 +52,35 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     database.as_ref().map(|db| system_over(locale, db.clone()))
 }
 
+/// The product catalog read whole into memory, with no host fonts behind
+/// it: for a process about to lose the filesystem (a confined app worker)
+/// whose views still lay out text. `None` when no catalog loads.
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
+    let (locale, loaded) = load_first_catalog(&catalog_roots(), locale, |_| {})
+        .ok()?
+        .into_locale_and_db();
+    let mut held = fontdb::Database::new();
+    let mut read = HashSet::new();
+    for face in loaded.faces() {
+        let (fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _)) = &face.source
+        else {
+            continue;
+        };
+        if read.insert(path.clone()) {
+            let bytes = std::fs::read(path).ok()?;
+            held.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
+        }
+    }
+    held.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
+    held.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
+    held.set_monospace_family(crate::text_render::UI_MONOSPACE_FAMILY);
+    Some(system_over(locale, held))
+}
+
 /// Where a native process looks for the product catalog, in order: a
 /// `fonts/` directory next to the executable (an installed app bundle), the
 /// catalog mounted from the selected signed SDK in a Tilo app sandbox,

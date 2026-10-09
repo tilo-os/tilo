@@ -415,13 +415,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     .unwrap();
 
     // 3. The browser spawns the agent through the host, with a task that
-    // edits the page's record through Scratchpad's own action.
+    // edits the page's record through Scratchpad's own field edit.
+    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
     let task = serde_json::json!([{
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Drafted by the agent"},
+        "action": note.action,
+        "arguments": arguments,
     }])
     .to_string();
     let mut spawn_arguments = serde_json::Map::new();
@@ -465,7 +466,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let info = &status_after.agents[0];
     assert_eq!(info.status, AgentStatus::Waiting);
     assert_eq!(info.tasks[0].state, TaskState::Completed);
-    assert_eq!(info.tasks[0].steps[0].action, "edit");
+    assert_eq!(info.tasks[0].steps[0].action, note.action);
     assert_eq!(info.device, hex::encode(agent_cert.device_public_key));
     let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
@@ -611,12 +612,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         )
         .await,
     );
+    let (note, arguments) = common::scratchpad_body("Second draft");
     let second = serde_json::json!({
         "app": SCRATCHPAD,
         "record": route.record,
         "resource": "scratchpad.note",
-        "action": "edit",
-        "arguments": {"text": "Second draft"},
+        "action": note.action,
+        "arguments": arguments,
     })
     .to_string();
     completed(
@@ -678,12 +680,13 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // between them (a loop on a 20 ms interval took one step per pump).
     let steps: Vec<serde_json::Value> = (1..=10)
         .map(|n| {
+            let (note, arguments) = common::scratchpad_body(&format!("Step {n} of ten"));
             serde_json::json!({
                 "app": SCRATCHPAD,
                 "record": route.record,
                 "resource": "scratchpad.note",
-                "action": "edit",
-                "arguments": {"text": format!("Step {n} of ten")},
+                "action": note.action,
+                "arguments": arguments,
             })
         })
         .collect();

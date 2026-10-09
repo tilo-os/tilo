@@ -12,7 +12,6 @@ mod common;
 
 use collab_types::DocumentMutation;
 use common::catalogue;
-use tilo_actions::door::ActionAddress;
 use tilo_agent_participant::{Replica, Seed};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -119,15 +118,8 @@ fn an_agent_mount_and_a_person_mount_converge() {
     if let Some(opened) = agent.take_mutation() {
         page.apply(&opened).unwrap();
     }
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("text".into(), "Drafted by the agent".into());
-    agent
-        .invoke(
-            &ActionAddress::new("scratchpad.note", "edit"),
-            &arguments,
-            false,
-        )
-        .unwrap();
+    let (note, arguments) = common::scratchpad_body("Drafted by the agent");
+    agent.invoke(&note, &arguments, false).unwrap();
     let edit = agent
         .take_mutation()
         .expect("the edit is the agent's own change");
@@ -141,13 +133,8 @@ fn an_agent_mount_and_a_person_mount_converge() {
 
     // And back: the person's edit reaches the agent, and the agent never
     // republishes it as its own.
-    arguments.insert("text".into(), "Ada's revision".into());
-    page.invoke(
-        &ActionAddress::new("scratchpad.note", "edit"),
-        &arguments,
-        false,
-    )
-    .unwrap();
+    let (note, arguments) = common::scratchpad_body("Ada's revision");
+    page.invoke(&note, &arguments, false).unwrap();
     agent.apply(&page.take_mutation().unwrap()).unwrap();
     assert!(body(&agent).contains("Ada's revision"), "{}", body(&agent));
     assert!(
