@@ -1526,8 +1526,15 @@ impl<T: Model> Model for BTreeMap<String, T> {
                     return edit_whole::<T>(doc, Slot::Key(&map, key), rest, op)
                         .map_err(|error| error.at(key));
                 }
+                // An edit inside an entry that is not there yet starts it
+                // from its value's empty value (a rule for an app that had
+                // none).
                 if doc.get(&map, key.as_str())?.is_none() {
-                    return Err(ModelError::invalid(format!("no entry `{key}`")));
+                    let empty = T::missing()
+                        .map_err(|_| ModelError::invalid(format!("no entry `{key}`")))?;
+                    empty
+                        .store(doc, Slot::Key(&map, key))
+                        .map_err(|error| error.at(key))?;
                 }
                 T::edit(doc, Slot::Key(&map, key), rest, op, cx).map_err(|error| error.at(key))
             }

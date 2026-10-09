@@ -758,3 +758,21 @@ fn a_search_entry_opens_by_its_rows_effect() {
     assert_eq!(action.resource, "shelf.top:2");
     assert_eq!(action.action, "top");
 }
+
+#[test]
+fn an_edit_inside_a_missing_map_entry_starts_the_entry() {
+    let mut reports = Replica::<Reports>::new();
+    let action = Reports::edit_action(
+        Reports::paths()
+            .reports
+            .key("so.tilo.maps")
+            .note
+            .replace("needs a key"),
+    )
+    .unwrap();
+    reports.apply_action(&action).unwrap();
+    let state = reports.state().unwrap();
+    let report = state.reports.get("so.tilo.maps").unwrap();
+    assert_eq!(report.note, "needs a key");
+    assert_eq!(report.title, "");
+}
