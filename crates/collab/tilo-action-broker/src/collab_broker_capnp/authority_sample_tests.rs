@@ -316,8 +316,7 @@ struct WideDirectory;
 
 impl WideDirectory {
     fn row(index: usize) -> runtime_collab::ActionDirectoryRow {
-        let contract_json =
-            serde_json::to_string(&tilo_actions::ActionContract::view()).expect("contract");
+        let contract = tilo_actions::ActionContract::view();
         let resource = format!("workspace:atlas-{index}");
         let descriptor = runtime_collab::ExportedAction {
             semantic_identity: None,
@@ -327,9 +326,9 @@ impl WideDirectory {
             resource_label: "Atlas".into(),
             action_label: "Open Atlas".into(),
             description: None,
-            operation_kind: "view".into(),
-            params_json: "[]".into(),
-            contract_json: contract_json.clone(),
+            operation_kind: tilo_actions::OperationKind::View,
+            params: Vec::new(),
+            contract: contract.clone(),
             input: runtime_collab::ExportedInput::None,
             view: None,
         };
@@ -338,12 +337,14 @@ impl WideDirectory {
             resource,
             resource_kind: descriptor.resource_kind.clone(),
             resource_label: descriptor.resource_label.clone(),
-            resource_presentation_json: String::new(),
+            presentation: None,
             action: Some(descriptor.action.clone()),
             descriptor: Some(descriptor),
             has_children: false,
-            visibility_action: Some("open".into()),
-            visibility_contract_json: contract_json,
+            visibility: Some(runtime_collab::RowVisibility {
+                action: "open".into(),
+                contract,
+            }),
         }
     }
 }
@@ -366,7 +367,9 @@ impl action_directory::Server for WideDirectory {
             stale_cursor: false,
             budget_exhausted: false,
         };
-        if let Err(error) = write_directory_page(results.get().init_page(), &page) {
+        if let Err(error) =
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
+        {
             return Promise::err(error);
         }
         Promise::ok(())
