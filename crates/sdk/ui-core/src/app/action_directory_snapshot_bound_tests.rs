@@ -25,7 +25,7 @@ fn directory_snapshot_bound_projection_expires_or_revises_on_owner_changes() {
             fixture
                 .app
                 .resolve_action_directory(&revision, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         fixture
             .app
@@ -138,10 +138,14 @@ fn directory_resolution_without_a_revision_reads_the_directory_as_it_is_now() {
             .resolve_action_directory(&before, &alias, "follow-up"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(matches!(
-        fixture
-            .app
-            .resolve_action_directory("", &alias, "follow-up"),
-        runtime_collab::ActionDirectoryResolution::Found(_)
-    ));
+    assert!(
+        matches!(
+            fixture
+                .app
+                .resolve_action_directory("", &alias, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::Found { revision: Some(resolved), .. }
+                if resolved == now
+        ),
+        "the resolution names the revision it read, which the broker binds the admission to"
+    );
 }

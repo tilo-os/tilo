@@ -159,7 +159,15 @@ pub struct ActionDirectoryPage {
 /// Exact, current-authority response before an invocation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionDirectoryResolution {
-    Found(Box<ActionDirectoryRow>),
+    /// The row, and the revision the owner resolved it against: the named
+    /// one, or the directory as it is now for an empty revision. An
+    /// admission is bound to that revision, so its host refuses to run it
+    /// once the directory moved on. `None` only from an owner built before
+    /// the field existed.
+    Found {
+        row: Box<ActionDirectoryRow>,
+        revision: Option<String>,
+    },
     NotFound,
     StaleRevision,
     Unavailable,
@@ -531,8 +539,11 @@ mod codec {
         resolution: &ActionDirectoryResolution,
     ) -> Result<(), capnp::Error> {
         match resolution {
-            ActionDirectoryResolution::Found(row) => {
-                write_action_directory_row(out.init_found(), row)?;
+            ActionDirectoryResolution::Found { row, revision } => {
+                write_action_directory_row(out.reborrow().init_found(), row)?;
+                if let Some(revision) = revision {
+                    out.set_resolved_revision(revision.as_str());
+                }
             }
             ActionDirectoryResolution::NotFound => out.set_not_found(()),
             ActionDirectoryResolution::StaleRevision => out.set_stale_revision(()),
@@ -807,9 +818,13 @@ mod codec {
         resolution: collab_capnp::action_directory_resolution::Reader<'_>,
     ) -> Result<ActionDirectoryResolution, capnp::Error> {
         match resolution.which()? {
-            collab_capnp::action_directory_resolution::Which::Found(row) => Ok(
-                ActionDirectoryResolution::Found(Box::new(decode_action_directory_row(row?)?)),
-            ),
+            collab_capnp::action_directory_resolution::Which::Found(row) => {
+                let revision = capnp_text(resolution.get_resolved_revision()?)?;
+                Ok(ActionDirectoryResolution::Found {
+                    row: Box::new(decode_action_directory_row(row?)?),
+                    revision: (!revision.is_empty()).then_some(revision),
+                })
+            }
             collab_capnp::action_directory_resolution::Which::NotFound(()) => {
                 Ok(ActionDirectoryResolution::NotFound)
             }
