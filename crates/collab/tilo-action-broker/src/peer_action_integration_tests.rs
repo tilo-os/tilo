@@ -683,7 +683,6 @@ impl RawSession {
         session
     }
     async fn write(&mut self, frame: EnvelopeV2) {
-        use tokio::io::AsyncWriteExt as _;
         self.send
             .write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
             .await

@@ -2350,13 +2350,13 @@ mod session_carrier_tests {
     }
 
     fn signed_request(
-        signer: u8,
+        by: u8,
         source: [u8; 32],
     ) -> tilo_delivery_protocol::peer_actions::SignedDirectedAction {
         let action = tilo_delivery_protocol::peer_actions::DirectedAction {
             room: uuid::Uuid::from_u128(1),
             request_id: uuid::Uuid::from_u128(2),
-            source: ed25519_dalek::SigningKey::from_bytes(&[signer; 32])
+            source: ed25519_dalek::SigningKey::from_bytes(&[by; 32])
                 .verifying_key()
                 .to_bytes(),
             target: [30; 32],
@@ -2367,7 +2367,7 @@ mod session_carrier_tests {
         let signed = tilo_delivery_protocol::peer_actions::SignedDirectedAction::sign(
             &action,
             tilo_clock::unix_now_ns(),
-            &ed25519_dalek::SigningKey::from_bytes(&[signer; 32]),
+            &ed25519_dalek::SigningKey::from_bytes(&[by; 32]),
         )
         .unwrap();
         if source == action.source {
