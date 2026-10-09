@@ -1755,37 +1755,30 @@ async fn serve(
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
     if remote_ticket.is_none()
-        && let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
-            record_services.as_mut(),
-            cache_dir.as_ref(),
-            acl_args.acl.as_ref(),
-            share_issuer.as_ref(),
-        )
+        && let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref())
     {
-        let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
-            .context("parse workspace authority bootstrap capabilities")?;
         let principals = acl_args
             .principals
             .iter()
             .map(|principal| parse_principal(principal))
             .collect::<Result<Vec<_>>>()?;
-        let authority = Arc::new(WorkspaceAuthority::open(
-            cache_dir.join("workspace-authority.bin"),
+        let bootstrap = acl_args
+            .acl
+            .as_ref()
+            .zip(share_issuer.as_ref())
+            .map(|(path, signer)| -> Result<_> {
+                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
+                    .context("parse workspace authority bootstrap capabilities")?;
+                Ok((capabilities, signer))
+            })
+            .transpose()?;
+        records.workspace_authority = workspace_startup::owner_authority(
+            cache_dir,
             workspace_id,
-            governor.verifying_key().to_bytes(),
             credentials.user_public_key(),
             principals,
-        )?);
-        if authority.current().is_none() {
-            authority.apply(WorkspaceAuthorityEnvelope::sign(
-                workspace_id,
-                1,
-                capabilities,
-                false,
-                governor,
-            )?)?;
-        }
-        records.workspace_authority = Some(authority);
+            bootstrap,
+        )?;
     }
     let record_publisher = record_repository
         .clone()
