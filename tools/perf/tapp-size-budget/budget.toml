@@ -48,7 +48,10 @@ p90 = 4521984   # 4,447,232 (osk)
 
 # Seeded from registry sequence 805 (2026-10-09). That registry state includes
 # #3374 (OS dictation) and #3969 (TIL-632, the resource action cache), the two
-# intended growth steps TIL-703 found.
+# intended growth steps TIL-703 found. The exception is so.tilo.code-editor:
+# the registry still served a tapp built at 0.1.76490, so its budget is the
+# current source packaged by Release / apps runs 90043 (x86_64, 2,963,456 B)
+# and 90066 (aarch64, 2,706,432 B).
 
 [apps."so.tilo.agent"]
 x86_64 = 5242880
@@ -95,8 +98,8 @@ x86_64 = 2097152
 aarch64 = 1900544
 
 [apps."so.tilo.code-editor"]
-x86_64 = 2818048
-aarch64 = 2555904
+x86_64 = 3014656
+aarch64 = 2752512
 
 [apps."so.tilo.contacts"]
 x86_64 = 2752512
