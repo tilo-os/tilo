@@ -78,7 +78,7 @@ impl DrawnOnTop {
     /// Where its pixels land once the scene is magnified by `to_scene`.
     pub(crate) fn placed(self, to_scene: Affine) -> Self {
         Self {
-            transform: self.transform.then(to_scene),
+            transform: then(self.transform, to_scene),
             ..self
         }
     }
@@ -92,6 +92,21 @@ impl DrawnOnTop {
             f64::from(self.image.height),
         ))
     }
+}
+
+/// `inner`, then `outer`: what `outer * inner` computes, spelled out because
+/// the workspace denies operator arithmetic on non-primitive types.
+fn then(inner: Affine, outer: Affine) -> Affine {
+    let [a, b, c, d, e, f] = outer.as_coeffs();
+    let [g, h, i, j, k, l] = inner.as_coeffs();
+    Affine::new([
+        a * g + c * h,
+        b * g + d * h,
+        a * i + c * j,
+        b * i + d * j,
+        a * k + c * l + e,
+        b * k + d * l + f,
+    ])
 }
 
 /// Whether the last path encoded into `path_data` is `rect`, as a fill of a
@@ -345,6 +360,11 @@ mod tests {
     #[test]
     fn only_whole_pixel_unit_scale_placements_are_pixel_exact() {
         let size = (3840, 2160);
+        assert_eq!(
+            then(Affine::translate((1.0, 2.0)), Affine::scale(2.0)),
+            Affine::new([2.0, 0.0, 0.0, 2.0, 2.0, 4.0]),
+            "the inner transform applies first"
+        );
         assert_eq!(pixel_exact_origin(Affine::IDENTITY, size), Some((0, 0)));
         assert_eq!(
             pixel_exact_origin(Affine::translate((1920.0, 0.0)), size),
@@ -355,11 +375,14 @@ mod tests {
         let logical = Affine::scale(0.5).then_translate(vello::kurbo::Vec2::new(960.0, 0.0));
         let to_scene = Affine::scale(2.0);
         assert_eq!(
-            pixel_exact_origin(logical.then(to_scene), size),
+            pixel_exact_origin(then(logical, to_scene), size),
             Some((1920, 0))
         );
         // Fractional 1.5 through f32 encoding precision.
-        let fractional = Affine::scale(f64::from(1.0_f32 / 1.5_f32)).then(Affine::scale(1.5));
+        let fractional = then(
+            Affine::scale(f64::from(1.0_f32 / 1.5_f32)),
+            Affine::scale(1.5),
+        );
         assert_eq!(pixel_exact_origin(fractional, size), Some((0, 0)));
         // Scaled, rotated, half-pixel, empty, non-finite: not pixel for pixel.
         assert_eq!(pixel_exact_origin(Affine::scale(0.5), size), None);
