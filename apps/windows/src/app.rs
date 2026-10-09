@@ -1080,12 +1080,10 @@ impl WindowsApp {
             }
             "windows.confirm-vm-install" => self.provider.borrow_mut().confirm_vm_install()?,
             "windows.open-file" => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                let app_id = args
-                    .first()
-                    .ok_or_else(|| "missing Windows app id".to_string())?;
-                let file_path = args.get(1).map_or("", String::as_str);
+                let (app_id, file_path): (String, String) = serde_json::from_slice(payload)
+                    .map_err(|_| "open-file names the Windows app and the file".to_string())?;
+                let app_id = &app_id;
+                let file_path = file_path.as_str();
                 if file_path.trim().is_empty() {
                     if self.document_portal_rx.is_some() {
                         return Err("a document picker is already open".into());

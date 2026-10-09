@@ -1,5 +1,5 @@
 use crate::{Attr, GridPos, Selection, TerminalPerformer, TerminalWidget};
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use automerge::{AutoCommit, ROOT};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::rc::Rc;
@@ -311,13 +311,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget = crate::TerminalWidget::spawn_hosted(services)
             .expect("the discovered ush connection must use the supervisor protocol");
         // The session opens at the first sync, once the record says where.
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            crate::target::TARGET_KEY,
-            crate::target::SessionTarget::default_environment().encode(),
-        )
-        .unwrap();
+        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
@@ -357,13 +351,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         let mut widget =
             crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) })
                 .unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(
-            automerge::ROOT,
-            crate::target::TARGET_KEY,
-            crate::target::SessionTarget::default_environment().encode(),
-        )
-        .unwrap();
+        let doc = session_record_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         assert!(
             matches!(
@@ -377,6 +365,16 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
 }
 
 /// Drain and concatenate everything the PTY-write channel has buffered.
+/// A session record whose session runs at `target`, as the record's own
+/// verb writes it.
+fn session_record_at(target: &crate::target::SessionTarget) -> AutoCommit {
+    let mut record = ui::tilo_resource::Replica::<crate::resource::Terminal>::new();
+    record
+        .apply(crate::resource::Terminal::RECORD_TARGET.with(target.encode()))
+        .expect("the target is recorded");
+    record.doc().clone()
+}
+
 pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
