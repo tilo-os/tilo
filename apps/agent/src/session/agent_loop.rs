@@ -2052,6 +2052,48 @@ mod tests {
         events
     }
 
+    /// One Anthropic-dialect turn calling `calls`, as the gateway streams it:
+    /// a call's argument deltas (indexed among the turn's tool calls), its
+    /// completed-call frame at its `content_block_stop`, then the assembled
+    /// Messages body, whose text blocks the frames never carried.
+    fn anthropic_turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
+        let mut events = Vec::new();
+        let mut content = vec![serde_json::json!({"type": "text", "text": "On it."})];
+        for (index, (name, arguments)) in calls.iter().enumerate() {
+            let id = format!("toolu_0{index}");
+            let text = arguments.to_string();
+            let mut start = 0;
+            while start < text.len() {
+                let mut end = (start + piece).min(text.len());
+                while !text.is_char_boundary(end) {
+                    end += 1;
+                }
+                events.push(TurnEvent::Frame {
+                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                    output: serde_json::json!({
+                        "index": index, "id": id, "name": name, "delta": &text[start..end]
+                    })
+                    .to_string(),
+                });
+                start = end;
+            }
+            events.push(TurnEvent::Frame {
+                event: tilo_model_gateway::EVENT_TOOL_CALL.into(),
+                output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
+            });
+            content.push(serde_json::json!({
+                "type": "tool_use", "id": id, "name": name, "input": arguments
+            }));
+        }
+        events.push(TurnEvent::Finished(Ok(serde_json::json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "scripted",
+            "content": content, "stop_reason": "tool_use", "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 20}
+        })
+        .to_string())));
+        events
+    }
+
     // -- A scripted broker: one small document app ------------------------
 
     const PEER: u64 = 7;
@@ -3393,6 +3435,85 @@ mod tests {
             runtime_collab::TaskRunUpdate::Failed { message }
                 if message.contains("provider stream reset") && message.contains("already written")
         ));
+    }
+
+    /// With Anthropic streamed like the `OpenAI` dialect, a call runs the
+    /// moment its `tool_use` block closes, while Claude still writes the
+    /// next one; the assembled body's pass then skips every call that ran
+    /// (same `toolu_` id), and each result goes back under its call's id.
+    #[test]
+    fn an_anthropic_call_runs_as_its_block_closes_and_only_once() {
+        let first = anthropic_turn(
+            &[
+                invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
+                invoke("read-text", &serde_json::json!({})),
+            ],
+            8,
+        );
+        let second_call = first
+            .iter()
+            .position(|event| {
+                matches!(event, TurnEvent::Frame { event, output }
+                    if event == tilo_model_gateway::EVENT_TOOL_CALL && output.contains("toolu_01"))
+            })
+            .unwrap();
+        let mut f = paced_fixture(
+            "write hello",
+            World::default(),
+            vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
+            Some(Duration::from_millis(4)),
+        );
+        f.session.chooser = Chooser::scripted(
+            Duration::from_secs(5),
+            agent_provider_config::ProviderProtocol::Anthropic,
+            Arc::new(Scripted(f.script.clone())),
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.blocks[0].1, "Hello");
+        let actions = world
+            .steps
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            ["append-paragraph", "read-text"],
+            "each call ran once"
+        );
+        assert!(
+            world.steps_at[0] <= second_call,
+            "the first call ran at event {} while the second was still being written ({second_call})",
+            world.steps_at[0]
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0]["tools"][0].get("input_schema").is_some());
+        let results = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(results["role"], "user");
+        let ids = results["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| {
+                assert_eq!(block["type"], "tool_result");
+                assert_ne!(block["content"], "Not handled.");
+                block["tool_use_id"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["toolu_00", "toolu_01"]);
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Wrote it.".into()
+            }
+        );
     }
 
     #[test]

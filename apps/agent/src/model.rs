@@ -147,7 +147,6 @@ impl Chooser {
         let turns: Arc<dyn TurnTransport> = Arc::new(GatewayTurns {
             profile_id: selection.profile_id.clone(),
             model_id: selection.model.id.clone(),
-            protocol: selection.protocol,
             marks: Arc::clone(&marks),
         });
         Self {
@@ -266,9 +265,9 @@ impl Chooser {
     }
 
     /// [`Self::choose_actions`], reporting what the model produces while it
-    /// streams to `live` (display only; the decision is unchanged). The
-    /// OpenAI-compatible dialect reports argument text as it arrives; the
-    /// Anthropic dialect reports turns and tool calls.
+    /// streams to `live` (display only; the decision is unchanged). Both
+    /// dialects report argument text as it arrives and each tool call as it
+    /// completes.
     ///
     /// # Errors
     ///
@@ -343,7 +342,6 @@ impl Chooser {
         most_steps: usize,
         live: &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<tools::Answer, AskError> {
-        let dialect = Dialect::of(provider.selection.protocol);
         let began = ui::time::now();
         let remaining = || self.timeout.checked_sub(began.elapsed());
         let trace_id = uuid::Uuid::new_v4().as_u64_pair().0.max(1);
@@ -357,9 +355,7 @@ impl Chooser {
         };
         decision.run(
             trace_id,
-            &mut |body, trace, live| {
-                post_action_turn(provider, dialect, body, &remaining, trace, live)
-            },
+            &mut |body, trace, live| post_action_turn(provider, body, &remaining, trace, live),
             live,
         )
     }
@@ -438,13 +434,8 @@ impl ActionDecision<'_> {
                     }
                 },
                 ActionTurn::Tools { assistant, calls } => {
+                    // The stream reported each call as it completed.
                     messages.push(assistant);
-                    if dialect == Dialect::Anthropic {
-                        // The OpenAI stream reported these as they completed.
-                        for call in &calls {
-                            live(StreamSignal::ToolCall(&call.name));
-                        }
-                    }
                     for call in calls {
                         let answer =
                             tools::answer(&call.name, &call.input, self.catalogue, &mut revealed);
@@ -780,33 +771,16 @@ pub fn action_user_turn(
     text
 }
 
-/// Send through the profile selected for this task. The gateway resolves the
-/// current profile and its vault-held key; no provider endpoint or bearer
-/// value is used in this process.
-fn post_provider(
-    provider: &ProviderConnection,
-    body: &Value,
-    remaining: &dyn Fn() -> Option<Duration>,
-) -> Result<String, AskError> {
-    // The agent has no provider network namespace and cannot resolve a vault
-    // reference. All profile lookup, credential resolution, and egress happen
-    // at the per-user model gateway reached through a launcher-issued FD.
-    let timeout = remaining().ok_or_else(|| AskError::Failed("the call timed out".into()))?;
-    tilo_model_gateway::plan(
-        &provider.selection.profile_id,
-        &provider.selection.model.id,
-        body.clone(),
-        timeout,
-    )
-    .map_err(|error| AskError::Failed(error.to_string()))
-}
-
-/// Send one action-discovery turn. The `OpenAI` dialect streams: the gateway
-/// reports each tool call the moment it is complete (logged here), then the
-/// assembled body, so the loop itself is identical for both dialects.
+/// Send one action-discovery turn through the profile selected for this
+/// task. Both dialects stream: the gateway reports each tool call the moment
+/// it is complete (logged here), then the assembled body in the provider's
+/// non-streamed shape, so the loop itself is identical for both.
+///
+/// The agent has no provider network namespace and cannot resolve a vault
+/// reference. All profile lookup, credential resolution, and egress happen
+/// at the per-user model gateway reached through a launcher-issued FD.
 fn post_action_turn(
     provider: &ProviderConnection,
-    dialect: Dialect,
     body: Value,
     remaining: &dyn Fn() -> Option<Duration>,
     trace: tilo_model_gateway::PlanTrace,
@@ -816,9 +790,6 @@ fn post_action_turn(
         .filter(|left| !left.is_zero())
         .ok_or_else(|| AskError::Failed("the call timed out".into()))?
         .min(MAX_TURN_TIME);
-    if dialect == Dialect::Anthropic {
-        return post_provider(provider, &body, &|| Some(timeout));
-    }
     let began = ui::time::now();
     let mut scanners: BTreeMap<u64, plan_stream::PlanArgumentsScanner> = BTreeMap::new();
     tilo_model_gateway::plan_streaming_deltas(
@@ -892,12 +863,25 @@ pub struct MarkGate {
 #[derive(Debug, Default)]
 struct MarkState {
     busy: bool,
+    /// The turn that owns (or last owned) the channel.
+    turn: u64,
+    /// That turn's Plan is over: nothing more of it is on the channel.
+    over: bool,
     /// Held marks with the Unix ms at which each happened.
     pending: Vec<(
         tilo_model_gateway::PlanTrace,
         tilo_model_gateway::TraceEvent,
         u64,
     )>,
+}
+
+impl MarkState {
+    /// Send the held marks, each with the time it happened, in order.
+    fn flush(&mut self) {
+        for (trace, event, at) in std::mem::take(&mut self.pending) {
+            let _ = tilo_model_gateway::trace_at(trace, event, Some(at));
+        }
+    }
 }
 
 impl MarkGate {
@@ -916,28 +900,51 @@ impl MarkGate {
         let _ = tilo_model_gateway::trace(trace, event);
     }
 
-    fn acquire(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.busy = true;
+    /// A turn takes the channel; its ticket for [`Self::release`]. Marks the
+    /// previous turn held go out first when its Plan is over, even if its
+    /// thread has not released yet: the channel is free until this turn's
+    /// Plan starts.
+    fn acquire(&self) -> u64 {
+        let Ok(mut state) = self.state.lock() else {
+            return 0;
+        };
+        if state.over {
+            state.flush();
+        }
+        state.turn = state.turn.wrapping_add(1);
+        state.busy = true;
+        state.over = false;
+        state.turn
+    }
+
+    /// Turn `ticket`'s Plan is over; its `Finished` may go out before the
+    /// marks it held.
+    fn plan_over(&self, ticket: u64) {
+        if let Ok(mut state) = self.state.lock()
+            && state.turn == ticket
+        {
+            state.over = true;
         }
     }
 
-    fn release(&self) {
+    /// Turn `ticket` is done with the channel: send what it held and free
+    /// the channel, unless a later turn already took it.
+    fn release(&self, ticket: u64) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        for (trace, event, at) in std::mem::take(&mut state.pending) {
-            let _ = tilo_model_gateway::trace_at(trace, event, Some(at));
+        if state.turn != ticket {
+            return;
         }
+        state.flush();
         state.busy = false;
     }
 }
 
-/// Turns over the launcher-issued model gateway.
+/// Turns over the launcher-issued model gateway. Both dialects stream.
 struct GatewayTurns {
     profile_id: String,
     model_id: String,
-    protocol: agent_provider_config::ProviderProtocol,
     marks: Arc<MarkGate>,
 }
 
@@ -946,48 +953,38 @@ impl TurnTransport for GatewayTurns {
         let (tx, rx) = std::sync::mpsc::channel();
         let profile_id = self.profile_id.clone();
         let model_id = self.model_id.clone();
-        let protocol = self.protocol;
         let marks = Arc::clone(&self.marks);
-        marks.acquire();
+        let ticket = marks.acquire();
         let spawned = std::thread::Builder::new()
             .name("agent-model-turn".into())
             .spawn({
                 let tx = tx.clone();
                 let marks = Arc::clone(&marks);
                 move || {
-                    let result = match protocol {
-                        agent_provider_config::ProviderProtocol::Anthropic => {
-                            tilo_model_gateway::plan(
-                                &profile_id,
-                                &model_id,
-                                request.body,
-                                request.timeout,
-                            )
-                        }
-                        agent_provider_config::ProviderProtocol::OpenAiCompatible => {
-                            tilo_model_gateway::plan_streaming_deltas(
-                                &profile_id,
-                                &model_id,
-                                request.body,
-                                request.timeout,
-                                request.trace,
-                                &mut |event, output| {
-                                    let _ = tx.send(TurnEvent::Frame {
-                                        event: event.to_owned(),
-                                        output: output.to_owned(),
-                                    });
-                                },
-                            )
-                        }
-                    };
-                    marks.release();
+                    let result = tilo_model_gateway::plan_streaming_deltas(
+                        &profile_id,
+                        &model_id,
+                        request.body,
+                        request.timeout,
+                        request.trace,
+                        &mut |event, output| {
+                            let _ = tx.send(TurnEvent::Frame {
+                                event: event.to_owned(),
+                                output: output.to_owned(),
+                            });
+                        },
+                    );
+                    // The loop hears the turn is over first; the marks held
+                    // while it ran (round trips to the gateway) follow.
+                    marks.plan_over(ticket);
                     let _ = tx.send(TurnEvent::Finished(
                         result.map_err(|error| error.to_string()),
                     ));
+                    marks.release(ticket);
                 }
             });
         if spawned.is_err() {
-            marks.release();
+            marks.release(ticket);
             let _ = tx.send(TurnEvent::Finished(Err(
                 "could not start the model turn".into()
             )));
@@ -1029,9 +1026,13 @@ impl Conversation {
         }
     }
 
-    /// Whether the provider streams argument deltas (`OpenAI` dialect).
+    /// Whether the provider streams argument deltas and completed tool calls
+    /// while it writes. Both dialects do: an Anthropic `tool_use` block is
+    /// complete at its own `content_block_stop`.
     pub fn streams(&self) -> bool {
-        self.dialect == Dialect::OpenAi
+        match self.dialect {
+            Dialect::Anthropic | Dialect::OpenAi => true,
+        }
     }
 
     /// The request for the next turn, offering `tools` (Anthropic-shaped
@@ -1512,6 +1513,50 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
+        let conversation = Conversation::new(selection.protocol, "claude-x", "system", "do it");
+        assert!(conversation.streams(), "tool calls run while Claude writes");
+    }
+
+    /// `Finished` goes out before the marks a turn held. The next turn may
+    /// start in between: it sends them before taking the channel, and the
+    /// finished turn's late release then leaves the channel to it.
+    #[test]
+    fn a_late_release_never_frees_the_channel_a_later_turn_holds() {
+        let gate = MarkGate::default();
+        let trace = tilo_model_gateway::PlanTrace { id: 1, turn: 0 };
+        let held = |gate: &MarkGate| {
+            let state = gate.state.lock().unwrap();
+            (state.busy, state.pending.len())
+        };
+        let first = gate.acquire();
+        gate.mark(trace, tilo_model_gateway::TraceEvent::ActionSubmitted);
+        assert_eq!(
+            held(&gate),
+            (true, 1),
+            "held while the turn owns the channel"
+        );
+        // The loop already heard `Finished` and starts the next turn before
+        // the first one's thread released.
+        gate.plan_over(first);
+        let second = gate.acquire();
+        assert_eq!(held(&gate), (true, 0), "sent before the next Plan starts");
+        gate.release(first);
+        assert_eq!(
+            held(&gate),
+            (true, 0),
+            "the next turn still owns the channel"
+        );
+        gate.mark(trace, tilo_model_gateway::TraceEvent::ActionSettled);
+        assert_eq!(held(&gate), (true, 1));
+        // A turn whose Plan is not over (abandoned, still streaming) keeps
+        // its marks from the channel when another turn starts.
+        let third = gate.acquire();
+        assert_eq!(held(&gate), (true, 1));
+        gate.release(second);
+        assert_eq!(held(&gate), (true, 1));
+        gate.plan_over(third);
+        gate.release(third);
+        assert_eq!(held(&gate), (false, 0), "released: sent, channel free");
     }
 
     const PROTOCOLS: [agent_provider_config::ProviderProtocol; 2] = [
