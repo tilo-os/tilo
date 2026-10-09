@@ -3223,6 +3223,7 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     serde_json::json!({
         "visible": visible,
         "inspection": fb.host().palette_inspection(),
+        "observer": crate::shell::search::palette_trace::observer_inspection(),
         "query": query,
         "selected_id": selected,
         "selected_action": fb.host().palette_selected_action().map(|(provider, id)| {
@@ -12251,6 +12252,11 @@ pub fn run() {
             let t_scene_start = Instant::now();
             let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
+            frame_builder.host_mut().observe_palette_draws(
+                !session.is_locked()
+                    && crate::shell::launcher::LaunchSession::current()
+                        .presentation_observer_enabled(),
+            );
             let retained_damage_supported = backend.supports_retained_scene_damage();
             frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
             frame_builder.set_session_locked(session.is_locked());

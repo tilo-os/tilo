@@ -3,7 +3,34 @@
 //! Submission is not presentation. Only the independent presenter retirement
 //! with this exact pipe serial and scene revision can establish a KMS outcome.
 use serde_json::{Value, json};
+use std::cell::Cell;
 use uuid::Uuid;
+
+thread_local! { static OBSERVER: Cell<Option<(Uuid, u64)>> = const { Cell::new(None) }; }
+
+/// Public identity for this native event-loop producer, never a guessed log PID.
+pub(crate) fn observer_inspection() -> Value {
+    if !crate::shell::launcher::LaunchSession::current().presentation_observer_enabled() {
+        return Value::Null;
+    }
+    OBSERVER.get().map_or(Value::Null, |(session, last_input)| {
+        json!({
+            "process_id":std::process::id(), "observer_session":session,
+            "after_input_id":last_input, "clock_id":libc::CLOCK_MONOTONIC, "schema":1,
+        })
+    })
+}
+
+impl Drop for PaletteTrace {
+    fn drop(&mut self) {
+        if OBSERVER
+            .get()
+            .is_some_and(|(session, _)| session == self.session)
+        {
+            OBSERVER.set(None);
+        }
+    }
+}
 
 const MAX_INPUTS: usize = 32;
 const MAX_EVENTS: u64 = 2048;
@@ -33,8 +60,10 @@ pub(crate) struct PaletteTrace {
 
 impl Default for PaletteTrace {
     fn default() -> Self {
+        let session = Uuid::new_v4();
+        OBSERVER.set(Some((session, 0)));
         Self {
-            session: Uuid::new_v4(),
+            session,
             next_id: 1,
             pending: Vec::new(),
             submitted: false,
@@ -85,6 +114,7 @@ impl PaletteTrace {
             return None;
         }
         self.next_id += 1;
+        OBSERVER.set(Some((self.session, input.identity.id)));
         // Retain a cause across later background result publication. A new
         // physical change replaces it only after a scene was submitted; input
         // changes coalesced before the first scene stay explicitly multiple.
@@ -217,6 +247,7 @@ mod tests {
             .unwrap();
         trace.finish(input, snapshot(true, ""), 80).unwrap();
         assert!(trace.frame(0, 1, snapshot(true, ""), 90, 100).is_none());
+        assert!(trace.frame(1, 0, snapshot(true, ""), 90, 100).is_none());
         assert!(trace.frame(1, 1, Value::Null, 90, 100).is_none());
         assert!(trace.frame(1, 1, snapshot(true, ""), 110, 100).is_none());
         trace.reset();
