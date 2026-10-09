@@ -10,23 +10,64 @@ CHRONYC="${TILO_IMAGE_TRUST_CHRONYC:-/usr/bin/chronyc}"
 CHRONY_CONFIG="${TILO_IMAGE_TRUST_CHRONY_CONFIG:-/etc/chrony.conf}"
 REQUIRE_STAGED=0
 TRUST_OWNER_UID="${TILO_IMAGE_TRUST_OWNER_UID:-0}"
-[ "${1:-}" != --require-staged ] || REQUIRE_STAGED=1
-[ $# -le 1 ] || { echo 'tilo-image-trust-staged: unexpected arguments' >&2; exit 2; }
+EXPECTED_DIGEST=""
+EXPECTED_GENERATION=""
+FRESHNESS_EXPIRES=""
+UPDATE_LOCK_FD=""
+UPDATE_LOCK_PATH=""
+authenticated_time() {
+  # Endorsement expiry and time.state use wall time. Refuse to consume the RTC
+  # until Chrony has selected the immutable NTS-only source set and reduced the
+  # remaining correction below 100 ms; otherwise an unsynchronised future RTC
+  # could permanently advance the rollback-resistant time floor.
+  [ -f "$CHRONY_CONFIG" ] && [ ! -L "$CHRONY_CONFIG" ] \
+    && [ "$(stat -c '%u:%a:%h' "$CHRONY_CONFIG" 2>/dev/null)" = "$TRUST_OWNER_UID:644:1" ] \
+    && grep -Fqx 'authselectmode require' "$CHRONY_CONFIG" \
+    && [ "$(grep -Ec '^server [^ ]+ .*\bnts\b' "$CHRONY_CONFIG")" -ge 3 ] \
+    && ! grep -E '^server ' "$CHRONY_CONFIG" | grep -Ev '\bnts\b' >/dev/null \
+    && ! grep -Eq '^[[:space:]]*(pool|peer|sourcedir|confdir)[[:space:]]' "$CHRONY_CONFIG" \
+    || { echo 'tilo-image-trust-staged: authenticated time configuration is unsafe' >&2; exit 1; }
+  LC_ALL=C "$CHRONYC" -n waitsync 1 0.1 >/dev/null 2>&1 \
+    || { echo 'tilo-image-trust-staged: authenticated wall clock is not synchronized within 100 ms' >&2; exit 1; }
+  date +%s%N
+}
+
+case "${1:-}" in
+  --trusted-time)
+    [ $# -eq 1 ] || exit 2
+    authenticated_time
+    exit 0 ;;
+  --require-staged)
+    [ $# -eq 1 ] || exit 2
+    REQUIRE_STAGED=1 ;;
+  --successor)
+    [ $# -eq 6 ] || exit 2
+    EXPECTED_DIGEST="$2"; EXPECTED_GENERATION="$3"
+    FRESHNESS_EXPIRES="$4"; UPDATE_LOCK_FD="$5"; UPDATE_LOCK_PATH="$6"
+    REQUIRE_STAGED=1 ;;
+  '') [ $# -eq 0 ] || exit 2 ;;
+  *) echo 'tilo-image-trust-staged: unexpected argument' >&2; exit 2 ;;
+esac
 
 # Installing this root-owned marker opts the machine into the additional owner
 # chain. Without it, the mandatory containers-policy Cosign gate remains the
 # update authority and this helper is deliberately inert.
-[ -e "$TRUST_DIR/required" ] || [ -L "$TRUST_DIR/required" ] || exit 0
-[ -d "$TRUST_DIR" ] && [ ! -L "$TRUST_DIR" ] \
-  || { echo 'tilo-image-trust-staged: trust store is not a real directory' >&2; exit 1; }
-[ "$(stat -c '%u:%a' "$TRUST_DIR" 2>/dev/null)" = "$TRUST_OWNER_UID:700" ] \
-  || { echo 'tilo-image-trust-staged: trust store must be root-owned mode 0700' >&2; exit 1; }
-marker="$TRUST_DIR/required"
-[ -f "$marker" ] && [ ! -L "$marker" ] \
-  && [ "$(stat -c '%u:%a:%h' "$marker" 2>/dev/null)" = "$TRUST_OWNER_UID:600:1" ] \
-  && [ "$(wc -c <"$marker" 2>/dev/null)" = 6 ] \
-  && grep -Fqx armed "$marker" \
-  || { echo 'tilo-image-trust-staged: required marker is malformed or unsafe' >&2; exit 1; }
+ARMED=0
+if [ -e "$TRUST_DIR/required" ] || [ -L "$TRUST_DIR/required" ]; then
+  ARMED=1
+  [ -d "$TRUST_DIR" ] && [ ! -L "$TRUST_DIR" ] \
+    || { echo 'tilo-image-trust-staged: trust store is not a real directory' >&2; exit 1; }
+  [ "$(stat -c '%u:%a' "$TRUST_DIR" 2>/dev/null)" = "$TRUST_OWNER_UID:700" ] \
+    || { echo 'tilo-image-trust-staged: trust store must be root-owned mode 0700' >&2; exit 1; }
+  marker="$TRUST_DIR/required"
+  [ -f "$marker" ] && [ ! -L "$marker" ] \
+    && [ "$(stat -c '%u:%a:%h' "$marker" 2>/dev/null)" = "$TRUST_OWNER_UID:600:1" ] \
+    && [ "$(wc -c <"$marker" 2>/dev/null)" = 6 ] \
+    && grep -Fqx armed "$marker" \
+    || { echo 'tilo-image-trust-staged: required marker is malformed or unsafe' >&2; exit 1; }
+elif [ -z "$EXPECTED_DIGEST" ]; then
+  exit 0
+fi
 
 status=""
 exec {status_fd}< <("$BOOTC" status --format json)
@@ -120,24 +161,33 @@ done
 [ -n "$generation" ] \
   || { echo 'tilo-image-trust-staged: cannot bind staged image to a measured generation' >&2; exit 1; }
 
-# Endorsement expiry and time.state use wall time. Refuse to consume the RTC
-# until Chrony has selected the immutable NTS-only source set and reduced the
-# remaining correction below 100 ms; otherwise an unsynchronised future RTC
-# could permanently advance the rollback-resistant time floor.
-[ -f "$CHRONY_CONFIG" ] && [ ! -L "$CHRONY_CONFIG" ] \
-  && [ "$(stat -c '%u:%a:%h' "$CHRONY_CONFIG" 2>/dev/null)" = "$TRUST_OWNER_UID:644:1" ] \
-  && grep -Fqx 'authselectmode require' "$CHRONY_CONFIG" \
-  && [ "$(grep -Ec '^server [^ ]+ .*\bnts\b' "$CHRONY_CONFIG")" -ge 3 ] \
-  && ! grep -E '^server ' "$CHRONY_CONFIG" | grep -Ev '\bnts\b' >/dev/null \
-  && ! grep -Eq '^[[:space:]]*(pool|peer|sourcedir|confdir)[[:space:]]' "$CHRONY_CONFIG" \
-  || { echo 'tilo-image-trust-staged: authenticated time configuration is unsafe' >&2; exit 1; }
-LC_ALL=C "$CHRONYC" -n waitsync 1 0.1 >/dev/null 2>&1 \
-  || { echo 'tilo-image-trust-staged: authenticated wall clock is not synchronized within 100 ms' >&2; exit 1; }
+now="$(authenticated_time)"
+
+if [ -n "$EXPECTED_DIGEST" ]; then
+  [ "$digest" = "$EXPECTED_DIGEST" ] && [ "$generation" = "$EXPECTED_GENERATION" ] || {
+    echo 'tilo-image-trust-staged: staged image/UKI differs from verified successor' >&2
+    exit 1
+  }
+  [[ "$FRESHNESS_EXPIRES" =~ ^[1-9][0-9]{0,9}$ ]] \
+    && [ "${now:0:${#now}-9}" -lt "$FRESHNESS_EXPIRES" ] || {
+    echo 'tilo-image-trust-staged: verified release freshness expired before activation' >&2
+    exit 1
+  }
+  if [ "$ARMED" -eq 1 ]; then
+    tilo-image-trust renew-under-update-lock "$TRUST_DIR" \
+      "${TILO_IMAGE_TRUST_DEVICE_KEY:-/var/lib/tilo/device-private/keypair.bin}" \
+      "$digest" "$generation" "$now" "$UPDATE_LOCK_FD" "$UPDATE_LOCK_PATH" || {
+      echo 'tilo-image-trust-staged: existing owner authorization cannot endorse successor' >&2
+      exit 1
+    }
+  fi
+fi
+[ "$ARMED" -eq 1 ] || exit 0
 
 if ! tilo-image-trust verify-and-record \
     "$TRUST_DIR/root.pub" "$TRUST_DIR/revocations.bin" \
     "$TRUST_DIR/endorsement.bin" "$digest" "$generation" \
-    "$(date +%s%N)" "$TRUST_DIR/generation.state" "$TRUST_DIR/time.state"; then
+    "$now" "$TRUST_DIR/generation.state" "$TRUST_DIR/time.state"; then
   echo 'tilo-image-trust-staged: owner endorsement rejected; downloaded image was not activated' >&2
   exit 1
 fi
