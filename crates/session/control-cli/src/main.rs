@@ -22,10 +22,9 @@
 //! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use tilo_control::ControlClient;
 
 use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
 
@@ -425,7 +424,7 @@ fn job_status_request(job: u64) -> String {
 
 /// `read APP [ITEM]`: find the open app's `read` action, invoke it, and
 /// print the typed value it answers.
-fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) -> u8 {
+fn run_read(stream: &mut ControlClient, app: &str, item: Option<&str>, json: bool) -> u8 {
     let enumerate = serde_json::json!({ "op": "actions_enumerate", "query": "read" }).to_string();
     let mut id = None;
     for attempt in 0..READ_DISCOVERY_ATTEMPTS {
@@ -964,23 +963,15 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
 /// Connect to the unix socket at `path`. Returns a usage-style error
 /// message wrapped in a string so the caller can format it however
 /// it likes — the binary's `main` prints this and exits 2.
-fn connect(path: &PathBuf) -> std::io::Result<UnixStream> {
-    UnixStream::connect(path)
+fn connect(path: &Path) -> std::io::Result<ControlClient> {
+    ControlClient::connect(path)
 }
 
 /// Send `cmd_json` to the compositor and read one response line.
 /// Both directions are line-delimited; the function pushes `\n` and
 /// reads up to the first newline.
-fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> std::io::Result<serde_json::Value> {
-    let mut line = cmd_json.to_string();
-    line.push('\n');
-    stream.write_all(line.as_bytes())?;
-    stream.flush()?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    serde_json::from_str(response.trim())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+fn round_trip(stream: &mut ControlClient, cmd_json: &str) -> std::io::Result<serde_json::Value> {
+    stream.exchange(cmd_json)
 }
 
 /// Print the compositor's response in the format each subcommand

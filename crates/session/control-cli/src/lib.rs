@@ -76,3 +76,8 @@ mod tests {
         }
     }
 }
+
+mod client;
+#[cfg(target_os = "linux")]
+pub use client::KernelPeer;
+pub use client::{ControlClient, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES};
