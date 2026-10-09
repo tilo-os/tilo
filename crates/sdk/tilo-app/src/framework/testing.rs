@@ -417,6 +417,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         capture: Option<(Capture, (u32, u32))>,
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
+        super::controls::strict_bindings();
         let (profile, private, private_arguments) = private_launch::<A>(profile, arguments)?;
         let (arguments, options) = split_command_line(&private_arguments, A::OPTIONS, A::FLAGS);
         let arguments = arguments.as_slice();

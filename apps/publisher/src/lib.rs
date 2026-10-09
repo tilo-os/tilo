@@ -398,21 +398,21 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
 /// The published namespace claims, bound to their canonical profile edits.
 fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
     let registry = cx
-        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
+        .input_with(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
         .with_id("registry-input");
     let domain = cx
-        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
+        .input_with(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
         .with_id("domain-input")
         .with_placeholder("publisher-domain-placeholder");
     let forge = cx
-        .input(
+        .input_with(
             |profile| profile.forge_account.clone(),
             Publisher::SET_FORGE_ACCOUNT,
         )
         .with_id("forge-input")
         .with_placeholder("publisher-forge-placeholder");
     let contact = cx
-        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
+        .input_with(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
         .with_id("contact-input")
         .with_placeholder("publisher-contact-placeholder");
     ui::column![

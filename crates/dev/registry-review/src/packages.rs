@@ -418,12 +418,12 @@ pub(super) fn detail(cx: &ViewCx<Draft>, snapshot: &Snapshot) -> Element {
     body = body
         .push(Box::new(labeled_field(
             "review-reviewer",
-            cx.input(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
+            cx.input_with(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
                 .with_id("reviewer-input"),
         )))
         .push(Box::new(labeled_field(
             "package-review-reason",
-            cx.input(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
+            cx.input_with(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
                 .with_id("feedback-input"),
         )));
     let snapshot = snapshot.clone();

@@ -57,7 +57,7 @@ impl ResourceApp for ChecklistApp {
         Box::new(
             Column::new()
                 .push(Box::new(
-                    cx.input(|list| list.title.clone(), Checklist::RENAME)
+                    cx.input_with(|list| list.title.clone(), Checklist::RENAME)
                         .with_id("title"),
                 ))
                 .push(Box::new(cx.text(|list| {
@@ -68,7 +68,7 @@ impl ResourceApp for ChecklistApp {
                     |list| &list.items,
                     |row| {
                         let id = row.item().cloned().unwrap_or_else(|| Id::from_raw(""));
-                        Box::new(row.checkbox(
+                        Box::new(row.checkbox_with(
                             row.read(|item| item.map(|item| item.text.clone()).unwrap_or_default()),
                             |item| item.done,
                             Checklist::SET_DONE.map(move |done| (id.clone(), done)),

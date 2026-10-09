@@ -58,7 +58,7 @@ impl ResourceApp for Scratchpad {
     fn view(cx: &mut ViewCx<Note>) -> Element {
         let scroll = Rc::new(Cell::new((0.0, 0.0)));
         let editor = cx
-            .input(|note| note.body.clone(), Note::EDIT)
+            .input_with(|note| note.body.clone(), Note::EDIT)
             .with_id("note-editor")
             .with_accessible_name("Note")
             .with_plain_chrome()

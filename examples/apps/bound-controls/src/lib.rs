@@ -121,11 +121,11 @@ impl ResourceApp for App {
         install_catalog();
         // Text and booleans have dedicated bindings.
         let name = cx
-            .input(|prefs| prefs.name.clone(), Preferences::SET_NAME)
+            .input_with(|prefs| prefs.name.clone(), Preferences::SET_NAME)
             .with_id("name-input")
             .with_placeholder("controls-name-placeholder");
         let updates = cx
-            .checkbox(
+            .checkbox_with(
                 "controls-updates-label",
                 |prefs| prefs.updates,
                 Preferences::SET_UPDATES,
@@ -135,7 +135,7 @@ impl ResourceApp for App {
         // the `LocalState` it is given, say what it shows, and which action
         // its committed values invoke.
         let refresh = cx
-            .control(
+            .control_with(
                 |value| {
                     NumberInput::from_state(value)
                         .with_range(1.0, 120.0)
@@ -147,14 +147,14 @@ impl ResourceApp for App {
             )
             .with_id("refresh-input");
         let volume = cx
-            .control(
+            .control_with(
                 Slider::from_state,
                 |prefs| prefs.volume,
                 Preferences::SET_VOLUME,
             )
             .with_id("volume-slider");
         let region = cx
-            .control(
+            .control_with(
                 |value| {
                     Dropdown::from_state(
                         REGIONS.iter().map(|region| (*region).to_owned()).collect(),

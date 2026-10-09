@@ -85,7 +85,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Shelf>) -> Element {
         install_catalog();
         let reader = cx
-            .input(|shelf| shelf.reader.clone(), Shelf::SET_READER)
+            .input_with(|shelf| shelf.reader.clone(), Shelf::SET_READER)
             .with_id("reader-input")
             .with_placeholder("localized-reader-placeholder");
         let name = cx.value(|shelf| shelf.reader.clone());

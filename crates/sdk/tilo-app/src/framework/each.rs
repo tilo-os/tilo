@@ -1,6 +1,7 @@
 //! A keyed list of rows that follows a collection in the resource, with each
 //! row's item actions in its context menu.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui_core::widget::{AppModel, ModelPath};
@@ -58,7 +59,9 @@ pub struct Each<R: Resource> {
     ids: Ids<R>,
     build: BuildRow,
     rows: Vec<Row>,
-    built: u64,
+    /// Set when the collection's membership may have changed since the rows
+    /// were last reconciled with it.
+    stale: Rc<Cell<bool>>,
     nodes: Vec<NodeId>,
     rect: Rect,
     structure_dirty: bool,
@@ -69,10 +72,11 @@ impl<R: Resource> Each<R> {
         live: Live<R>,
         dispatch: Dispatcher<R>,
         ids: Ids<R>,
+        stale: Rc<Cell<bool>>,
         build: BuildRow,
     ) -> Self {
         let mut each = Self {
-            built: live.revision(),
+            stale,
             live,
             dispatch,
             menu: RowMenu::default(),
@@ -238,8 +242,7 @@ impl<R: Resource> Each<R> {
 
 impl<R: Resource> Widget for Each<R> {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.live.revision() != self.built {
-            self.built = self.live.revision();
+        if self.stale.replace(false) {
             self.reconcile();
         }
         for row in &mut self.rows {

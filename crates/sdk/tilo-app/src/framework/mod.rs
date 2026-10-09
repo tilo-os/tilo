@@ -323,6 +323,7 @@ mod person;
 mod preview;
 #[cfg(feature = "test-support")]
 pub mod profiling;
+mod reactive;
 mod root;
 mod rows;
 mod scenario;
@@ -345,7 +346,7 @@ pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
 pub use attached::AttachedView;
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
-pub use dispatch::{DispatchGroup, Dispatcher, Refused};
+pub use dispatch::{DispatchGroup, Dispatcher, Refused, Submit};
 pub use each::Each;
 pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,

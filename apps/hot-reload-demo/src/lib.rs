@@ -95,11 +95,11 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Document>) -> Element {
         crate::install_catalog();
         let title = cx
-            .input(|document| document.title.clone(), Document::SET_TITLE)
+            .input_with(|document| document.title.clone(), Document::SET_TITLE)
             .with_id("document-title-input")
             .with_placeholder("document-title-placeholder");
         let body = cx
-            .input(|document| document.body.clone(), Document::SET_BODY)
+            .input_with(|document| document.body.clone(), Document::SET_BODY)
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
             .with_min_lines(6);

@@ -264,16 +264,16 @@ impl ResourceApp for FeedbackComposer {
         Box::new(
             crate::column![
                 Text::new("feedback-title"),
-                cx.input(|draft| draft.issue.clone(), FeedbackDraft::DESCRIBE)
+                cx.input_with(|draft| draft.issue.clone(), FeedbackDraft::DESCRIBE)
                     .with_id("feedback-issue")
                     .with_placeholder("feedback-describe")
                     .multiline(true),
-                cx.checkbox(
+                cx.checkbox_with(
                     "feedback-context",
                     |draft| draft.include_context,
                     FeedbackDraft::CONTEXT
                 ),
-                cx.checkbox(
+                cx.checkbox_with(
                     "feedback-screenshot",
                     |draft| draft.include_screenshot,
                     FeedbackDraft::SCREENSHOT

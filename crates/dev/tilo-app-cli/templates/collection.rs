@@ -71,14 +71,14 @@ fn item_row(row: &mut ViewCx<Items, Item>) -> Element {
         return Box::new(Column::new());
     };
     let done_id = id.clone();
-    let done = row.checkbox(
+    let done = row.checkbox_with(
         "collection-done-label",
         |item| item.done,
         Items::SET_DONE.map(move |done| (done_id.clone(), done)),
     );
     let title_id = id.clone();
     let title = row
-        .input(
+        .input_with(
             |item| item.title.clone(),
             Items::RENAME.map(move |title| (title_id.clone(), title)),
         )
@@ -97,7 +97,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Items>) -> Element {
         crate::install_catalog();
         let draft = cx
-            .input(|items| items.draft.clone(), Items::SET_DRAFT)
+            .input_with(|items| items.draft.clone(), Items::SET_DRAFT)
             .with_id("draft-input")
             .with_placeholder("collection-draft-placeholder");
         let add = cx.button("collection-add", Items::ADD.invoke());

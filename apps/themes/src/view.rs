@@ -262,7 +262,7 @@ fn slider<A: ui::tilo_resource::Params + From<(Id, f64)>>(
     let span = (hi - lo).max(f64::EPSILON);
     let key = id.clone();
     let target = id.clone();
-    cx.control(
+    cx.control_with(
         Slider::from_state,
         move |studio: &Studio| {
             studio
@@ -282,7 +282,7 @@ fn band_id(lo: f64, hi: f64) -> String {
 fn rung_slider(cx: &ViewCx<Studio>, id: &Id, rung: Rung) -> Slider {
     let key = id.clone();
     let target = id.clone();
-    cx.control(
+    cx.control_with(
         Slider::from_state,
         move |studio: &Studio| {
             studio
@@ -320,7 +320,7 @@ fn choice<A: ui::tilo_resource::Params + From<(Id, bool)>>(
     let key = id.clone();
     let target = id.clone();
     let [first, second] = options;
-    cx.control(
+    cx.control_with(
         |state| Dropdown::from_state(vec![first.to_owned(), second.to_owned()], state),
         move |studio: &Studio| {
             let on = studio.themes.get(&key).is_some_and(&read);
@@ -447,7 +447,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
     let name = {
         let key = id.clone();
         let target = id.clone();
-        cx.input(
+        cx.input_with(
             move |studio: &Studio| {
                 studio
                     .themes
@@ -468,7 +468,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
     let face = {
         let key = id.clone();
         let target = id.clone();
-        cx.input(
+        cx.input_with(
             move |studio: &Studio| {
                 studio
                     .themes

@@ -3,7 +3,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_resource::{Demand, Doc, ModelError, Reader, Resource};
+use tilo_resource::{Delta, Demand, Doc, ModelError, Reader, Resource, Tracker};
+use ui_core::automerge::transaction::Transactable as _;
 
 /// A shared handle to the current state of one resource.
 ///
@@ -17,12 +18,33 @@ use tilo_resource::{Demand, Doc, ModelError, Reader, Resource};
 /// ([`Resource::load`]).
 pub struct Live<R: Resource> {
     inner: Rc<RefCell<Reader<R>>>,
+    changes: Rc<RefCell<Changes>>,
+}
+
+/// What changed since bound controls last followed the state.
+#[derive(Default)]
+struct Changes {
+    /// Follows the same document as the reader, for the delta of each sync.
+    tracker: Tracker,
+    /// The change not yet followed: `None` when nothing changed, the delta of
+    /// one sync, or everything after several.
+    pending: Option<Delta>,
+}
+
+impl Changes {
+    fn note(&mut self, delta: Delta) {
+        self.pending = Some(match self.pending.take() {
+            None => delta,
+            Some(_) => Delta::everything(),
+        });
+    }
 }
 
 impl<R: Resource> Clone for Live<R> {
     fn clone(&self) -> Self {
         Self {
             inner: Rc::clone(&self.inner),
+            changes: Rc::clone(&self.changes),
         }
     }
 }
@@ -31,7 +53,14 @@ impl<R: Resource> Live<R> {
     pub(crate) fn new(reader: Reader<R>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(reader)),
+            changes: Rc::default(),
         }
+    }
+
+    /// What changed since the last call, for the readers bound to the
+    /// state: `None` when nothing did.
+    pub(crate) fn take_change(&self) -> Option<Delta> {
+        self.changes.borrow_mut().pending.take()
     }
 
     /// The current state. Cheap: shares the materialised value.
@@ -71,7 +100,11 @@ impl<R: Resource> Live<R> {
     where
         R::State: Clone,
     {
-        self.inner.borrow_mut().demand(doc, demand)
+        let changed = self.inner.borrow_mut().demand(doc, demand)?;
+        if changed {
+            self.changes.borrow_mut().note(Delta::everything());
+        }
+        Ok(changed)
     }
 
     /// Ask everything bound to the state to take it again, unchanged. After
@@ -79,6 +112,7 @@ impl<R: Resource> Live<R> {
     /// previewed it optimistically is re-presented the stored state.
     pub(crate) fn represent(&self) {
         self.inner.borrow_mut().represent();
+        self.changes.borrow_mut().note(Delta::everything());
     }
 
     /// What views currently demand.
@@ -97,6 +131,20 @@ impl<R: Resource> Live<R> {
     pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
         #[cfg(feature = "test-support")]
         let _profile = super::profiling::Scope::start("framework.live_sync");
-        self.inner.borrow_mut().sync(doc)
+        let mut reader = self.inner.borrow_mut();
+        let moved = reader.sync(doc)?;
+        let mut changes = self.changes.borrow_mut();
+        let delta = if doc.pending_ops() > 0 {
+            Delta::everything()
+        } else {
+            let state = reader.state();
+            changes
+                .tracker
+                .committed_delta_located(doc, &|obj| R::locate(state, obj))
+        };
+        if moved {
+            changes.note(delta);
+        }
+        Ok(moved)
     }
 }

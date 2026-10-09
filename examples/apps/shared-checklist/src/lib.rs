@@ -125,13 +125,13 @@ fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
         return Box::new(Column::new());
     };
     let done_id = id.clone();
-    let done = row.checkbox(
+    let done = row.checkbox_with(
         "checklist-done-label",
         |item| item.done,
         Checklist::SET_DONE.map(move |done| (done_id.clone(), done)),
     );
     let title = row
-        .input(
+        .input_with(
             |item| item.title.clone(),
             Checklist::RETITLE.map(move |title| (id.clone(), title)),
         )
@@ -168,11 +168,11 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         install_catalog();
         let name = cx
-            .input(|checklist| checklist.name.clone(), Checklist::RENAME)
+            .input_with(|checklist| checklist.name.clone(), Checklist::RENAME)
             .with_id("name-input")
             .with_placeholder("checklist-name-placeholder");
         let draft = cx
-            .input(|checklist| checklist.draft.clone(), Checklist::SET_DRAFT)
+            .input_with(|checklist| checklist.draft.clone(), Checklist::SET_DRAFT)
             .with_id("draft-input")
             .with_placeholder("checklist-draft-placeholder");
         let add = cx.button("checklist-add", Checklist::ADD.invoke());

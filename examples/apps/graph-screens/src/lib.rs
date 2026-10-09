@@ -92,7 +92,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Projects>) -> Element {
         install_catalog();
         let input = cx
-            .input(|projects| projects.draft.clone(), Projects::SET_DRAFT)
+            .input_with(|projects| projects.draft.clone(), Projects::SET_DRAFT)
             .with_id("name-input")
             .with_placeholder("graph-project-name");
         let preview = cx

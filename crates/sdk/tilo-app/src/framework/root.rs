@@ -33,11 +33,12 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::live::Live;
+use super::reactive::{Change, Updaters};
 use super::rows::{find, join, merge, outside_document};
 use super::scenario::Run;
 use super::stage::Stages;
 use super::surface::SurfacePublication;
-use super::view::{Bindings, Updaters, ViewCx};
+use super::view::{Bindings, ViewCx};
 
 struct PublicationCache {
     revision: (u64, u64, String),
@@ -324,14 +325,30 @@ impl<R: Resource> ResourceRoot<R> {
         walk(self.content.as_ref(), visit);
     }
 
-    /// Bind the edits surfaces offer on the row `row` names
-    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
-    fn bind_row_declarations(&self, row: &mut tilo_actions::Resource) {
-        let mut decls = Vec::new();
-        self.surfaces(&mut |surface| decls.extend(surface.row_declarations(row.id.as_str())));
-        for decl in decls {
-            let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-            *row = tilo_resource::bind_declaration(bound, &decl);
+    /// Bind the edits surfaces offer on each of `rows`
+    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)),
+    /// asking every surface once per row in one walk of the view.
+    fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
+        let mut decls: Vec<Vec<tilo_resource::ActionDecl<R>>> = Vec::new();
+        let mut any = false;
+        self.surfaces(&mut |surface| {
+            if decls.is_empty() {
+                decls.resize_with(rows.len(), Vec::new);
+            }
+            for (row, offered) in rows.iter().zip(&mut decls) {
+                let more = surface.row_declarations(row.id.as_str());
+                any |= !more.is_empty();
+                offered.extend(more);
+            }
+        });
+        if !any {
+            return;
+        }
+        for (row, offered) in rows.iter_mut().zip(decls) {
+            for decl in offered {
+                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+                *row = tilo_resource::bind_declaration(bound, &decl);
+            }
         }
     }
 
@@ -438,9 +455,7 @@ impl<R: Resource> ResourceRoot<R> {
         {
             #[cfg(feature = "test-support")]
             let _profile = super::profiling::Scope::start("framework.row_declarations");
-            for child in &mut resource.children {
-                self.bind_row_declarations(child);
-            }
+            self.bind_row_declarations(&mut resource.children);
         }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
@@ -527,9 +542,16 @@ impl<R: Resource> ResourceRoot<R> {
         self.action_bindings.update(self.publication());
         // A surface may have synced the state itself after its own edit.
         let revision = self.live.revision();
-        if revision != self.followed.get() {
+        let change = self.live.take_change();
+        if revision != self.followed.get() || change.is_some() {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.updaters");
             self.followed.set(revision);
-            self.updaters.run(&self.live.get());
+            let change = match &change {
+                Some(delta) => Change::Delta { delta, doc },
+                None => Change::Everything,
+            };
+            self.updaters.run(&self.live.get(), &change);
         }
         self.feeds.refresh(doc);
         self.live
@@ -967,7 +989,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.refresh_access();
         self.refresh(state);
         self.storage.refresh();
-        self.content.sync(state, path);
+        {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.content_sync");
+            self.content.sync(state, path);
+        }
         self.action_bindings.update(self.publication());
     }
 
@@ -1383,7 +1409,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             }
         });
         if let Some(mut row) = row {
-            self.bind_row_declarations(&mut row);
+            self.bind_row_declarations(std::slice::from_mut(&mut row));
             return Some(row);
         }
         // Last, what the content resolves by id beyond what it publishes (a

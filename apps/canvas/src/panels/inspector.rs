@@ -709,7 +709,7 @@ fn nearest(
 /// The artwork's title, size and ground.
 fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
     let side = |read: fn(&Artwork) -> f64, action, name: &str| {
-        cx.control(
+        cx.control_with(
             |state| {
                 NumberInput::from_state(state)
                     .with_range(16.0, crate::model::MAX_SIDE)
@@ -739,7 +739,7 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
             (name, label)
         })
         .collect();
-    let texture = cx.control(
+    let texture = cx.control_with(
         |state| {
             let mut dropdown = Dropdown::from_state(Vec::new(), state)
                 .with_id("canvas-ground-texture")

@@ -48,7 +48,7 @@ impl ResourceApp for App {
         crate::install_catalog();
         // Every string is a Fluent message id from locales/en-US.ftl.
         let name = cx
-            .input(|greeting| greeting.name.clone(), Greeting::SET_NAME)
+            .input_with(|greeting| greeting.name.clone(), Greeting::SET_NAME)
             .with_id("name-input")
             .with_placeholder("starter-name-placeholder");
         // Read from the resource, so it follows every edit: this window's, a

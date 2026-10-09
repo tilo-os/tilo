@@ -2511,7 +2511,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
         assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
+        assert!(
+            library.contains(".input_with(|greeting| greeting.name.clone(), Greeting::SET_NAME)")
+        );
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
         assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
@@ -3436,7 +3438,9 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             template: Template::Document,
         };
         let source = app_lib(&spec);
-        assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
+        assert!(
+            source.contains(".input_with(|document| document.title.clone(), Document::SET_TITLE)")
+        );
         assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
         assert!(source.contains("#[action(destructive)]"));

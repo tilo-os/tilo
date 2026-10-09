@@ -7,17 +7,20 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::ActionBinding;
-use tilo_resource::{ActionDecl, Binds, Collection, Effect, Id, Invoke, Resource};
+use tilo_resource::{
+    ActionDecl, Binds, Collection, Effect, Id, Model, Path, Resource, Segment, Settable,
+};
 use ui_core::LocalState;
 use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
 use super::controls::{ActionControl, Actions};
-use super::dispatch::Dispatcher;
+use super::dispatch::{Dispatcher, Submit};
 use super::each::Each;
 use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects, Projection};
 use super::live::Live;
+use super::reactive::{Reads, Updaters};
 use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
 use super::stage::Stages;
@@ -27,45 +30,6 @@ use super::switch::Switch;
 fn disabled(mut button: Button) -> Button {
     button.set_enabled(false);
     button
-}
-
-type Update<R> = Box<dyn FnMut(&<R as Resource>::State)>;
-type Updater<R> = (Weak<()>, Update<R>);
-
-/// Model-to-widget refreshers registered by bound controls. Each is tied to
-/// the lifetime of the view scope that created it (a row of an [`Each`]).
-pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Vec<Updater<R>>>>);
-
-impl<R: Resource> Clone for Updaters<R> {
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-}
-
-impl<R: Resource> Updaters<R> {
-    pub(crate) fn new() -> Self {
-        Self(Rc::default())
-    }
-
-    pub(crate) fn run(&self, state: &R::State) {
-        // Take the list so an updater may register more (a rebuilt row)
-        // without a reentrant borrow.
-        let mut current = std::mem::take(&mut *self.0.borrow_mut());
-        current.retain_mut(|(alive, update)| {
-            if alive.strong_count() == 0 {
-                return false;
-            }
-            update(state);
-            true
-        });
-        let mut list = self.0.borrow_mut();
-        current.append(&mut list);
-        *list = current;
-    }
-
-    fn push(&self, alive: Weak<()>, update: Update<R>) {
-        self.0.borrow_mut().push((alive, update));
-    }
 }
 
 type Bind<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<ActionDecl<R>>>;
@@ -112,6 +76,10 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
+    /// Where this scope's value sits in the record: the root, or the item a
+    /// row stands for. `None` inside a row of a collection the view reads
+    /// in a way no path names.
+    pub(crate) path: Option<Vec<Segment>>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
@@ -140,14 +108,16 @@ impl<R: Resource> ViewCx<R> {
                 published = published.with_action(spec);
             }
         }
+        let app = dispatch.app_id();
         Self {
             live,
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
-            action_bindings: Actions::new(Rc::new(published)),
+            action_bindings: Actions::new(app, Rc::new(published)),
             item: None,
+            path: Some(Vec::new()),
             controls: Rc::default(),
             saved: LocalState::new(RecordSaveStatus::Saved),
             stages: Stages::new(),
@@ -454,20 +424,32 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     fn binding<I: 'static>(&self, binds: impl Binds<R, I>) -> Option<ActionBinding<I>> {
-        self.actions().binding(binds)
+        self.actions().control_binding(binds)
     }
 
-    /// Keep `sink` in step with a value derived from the resource.
+    /// Keep `sink` in step with a value derived from the resource, read
+    /// again after every change.
     fn follow<V: PartialEq + Default + Clone + 'static>(
         &self,
         read: impl Fn(&T) -> V + 'static,
+        sink: impl FnMut(V) + 'static,
+    ) -> V {
+        self.follow_state(Reads::Always, self.reader(read), sink)
+    }
+
+    /// Keep `sink` in step with `read` of the state, read again after the
+    /// changes `reads` names.
+    fn follow_state<V: PartialEq + Clone + 'static>(
+        &self,
+        reads: Reads,
+        read: impl Fn(&R::State) -> V + 'static,
         mut sink: impl FnMut(V) + 'static,
     ) -> V {
-        let read = self.reader(read);
         let initial = self.live.with(&read);
         let mut last = initial.clone();
         self.updaters.push(
             self.alive.clone(),
+            reads,
             Box::new(move |state| {
                 let next = read(state);
                 if next != last {
@@ -487,8 +469,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// A text field showing `read` of the resource; each committed edit
-    /// invokes `action` with the field's new text.
-    pub fn input(
+    /// invokes `action` with the field's new text. A field of the record is
+    /// bound by its path instead ([`Self::input`]).
+    pub fn input_with(
         &self,
         read: impl Fn(&T) -> String + 'static,
         action: impl Binds<R, String>,
@@ -546,8 +529,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// A checkbox showing `read` of the resource; toggling invokes `action`
-    /// with the new value.
-    pub fn checkbox(
+    /// with the new value. A field of the record is bound by its path
+    /// instead ([`Self::checkbox`]).
+    pub fn checkbox_with(
         &self,
         label: impl Into<LabelKey>,
         read: impl Fn(&T) -> bool + 'static,
@@ -566,72 +550,24 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
-    /// A button that invokes one fully specified action.
-    pub fn button(&self, label: impl Into<LabelKey>, invoke: Invoke<R>) -> Button {
+    /// A button that submits one fully specified action: a verb with its
+    /// arguments (`Snippets::NEW_SNIPPET.with(..)`) or a field edit
+    /// (`p.favorite.set(true)`).
+    pub fn button(&self, label: impl Into<LabelKey>, submit: impl Submit<R>) -> Button {
+        let label: LabelKey = label.into();
+        let invoke = match submit.into_invoke() {
+            Ok(invoke) => invoke,
+            Err(error) => {
+                super::controls::unbound::<R>(label.as_str(), &error);
+                return disabled(Button::new(label.as_str(), label.as_str()));
+            }
+        };
         let id = self.control_id(invoke.id);
-        let button = Button::new(&id, label.into().as_str());
-        match self.actions().invocation(invoke) {
+        let button = Button::new(&id, label.as_str());
+        match self.actions().control_invocation(invoke) {
             Some(binding) => button.on_action(binding),
             None => disabled(button),
         }
-    }
-
-    /// One row per item of a collection, kept in collection order. A row is
-    /// built once per item and retained while the item exists, so focus and
-    /// caret inside it survive other items changing. A row's context menu
-    /// (right-click, the Menu key or Shift+F10) offers the actions the
-    /// resource publishes on its item, with the item already bound.
-    pub fn each<I: 'static>(
-        &self,
-        items: fn(&T) -> &Collection<I>,
-        row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
-    ) -> Each<R> {
-        let focus = Rc::clone(&self.focus);
-        let ids = move |state: &R::State| -> Vec<Id> {
-            (focus)(state).map_or_else(Vec::new, |value| items(value).ids().cloned().collect())
-        };
-        let parent_focus = Rc::clone(&self.focus);
-        let live = self.live.clone();
-        let updaters = self.updaters.clone();
-        let dispatch = self.dispatch.clone();
-        let action_bindings = self.action_bindings.clone();
-        let controls = Rc::clone(&self.controls);
-        let saved = self.saved.clone();
-        let stages = self.stages.clone();
-        let feeds = self.feeds.clone();
-        let run = self.run.clone();
-        let storage = Rc::clone(&self.storage);
-        let bindings = self.bindings.clone();
-        let effects = self.effects.clone();
-        Each::new(
-            self.live.clone(),
-            self.dispatch.clone(),
-            Box::new(ids),
-            Box::new(move |id: &Id, alive: &Rc<()>| {
-                let parent = Rc::clone(&parent_focus);
-                let key = id.clone();
-                let focus: Focus<R, I> =
-                    Rc::new(move |state| (parent)(state).and_then(|value| items(value).get(&key)));
-                let mut cx = ViewCx {
-                    live: live.clone(),
-                    focus,
-                    updaters: updaters.clone(),
-                    alive: Rc::downgrade(alive),
-                    dispatch: dispatch.clone(),
-                    action_bindings: action_bindings.clone(),
-                    item: Some(id.clone()),
-                    controls: Rc::clone(&controls),
-                    saved: saved.clone(),
-                    stages: stages.clone(),
-                    feeds: feeds.clone(),
-                    run: run.clone(),
-                    storage: Rc::clone(&storage),
-                    bindings: bindings.clone(),
-                    effects: effects.clone(),
-                };
-                row(&mut cx)
-            }),
-        )
     }
 
     /// Publish edits bound to this view's local state — the folder shown,
@@ -671,9 +607,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// Any action-bound toolkit control, showing `read` of the resource and
     /// invoking `action` with each committed value:
-    /// `cx.control(Slider::from_state, |p| p.volume, Profile::SET_VOLUME)`.
-    /// The control is disabled when the action is not published.
-    pub fn control<V, C>(
+    /// `cx.control_with(Slider::from_state, |p| p.volume, Profile::SET_VOLUME)`.
+    /// The control is disabled when the action is not published. A field of
+    /// the record is bound by its path instead ([`Self::control`]).
+    pub fn control_with<V, C>(
         &self,
         make: impl FnOnce(&LocalState<V>) -> C,
         read: impl Fn(&T) -> V + 'static,
@@ -704,6 +641,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let dispatch = self.dispatch.clone();
         let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
+        let path = self.path.clone();
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
@@ -722,6 +660,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     dispatch: dispatch.clone(),
                     action_bindings: action_bindings.clone(),
                     item: item.clone(),
+                    path: path.clone(),
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),
                     saved: saved.clone(),
@@ -862,6 +801,259 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let id = self.control_id(effect.id());
         self.actions()
             .bind_effect_invocation(Button::new(&id, label.into().as_str()), effect)
+    }
+}
+
+impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
+    /// The typed paths of this scope's value: the record's fields at the
+    /// root, the item's in a row of [`Self::each`]. Controls bind to them
+    /// (`row.checkbox("snippets-favorite", p.favorite)`) and edits are made
+    /// at them (`p.favorite.set(true)`).
+    ///
+    /// # Panics
+    /// Panics inside a row of a collection [`Self::each`] could not find
+    /// among the fields of the value it was given.
+    #[allow(
+        clippy::panic,
+        reason = "a row whose collection has no path is a mistake the first run of the view shows"
+    )]
+    pub fn paths(&self) -> T::Paths<R> {
+        let Some(path) = &self.path else {
+            panic!(
+                "this row's collection is not a field of the value `each` read it from; read it as `|value| &value.field`"
+            );
+        };
+        T::paths_at(Path::from_segments(path.clone()))
+    }
+
+    /// One row per item of a collection, kept in collection order:
+    /// `cx.each(|snippets| &snippets.snippets, |row| ...)`. A row is built
+    /// once per item and retained while the item exists, so focus and caret
+    /// inside it survive other items changing; rows are added, removed and
+    /// moved only when the collection's membership changes. In a row,
+    /// [`Self::paths`] are rooted at its item. A row's context menu
+    /// (right-click, the Menu key or Shift+F10) offers the actions the
+    /// resource publishes on its item, with the item already bound.
+    pub fn each<I: Model + 'static>(
+        &self,
+        items: impl Fn(&T) -> &Collection<I> + 'static,
+        row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
+    ) -> Each<R> {
+        let items: ItemsOf<T, I> = Rc::new(items);
+        let located = self.path.as_ref().and_then(|base| {
+            self.read(|value| {
+                let value = value?;
+                let relative = locate(value, items(value))?;
+                let mut path = base.clone();
+                path.extend(relative);
+                Some(path)
+            })
+        });
+        let focus = Rc::clone(&self.focus);
+        let read_items = Rc::clone(&items);
+        let ids = move |state: &R::State| -> Vec<Id> {
+            (focus)(state).map_or_else(Vec::new, |value| read_items(value).ids().cloned().collect())
+        };
+        let stale = Rc::new(std::cell::Cell::new(false));
+        let mark = Rc::clone(&stale);
+        self.updaters.push(
+            self.alive.clone(),
+            located.clone().map_or(Reads::Always, Reads::Members),
+            Box::new(move |_| mark.set(true)),
+        );
+        let parent_focus = Rc::clone(&self.focus);
+        let live = self.live.clone();
+        let updaters = self.updaters.clone();
+        let dispatch = self.dispatch.clone();
+        let action_bindings = self.action_bindings.clone();
+        let controls = Rc::clone(&self.controls);
+        let saved = self.saved.clone();
+        let stages = self.stages.clone();
+        let feeds = self.feeds.clone();
+        let run = self.run.clone();
+        let storage = Rc::clone(&self.storage);
+        let bindings = self.bindings.clone();
+        let effects = self.effects.clone();
+        Each::new(
+            self.live.clone(),
+            self.dispatch.clone(),
+            Box::new(ids),
+            stale,
+            Box::new(move |id: &Id, alive: &Rc<()>| {
+                let parent = Rc::clone(&parent_focus);
+                let items = Rc::clone(&items);
+                let key = id.clone();
+                let focus: Focus<R, I> =
+                    Rc::new(move |state| (parent)(state).and_then(|value| items(value).get(&key)));
+                let path = located.as_ref().map(|located| {
+                    let mut path = located.clone();
+                    path.push(Segment::Item(id.clone()));
+                    path
+                });
+                let mut cx = ViewCx {
+                    live: live.clone(),
+                    focus,
+                    updaters: updaters.clone(),
+                    alive: Rc::downgrade(alive),
+                    dispatch: dispatch.clone(),
+                    action_bindings: action_bindings.clone(),
+                    item: Some(id.clone()),
+                    path,
+                    controls: Rc::clone(&controls),
+                    saved: saved.clone(),
+                    stages: stages.clone(),
+                    feeds: feeds.clone(),
+                    run: run.clone(),
+                    storage: Rc::clone(&storage),
+                    bindings: bindings.clone(),
+                    effects: effects.clone(),
+                };
+                row(&mut cx)
+            }),
+        )
+    }
+}
+
+/// How a scope reads the collection [`ViewCx::each`] shows.
+type ItemsOf<T, I> = Rc<dyn Fn(&T) -> &Collection<I>>;
+
+/// Where `target` sits among the fields of `value`, through nested records:
+/// the path of the collection a view's `each` reads.
+fn locate<T: Model + 'static, I: 'static>(
+    value: &T,
+    target: &Collection<I>,
+) -> Option<Vec<Segment>> {
+    fn walk<T: Model + 'static>(
+        value: &T,
+        shape: tilo_resource::Shape,
+        prefix: &mut Vec<Segment>,
+        target: *const u8,
+    ) -> bool {
+        for field in shape.fields() {
+            prefix.push(Segment::Field(field.key.to_owned()));
+            let found = match field.shape {
+                tilo_resource::Shape::Collection(_) => value
+                    .get_at(prefix)
+                    .is_some_and(|at| std::ptr::eq(std::ptr::from_ref(at).cast::<u8>(), target)),
+                tilo_resource::Shape::Record(_) => walk(value, field.shape, prefix, target),
+                tilo_resource::Shape::Value => false,
+            };
+            if found {
+                return true;
+            }
+            prefix.pop();
+        }
+        false
+    }
+    let mut path = Vec::new();
+    walk(
+        value,
+        T::SHAPE,
+        &mut path,
+        std::ptr::from_ref(target).cast::<u8>(),
+    )
+    .then_some(path)
+}
+
+/// Binding controls to the record's fields by path.
+impl<R, T: 'static> ViewCx<R, T>
+where
+    R: Resource<State = R> + Model,
+{
+    /// Keep `sink` in step with the value at `path`, read again only after
+    /// changes that touched it.
+    fn follow_path<V: PartialEq + Default + Clone + 'static>(
+        &self,
+        path: &Path<R, V>,
+        sink: impl FnMut(V) + 'static,
+    ) -> V {
+        let read = path.clone();
+        self.follow_state(
+            Reads::At(path.segments().to_vec()),
+            move |state| read.get(state).cloned().unwrap_or_default(),
+            sink,
+        )
+    }
+
+    /// A stable, addressable control name for a control bound to `path`:
+    /// its fields and items joined, numbered only when the path repeats.
+    fn path_control_id<V>(&self, path: &Path<R, V>) -> String {
+        let base = path
+            .segments()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("-");
+        let mut seen = self.controls.borrow_mut();
+        let count = seen.entry(base.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        if *count == 1 {
+            base
+        } else {
+            format!("{base}-{count}")
+        }
+    }
+
+    /// The value at `path`, as local state that follows it: for any toolkit
+    /// control built from a [`LocalState`], or a part of the view that shows
+    /// it. It is read again only after changes that touched it.
+    pub fn value_at<V>(&self, path: &Path<R, V>) -> LocalState<V>
+    where
+        V: PartialEq + Default + Clone + 'static,
+    {
+        let state = LocalState::new(V::default());
+        let sink = state.clone();
+        let initial = self.follow_path(path, move |value| sink.set(value));
+        state.set(initial);
+        state
+    }
+
+    /// A text field showing the text at `path`; each committed edit replaces
+    /// it ([`Path::replace`]), and the keystrokes of one word are one undo
+    /// step.
+    pub fn input(&self, path: Path<R, String>) -> TextInput {
+        let id = self.path_control_id(&path);
+        let state = self.value_at(&path);
+        let input = TextInput::from_state(&state).with_id(&id);
+        match self
+            .actions()
+            .edit_binding(path, |path, text: String| path.replace(text))
+        {
+            Some(binding) => input.on_action(binding),
+            None => input.disabled(true),
+        }
+    }
+
+    /// A checkbox showing the flag at `path`; toggling sets it.
+    pub fn checkbox(&self, label: impl Into<LabelKey>, path: Path<R, bool>) -> Checkbox {
+        let id = self.path_control_id(&path);
+        let state = self.value_at(&path);
+        let label: LabelKey = label.into();
+        let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
+        match self
+            .actions()
+            .edit_binding(path, |path, value: bool| path.set(value))
+        {
+            Some(binding) => checkbox.on_action(binding),
+            None => checkbox.with_enabled(false),
+        }
+    }
+
+    /// Any toolkit control showing the value at `path` and setting it with
+    /// each committed value: `cx.control(Slider::from_state, p.volume)`.
+    pub fn control<V, C>(&self, make: impl FnOnce(&LocalState<V>) -> C, path: Path<R, V>) -> C
+    where
+        V: Settable + PartialEq + Default + Clone + 'static,
+        C: ActionControl<V>,
+    {
+        let control = make(&self.value_at(&path));
+        match self
+            .actions()
+            .edit_binding(path, |path, value: V| path.set(value))
+        {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
     }
 }
 

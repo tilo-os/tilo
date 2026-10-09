@@ -86,7 +86,7 @@ impl ResourceApp for MemoApp {
             Column::new()
                 .push(owner_panel)
                 .push(Box::new(
-                    cx.input(|memo| memo.title.clone(), Memo::RETITLE)
+                    cx.input_with(|memo| memo.title.clone(), Memo::RETITLE)
                         .with_id("title"),
                 ))
                 .push(Box::new(

@@ -81,7 +81,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Code>) -> Element {
         install_catalog();
         let input = cx
-            .input(|code| code.payload.clone(), Code::SET_PAYLOAD)
+            .input_with(|code| code.payload.clone(), Code::SET_PAYLOAD)
             .with_id("qr-input")
             .with_placeholder("qr-input-placeholder");
         let payload = cx.value(|code| code.payload.clone());

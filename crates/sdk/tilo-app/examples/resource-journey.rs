@@ -120,7 +120,7 @@ impl ResourceApp for ChecklistApp {
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         let draft = cx
-            .input(|list| list.draft.clone(), Checklist::DRAFT)
+            .input_with(|list| list.draft.clone(), Checklist::DRAFT)
             .with_id("draft")
             .with_placeholder("journey-draft");
         // Progressive disclosure: start with the shorthand, then use the
@@ -154,7 +154,7 @@ impl ResourceApp for ChecklistApp {
                 let done_id = id.clone();
                 Box::new(tilo_app::row![
                     row.text(|task| task.title.clone()),
-                    row.checkbox(
+                    row.checkbox_with(
                         "journey-done",
                         |task| task.done,
                         Checklist::SET_DONE.map(move |done| (done_id.clone(), done))

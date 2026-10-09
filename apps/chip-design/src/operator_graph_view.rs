@@ -309,7 +309,7 @@ fn shape_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Element {
     let action: ActionRef<ChipProject, ProjectAction> =
         ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
     let input = cx
-        .input(
+        .input_with(
             move |state| {
                 state
                     .operator_graph
@@ -336,7 +336,7 @@ fn output_width_field(cx: &ViewCx<ChipProject>, node: &OperatorNode) -> Option<E
         let action: ActionRef<ChipProject, ProjectAction> =
             ActionRef::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]);
         let input = cx
-            .input(
+            .input_with(
                 move |state| {
                     state
                         .operator_graph

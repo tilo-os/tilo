@@ -338,10 +338,10 @@ fn detail(cx: &ViewCx<Draft>, application: &StoredApplication) -> Element {
         ));
     }
     let reviewer = cx
-        .input(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
+        .input_with(|draft| draft.reviewer.clone(), Draft::SET_REVIEWER)
         .with_id("reviewer-input");
     let feedback = cx
-        .input(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
+        .input_with(|draft| draft.feedback.clone(), Draft::SET_FEEDBACK)
         .with_id("feedback-input");
     let application = application.clone();
     let draft = cx.value(Clone::clone);

@@ -11,8 +11,10 @@ use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use std::cell::Cell;
+
 use tilo_actions::ActionBinding;
-use tilo_resource::{Binds, Effect, Invoke, Resource};
+use tilo_resource::{ActionKey, Binds, Edit, Effect, Invoke, Path, Resource};
 use ui_core::widget::{
     Button, Checkbox, Dropdown, EditableLabel, EmptyState, NumberInput, Slider, TextInput, Toggle,
 };
@@ -57,10 +59,43 @@ action_control! {
     EditableLabel => String, |control| control;
 }
 
+thread_local! {
+    /// Whether a control bound to something the resource does not publish
+    /// is a failure rather than a disabled control: in tests and checks.
+    static STRICT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Make a control bound to an action the resource does not publish a panic
+/// on this thread, as [`TestApp`](super::testing::HeadlessApp) and
+/// `tilo-app check` do: a typo in a binding must fail, not grey a button.
+pub(crate) fn strict_bindings() {
+    STRICT.with(|strict| strict.set(true));
+}
+
+/// A control could not be bound to `what` because of `why`.
+///
+/// # Panics
+/// Panics where bindings are strict ([`strict_bindings`]).
+pub(crate) fn unbound<R: Resource>(what: &str, why: &str) {
+    assert!(
+        !STRICT.with(Cell::get),
+        "a control of `{}` is bound to {what}, which it cannot be: {why}",
+        R::KIND
+    );
+    tracing::warn!(
+        kind = R::KIND,
+        binding = what,
+        reason = why,
+        "control not bound"
+    );
+}
+
 /// The actions a resource publishes, for binding controls that are built
 /// outside the view function: rows a table, list or tree creates on demand.
 /// Cheap to clone; clones share the published descriptor.
 pub struct Actions<R: Resource> {
+    /// The app whose resource this is, for the keys of its actions.
+    app: &'static str,
     published: Rc<RefCell<tilo_actions::Resource>>,
     marker: PhantomData<fn() -> R>,
 }
@@ -68,6 +103,7 @@ pub struct Actions<R: Resource> {
 impl<R: Resource> Clone for Actions<R> {
     fn clone(&self) -> Self {
         Self {
+            app: self.app,
             published: Rc::clone(&self.published),
             marker: PhantomData,
         }
@@ -75,8 +111,9 @@ impl<R: Resource> Clone for Actions<R> {
 }
 
 impl<R: Resource> Actions<R> {
-    pub(crate) fn new(published: Rc<tilo_actions::Resource>) -> Self {
+    pub(crate) fn new(app: &'static str, published: Rc<tilo_actions::Resource>) -> Self {
         Self {
+            app,
             published: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
             marker: PhantomData,
         }
@@ -93,33 +130,120 @@ impl<R: Resource> Actions<R> {
         }
     }
 
-    /// The binding of `action` for a control with input `I`, or `None` when
-    /// the resource does not publish it.
-    pub fn binding<I: 'static>(&self, action: impl Binds<R, I>) -> Option<ActionBinding<I>> {
-        let id = action.action_id();
+    /// The published spec of the action `key` names, or why there is none.
+    fn spec(&self, key: &ActionKey) -> Result<tilo_actions::ActionSpec, String> {
         let published = self.published.borrow();
-        let spec = published.actions.iter().find(|spec| spec.id == id)?.clone();
-        ActionBinding::new(&published, &spec, move |input| action.arguments(input))
-            .map_err(|error| tracing::warn!(%error, action = id, "control not bound"))
-            .ok()
-    }
-
-    /// The binding of one fully specified invocation, for a button.
-    pub fn invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
-        let published = self.published.borrow();
-        let spec = published
+        if published.kind != key.kind {
+            return Err(format!("the resource is a `{}`", published.kind));
+        }
+        published
             .actions
             .iter()
-            .find(|spec| spec.id == invoke.id)?
-            .clone();
+            .find(|spec| spec.id == key.action)
+            .cloned()
+            .ok_or_else(|| "the resource does not publish it".to_owned())
+    }
+
+    /// The key of `R`'s action `id`.
+    fn key(&self, id: &str) -> ActionKey {
+        ActionKey::new(self.app, R::KIND, id)
+    }
+
+    /// The binding of `action` for a control with input `I`, or why there
+    /// is none.
+    fn try_binding<I: 'static>(
+        &self,
+        action: impl Binds<R, I>,
+    ) -> Result<ActionBinding<I>, (ActionKey, String)> {
+        let key = self.key(action.action_id());
+        let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
+        let published = self.published.borrow();
+        ActionBinding::new(&published, &spec, move |input| action.arguments(input))
+            .map_err(|error| (key, error.to_string()))
+    }
+
+    /// The binding of one fully specified invocation, or why there is none.
+    fn try_invocation(&self, invoke: Invoke<R>) -> Result<ActionBinding<()>, (ActionKey, String)> {
+        let key = self.key(invoke.id);
+        let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
+        let published = self.published.borrow();
         ActionBinding::static_json(&published, &spec, invoke.arguments)
-            .map_err(|error| tracing::warn!(%error, action = invoke.id, "control not bound"))
+            .map_err(|error| (key, error.to_string()))
+    }
+
+    /// The binding of `action` for a control with input `I`, or `None` while
+    /// the resource does not publish it (an edit bound to view state that
+    /// is not there now).
+    pub fn binding<I: 'static>(&self, action: impl Binds<R, I>) -> Option<ActionBinding<I>> {
+        self.try_binding(action).ok()
+    }
+
+    /// The binding of one fully specified invocation, for a button, or
+    /// `None` while the resource does not publish it.
+    pub fn invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
+        self.try_invocation(invoke).ok()
+    }
+
+    /// [`Self::binding`] for a control being built: an action the resource
+    /// does not publish fails tests and `tilo-app check`.
+    pub(crate) fn control_binding<I: 'static>(
+        &self,
+        action: impl Binds<R, I>,
+    ) -> Option<ActionBinding<I>> {
+        self.try_binding(action)
+            .map_err(|(key, why)| unbound::<R>(&format!("`{key}`"), &why))
             .ok()
     }
 
-    /// `control`, bound to `action`, or disabled when it is not published.
+    /// [`Self::invocation`] for a control being built.
+    pub(crate) fn control_invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
+        self.try_invocation(invoke)
+            .map_err(|(key, why)| unbound::<R>(&format!("`{key}`"), &why))
+            .ok()
+    }
+
+    /// The binding of the field at `path` for a control with input `V`:
+    /// each committed value becomes the field edit `edit(path, value)`.
+    /// `None`, and a failure in tests, when the resource has no field edits
+    /// or the field is `#[model(readonly)]`.
+    pub fn edit_binding<V: 'static>(
+        &self,
+        path: Path<R, V>,
+        edit: impl Fn(&Path<R, V>, V) -> Edit<R> + Send + Sync + 'static,
+    ) -> Option<ActionBinding<V>> {
+        let what = format!("the field {path:?}");
+        if !R::EDITS {
+            unbound::<R>(&what, "it has no field edits");
+            return None;
+        }
+        if R::shape().is_some_and(|shape| shape.readonly_at(path.segments())) {
+            unbound::<R>(&what, "the field is read-only; only verbs change it");
+            return None;
+        }
+        let spec = match self.spec(&self.key(tilo_resource::FIELD_EDIT)) {
+            Ok(spec) => spec,
+            Err(why) => {
+                unbound::<R>(&what, &why);
+                return None;
+            }
+        };
+        let published = self.published.borrow();
+        ActionBinding::new(&published, &spec, move |value| {
+            let edit = edit(&path, value);
+            serde_json::to_value(&edit)
+                .map(|edit| {
+                    serde_json::Map::from_iter([(tilo_resource::EDIT_PARAM.to_owned(), edit)])
+                })
+                .unwrap_or_default()
+        })
+        .map_err(|error| unbound::<R>(&what, &error.to_string()))
+        .ok()
+    }
+
+    /// `control`, bound to `action`. An action the resource does not publish
+    /// leaves it disabled, and fails tests and `tilo-app check`.
     pub fn bind<I: 'static, C: ActionControl<I>>(&self, control: C, action: impl Binds<R, I>) -> C {
-        match self.binding(action) {
+        match self.control_binding(action) {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }
@@ -127,7 +251,7 @@ impl<R: Resource> Actions<R> {
 
     /// `control` (a button), bound to one fully specified invocation.
     pub fn bind_invocation<C: ActionControl<()>>(&self, control: C, invoke: Invoke<R>) -> C {
-        match self.invocation(invoke) {
+        match self.control_invocation(invoke) {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }

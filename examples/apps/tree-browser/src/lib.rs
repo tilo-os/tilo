@@ -113,7 +113,7 @@ fn node_label(id: u64) -> String {
 /// time the selection changes.
 fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
     let title = cx
-        .input(
+        .input_with(
             move |notebook| {
                 notebook
                     .section(id)
@@ -125,7 +125,7 @@ fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
         .with_id("tree-title-input")
         .with_placeholder("tree-title-placeholder");
     let notes = cx
-        .input(
+        .input_with(
             move |notebook| {
                 notebook
                     .section(id)

@@ -10,12 +10,36 @@ use tilo_actions::{
     ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation,
     PermissionRequirement,
 };
-use tilo_resource::{Effect, Invoke, Resource};
+use tilo_resource::{Edit, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
 use ui_core::widget::Edits;
 use ui_core::widget::controls::AttributedControlInvocation;
+
+/// Something a dispatcher submits and a button is bound to: a field edit
+/// made at a path (`p.favorite.set(true)`), a verb with its arguments, or an
+/// invocation built some other way. No app writes an action id or an
+/// argument map.
+pub trait Submit<R: Resource> {
+    /// The invocation of the host door this submits.
+    ///
+    /// # Errors
+    /// Returns why it cannot be submitted.
+    fn into_invoke(self) -> Result<Invoke<R>, String>;
+}
+
+impl<R: Resource> Submit<R> for Invoke<R> {
+    fn into_invoke(self) -> Result<Invoke<R>, String> {
+        Ok(self)
+    }
+}
+
+impl<R: Resource> Submit<R> for Edit<R> {
+    fn into_invoke(self) -> Result<Invoke<R>, String> {
+        Invoke::edit(&self).map_err(|error| error.to_string())
+    }
+}
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
@@ -414,6 +438,19 @@ impl<R: Resource> Dispatcher<R> {
         self.queue_invocation(ActionAddress::new(row, effect.id()), serde_json::Map::new());
     }
 
+    /// Submit a field edit (`dispatcher.submit(p.favorite.set(true))`) or a
+    /// verb (`dispatcher.submit(Snippets::DELETE.with(id))`) through the
+    /// door, after the event, as a control bound to it would.
+    pub fn submit(&self, submit: impl Submit<R>) {
+        match submit.into_invoke() {
+            Ok(invoke) => self.invoke(invoke),
+            Err(error) => {
+                super::controls::unbound::<R>("a submission", &error);
+                self.refuse(tilo_resource::FIELD_EDIT, error);
+            }
+        }
+    }
+
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
     /// or an effect ([`Invoke::effect`]), which reaches its handler as
     /// [`Self::effect`] does.
@@ -425,7 +462,7 @@ impl<R: Resource> Dispatcher<R> {
             return;
         }
         if invoke.is_effect() {
-            self.submit(invoke);
+            self.queue(invoke);
             return;
         }
         if !self.may_invoke(&invoke) {
@@ -439,10 +476,10 @@ impl<R: Resource> Dispatcher<R> {
                 return;
             }
         }
-        self.submit(invoke);
+        self.queue(invoke);
     }
 
-    fn submit(&self, invoke: Invoke<R>) {
+    fn queue(&self, invoke: Invoke<R>) {
         self.queue_invocation(
             ActionAddress::new(self.resource_id.as_ref(), invoke.id),
             invoke.arguments,
@@ -454,7 +491,7 @@ impl<R: Resource> Dispatcher<R> {
     /// (an edit bound to a surface's view state) is left to the host, which
     /// checks what its published action needs.
     fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
-        if invoke.id == tilo_resource::APPLY {
+        if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),
                 Err(_) => !self.read_only(),
@@ -538,9 +575,9 @@ impl<R: Resource> Dispatcher<R> {
         let mut members = members.into_iter();
         match (members.next(), members.next()) {
             (None, _) => {}
-            (Some(only), None) => self.submit(only),
+            (Some(only), None) => self.queue(only),
             (Some(first), Some(second)) => {
-                self.submit(Invoke::group([first, second].into_iter().chain(members)));
+                self.queue(Invoke::group([first, second].into_iter().chain(members)));
             }
         }
     }

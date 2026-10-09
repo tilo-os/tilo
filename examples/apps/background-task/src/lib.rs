@@ -136,7 +136,7 @@ impl ResourceApp for App {
             reason = "the limit is at most MAX_LIMIT, far below 2^52"
         )]
         let limit = cx
-            .control(
+            .control_with(
                 |value| {
                     NumberInput::from_state(value)
                         .with_range(2.0, MAX_LIMIT as f64)
