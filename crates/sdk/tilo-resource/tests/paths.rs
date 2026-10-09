@@ -333,12 +333,15 @@ fn an_outbox_queues_entries_the_owner_settles() {
     let id = id.clone();
     edit(
         &mut library,
-        &Library::paths().sent.settle(&id, Settled::Done),
+        &Library::paths().sent.settle(&id, &Settled::Done(())),
     )
     .unwrap();
     let state = library.state().unwrap();
     assert_eq!(state.sent.pending().count(), 0);
-    assert_eq!(state.sent.get(&id).unwrap().settled, Some(Settled::Done));
+    assert_eq!(
+        state.sent.get(&id).unwrap().settled,
+        Some(Settled::Done(()))
+    );
 }
 
 #[test]

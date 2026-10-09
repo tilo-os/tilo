@@ -165,8 +165,8 @@ pub mod prelude {
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, Atom, Collection, Counter, Delta, Demand, Edit, Effect, Id,
-        Invoke, Json, Model, Params, Path, PermissionRequirement, PlainText, Refusal, Replica,
-        Resource, SearchEntry, Set, TextEdit, resource,
+        Invoke, Json, Model, Outbox, Params, Path, PermissionRequirement, PlainText, Refusal,
+        Replica, Resource, SearchEntry, Set, Settled, TextEdit, Undoing, resource,
     };
     pub use ui_core::i18n::LabelKey;
 

@@ -549,14 +549,21 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
     }
 }
 
-impl<R, T: Model> Path<R, crate::Outbox<T>> {
-    /// Record how the owning device settled the entry `id`.
+impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned> Path<R, crate::Outbox<T, O>> {
+    /// Record how the owning device settled the entry `id`: content from
+    /// outside, nobody's undo step.
     #[must_use]
-    pub fn settle(&self, id: &Id, outcome: crate::Settled) -> Edit<R> {
+    pub fn settle(&self, id: &Id, outcome: &crate::Settled<O>) -> Edit<R> {
         self.edit(EditOp::Settle {
             id: id.clone(),
-            outcome,
+            outcome: Model::to_json(outcome),
         })
+    }
+
+    /// Forget the settled entry `id`: housekeeping, nobody's undo step.
+    #[must_use]
+    pub fn forget(&self, id: &Id) -> Edit<R> {
+        self.edit(EditOp::Forget { id: id.clone() })
     }
 }
 
@@ -633,10 +640,15 @@ pub enum EditOp {
     RemoveColumn {
         id: Id,
     },
-    /// Settle an outbox entry.
+    /// Settle an outbox entry, with its [`Settled`](crate::Settled) in JSON
+    /// form.
     Settle {
         id: Id,
-        outcome: crate::Settled,
+        outcome: serde_json::Value,
+    },
+    /// Forget a settled outbox entry.
+    Forget {
+        id: Id,
     },
     /// An edit of a type with its own vocabulary ([`Operations`]: rich text
     /// marks and blocks), in that type's JSON form.
@@ -666,6 +678,7 @@ impl EditOp {
             Self::RemoveRow { .. } => "remove-row",
             Self::RemoveColumn { .. } => "remove-column",
             Self::Settle { .. } => "settle",
+            Self::Forget { .. } => "forget",
             Self::Rich { .. } => "rich",
         }
     }

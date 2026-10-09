@@ -130,6 +130,11 @@ pub enum EditOp {
     InsertColumn,
     RemoveRow,
     RemoveColumn,
+    /// The owning device recorded how an outbox entry settled (`$state`:
+    /// `done` or `failed`, with `$reason`).
+    Settle,
+    /// A settled outbox entry was forgotten.
+    Forget,
 }
 
 impl EditOp {
@@ -149,6 +154,8 @@ impl EditOp {
             Self::InsertColumn => "insert-column",
             Self::RemoveRow => "remove-row",
             Self::RemoveColumn => "remove-column",
+            Self::Settle => "settle",
+            Self::Forget => "forget",
         }
     }
 }

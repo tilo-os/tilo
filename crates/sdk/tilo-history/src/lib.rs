@@ -389,6 +389,15 @@ impl<'a> Reader<'a> {
             EditOp::Remove | EditOp::RemoveRow | EditOp::RemoveColumn => "history-edit-remove",
             EditOp::MoveTo => "history-edit-move",
             EditOp::Mark => "history-edit-format",
+            EditOp::Settle => {
+                if let Some(reason) = edit.args.get("reason") {
+                    args.set("reason", self.shown(reason));
+                    "history-edit-settle-failed"
+                } else {
+                    "history-edit-settle"
+                }
+            }
+            EditOp::Forget => "history-edit-forget",
         };
         self.named_or_not(key, scope, &args)
     }

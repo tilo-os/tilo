@@ -211,6 +211,44 @@ of the action is its inverse document action run through `apply`, so a
 compensating entry is queued the same way. This one pattern replaces the
 per-app queues (file operations, CalDAV, IMAP flags).
 
+```rust
+#[derive(Model, Default, Clone, PartialEq)]
+pub struct Files { pub ops: Outbox<FileOp, Vec<Change>> }   // settled with what changed
+
+#[resource(kind = "files")]
+impl Files {
+    /// Move a file to the trash.
+    #[action(undo = Self::untrash)]
+    pub fn trash(&mut self, cx: &mut ActionCx, ops: &mut Outbox<FileOp, Vec<Change>>, path: String) {
+        ops.push(cx.id(), FileOp::trash(path));
+    }
+    fn untrash(undoing: Undoing<'_, Self, files::Trash>) -> Option<Invoke<Self>> {
+        Some(Self::REVERT.with(undoing.minted.first()?.clone()))
+    }
+    /// Put back what an operation changed.
+    #[action(item = ops)]
+    pub fn revert(&mut self, cx: &mut ActionCx, ops: &mut Outbox<FileOp, Vec<Change>>, op: Id) { .. }
+}
+
+// the view, on every device; only the owner carries entries out
+cx.outbox(Files::paths().ops, move |_, op| op.device == me, |id, op, cx| Ok(Effected::value(run(op))));
+```
+
+- An `Outbox<T, O>` entry settles as `Settled::Done(O)` or `Settled::Failed { reason, partial }`:
+  `O` is what the handler reports back (where a trashed file went). A verb reads it with
+  `outcome(&id)`, may `settle` an entry and `forget` or `prune` settled ones.
+- The settle edit is content from outside and forgetting is housekeeping: neither is
+  anyone's undo step, so an undo never sends a mail twice. Both are recorded in history
+  (`$state`, `$reason`).
+- `#[action(undo = path)]` names the verb that compensates an Outside verb, from the record
+  before and after it and the ids it minted. Undo applies that verb (which reads at that
+  time how the entry settled), redo runs the original verb again. Without `undo`, undo
+  reverts the document, which forgets an entry nobody carried out yet.
+- `#[action(item = ops)]` on a verb whose first parameter is an `Id` names an outbox entry;
+  such a verb is not offered on collection items.
+- A handler's `Err` leaves the entry pending, tried again after the next change or when the
+  `Projection` it returns is told the outside changed.
+
 Effects remain for work with no document entry: starting a sync job, choosing
 a file, a view change. They are typed (`#[derive(Effect)]`), long work is a job
 with progress and cancellation, and a job changes the document only through

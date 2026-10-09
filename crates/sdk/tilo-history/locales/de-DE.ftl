@@ -20,6 +20,12 @@ history-edit-move = { $field } von { $item } umsortiert
 history-edit-move-unnamed = { $field } umsortiert
 history-edit-format = { $field } von { $item } formatiert
 history-edit-format-unnamed = { $field } formatiert
+history-edit-settle = { $item } aus { $field } ausgeführt
+history-edit-settle-unnamed = Einen Eintrag aus { $field } ausgeführt
+history-edit-settle-failed = { $item } aus { $field } fehlgeschlagen: { $reason }
+history-edit-settle-failed-unnamed = Ein Eintrag aus { $field } fehlgeschlagen: { $reason }
+history-edit-forget = { $item } aus { $field } entfernt
+history-edit-forget-unnamed = Einen Eintrag aus { $field } entfernt
 history-edit = { $field } von { $item } geändert
 history-edit-unnamed = { $field } geändert
 

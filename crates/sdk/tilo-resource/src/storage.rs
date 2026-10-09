@@ -930,17 +930,60 @@ impl<T: Model> Model for Grid<T> {
     }
 }
 
-/// How the owning device settled an [`Outbox`] entry.
+/// How the owning device settled an [`Outbox`] entry, with what its handler
+/// reports back (`O`): where a trashed file went, the name a copy got, the
+/// id a server gave the upload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "kebab-case")]
-pub enum Settled {
+#[serde(tag = "state", content = "result", rename_all = "kebab-case")]
+pub enum Settled<O = ()> {
     /// The outside consequence happened.
-    Done,
-    /// It failed for good, in the handler's words.
-    Failed { reason: String },
+    Done(O),
+    /// It failed for good, in the handler's words, after doing `partial`.
+    Failed { reason: String, partial: O },
 }
 
-impl Model for Settled {
+impl<O> Settled<O> {
+    /// Whether the consequence happened.
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
+        matches!(self, Self::Done(_))
+    }
+
+    /// What the handler did: all of it, or the part done before it failed.
+    #[must_use]
+    pub const fn result(&self) -> &O {
+        match self {
+            Self::Done(result)
+            | Self::Failed {
+                partial: result, ..
+            } => result,
+        }
+    }
+
+    /// Why it failed, if it did.
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Done(_) => None,
+            Self::Failed { reason, .. } => Some(reason),
+        }
+    }
+}
+
+impl<O: Default> Settled<O> {
+    /// Failed for good with nothing done.
+    #[must_use]
+    pub fn failed(reason: impl Into<String>) -> Self {
+        Self::Failed {
+            reason: reason.into(),
+            partial: O::default(),
+        }
+    }
+}
+
+/// A settlement stores as one JSON value: it is written once, by the owning
+/// device.
+impl<O: Serialize + serde::de::DeserializeOwned> Model for Settled<O> {
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
@@ -963,15 +1006,15 @@ impl Model for Settled {
 /// One queued outside consequence and, once the owning device ran it, how
 /// it settled.
 #[derive(Clone, Debug, PartialEq)]
-pub struct OutboxEntry<T> {
+pub struct OutboxEntry<T, O = ()> {
     pub value: T,
-    pub settled: Option<Settled>,
+    pub settled: Option<Settled<O>>,
 }
 
 const ENTRY_VALUE: &str = "value";
 const ENTRY_SETTLED: &str = "settled";
 
-impl<T: Model> Model for OutboxEntry<T> {
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry<T, O> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
@@ -984,7 +1027,7 @@ impl<T: Model> Model for OutboxEntry<T> {
         let null = serde_json::Value::Null;
         Ok(Self {
             value: T::from_json(value.get(ENTRY_VALUE).unwrap_or(&null))?,
-            settled: Option::<Settled>::from_json(value.get(ENTRY_SETTLED).unwrap_or(&null))?,
+            settled: Option::<Settled<O>>::from_json(value.get(ENTRY_SETTLED).unwrap_or(&null))?,
         })
     }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
@@ -1007,19 +1050,24 @@ impl<T: Model> Model for OutboxEntry<T> {
 }
 
 /// Outside consequences of the record's actions, queued in the document: a
-/// mail to send, a flag to set on the server, a file to move. A verb that
-/// takes `&mut Outbox<T>` pushes entries and is an Outside action.
+/// mail to send, an event to upload, a file to move. A verb that takes
+/// `&mut Outbox<T, O>` pushes entries and is an Outside action.
 ///
-/// Every replica replays the entries; only the device that owns the outbox
-/// drains it: the framework runs the app's handler for each
-/// [`pending`](Self::pending) entry there and records how it went with the
-/// [`settle`](crate::Path::settle) edit, so the result syncs like any change.
+/// Every replica replays the entries; only the device that owns an entry
+/// carries it out. The framework drains the outbox there, runs the app's
+/// handler for each [`pending`](Self::pending) entry and records how it
+/// settled, with the handler's result `O`, through the
+/// [`settle`](crate::Path::settle) edit: content from outside, nobody's undo
+/// step. A verb reads a settlement with [`Self::outcome`] (a revert needs
+/// to know where the trashed file went), may settle an entry itself
+/// ([`Self::settle`]) and forgets settled entries ([`Self::forget`],
+/// [`Self::prune`]).
 #[derive(Clone, Debug)]
-pub struct Outbox<T> {
-    entries: Collection<OutboxEntry<T>>,
+pub struct Outbox<T, O = ()> {
+    entries: Collection<OutboxEntry<T, O>>,
 }
 
-impl<T> Default for Outbox<T> {
+impl<T, O> Default for Outbox<T, O> {
     fn default() -> Self {
         Self {
             entries: Collection::new(),
@@ -1027,13 +1075,13 @@ impl<T> Default for Outbox<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for Outbox<T> {
+impl<T: PartialEq, O: PartialEq> PartialEq for Outbox<T, O> {
     fn eq(&self, other: &Self) -> bool {
         self.entries == other.entries
     }
 }
 
-impl<T> Outbox<T> {
+impl<T, O> Outbox<T, O> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -1059,17 +1107,51 @@ impl<T> Outbox<T> {
     }
 
     /// Every entry, settled or not, oldest first.
-    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&Id, &OutboxEntry<T>)> {
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&Id, &OutboxEntry<T, O>)> {
         self.entries.iter()
     }
 
-    pub fn get(&self, id: &Id) -> Option<&OutboxEntry<T>> {
+    pub fn get(&self, id: &Id) -> Option<&OutboxEntry<T, O>> {
         self.entries.get(id)
     }
 
-    /// Forget a settled entry.
-    pub fn remove(&mut self, id: &Id) -> Option<OutboxEntry<T>> {
+    /// How the entry `id` settled; `None` while it is pending or when there
+    /// is no such entry.
+    pub fn outcome(&self, id: &Id) -> Option<&Settled<O>> {
+        self.entries.get(id)?.settled.as_ref()
+    }
+
+    /// Record how the entry `id` settled, from a verb. Whether there is
+    /// such an entry.
+    pub fn settle(&mut self, id: &Id, outcome: Settled<O>) -> bool {
+        self.entries.get_mut(id).is_some_and(|entry| {
+            entry.settled = Some(outcome);
+            true
+        })
+    }
+
+    /// Forget the entry `id`. A pending entry forgotten is never carried
+    /// out.
+    pub fn forget(&mut self, id: &Id) -> Option<OutboxEntry<T, O>> {
         self.entries.remove(id)
+    }
+
+    /// Forget the oldest settled entries beyond the newest `keep`; pending
+    /// ones stay.
+    pub fn prune(&mut self, keep: usize) {
+        let settled = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.settled.is_some())
+            .count();
+        let mut excess = settled.saturating_sub(keep);
+        self.entries.retain(|_, entry| {
+            if excess > 0 && entry.settled.is_some() {
+                excess = excess.saturating_sub(1);
+                return false;
+            }
+            true
+        });
     }
 
     pub fn len(&self) -> usize {
@@ -1081,7 +1163,21 @@ impl<T> Outbox<T> {
     }
 }
 
-impl<T: Model> Model for Outbox<T> {
+/// The map of entries an outbox stored in `slot` keeps, and the entry `id`
+/// in it.
+fn outbox_entry(doc: &mut Doc, slot: Slot<'_>, id: &Id) -> Result<(ObjId, ObjId), ModelError> {
+    let map = slot.object(doc, ObjType::Map)?;
+    let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? else {
+        return Err(ModelError::invalid(format!("no outbox entry `{id}`")));
+    };
+    let Some((Value::Object(ObjType::Map), value)) = doc.get(&entry, crate::collection::VALUE)?
+    else {
+        return Err(ModelError::invalid(format!("no outbox entry `{id}`")));
+    };
+    Ok((map, value))
+}
+
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
@@ -1108,6 +1204,8 @@ impl<T: Model> Model for Outbox<T> {
     ) -> Result<(), ModelError> {
         self.entries.refresh(doc, value, id, delta)
     }
+    /// Entries are queued by verbs; an edit settles one or forgets a
+    /// settled one.
     fn edit(
         doc: &mut Doc,
         slot: Slot<'_>,
@@ -1117,16 +1215,19 @@ impl<T: Model> Model for Outbox<T> {
     ) -> Result<(), ModelError> {
         match (path, op) {
             ([], EditOp::Settle { id, outcome }) => {
-                let map = slot.object(doc, ObjType::Map)?;
-                let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id.as_str())? else {
-                    return Err(ModelError::invalid(format!("no outbox entry `{id}`")));
-                };
-                let Some((Value::Object(ObjType::Map), value)) =
-                    doc.get(&entry, crate::collection::VALUE)?
-                else {
-                    return Err(ModelError::invalid(format!("no outbox entry `{id}`")));
-                };
-                write_key(doc, &value, ENTRY_SETTLED, &Some(outcome.clone()))
+                let outcome = Settled::<O>::from_json(outcome)?;
+                let (_, value) = outbox_entry(doc, slot, id)?;
+                write_key(doc, &value, ENTRY_SETTLED, &Some(outcome))
+            }
+            ([], EditOp::Forget { id }) => {
+                let (map, value) = outbox_entry(doc, slot, id)?;
+                if read_key::<Option<Settled<O>>>(doc, &value, ENTRY_SETTLED)?.is_none() {
+                    return Err(ModelError::refused(Refusal::new(format!(
+                        "outbox entry `{id}` is still pending"
+                    ))));
+                }
+                doc.delete(&map, id.as_str())?;
+                Ok(())
             }
             _ => Err(ModelError::unsupported(op)),
         }
@@ -1134,18 +1235,25 @@ impl<T: Model> Model for Outbox<T> {
     fn check(&self) -> Result<(), Refusal> {
         self.entries.check()
     }
-    /// Entries are queued by verbs; an edit only settles them.
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
         for (id, entry) in after.entries.iter() {
             if let (Some(outcome), Some(before)) = (&entry.settled, self.entries.get(id))
-                && before.settled.as_ref() != Some(outcome)
+                && before.settled.as_ref().map(Model::to_json) != Some(outcome.to_json())
             {
                 out.push(crate::Edit::new(
                     path.to_vec(),
                     EditOp::Settle {
                         id: id.clone(),
-                        outcome: outcome.clone(),
+                        outcome: outcome.to_json(),
                     },
+                ));
+            }
+        }
+        for (id, entry) in self.entries.iter() {
+            if entry.settled.is_some() && after.entries.get(id).is_none() {
+                out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::Forget { id: id.clone() },
                 ));
             }
         }

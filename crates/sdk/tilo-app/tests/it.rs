@@ -43,6 +43,8 @@ pub mod live_permissions;
 pub mod live_rows;
 #[path = "model_contract.rs"]
 pub mod model_contract;
+#[path = "outbox.rs"]
+pub mod outbox;
 #[path = "participant.rs"]
 pub mod participant;
 #[path = "person_records.rs"]

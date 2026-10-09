@@ -25,6 +25,12 @@ history-edit-move = Reordered { $field } of { $item }
 history-edit-move-unnamed = Reordered { $field }
 history-edit-format = Formatted { $field } of { $item }
 history-edit-format-unnamed = Formatted { $field }
+history-edit-settle = Carried out { $item } from { $field }
+history-edit-settle-unnamed = Carried out an entry of { $field }
+history-edit-settle-failed = { $item } from { $field } failed: { $reason }
+history-edit-settle-failed-unnamed = An entry of { $field } failed: { $reason }
+history-edit-forget = Cleared { $item } from { $field }
+history-edit-forget-unnamed = Cleared an entry of { $field }
 history-edit = Changed { $field } of { $item }
 history-edit-unnamed = Changed { $field }
 
