@@ -1417,7 +1417,7 @@ perm-kind-action = App action
 perm-verb-rw = read & write
 perm-verb-ro = read-only
 perm-any-host = Any host
-perm-action-detail = Use “{ $action }” in { $app }
+perm-action-detail = Use “{ $action }” on { $resource } in { $app }
 perm-expiry-always = Always
 perm-expiry-temp = Temporary
 perm-expiry-logout = Until log out
@@ -2100,3 +2100,18 @@ settings-disk-unlock-gone = That disk no longer unlocks with your other devices.
 settings-disk-unlock-bad-request = That request names no usable disk or network.
 settings-disk-unlock-too-many = The disk unlock answer lists more disks than this computer can have.
 settings-disk-unlock-malformed = The disk unlock answer could not be read: { $error }
+
+# Shared display arrangement, independent of device input permission.
+display-shared-title = Your shared display layout
+display-shared-description = Displays keep their device's layout. Inclusion and order follow you across devices; remote input requires separate permission.
+display-shared-include = Include in the shared layout
+display-shared-order = Display number
+display-shared-read-only = Shared display inspection is read-only.
+display-shared-unavailable = That display is no longer observed.
+display-shared-stale = The arrangement changed. Refresh this display and try again.
+display-shared-order-invalid = Choose a display number from the current list.
+display-shared-save-failed = The arrangement could not be saved: { $error }
+display-shared-saved = Shared display arrangement saved.
+display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
+display-shared-auto-input = Allow automatic input from your devices
+display-shared-auto-description = While one of this device's displays is included, let your enrolled online devices control it. Continuity and Display/input must also be enabled. Devices you have declined stay declined. This choice applies only here.

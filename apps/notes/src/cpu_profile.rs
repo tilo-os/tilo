@@ -225,3 +225,101 @@ fn mounted_typing_observes_canonical_projection_scaling() {
         }
     }
 }
+
+#[test]
+fn mounted_wheel_observes_long_note_main_thread_phases() {
+    use automerge::transaction::Transactable;
+    use std::fmt::Write as _;
+    let (mut app, target) = fixture(1);
+    let mut body = String::new();
+    for index in 0..180 {
+        writeln!(
+            body,
+            "Paragraph {index}: {}\n",
+            "Measured scrolling text with ordinary words. ".repeat(6)
+        )
+        .unwrap();
+    }
+    let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&crate::actions::write_body_action(target, &blocks))
+            .unwrap(),
+    )
+    .unwrap();
+    app.harness().relayout_at((1051, 952)).unwrap();
+    let rect = app
+        .harness()
+        .targets()
+        .get("block_editor")
+        .copied()
+        .expect("mounted long editor");
+    app.harness()
+        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 40.0),
+        });
+    let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
+    let event = winit::event::WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    app.harness().begin_profiling();
+    for sample in 0u32..150 {
+        let mut presence_ns = 0;
+        let mut baseline_presence_ns = 0;
+        let mut answers = Vec::new();
+        for dense in [sample.is_multiple_of(2), !sample.is_multiple_of(2)] {
+            let (answer, elapsed) = action_presence(app.harness().root_widget(), dense);
+            answers.push(answer);
+            if dense {
+                baseline_presence_ns = elapsed;
+            } else {
+                presence_ns = elapsed;
+            }
+        }
+        assert_eq!(
+            answers[0], answers[1],
+            "presence agrees with complete action inventory"
+        );
+        let has_action_controls = answers[0];
+        let ((elapsed, notes_rows), framework_rows) =
+            ui::framework::testing::phases::observe(|| {
+                observe(|| {
+                    assert!(
+                        app.harness()
+                            .dispatch_to_root_with(&event, &winit::event::Modifiers::default()),
+                        "real notebook wheel handled"
+                    );
+                    app.harness().relayout();
+                })
+            });
+        let frames = app.harness().take_profile_samples();
+        assert!(!frames.is_empty(), "real CPU frame observed");
+        eprintln!(
+            "notes-scroll-phases {}",
+            serde_json::json!({"sample":sample,"baseline_presence_ns":baseline_presence_ns,"presence_ns":presence_ns,"has_action_controls":has_action_controls,"root_type":app.harness().root_widget().concrete_type_name(),"paragraphs":180,"markdown_bytes":body.len(),"viewport":[1051,952],"elapsed_ns":elapsed,"notes_phases":notes_rows,"framework_phases":framework_rows,"frames":frames,"includes_gpu_or_display":false,"architecture":std::env::consts::ARCH})
+        );
+    }
+    assert_eq!(
+        app.read_document(|doc| (doc.base_heads(), doc.pending_ops())),
+        before,
+        "scrolling does not mutate canonical note"
+    );
+    let scrolled = app
+        .surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().scroll_y_for_test())
+        .unwrap();
+    assert!(scrolled > 0.0, "observed note content moves");
+}
+
+fn action_presence(root: &dyn ui::Widget, dense: bool) -> (bool, u128) {
+    let began = ui::time::now();
+    let present = if dense {
+        ui::widget::controls::control_action_bindings(root)
+            .iter()
+            .any(|binding| matches!(binding.kind, ui::widget::ControlBindingKind::Action(_)))
+    } else {
+        ui::widget::controls::has_action_control_bindings(root)
+    };
+    (present, began.elapsed().as_nanos())
+}

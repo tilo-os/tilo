@@ -38,7 +38,7 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
-pub use pending::{Completer, Pending, PendingPoll, pending};
+pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 
 use crate::context::ActionContext;
 use crate::door::ActionAddress;

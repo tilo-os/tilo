@@ -54,7 +54,9 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
 
 /// Where a native process looks for the product catalog, in order: a
 /// `fonts/` directory next to the executable (an installed app bundle), the
-/// catalog the Tilo image installs (absent on other systems), then this
+/// catalog mounted from the selected signed SDK in a Tilo app sandbox,
+/// the catalog the Tilo image installs (absent on other systems), the immutable
+/// catalog named by this build's manifest digest, then this
 /// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
 #[cfg_attr(
@@ -67,7 +69,13 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
         .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
         .into_iter()
         .collect();
+    // Launcher owns this fixed read-only mount in the app's private namespace.
+    // Each retained SDK can carry its own catalog without replacing OS fonts.
+    roots.push(PathBuf::from("/run/tilo-fonts"));
     roots.push(PathBuf::from("/usr/share/fonts/tilo"));
+    roots.push(
+        PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
+    );
     roots.push(checkout_root());
     roots
 }

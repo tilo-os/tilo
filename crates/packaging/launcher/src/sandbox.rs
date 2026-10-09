@@ -25,6 +25,10 @@ pub fn runtime_library_path(version: &str) -> PathBuf {
     runtime_mount_for(version).join("lib")
 }
 
+/// The selected signed SDK's catalog, private to this application's namespace.
+/// The toolkit checks its compiled manifest and each font's pinned bytes.
+pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
+
 /// Canonical absolute ELF interpreter paths re-exposed from the runtime
 /// bundle. Ordinary shared libraries are found through the bundle's
 /// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
@@ -538,6 +542,15 @@ fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     };
     let runtime_mount = runtime_mount_for(runtime_version);
     push_bind(argv, "--ro-bind", runtime_root, &runtime_mount);
+    let fonts = runtime_root.join("lib/fonts");
+    if fonts.is_dir() {
+        push_bind(
+            argv,
+            "--ro-bind",
+            &fonts,
+            Path::new(RUNTIME_FONT_CATALOG_PATH),
+        );
+    }
     argv.extend([
         "--setenv".to_string(),
         "LD_LIBRARY_PATH".to_string(),
@@ -730,7 +743,7 @@ pub fn egress_decision(
         && crate::dev_env::dev_override(crate::dev_env::NET_GATE_ENV).is_some_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(super::netgate::EgressPolicy::hosts),
+            hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
             crate::run::NET_GATE_ENV,
@@ -1050,6 +1063,60 @@ mod tests {
             opens_schemes: Vec::new(),
             continuity: crate::manifest::ContinuityContract::default(),
         }
+    }
+
+    #[test]
+    fn selected_runtime_fonts_are_private_readonly_and_follow_the_selected_sdk() {
+        let directory = tempfile::tempdir().unwrap();
+        for version in ["held", "new"] {
+            let root = directory.path().join(version);
+            let fonts = root.join("lib/fonts");
+            std::fs::create_dir_all(&fonts).unwrap();
+            std::fs::write(fonts.join("manifest.toml"), version).unwrap();
+            let mut argv = vec!["--unshare-all".to_string()];
+            push_runtime_bundle(&mut argv, Some((&root, version)));
+            crate::profile::push_system_profile(&mut argv, false);
+            // Execute the production mount plan without starting an app or
+            // compositor. The catalog mount needs no directory on the host.
+            argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                "/usr/bin/cat".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/manifest.toml"),
+            ]);
+            let output = std::process::Command::new("bwrap")
+                .args(&argv)
+                .output()
+                .expect("execute actual private runtime mount");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(output.stdout, version.as_bytes());
+            let mut write_argv = argv[..argv.len() - 2].to_vec();
+            write_argv.extend([
+                "--ro-bind".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                "/usr/bin/touch".into(),
+                format!("{RUNTIME_FONT_CATALOG_PATH}/new-file"),
+            ]);
+            let write = std::process::Command::new("bwrap")
+                .args(write_argv)
+                .output()
+                .unwrap();
+            assert!(!write.status.success(), "SDK fonts must remain read-only");
+            assert!(!fonts.join("new-file").exists());
+            assert_eq!(
+                std::fs::read(fonts.join("manifest.toml")).unwrap(),
+                version.as_bytes()
+            );
+        }
+        let mut legacy = Vec::new();
+        push_runtime_bundle(&mut legacy, Some((directory.path(), "legacy")));
+        assert!(!legacy.iter().any(|arg| arg == RUNTIME_FONT_CATALOG_PATH));
     }
 
     /// Build argv for `mk_manifest`'s package id with `policy`, exercising

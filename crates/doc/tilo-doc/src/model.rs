@@ -1724,8 +1724,8 @@ pub fn has_mark_over(
 }
 
 /// All preserved parts (the lossless preservation layer — verbatim bytes a codec stashed for content it
-/// doesn't model), as `(key, bytes)`. Reconstructed exactly from however the part is stored — the legacy
-/// single-`Bytes` scalar form, or the per-atom segmented `Map` form (see `PRESERVED_SEGMENTS`) — by concatenating segments in stored order.
+/// doesn't model), as `(key, bytes)`, each reconstructed exactly by concatenating its per-atom segments
+/// in stored order.
 ///
 /// A part preserved as a content reference is read from `content`; one whose content is missing there
 /// is left out (and logged), since there are no bytes to re-emit.
@@ -1758,8 +1758,8 @@ pub fn preserved_entry(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Pr
     preserved_inline(doc, c, key).map(PreservedPart::Bytes)
 }
 
-/// Reconstruct one preserved part's verbatim bytes by key: inline parts from the document (both the
-/// legacy `Bytes`-scalar form and the per-atom segmented `Map` form), content references from `content`.
+/// Reconstruct one preserved part's verbatim bytes by key: inline parts from the document, content
+/// references from `content`.
 pub fn preserved_part(
     doc: &AutoCommit,
     c: &Containers,
@@ -1778,55 +1778,34 @@ pub fn preserved_part(
     }
 }
 
-/// A preserved part stored in the document, transparently handling both the legacy `Bytes`-scalar form
-/// and the per-atom segmented `Map` form (concatenating ordered segments).
+/// A preserved part stored in the document: its atoms concatenated in order.
 fn preserved_inline(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec<u8>> {
-    match doc.get(&c.preserved, key) {
-        // Per-atom segmented form: `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` then concatenated.
-        // CRDT-merge-friendly: each segment is an independent automerge object, so edits to different atoms of the same part merge.
-        Ok(Some((Value::Object(ObjType::Map), part_obj))) => {
-            let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
-                .keys(&part_obj)
-                .filter_map(|sid| {
-                    let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid)
-                    else {
-                        return None;
-                    };
-                    let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
-                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                            ScalarValue::Bytes(b) => b.clone(),
-                            _ => Vec::new(),
-                        },
-                        _ => Vec::new(),
-                    };
-                    let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
-                        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                            ScalarValue::Bytes(b) => b.clone(),
-                            _ => return None,
-                        },
-                        _ => return None,
-                    };
-                    Some((ord, sid, bytes))
-                })
-                .collect();
-            // Sort by fractional order key, then segment id as a deterministic tiebreak.
-            segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
-            Some(segs.into_iter().flat_map(|(_, _, b)| b).collect())
-        }
-        // Legacy single-blob form: the whole part as one `Bytes` scalar.
+    preserved_segments(doc, c, key).map(|segs| segs.into_iter().flat_map(|(_, b)| b).collect())
+}
+
+/// The per-atom segment ids of a preserved part, in source order, paired with each atom's verbatim bytes.
+/// Empty for a part that is not stored inline. Lets a codec or test address an individual atom by its stable id.
+pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
+    preserved_segments(doc, c, key).unwrap_or_default()
+}
+
+/// A part's `Map<segment_id, {ord: Bytes, bytes: Bytes}>`, sorted by `ord` (segment id breaks ties), or
+/// `None` when `key` is not an inline part. Each segment is its own automerge object, so edits to
+/// different atoms of one part merge rather than clobber each other.
+fn preserved_segments(
+    doc: &AutoCommit,
+    c: &Containers,
+    key: &str,
+) -> Option<Vec<(String, Vec<u8>)>> {
+    let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
+        return None;
+    };
+    let bytes_at = |obj: &ObjId, prop: &str| match doc.get(obj, prop) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Bytes(b) => Some(b.clone()),
             _ => None,
         },
         _ => None,
-    }
-}
-
-/// The per-atom segment ids of a preserved part, in source order, paired with each atom's verbatim bytes.
-/// Empty for a part stored in the legacy single-blob form. Lets a codec or test address an individual atom by its stable id.
-pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
-    let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
-        return Vec::new();
     };
     let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
         .keys(&part_obj)
@@ -1834,25 +1813,13 @@ pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(Stri
             let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid) else {
                 return None;
             };
-            let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                    ScalarValue::Bytes(b) => b.clone(),
-                    _ => Vec::new(),
-                },
-                _ => Vec::new(),
-            };
-            let bytes = match doc.get(&seg_obj, PRESERVED_SEG_BYTES) {
-                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                    ScalarValue::Bytes(b) => b.clone(),
-                    _ => return None,
-                },
-                _ => return None,
-            };
+            let ord = bytes_at(&seg_obj, PRESERVED_SEG_ORD).unwrap_or_default();
+            let bytes = bytes_at(&seg_obj, PRESERVED_SEG_BYTES)?;
             Some((ord, sid, bytes))
         })
         .collect();
     segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
-    segs.into_iter().map(|(_, sid, b)| (sid, b)).collect()
+    Some(segs.into_iter().map(|(_, sid, b)| (sid, b)).collect())
 }
 
 /// A stable, replica-independent id for a preserved atom: its source-order index plus a short content hash.
@@ -4799,22 +4766,6 @@ mod preserved_tests {
                 .unwrap();
             assert_eq!(p.1, TWO_STYLE_PART);
             assert!(preserved_atoms(&doc, &c, "odt/part/styles.xml").len() >= 2);
-        }
-        // Phase `legacy_blob_form_still_reconstructs`.
-        {
-            // Simulate a document written under the old single-`Bytes`-scalar schema.
-            let (mut doc, c, _ids) = new_doc();
-            doc.put(
-                &c.preserved,
-                "odt/part/settings.xml",
-                ScalarValue::Bytes(TWO_STYLE_PART.to_vec()),
-            )
-            .unwrap();
-            let got = preserved_part(&doc, &c, "odt/part/settings.xml", &tilo_content::NoContent)
-                .unwrap();
-            assert_eq!(got, TWO_STYLE_PART, "legacy blob still re-emits verbatim");
-            // Legacy form exposes no addressable atoms (it's one opaque blob).
-            assert!(preserved_atoms(&doc, &c, "odt/part/settings.xml").is_empty());
         }
         // Phase `different_atom_edits_merge_not_clobber`.
         // THE core win: two replicas import the same part, each rewrites a DIFFERENT
