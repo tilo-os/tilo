@@ -97,7 +97,7 @@ struct NameIndex {
 impl NameIndex {
     fn from_entries(mut entries: Vec<NameEntry>, generation: u64) -> Self {
         #[cfg(test)]
-        tests::NAME_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
+        tests::NAME_INDEX_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
         entries.sort_by(|a, b| {
             path_depth(&a.facts.lower)
                 .cmp(&path_depth(&b.facts.lower))
@@ -681,7 +681,7 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
 
 /// Everything a path's score depends on besides the needle, computed by the
 /// walker so a keystroke never `stat`s a file.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
@@ -996,6 +996,14 @@ fn apply_watched_paths(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>, paths: &
             let display = display_path(home, path);
             let facts = NameFacts::new(&display, modified);
             if let Some(existing) = entries.iter_mut().find(|entry| entry.path == *path) {
+                // Content and mtime changes within a recency band leave the
+                // searchable names, rows and ranking unchanged.
+                if existing.display == display
+                    && existing.facts == facts
+                    && existing.is_dir == is_dir
+                {
+                    continue;
+                }
                 existing.display = display;
                 existing.facts = facts;
                 existing.is_dir = is_dir;
@@ -1152,8 +1160,8 @@ mod tests {
         std::fs::write(&file, b"first content").unwrap();
         std::fs::create_dir(&folder).unwrap();
         let now = SystemTime::now();
-        let first_time = now - Duration::from_secs(2 * 86_400);
-        let second_time = now - Duration::from_secs(3 * 86_400);
+        let first_time = now.checked_sub(Duration::from_secs(2 * 86_400)).unwrap();
+        let second_time = now.checked_sub(Duration::from_secs(3 * 86_400)).unwrap();
         set_modified(&file, first_time);
         set_modified(&folder, first_time);
         let provider = watched_provider(home);
@@ -1208,8 +1216,14 @@ mod tests {
         std::fs::write(&file, b"content").unwrap();
         std::fs::write(&peer, b"peer").unwrap();
         let now = SystemTime::now();
-        set_modified(&file, now - Duration::from_secs(400 * 86_400));
-        set_modified(&peer, now - Duration::from_secs(2 * 86_400));
+        set_modified(
+            &file,
+            now.checked_sub(Duration::from_secs(400 * 86_400)).unwrap(),
+        );
+        set_modified(
+            &peer,
+            now.checked_sub(Duration::from_secs(2 * 86_400)).unwrap(),
+        );
         let provider = watched_provider(home);
         let chrome = empty_chrome();
         let st = chrome.borrow();
@@ -1229,7 +1243,7 @@ mod tests {
         // An unchanged path in the same batch must not suppress a real change.
         apply_watched_paths(home, &provider.name_index, &[peer.clone(), file.clone()]);
         assert_ne!(provider.published().unwrap().generation, before.generation);
-        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 1);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds.saturating_add(1));
         let ranked = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
         assert_eq!(ranked.results[0].id, file.display().to_string());
         assert!(
@@ -1250,7 +1264,7 @@ mod tests {
         );
         assert_eq!(folders.results.len(), 1);
         assert_eq!(folders.results[0].id, file.display().to_string());
-        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 2);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds.saturating_add(2));
 
         let renamed = home.join("renamed.md");
         std::fs::rename(&peer, &renamed).unwrap();
@@ -1262,7 +1276,7 @@ mod tests {
         );
         assert_eq!(found.results.len(), 1);
         assert_eq!(found.results[0].id, renamed.display().to_string());
-        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 3);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds.saturating_add(3));
 
         std::fs::write(file.join("child.md"), b"child").unwrap();
         apply_watched_paths(home, &provider.name_index, &[file.join("child.md")]);
@@ -1276,11 +1290,11 @@ mod tests {
                 .iter()
                 .all(|entry| !entry.path.starts_with(&file))
         );
-        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 5);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds.saturating_add(5));
         let retained = provider.published().unwrap();
         apply_watched_paths(home, &provider.name_index, &[file]);
         assert!(Arc::ptr_eq(&retained, &provider.published().unwrap()));
-        assert_eq!(NAME_INDEX_BUILDS.get(), builds + 5);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds.saturating_add(5));
     }
 
     /// Case-insensitive-by-construction extension check for test assertions,
