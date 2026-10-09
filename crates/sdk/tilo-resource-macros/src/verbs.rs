@@ -23,11 +23,13 @@ pub(crate) struct ResourceOptions {
     available: Option<syn::Path>,
     read_content: Option<syn::Path>,
     views: Option<syn::Path>,
+    version: Option<syn::LitInt>,
+    migrate: Option<syn::Path>,
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path` or `views = path`";
+     `read_content = path`, `views = path`, `version = N` or `migrate = path`";
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
@@ -43,6 +45,8 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         available: None,
         read_content: None,
         views: None,
+        version: None,
+        migrate: None,
     };
     let mut kind = None;
     let mut label = None;
@@ -81,11 +85,25 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
             ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
             ("views", Expr::Path(path)) => options.views = Some(path.path.clone()),
+            (
+                "version",
+                Expr::Lit(ExprLit {
+                    lit: Lit::Int(version),
+                    ..
+                }),
+            ) => options.version = Some(version.clone()),
+            ("migrate", Expr::Path(path)) => options.migrate = Some(path.path.clone()),
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
     }
     options.kind =
         kind.ok_or_else(|| syn::Error::new(Span::call_site(), "missing `kind = \"...\"`"))?;
+    if options.version.is_some() != options.migrate.is_some() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`version = N` and `migrate = path` go together: a new version needs a migration",
+        ));
+    }
     options.label = label.unwrap_or_else(|| options.kind.clone());
     Ok(options)
 }
@@ -846,6 +864,22 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let version = options.version.as_ref().map_or_else(
+        || quote!(),
+        |version| {
+            let migrate = &options.migrate;
+            quote! {
+                const VERSION: u32 = #version;
+
+                fn migrate(
+                    doc: &mut #krate::Doc,
+                    from: u32,
+                ) -> ::core::result::Result<(), #krate::ModelError> {
+                    #migrate(doc, from)
+                }
+            }
+        },
+    );
     let read_content = options.read_content.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1009,6 +1043,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             type Action = #krate::Stamped<#action_enum>;
 
             fn read(doc: &#krate::Doc) -> ::core::result::Result<Self, #krate::ModelError> {
+                #krate::evolution::check_version::<Self>(doc)?;
                 <Self as #krate::Fields>::read_fields(doc, &#krate::__private::ROOT)
             }
 
@@ -1017,12 +1052,14 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 doc: &#krate::Doc,
                 delta: &#krate::Delta,
             ) -> ::core::result::Result<(), #krate::ModelError> {
+                #krate::evolution::check_version::<Self>(doc)?;
                 <Self as #krate::Fields>::refresh_fields(state, doc, &#krate::__private::ROOT, delta)
             }
 
             fn initialize(doc: &mut #krate::Doc) -> ::core::result::Result<(), #krate::ModelError> {
                 let initial: Self = #initial;
-                <Self as #krate::Fields>::write_fields(&initial, doc, &#krate::__private::ROOT)
+                <Self as #krate::Fields>::write_fields(&initial, doc, &#krate::__private::ROOT)?;
+                #krate::evolution::write_version(doc, <Self as #krate::Resource>::VERSION)
             }
 
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
@@ -1056,6 +1093,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             #seed_fn
+            #version
             #availability
             #read_content
             #views

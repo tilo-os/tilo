@@ -90,6 +90,8 @@ pub struct Reader<R: Resource> {
     uncommitted: Option<(Vec<ChangeHash>, usize)>,
     /// What the last sync that changed the state applied.
     last: Delta,
+    /// Why the document last failed to read, until it reads again.
+    unreadable: Option<crate::Unreadable>,
 }
 
 impl<R: Resource> Reader<R> {
@@ -111,6 +113,7 @@ impl<R: Resource> Reader<R> {
             stale: false,
             uncommitted: None,
             last: Delta::everything(),
+            unreadable: None,
         })
     }
 
@@ -137,6 +140,7 @@ impl<R: Resource> Reader<R> {
             stale: false,
             uncommitted: None,
             last: Delta::everything(),
+            unreadable: None,
         }
     }
 
@@ -155,6 +159,13 @@ impl<R: Resource> Reader<R> {
     /// whole (an open transaction, a failed refresh, the first read).
     pub fn last_delta(&self) -> &Delta {
         &self.last
+    }
+
+    /// Why the document does not read as the resource since the last sync,
+    /// if it does not: the state is then the last one that did read, and a
+    /// view shows this instead of it.
+    pub fn unreadable(&self) -> Option<&crate::Unreadable> {
+        self.unreadable.as_ref()
     }
 
     /// Increases whenever the state changes.
@@ -225,6 +236,15 @@ impl<R: Resource> Reader<R> {
     }
 
     fn apply(&mut self, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        let applied = self.apply_delta(doc, delta);
+        self.unreadable = applied
+            .as_ref()
+            .err()
+            .map(|error| crate::Unreadable::of::<R>(doc, error));
+        applied
+    }
+
+    fn apply_delta(&mut self, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
         self.stale = true;
         let mut applied = delta.clone();
         let state = match Rc::get_mut(&mut self.state) {

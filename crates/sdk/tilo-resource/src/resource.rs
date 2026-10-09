@@ -331,6 +331,32 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// The storage version documents of this resource are written at;
+    /// `#[resource(version = N)]` raises it with each incompatible change
+    /// and [`Self::migrate`] brings older documents up to it.
+    const VERSION: u32 = 1;
+
+    /// Bring a document stored at version `from` up to [`Self::VERSION`],
+    /// reading its old shape with the model helpers. Called once per
+    /// document by [`crate::evolution::migrate`].
+    ///
+    /// # Errors
+    /// Returns why the document cannot be migrated.
+    fn migrate(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
+        let _ = doc;
+        Err(ModelError::invalid(format!(
+            "{} has no migration from storage version {from}",
+            Self::LABEL
+        )))
+    }
+
+    /// The public surface: verbs, their parameters and kinds, and the
+    /// stored fields ([`crate::surface`]).
+    #[must_use]
+    fn surface() -> crate::surface::Surface {
+        crate::surface::surface_of::<Self>()
+    }
+
     /// Whether the resource's actions include field edits ([`Edit`]),
     /// published as [`FIELD_EDIT`]. `#[resource]` records have them.
     const EDITS: bool = false;

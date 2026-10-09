@@ -35,6 +35,8 @@ pub struct FieldShape {
     pub owner: &'static str,
     /// The field's Rust name.
     pub name: &'static str,
+    /// The field's Rust type, as written.
+    pub ty: &'static str,
     /// What the field is, for people: its doc comment's first line, else its
     /// name in words. History falls back to it ("Changed *Folder*").
     pub title: &'static str,

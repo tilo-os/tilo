@@ -117,6 +117,7 @@ pub mod delta;
 pub mod derived;
 pub mod diff;
 pub mod effect;
+pub mod evolution;
 pub mod group;
 pub mod history;
 pub mod items;
@@ -131,6 +132,7 @@ pub mod resource;
 pub mod schema;
 pub mod shape;
 pub mod storage;
+pub mod surface;
 pub mod text;
 
 pub use action::{
@@ -142,6 +144,7 @@ pub use collection::{Collection, Id};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
+pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
@@ -160,6 +163,7 @@ pub use resource::{
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
+pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
 pub use tilo_actions::{Availability, PermissionRequirement};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};

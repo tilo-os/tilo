@@ -40,6 +40,8 @@ fn a_derived_record_lists_its_stored_fields() {
             key: "name",
             owner: "column",
             name: "name",
+
+            ty: "String",
             title: "Name",
             shape: Shape::Value,
             unit: false,
@@ -50,6 +52,8 @@ fn a_derived_record_lists_its_stored_fields() {
             key: "limit",
             owner: "column",
             name: "limit",
+
+            ty: "u32",
             title: "Limit",
             shape: Shape::Value,
             unit: false,
@@ -61,6 +65,8 @@ fn a_derived_record_lists_its_stored_fields() {
         key: "by",
         owner: "meta",
         name: "by",
+
+        ty: "String",
         title: "By",
         shape: Shape::Value,
         unit: false,
@@ -74,6 +80,8 @@ fn a_derived_record_lists_its_stored_fields() {
                 key: "title",
                 owner: "board",
                 name: "title",
+
+                ty: "String",
                 title: "Title",
                 shape: Shape::Value,
                 unit: false,
@@ -84,6 +92,8 @@ fn a_derived_record_lists_its_stored_fields() {
                 key: "cols",
                 owner: "board",
                 name: "columns",
+
+                ty: "Collection<Column>",
                 title: "Columns",
                 shape: Shape::Collection(&COLUMN),
                 unit: false,
@@ -94,6 +104,8 @@ fn a_derived_record_lists_its_stored_fields() {
                 key: "archived",
                 owner: "board",
                 name: "archived",
+
+                ty: "Option<Meta>",
                 title: "Archived",
                 shape: META,
                 unit: false,
@@ -104,6 +116,8 @@ fn a_derived_record_lists_its_stored_fields() {
                 key: "filter",
                 owner: "board",
                 name: "filter",
+
+                ty: "Json<Vec<String>>",
                 title: "Filter",
                 shape: Shape::Value,
                 unit: false,

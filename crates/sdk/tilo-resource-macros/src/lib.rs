@@ -427,10 +427,20 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .push(quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;));
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
+        let ty_text = quote!(#ty)
+            .to_string()
+            .replace(" < ", "<")
+            .replace("< ", "<")
+            .replace(" <", "<")
+            .replace(" >", ">")
+            .replace(" :: ", "::")
+            .replace(":: ", "::")
+            .replace(" ,", ",");
         shapes.push(quote!(#krate::FieldShape {
             key: #key,
             owner: #owner,
             name: #field_name,
+            ty: #ty_text,
             title: #title,
             shape: <#ty as #krate::Model>::SHAPE,
             unit: #unit,
