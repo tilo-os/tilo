@@ -142,31 +142,68 @@ fn route(
     resource.actions = std::mem::take(&mut resource.actions)
         .into_iter()
         .filter(|spec| editable && spec.kind == OperationKind::Document)
-        .map(|spec| {
-            let record = record.to_owned();
-            spec.routed(RECORD_ACTION_TYPE, move |action| {
-                let routed = RecordAction {
-                    record: record.clone(),
-                    action,
-                };
-                EncodedAction::encode_operation(RECORD_ACTION_TYPE, &routed).unwrap_or_else(
-                    |error| EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-                        payload: error.to_string().into_bytes(),
-                    },
-                )
-            })
-            // The room's roles do not reach a record of the person's own:
-            // the host lets only its person change it.
-            .of_kind(ActionKind::Read)
-            .with_need_of(|_| ActionNeed::of(ActionKind::Read))
-        })
+        .map(|spec| route_spec(spec, record))
         .collect();
     resource.children = std::mem::take(&mut resource.children)
         .into_iter()
         .map(|child| route(child, record, editable))
         .collect();
     resource
+}
+
+/// The document action `spec` carried out on the record `record`.
+fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
+    let record = record.to_owned();
+    spec.routed(RECORD_ACTION_TYPE, move |action| {
+        let routed = RecordAction {
+            record: record.clone(),
+            action,
+        };
+        EncodedAction::encode_operation(RECORD_ACTION_TYPE, &routed).unwrap_or_else(|error| {
+            EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+                payload: error.to_string().into_bytes(),
+            }
+        })
+    })
+    // The room's roles do not reach a record of the person's own: the host
+    // lets only its person change it.
+    .of_kind(ActionKind::Read)
+    .with_need_of(|_| ActionNeed::of(ActionKind::Read))
+}
+
+/// Field edits and verbs of another record, offered where the app's own
+/// actions cannot go: on a live row (*this* app's notification rule, on the
+/// app's row). See [`SurfaceCx::record_operations`].
+pub struct RecordOperations<P: Resource> {
+    id: String,
+    editable: bool,
+    marker: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: Resource> Clone for RecordOperations<P> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            editable: self.editable,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<P: Resource> RecordOperations<P> {
+    /// `decl` (a bound field edit, [`tilo_resource::ActionDecl::edit`], or
+    /// one asking its value) as an operation a live row offers
+    /// ([`LiveRow::operation`](super::LiveRow::operation)), carried out on
+    /// the record as its person. `None` where the record is read only here.
+    #[must_use]
+    pub fn operation(
+        &self,
+        decl: &tilo_resource::ActionDecl<P>,
+    ) -> Option<tilo_actions::ActionSpec> {
+        self.editable
+            .then(|| route_spec(tilo_resource::declaration_spec(decl), &self.id))
+    }
 }
 
 /// A held record with its type erased, as the host publishes and answers
@@ -483,6 +520,21 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// Another record's field edits and verbs for the live rows the surface
+    /// publishes ([`RecordOperations`]). `None` where the record cannot be
+    /// held.
+    pub fn record_operations<P: Resource>(
+        &self,
+        record: &impl OtherRecord<P>,
+    ) -> Option<RecordOperations<P>> {
+        let held = record.held(sealed::Storage(&self.storage))?;
+        Some(RecordOperations {
+            id: held.id().to_owned(),
+            editable: held.editable(),
+            marker: std::marker::PhantomData,
+        })
+    }
+
     /// The published actions of another record than the app's own, as
     /// [`ViewCx::record_actions`]: a hand surface binds its controls to the
     /// record's verbs and field edits with them, as to its own.
