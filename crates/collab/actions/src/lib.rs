@@ -120,9 +120,9 @@ pub use entry::{
 };
 pub use envelope::ActionEnvelope;
 pub use executor::{
-    ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
-    apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
-    dispatch_with_context, invoking_context, replay,
+    ActionTransport, Dispatched, HostDecision, LocalTransport, Verified, apply_local,
+    apply_local_by, apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
+    dispatch_with_context, invoking_context, replay, verify_change,
 };
 pub use interaction::{
     ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionAnchor,

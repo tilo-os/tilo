@@ -352,6 +352,78 @@ pub fn replay(
     Ok(())
 }
 
+/// What replaying a received change showed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verified {
+    /// The action the change records reproduces exactly this change.
+    Reproduced,
+    /// The change records no action to replay (a framework change: a
+    /// record's genesis, a checkpoint, a merge).
+    NothingRecorded,
+    /// The change records an action this replica cannot decode: the app is
+    /// not installed here, so another device has to verify it.
+    UnknownAction(String),
+}
+
+/// The action a change records, encoded as the executor dispatched it.
+fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
+    context
+        .compensation
+        .as_ref()
+        .map(|compensation| &compensation.redo)
+}
+
+/// Replay the action the change `hash` records on the document it was
+/// authored against, and check that it produces exactly that change: same
+/// operations, same actor, time and message, so the same hash. This is what
+/// a device that has the app does with every change it receives, beside the
+/// relay's grant check: an author granted an action who wrote something else
+/// inside its storage units is caught here.
+///
+/// # Errors
+/// Refuses a change that is not in `doc`, whose base is incomplete, or that
+/// its recorded action does not reproduce.
+pub fn verify_change(
+    doc: &mut Doc,
+    hash: automerge::ChangeHash,
+    registry: &ActionRegistry,
+) -> Result<Verified, ActionError> {
+    let change = doc
+        .get_change_meta_by_hash(&hash)
+        .ok_or_else(|| ActionError::Refused("the change is not in the document".into()))?
+        .into_owned();
+    let Some(context) = change
+        .message
+        .as_deref()
+        .and_then(ActionContext::from_change_message)
+    else {
+        return Ok(Verified::NothingRecorded);
+    };
+    let Some(action) = recorded_action(&context).cloned() else {
+        return Ok(Verified::NothingRecorded);
+    };
+    if !registry.contains(&action.type_id) {
+        return Ok(Verified::UnknownAction(action.type_id));
+    }
+    let env = ActionEnvelope {
+        id: ActionId::new(),
+        action,
+        base_heads: change.deps.iter().map(|head| head.0).collect(),
+        timestamp: change.timestamp,
+        locus: ExecutionLocus::ClientLocal,
+        actor: Some(change.actor.to_bytes().to_vec()),
+        context: Some(context),
+    };
+    let mut original = doc.fork_at(&change.deps)?;
+    replay(&mut original, &env, registry)?;
+    if original.get_heads() != [hash] {
+        return Err(ActionError::Refused(
+            "the change is not what its recorded action produces".into(),
+        ));
+    }
+    Ok(Verified::Reproduced)
+}
+
 /// Decode a recorded inverse only after reproducing its original change.
 /// Descriptive CRDT metadata alone cannot install executable history.
 ///
@@ -363,38 +435,23 @@ pub fn verified_compensation(
     hash: automerge::ChangeHash,
     registry: &ActionRegistry,
 ) -> Result<Option<Box<dyn Action>>, ActionError> {
-    let change = doc
+    let inverse = doc
         .get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?
-        .into_owned();
-    let context = change
         .message
         .as_deref()
-        .and_then(ActionContext::from_change_message);
-    let Some(compensation) = context
-        .as_ref()
-        .and_then(|context| context.compensation.as_ref())
-    else {
+        .and_then(ActionContext::from_change_message)
+        .and_then(|context| context.compensation)
+        .map(|compensation| compensation.undo);
+    let Some(inverse) = inverse else {
         return Ok(None);
     };
-    let inverse = compensation.undo.clone();
-    let env = ActionEnvelope {
-        id: ActionId::new(),
-        action: compensation.redo.clone(),
-        base_heads: change.deps.iter().map(|head| head.0).collect(),
-        timestamp: change.timestamp,
-        locus: ExecutionLocus::ClientLocal,
-        actor: Some(change.actor.to_bytes().to_vec()),
-        context,
-    };
-    let mut original = doc.fork_at(&change.deps)?;
-    replay(&mut original, &env, registry)?;
-    if original.get_heads() != [hash] {
-        return Err(ActionError::Refused(
+    match verify_change(doc, hash, registry)? {
+        Verified::Reproduced => registry.decode(&inverse).map(Some),
+        Verified::NothingRecorded | Verified::UnknownAction(_) => Err(ActionError::Refused(
             "recorded history action does not reproduce its change".into(),
-        ));
+        )),
     }
-    registry.decode(&inverse).map(Some)
 }
 
 fn validate_compensation(
