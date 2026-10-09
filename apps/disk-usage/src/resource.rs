@@ -1,4 +1,4 @@
-//! Disk Usage as a [`tilo_resource::Resource`]: scans and navigation are the
+//! Disk Usage as a resource: scans and navigation are the
 //! surface's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
 //! this device, so they are a device-local setting ([`RecentFolders`]),
 //! published as live rows beside the resource.
@@ -11,7 +11,7 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, Doc, ModelError, NoAction, Resource};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::app::DiskUsageApp;
@@ -68,21 +68,13 @@ pub enum DiskUsageEffect {
 }
 
 /// The disk-usage analyzer: the door its effects and live rows are
-/// published on. It keeps no document state.
-pub struct DiskUsage;
+/// published on. It keeps no document state: what it scans is this device's
+/// disk, and the folders it remembers are a device-local setting.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct DiskUsage {}
 
-impl Resource for DiskUsage {
-    const KIND: &'static str = "disk-usage";
-    const LABEL: &'static str = "Disk Usage Analyzer";
-    const ACTION_TYPE: &'static str = "disk_usage.action";
-
-    type State = ();
-    type Action = NoAction;
-
-    fn read(_doc: &Doc) -> Result<(), ModelError> {
-        Ok(())
-    }
-}
+#[resource(kind = "disk-usage", label = "Disk Usage Analyzer")]
+impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
@@ -169,7 +161,7 @@ impl ResourceApp for DiskUsageShell {
 }
 
 impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
-    fn present(&mut self, _state: &std::rc::Rc<()>) {}
+    fn present(&mut self, _state: &std::rc::Rc<DiskUsage>) {}
 
     /// A capture shows its scenario's folders; a live window this device's,
     /// remembering what it analyzes; a past version has none.

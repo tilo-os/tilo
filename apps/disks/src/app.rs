@@ -336,11 +336,6 @@ impl DisksApp {
             .map_or(drive.model.as_str(), String::as_str)
     }
 
-    /// The selected drive's serial number, which names it in the document.
-    pub(crate) fn selected_serial(&self) -> Option<String> {
-        self.drive()?.serial.clone()
-    }
-
     pub(crate) fn is_running(&self) -> bool {
         self.running.is_some()
     }
@@ -1017,7 +1012,10 @@ mod tests {
     #[test]
     fn a_named_drive_shows_its_name() {
         let mut app = sample_app();
-        let serial = app.selected_serial().expect("the sample nvme has a serial");
+        let serial = app
+            .drive()
+            .and_then(|drive| drive.serial.clone())
+            .expect("the sample nvme has a serial");
         app.adopt_names(&BTreeMap::from([(serial, "Workstation".to_owned())]));
         app.refresh_view();
         let drive = app.drive().unwrap();
