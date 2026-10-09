@@ -162,6 +162,41 @@ fn since(
         .collect()
 }
 
+fn room_change_count(tree: &WorkspaceTreeHandle, room: RoomId) -> usize {
+    tree.write()
+        .room_docs
+        .get_mut(&room)
+        .map_or(0, |doc| doc.get_changes(&[]).len())
+}
+
+/// What `room`'s document gained on `tree` since it held `before` changes:
+/// the newest few, so a report names what an idle desktop keeps writing.
+fn newest_room_changes(tree: &WorkspaceTreeHandle, room: RoomId, before: usize) -> String {
+    let mut tree = tree.write();
+    let Some(doc) = tree.room_docs.get_mut(&room) else {
+        return "none".into();
+    };
+    let changes = doc.get_changes(&[]);
+    let mut out = format!(
+        "{} changes while idle",
+        changes.len().saturating_sub(before)
+    );
+    for change in changes.iter().skip(before).rev().take(3) {
+        let change = change.decode();
+        let ops: String = serde_json::to_string(&change.operations)
+            .unwrap_or_default()
+            .chars()
+            .take(800)
+            .collect();
+        let _ = write!(
+            out,
+            "\n    by {} at {}: {ops}",
+            change.actor_id, change.time
+        );
+    }
+    out
+}
+
 #[test]
 #[serial_test::serial]
 fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute() {
@@ -241,6 +276,10 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     let first_before = received(&first_net);
     let second_before = received(&second_net);
     let repaints_before = (first.repaints, second.repaints);
+    let room_changes_before = (
+        room_change_count(&first.tree, room),
+        room_change_count(&second.tree, room),
+    );
     let started = Instant::now();
     let _ = run(&mut [&mut first, &mut second], IDLE, |_| false);
     let measured = started.elapsed();
@@ -273,6 +312,16 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         repaints.0,
         repaints.1,
     );
+    for (name, tree, before) in [
+        ("first", &first.tree, room_changes_before.0),
+        ("second", &second.tree, room_changes_before.1),
+    ] {
+        let _ = writeln!(
+            report,
+            "  {name}'s room document: {}",
+            newest_room_changes(tree, room, before)
+        );
+    }
     eprintln!("{report}");
     assert_eq!(total, 0, "{report}");
     assert_eq!(repaints, (0, 0), "{report}");
