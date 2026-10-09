@@ -17,14 +17,13 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
                 kind: descriptor.resource_kind.clone(),
                 key: descriptor.resource.clone(),
             });
-            descriptor.operation_kind = "effect".into();
-            descriptor.contract_json = serde_json::to_string(&tilo_actions::ActionContract {
+            descriptor.operation_kind = tilo_actions::OperationKind::Effect;
+            descriptor.contract = tilo_actions::ActionContract {
                 permission: tilo_actions::PermissionRequirement::Write,
                 result: tilo_actions::ResultSpec::Job,
                 execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                 ..Default::default()
-            })
-            .unwrap();
+            };
             target
                 .handle
                 .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
@@ -184,13 +183,13 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         let mut descriptor = directory.borrow().row().descriptor.unwrap();
         descriptor.action = runtime_collab::approved_checks::ACTION_ID.into();
             descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity { kind: descriptor.resource_kind.clone(), key: descriptor.resource.clone() });
-        descriptor.operation_kind = "effect".into();
-        descriptor.contract_json = serde_json::to_string(&tilo_actions::ActionContract {
+        descriptor.operation_kind = tilo_actions::OperationKind::Effect;
+        descriptor.contract = tilo_actions::ActionContract {
             permission: tilo_actions::PermissionRequirement::Write,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
             result: tilo_actions::ResultSpec::Job,
             ..Default::default()
-        }).unwrap();
+        };
         connection.handle.publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor)).await.unwrap();
         let stream = connection.handle.subscribe_stable_invocations().await.unwrap();
         let (wire, _) = connection.handle.invoke_published_action(991, "workspace:atlas", runtime_collab::approved_checks::ACTION_ID, Some(r#"{"check_id":"regression"}"#), "{}").await.unwrap();
