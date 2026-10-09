@@ -28,10 +28,10 @@
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
 use fuser::{
-    BackingId, BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
-    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags,
+    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
+    ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
@@ -54,14 +54,15 @@ use crate::availability::{
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
-use crate::namespace::Namespace;
+use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
 
 const TTL: Duration = Duration::from_secs(10);
-// Namespace changes normally wake the worker directly.  This is solely a
-// repair path for changes received outside the FUSE callbacks (and for a
-// process that died between persisting a pin and scheduling it).
+// Namespace changes normally wake the worker directly.  This tick is solely a
+// repair path for changes received outside the FUSE callbacks (remote applies,
+// ACL and registry changes) and for backoff deadlines; it compares cheap change
+// tokens and walks the namespace only when one of them moved.
 const PINNED_HYDRATION_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_PINNED_FETCHES_PER_PASS: usize = 4;
 const HYDRATION_PROGRESS_PERSIST_BYTES: u64 = 8 * 1024 * 1024;
@@ -287,6 +288,19 @@ fn prepare_stage_dir(dir: &std::path::Path) -> io::Result<()> {
 #[cfg(test)]
 type CommitPause = Arc<dyn Fn(u64) + Send + Sync>;
 
+/// How a FUSE `read` is answered, decided by `QuickFS::plan_read` before
+/// any reply is sent.
+enum ReadPlan {
+    /// Refused, or failed, with this errno.
+    Error(i32),
+    /// From the inode's write stage or a document's export.
+    Buffered(BufferedRead),
+    /// Bytes already on this device (empty for a file with no content).
+    Local(Vec<u8>),
+    /// Content a peer must supply, hydrated off the FUSE worker.
+    Remote(Hash),
+}
+
 /// A read answered without the committed content's read path.
 enum BufferedRead {
     /// A range of a document's shared export.
@@ -362,6 +376,52 @@ impl Drop for PinnedHydrationTask {
     }
 }
 
+/// What a pinned-hydration pass is computed from, as cheap change tokens.
+#[derive(PartialEq, Eq)]
+struct PinnedPassInputs {
+    namespace: crate::namespace::NamespaceChangeToken,
+    acl_revision: u64,
+    availability: u64,
+}
+
+impl PinnedPassInputs {
+    fn capture(
+        namespace: &Arc<Mutex<Namespace>>,
+        registry: &Arc<Mutex<AvailabilityRegistry>>,
+        enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
+    ) -> Self {
+        let namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .change_token();
+        let availability = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .hydration_generation();
+        Self {
+            namespace,
+            acl_revision: enforcement.map_or(0, |(acl, _)| acl.revision()),
+            availability,
+        }
+    }
+}
+
+/// What a pinned-hydration pass leaves for the worker's scheduler.
+#[derive(Default)]
+struct PinnedPassOutcome {
+    /// More pinned files were due than one pass fetches: run again at once.
+    more_due: bool,
+    /// The earliest backoff deadline of a pinned file that was not yet due.
+    next_retry_at_ms: Option<u64>,
+}
+
+/// One pinned file's local content, probed outside every lock.
+#[derive(Clone, Copy)]
+enum PinnedProbe {
+    Local,
+    Missing { resident_bytes: u64 },
+}
+
 #[derive(Clone)]
 struct PinnedCandidate {
     record_id: collab_types::FileRecordId,
@@ -393,6 +453,32 @@ struct AclVisibleRecordIndex {
     revision: String,
     records: Vec<crate::syncstate::RecordIndexEntryV1>,
     by_id: HashMap<collab_types::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
+    /// Rows this authority may not see, with the path they were judged at.
+    /// With `by_id` it lets the next refresh under the same ACL revision
+    /// re-evaluate only rows whose path changed.
+    hidden: HashMap<collab_types::FileRecordId, String>,
+    /// ACL evaluations made building this view.
+    #[cfg(test)]
+    acl_evaluations: usize,
+}
+
+impl AclVisibleRecordIndex {
+    /// The visibility this view already decided for `record_id` at `path`,
+    /// if it judged that exact row. Visibility is a function of the ACL
+    /// revision and the path alone, so the verdict holds for the same pair.
+    fn verdict(&self, record_id: collab_types::FileRecordId, path: &str) -> Option<bool> {
+        if self
+            .by_id
+            .get(&record_id)
+            .is_some_and(|entry| entry.path == path)
+        {
+            return Some(true);
+        }
+        self.hidden
+            .get(&record_id)
+            .is_some_and(|hidden| hidden == path)
+            .then_some(false)
+    }
 }
 
 #[path = "checked_restore.rs"]
@@ -501,6 +587,9 @@ pub struct QuickFS {
     /// Test-only: run while an inode's stage is locked for its commit.
     #[cfg(test)]
     commit_pause: Mutex<Option<CommitPause>>,
+    /// Test-only: how many times [`Self::ns`] has taken the namespace lock.
+    #[cfg(test)]
+    namespace_locks: std::sync::atomic::AtomicUsize,
 }
 
 impl QuickFS {
@@ -564,6 +653,8 @@ impl QuickFS {
             commit_fault: Mutex::new(None),
             #[cfg(test)]
             commit_pause: Mutex::new(None),
+            #[cfg(test)]
+            namespace_locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -596,9 +687,31 @@ impl QuickFS {
     }
 
     fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
+        #[cfg(test)]
+        self.namespace_locks.fetch_add(1, Ordering::Relaxed);
         self.namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// [`Namespace::inode_view`] under one namespace lock, with the path
+    /// built only when this mount has an ACL to check it against.
+    fn inode_view(&self, ino: u64, unlinked: bool) -> Option<InodeView> {
+        let query = InodeQuery {
+            unlinked,
+            path: self.enforcement.is_some(),
+        };
+        self.ns().inode_view(ino, query)
+    }
+
+    /// The state of kernel handle `fh`, when it was opened on `ino`.
+    fn open_handle(&self, ino: u64, fh: u64) -> Option<OpenFileHandleState> {
+        self.open_file_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&fh)
+            .filter(|handle| handle.ino == ino)
+            .cloned()
     }
 
     fn buffers(&self) -> std::sync::MutexGuard<'_, WriteStages> {
@@ -1231,20 +1344,12 @@ impl QuickFS {
         Ok(())
     }
 
-    /// The part of `read` that is answered from memory or the stage: an
-    /// inode's write stage, else a document's shared export. `None` sends
-    /// the read to the committed content.
+    /// A range of document `ino`'s shared export, clamped to its length.
     ///
     /// `offset`/`size` cross the FUSE boundary as untrusted request values,
     /// so they are clamped rather than trusted to fit `usize`.
-    fn read_buffered(&self, ino: u64, offset: u64, size: u32) -> Option<BufferedRead> {
-        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
-            return Some(BufferedRead::Staged(staged));
-        }
-        if !self.is_document(ino) {
-            return None;
-        }
-        Some(match self.document_export(ino) {
+    fn read_document_export(&self, ino: u64, offset: u64, size: u32) -> BufferedRead {
+        match self.document_export(ino) {
             Some(bytes) => {
                 let start = usize::try_from(offset)
                     .unwrap_or(usize::MAX)
@@ -1253,10 +1358,128 @@ impl QuickFS {
                 BufferedRead::Shared(bytes, start..end)
             }
             None => BufferedRead::Failed,
-        })
+        }
     }
 
-    /// Answer a FUSE `read` with what [`Self::read_buffered`] found.
+    /// What a FUSE `getattr` answers for `ino` (through kernel handle `fh`,
+    /// when it has one): the attributes and whether `ino` is a document.
+    /// The inode is read under one namespace lock; a document's export size
+    /// and a directory's visible link count are the only further reads.
+    fn attr_for_request(&self, ino: u64, fh: Option<u64>) -> Result<(FileAttr, bool), i32> {
+        // Reflect an in-flight write stage so stat() sees read-your-writes size.
+        let buf_len = self.staged_len(ino);
+        let open_handle = fh.and_then(|fh| self.open_handle(ino, fh));
+        let view = self.inode_view(ino, open_handle.is_some()).ok_or(ENOENT)?;
+        // Outside the live view there is nothing to describe, except an inode
+        // retained by this exact open kernel handle after unlink/replacement.
+        let visible = if view.live {
+            self.view_in_view(&view)
+        } else {
+            open_handle
+                .as_ref()
+                .is_some_and(|handle| self.in_view(&handle.opened_path))
+        };
+        if !visible {
+            return Err(ENOENT);
+        }
+        let mut attr = view.attr;
+        // Documents have no stored byte length — report the current export
+        // size (so a collaboratively-edited document isn't read truncated).
+        let doc_len = if buf_len.is_none() && view.document {
+            self.document_export(ino).map(|b| b.len() as u64)
+        } else {
+            None
+        };
+        if let Some(len) = buf_len.or(doc_len) {
+            attr.size = len;
+            attr.blocks = len.div_ceil(512);
+        }
+        if attr.kind == FileType::Directory {
+            // Matches the filtered listing: an identity granted
+            // nothing sees an ordinary empty directory (nlink == 2).
+            attr.nlink = self.visible_dir_nlink(ino);
+        }
+        Ok((attr, view.document))
+    }
+
+    /// Everything a FUSE `read` decides before it replies: authorization,
+    /// then the write stage, a document's export, or the committed content.
+    /// The inode is read under **one** namespace lock — its liveness, path,
+    /// kind, content hash and whether it is a document come back together —
+    /// so a read of local content never queues behind a sync apply more than
+    /// once. Only a document read takes the lock again, to export it.
+    fn plan_read(&self, ino: u64, fh: u64, offset: u64, size: u32) -> ReadPlan {
+        let open_handle = self.open_handle(ino, fh);
+        let Some(view) = self.inode_view(ino, open_handle.is_some()) else {
+            return ReadPlan::Error(ENOENT);
+        };
+        // Live inodes use their current path. An unlinked/replaced inode has
+        // no path, so only the matching kernel handle may continue, with the
+        // access path captured when it was opened.
+        let access = if view.live {
+            self.check_view_access(&view, Access::Read)
+        } else if let Some(handle) = &open_handle {
+            self.check_path(&handle.opened_path, Access::Read)
+        } else {
+            Err(ENOENT)
+        };
+        if let Err(e) = access {
+            return ReadPlan::Error(e);
+        }
+        // Read-your-writes from the stage, else a document's shared export.
+        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
+            return ReadPlan::Buffered(BufferedRead::Staged(staged));
+        }
+        if view.document {
+            return ReadPlan::Buffered(self.read_document_export(ino, offset, size));
+        }
+        if view.attr.kind != FileType::RegularFile {
+            return ReadPlan::Error(EISDIR);
+        }
+        let Some(hash) = view.hash else {
+            return ReadPlan::Local(Vec::new());
+        };
+        // Local bytes are answered inline; bytes a peer must supply are
+        // left to the caller to hydrate off the FUSE worker.
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        let size = u64::from(size);
+        match tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size))) {
+            Some(data) => ReadPlan::Local(data),
+            None => ReadPlan::Remote(hash),
+        }
+    }
+
+    /// Answer a `read` whose bytes must come from a peer. The read still
+    /// blocks its caller as POSIX expects, but no FUSE worker waits on the
+    /// network, so a slow peer stalls only the readers of that file.
+    fn reply_remote(&self, hash: Hash, range: (u64, u64), nonblocking: bool, reply: ReplyData) {
+        let (offset, size) = range;
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        if nonblocking {
+            // A non-blocking reader gets EAGAIN at once; the range keeps
+            // hydrating so a retry finds it local.
+            rt.spawn(async move {
+                if let Err(error) = hydrator.read(hash, offset, size).await {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                }
+            });
+            reply.error(to_errno(libc::EAGAIN));
+            return;
+        }
+        rt.spawn(async move {
+            match hydrator.read(hash, offset, size).await {
+                Ok(data) => reply.data(&data),
+                Err(error) => {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                    reply.error(to_errno(EIO));
+                }
+            }
+        });
+    }
+
+    /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer.
     /// Unwritten ranges a peer must supply are hydrated on the runtime, like
     /// an unbuffered read: no FUSE worker waits on the network.
     fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
@@ -1547,13 +1770,26 @@ impl QuickFS {
 
     /// Import `data` as the content of document `ino`.
     fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        self.remember_rich_metadata(ino, data);
         if self
             .document_export(ino)
             .is_some_and(|current| *current == *data)
         {
+            self.remember_rich_metadata(ino, data);
             return Ok(());
         }
+        // The version records the written bytes by the content id the store
+        // serves them under, like any other file's, so history can read and
+        // restore it. A failed ingest fails the write before anything changes.
+        let content = self
+            .write_content_blocking(data)
+            .map_err(|error| commit_errno(&error))?
+            .map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+        // The version's metadata finds these facts by its content id.
+        self.remember_rich_metadata_as(
+            ino,
+            data,
+            content.unwrap_or_else(|| collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+        );
         // import_document validates before replacing; an invalid input
         // leaves the previous content intact and returns false.
         let delta = {
@@ -1570,11 +1806,7 @@ impl QuickFS {
             return Err(EINVAL);
         }
         self.publish(delta);
-        self.record_version(
-            ino,
-            collab_types::FileProvenance::Edit,
-            Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
-        );
+        self.record_version(ino, collab_types::FileProvenance::Edit, content);
         Ok(())
     }
 
@@ -1618,6 +1850,18 @@ impl QuickFS {
         ino: u64,
         bytes: &[u8],
     ) -> Option<collab_types::FilePropertiesV1> {
+        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
+        self.remember_rich_metadata_as(ino, bytes, hash)
+    }
+
+    /// [`Self::remember_rich_metadata`] keyed by `hash`, the content id the
+    /// version holding `bytes` records.
+    fn remember_rich_metadata_as(
+        &self,
+        ino: u64,
+        bytes: &[u8],
+        hash: collab_types::ContentHash,
+    ) -> Option<collab_types::FilePropertiesV1> {
         let (record_id, name) = {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
@@ -1626,7 +1870,6 @@ impl QuickFS {
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
-        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
         self.rich_metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1703,11 +1946,21 @@ impl QuickFS {
                 let Some(retained) = retained.upgrade() else {
                     break;
                 };
-                QuickFS::refresh_acl_visible_record_index_into(
-                    &namespace,
-                    Some(&enforcement),
-                    &retained,
-                );
+                // The refresh copies the catalogue and evaluates the ACL:
+                // blocking work that must not occupy a runtime worker.
+                let namespace = Arc::clone(&namespace);
+                let enforcement = enforcement.clone();
+                let refreshed = tokio::task::spawn_blocking(move || {
+                    QuickFS::refresh_acl_visible_record_index_into(
+                        &namespace,
+                        Some(&enforcement),
+                        &retained,
+                    );
+                })
+                .await;
+                if refreshed.is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -1738,7 +1991,12 @@ impl QuickFS {
     /// verified local residency. Call this after attaching the live ACL so the
     /// worker never hydrates records outside this mount's current view.
     #[must_use]
-    pub fn with_pinned_hydration(mut self) -> Self {
+    pub fn with_pinned_hydration(self) -> Self {
+        self.with_pinned_hydration_every(PINNED_HYDRATION_INTERVAL)
+    }
+
+    /// [`Self::with_pinned_hydration`] with its repair tick every `repair`.
+    fn with_pinned_hydration_every(mut self, repair: Duration) -> Self {
         let Some(registry) = self.availability.clone() else {
             return self;
         };
@@ -1751,17 +2009,34 @@ impl QuickFS {
         let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
         wake.send_modify(|generation| *generation = generation.wrapping_add(1));
         let task = self.hydrator.runtime_handle.spawn(async move {
-            let mut interval = tokio::time::interval(PINNED_HYDRATION_INTERVAL);
+            let mut interval = tokio::time::interval(repair);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut immediately = false;
+            let mut last_inputs = None;
+            let mut outcome = PinnedPassOutcome::default();
             loop {
-                if !immediately {
+                let mut woken = outcome.more_due;
+                if !outcome.more_due {
                     tokio::select! {
                         _ = interval.tick() => {}
-                        changed = wakes.changed() => if changed.is_err() { break; },
+                        changed = wakes.changed() => {
+                            if changed.is_err() { break; }
+                            woken = true;
+                        }
                     }
                 }
-                immediately = reconcile_pinned_hydration(
+                let inputs = PinnedPassInputs::capture(&namespace, &registry, enforcement.as_ref());
+                // A tick repairs only what nothing woke the worker for: when
+                // the namespace, ACL and registry are as the last pass left
+                // them and no backoff fell due, there is nothing to walk.
+                if !woken
+                    && last_inputs.as_ref() == Some(&inputs)
+                    && outcome
+                        .next_retry_at_ms
+                        .is_none_or(|retry_at| retry_at > now_ms())
+                {
+                    continue;
+                }
+                outcome = reconcile_pinned_hydration(
                     &namespace,
                     Arc::clone(&hydrator),
                     Arc::clone(&registry),
@@ -1769,6 +2044,7 @@ impl QuickFS {
                     wakes.clone(),
                 )
                 .await;
+                last_inputs = Some(inputs);
             }
         });
         self.pinned_hydration = Some(PinnedHydrationTask { wake, task });
@@ -2344,40 +2620,73 @@ impl QuickFS {
         );
     }
 
+    /// Rebuild the retained view when the namespace catalogue or the ACL
+    /// moved. The Namespace lock covers only copying the catalogue rows; the
+    /// ACL is evaluated after it is released, and under an unchanged ACL
+    /// revision only for rows whose path the previous view did not judge.
     fn refresh_acl_visible_record_index_into(
         namespace: &Arc<Mutex<Namespace>>,
         enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
         retained: &Arc<Mutex<Option<Arc<AclVisibleRecordIndex>>>>,
     ) {
         let acl_revision = enforcement.map_or(0, |(acl, _)| acl.revision());
-        let mut records = Vec::new();
-        let source_revision = {
+        let previous = retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let (source_revision, rows) = {
             let namespace = namespace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut offset = 0;
-            loop {
-                let candidates = namespace
-                    .indexed_record_page(offset, crate::syncstate::RECORD_INDEX_PAGE_ENTRIES);
-                if candidates.is_empty() {
-                    break;
-                }
-                offset = offset.saturating_add(candidates.len());
-                records.extend(candidates.into_iter().filter_map(|entry| {
-                    enforcement
-                        .is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
-                        .then_some(crate::syncstate::RecordIndexEntryV1 {
-                            record_id: entry.record_id,
-                            path: entry.path,
-                            is_dir: entry.is_dir,
-                        })
-                }));
-            }
-            Self::record_catalog_revision_from_index(
+            let source_revision = Self::record_catalog_revision_from_index(
                 namespace.indexed_record_revision(),
                 acl_revision,
-            )
+            );
+            // A content edit or a coalesced notification that moved no row
+            // leaves the retained view exactly current.
+            if previous.as_ref().is_some_and(|index| {
+                index.source_revision == source_revision && index.acl_revision == acl_revision
+            }) {
+                return;
+            }
+            let mut rows = Vec::with_capacity(namespace.indexed_record_count());
+            loop {
+                let page = namespace
+                    .indexed_record_page(rows.len(), crate::syncstate::RECORD_INDEX_PAGE_ENTRIES);
+                if page.is_empty() {
+                    break;
+                }
+                rows.extend(page);
+            }
+            drop(namespace);
+            (source_revision, rows)
         };
+        let reusable = previous.filter(|index| index.acl_revision == acl_revision);
+        #[cfg(test)]
+        let mut acl_evaluations = 0_usize;
+        let mut hidden = HashMap::new();
+        let mut records = Vec::with_capacity(rows.len());
+        for entry in rows {
+            let visible = reusable
+                .as_deref()
+                .and_then(|index| index.verdict(entry.record_id, &entry.path))
+                .unwrap_or_else(|| {
+                    #[cfg(test)]
+                    {
+                        acl_evaluations = acl_evaluations.saturating_add(1);
+                    }
+                    enforcement.is_none_or(|(acl, identity)| acl.visible(identity, &entry.path))
+                });
+            if visible {
+                records.push(crate::syncstate::RecordIndexEntryV1 {
+                    record_id: entry.record_id,
+                    path: entry.path,
+                    is_dir: entry.is_dir,
+                });
+            } else {
+                hidden.insert(entry.record_id, entry.path);
+            }
+        }
 
         // The public generation binds exactly the data this authority can
         // observe (and its ACL generation), with unambiguous field framing.
@@ -2404,6 +2713,9 @@ impl QuickFS {
             revision,
             records,
             by_id,
+            hidden,
+            #[cfg(test)]
+            acl_evaluations,
         });
         // Do not publish a coherent-but-old snapshot if a concurrent mutation
         // landed after releasing the namespace lock above. Its notification
@@ -2417,7 +2729,11 @@ impl QuickFS {
                 acl_revision,
             )
         };
-        if current_source != source_revision {
+        // Nor one whose verdicts may mix two ACL generations: the revision
+        // bump has its own refresh coming.
+        if current_source != source_revision
+            || enforcement.map_or(0, |(acl, _)| acl.revision()) != acl_revision
+        {
             return;
         }
         let mut retained = retained
@@ -2652,11 +2968,12 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if Self::restore_codec(&self.ns(), ino).is_err() {
-            // Document restoration needs codec-aware CRDT checkout rather
-            // than replacing its exported bytes as if it were a plain file.
-            return Err(libc::ENOTSUP);
-        }
+        // A namespace-held document needs a codec-aware CRDT checkout rather
+        // than replacing its exported bytes as if it were a plain file.
+        let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
+            collab_types::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
+            _ => ENOENT,
+        })?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
         let version = history
@@ -2681,31 +2998,28 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if tilo_doc::Document::load(&data).is_ok() {
-            return Err(libc::ENOTSUP);
-        }
-        let current_hash = self.ns().hash_for(ino);
-        if let Some(hash) = current_hash.filter(|hash| {
-            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
-        }) {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
-            let current =
-                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| EIO)?;
-            if tilo_doc::Document::load(&current).is_ok() {
-                return Err(libc::ENOTSUP);
-            }
-        }
-        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
-            return Err(EIO);
-        }
         let (expected_hash, expected_len) = {
             let namespace = self.ns();
             let attr = namespace.getattr(ino).ok_or(ENOENT)?;
             (namespace.hash_for(ino), attr.size)
         };
+        // A serialized document is restored as a new CRDT revision of the
+        // current document; any other content gets the version's bytes back.
+        let data = if kind.is_serialized_document() {
+            self.restored_document(expected_hash, version.content_hash, &data)
+                .map_err(|error| match error {
+                    checked_restore::DocumentRestoreError::Unavailable => EIO,
+                    checked_restore::DocumentRestoreError::NotADocument(_) => libc::ENOTSUP,
+                })?
+        } else {
+            data
+        };
+        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
+        if !kind.is_serialized_document()
+            && restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0)
+        {
+            return Err(EIO);
+        }
         let snapshot = self
             .replacement_snapshot(ino, restored_hash, data.len() as u64)
             .ok_or(EIO)?;
@@ -4130,6 +4444,20 @@ impl QuickFS {
         self.check_path(&path, access)
     }
 
+    /// [`Self::check_access`] of an inode already read by
+    /// [`Self::inode_view`], so the check takes no namespace lock of its own.
+    fn check_view_access(&self, view: &InodeView, access: Access) -> Result<(), i32> {
+        if self.enforcement.is_none() {
+            return Ok(());
+        }
+        self.check_path(view.path.as_deref().ok_or(ENOENT)?, access)
+    }
+
+    /// [`Self::ino_in_view`] of an inode already read by [`Self::inode_view`].
+    fn view_in_view(&self, view: &InodeView) -> bool {
+        self.enforcement.is_none() || view.path.as_deref().is_some_and(|path| self.in_view(path))
+    }
+
     /// [`Self::check_access`] against a path rather than an inode, for the
     /// operations whose subject is a name that may not exist yet.
     fn check_path(&self, path: &str, access: Access) -> Result<(), i32> {
@@ -5260,54 +5588,57 @@ fn update_retry_state(
     }
 }
 
+/// Every live node the mount may see, parents before descendants. The
+/// Namespace lock covers only reading the nodes; the ACL is evaluated after
+/// it is released. Blocking: run it off the async runtime's workers.
 fn pinned_candidates(
     namespace: &Arc<Mutex<Namespace>>,
     enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
 ) -> Vec<PinnedCandidate> {
-    let namespace = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let visible =
-        |path: &str| enforcement.is_none_or(|(acl, identity)| acl.visible(identity, path));
     let mut candidates = Vec::new();
-    if let Some(record_id) = namespace.record_id_for(crate::namespace::ROOT_INO)
-        && visible("/")
     {
-        candidates.push(PinnedCandidate {
-            record_id,
-            parent: None,
-            kind: RecordKind::Directory,
-            version: None,
-            hash: None,
-            size: 0,
-            path: "/".into(),
-        });
-    }
-    for id in namespace.live_node_ids() {
-        let Some(entry) = namespace.entry_for_node(&id) else {
-            continue;
-        };
-        let Some(path) = namespace.path_for_id(&id) else {
-            continue;
-        };
-        if !visible(&path) {
-            continue;
+        let namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(record_id) = namespace.record_id_for(crate::namespace::ROOT_INO) {
+            candidates.push(PinnedCandidate {
+                record_id,
+                parent: None,
+                kind: RecordKind::Directory,
+                version: None,
+                hash: None,
+                size: 0,
+                path: "/".into(),
+            });
         }
-        candidates.push(PinnedCandidate {
-            record_id: entry.record_id,
-            parent: namespace.record_id_for_id(&entry.parent),
-            kind: if namespace.node_is_dir(&id) == Some(true) {
-                RecordKind::Directory
-            } else {
-                RecordKind::File
-            },
-            version: namespace
-                .content_revision_for_id(&id)
-                .map(|revision| revision.version_id),
-            hash: entry.hash,
-            size: entry.size,
-            path,
-        });
+        for id in namespace.live_node_ids() {
+            let Some(entry) = namespace.entry_for_node(&id) else {
+                continue;
+            };
+            let Some(path) = namespace.path_for_id(&id) else {
+                continue;
+            };
+            candidates.push(PinnedCandidate {
+                record_id: entry.record_id,
+                parent: namespace.record_id_for_id(&entry.parent),
+                kind: if namespace.node_is_dir(&id) == Some(true) {
+                    RecordKind::Directory
+                } else {
+                    RecordKind::File
+                },
+                version: namespace
+                    .content_revision_for_id(&id)
+                    .map(|revision| revision.version_id),
+                hash: entry.hash,
+                size: entry.size,
+                path,
+            });
+        }
+    }
+    // Fail closed: nothing outside this mount's current view is registered
+    // or hydrated.
+    if let Some((acl, identity)) = enforcement {
+        candidates.retain(|candidate| acl.visible(identity, &candidate.path));
     }
     // Parents must enter the durable registry before descendants so ancestry
     // validation remains fail-closed without making initial scans fail.
@@ -5335,135 +5666,113 @@ fn update_candidate_state(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the reconciliation pass intentionally keeps topology discovery, durable transfer-state repair, local-residency probing, and bounded scheduling in one ordered state-machine pass"
-)]
-async fn reconcile_pinned_hydration(
-    namespace: &Arc<Mutex<Namespace>>,
-    hydrator: Arc<Hydrator>,
-    registry: Arc<Mutex<AvailabilityRegistry>>,
-    enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
-    wakes: tokio::sync::watch::Receiver<u64>,
+/// Whether a pin covers `record_id` once this pass has recorded the
+/// namespace's topology: the walk follows each visible candidate's current
+/// parent, and the registry's recorded parent above them.
+fn covered_by_pin(
+    registry: &AvailabilityRegistry,
+    parents: &HashMap<collab_types::FileRecordId, Option<collab_types::FileRecordId>>,
+    record_id: collab_types::FileRecordId,
 ) -> bool {
-    let has_pinned_policy = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .has_pinned_policy();
-    if !has_pinned_policy {
-        return false;
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = Some(record_id);
+    while let Some(id) = cursor {
+        if !seen.insert(id) {
+            return false;
+        }
+        if registry
+            .get(id)
+            .is_some_and(|record| record.policy == AvailabilityPolicy::Pinned)
+        {
+            return true;
+        }
+        cursor = match parents.get(&id) {
+            Some(parent) => *parent,
+            None => registry.get(id).and_then(|record| record.parent),
+        };
     }
-    let candidates = pinned_candidates(namespace, enforcement);
-    let observed_at = now_ms();
+    false
+}
 
-    // First reconcile the complete visible ancestry. This makes a pin on a
-    // stable directory automatically cover children introduced by a later
-    // namespace generation and preserves that relation across restart.
-    for candidate in &candidates {
-        let mut registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut record = registry
-            .get(candidate.record_id)
-            .cloned()
-            .unwrap_or_else(|| RecordAvailability::new(candidate.record_id, candidate.kind));
-        let version_changed = record.current_version != candidate.version;
-        let mut changed = record.kind != candidate.kind || record.parent != candidate.parent;
-        record.kind = candidate.kind;
-        record.parent = candidate.parent;
-        if version_changed {
-            record.current_version = candidate.version;
-            record.residency = Residency::NotResident;
+/// The row a pass records for `candidate`'s place in the tree, or `None`
+/// when the registry already holds it.
+fn topology_update(
+    current: Option<&RecordAvailability>,
+    candidate: &PinnedCandidate,
+    observed_at: u64,
+) -> Option<RecordAvailability> {
+    let mut record = current
+        .cloned()
+        .unwrap_or_else(|| RecordAvailability::new(candidate.record_id, candidate.kind));
+    let version_changed = record.current_version != candidate.version;
+    let mut changed =
+        current.is_none() || record.kind != candidate.kind || record.parent != candidate.parent;
+    record.kind = candidate.kind;
+    record.parent = candidate.parent;
+    if version_changed {
+        record.current_version = candidate.version;
+        record.residency = Residency::NotResident;
+        record.transfer = crate::availability::TransferState::default();
+        record.replica_observations.clear();
+        record.replicas = crate::availability::ReplicaEvidence::default();
+        record.freshness.local_verified_at_ms = None;
+        record.freshness.replicas_observed_at_ms = None;
+        record.freshness.metadata_observed_at_ms = Some(observed_at);
+        changed = true;
+    }
+    if record.freshness.metadata_observed_at_ms.is_none() {
+        record.freshness.metadata_observed_at_ms = Some(observed_at);
+        changed = true;
+    }
+    if candidate.kind == RecordKind::Directory || candidate.hash.is_none() {
+        let resident = Residency::Resident {
+            bytes: candidate.size,
+        };
+        if record.residency != resident || record.transfer.phase != TransferPhase::Idle {
+            record.residency = resident;
             record.transfer = crate::availability::TransferState::default();
-            record.replica_observations.clear();
-            record.replicas = crate::availability::ReplicaEvidence::default();
-            record.freshness.local_verified_at_ms = None;
-            record.freshness.replicas_observed_at_ms = None;
-            record.freshness.metadata_observed_at_ms = Some(observed_at);
+            record.freshness.local_verified_at_ms = Some(observed_at);
             changed = true;
         }
-        if record.freshness.metadata_observed_at_ms.is_none() {
-            record.freshness.metadata_observed_at_ms = Some(observed_at);
-            changed = true;
-        }
-        if candidate.kind == RecordKind::Directory || candidate.hash.is_none() {
+    }
+    changed.then_some(record)
+}
+
+/// The row a pass records for a pinned file whose content `probe` found,
+/// or `None` to leave it alone, and whether its fetch may start now.
+fn pinned_state_update(
+    current: &RecordAvailability,
+    candidate: &PinnedCandidate,
+    probe: PinnedProbe,
+    observed_at: u64,
+) -> (Option<RecordAvailability>, bool) {
+    let mut record = current.clone();
+    match probe {
+        PinnedProbe::Local => {
+            if record.current_version != candidate.version {
+                return (None, false);
+            }
             let resident = Residency::Resident {
                 bytes: candidate.size,
             };
-            if record.residency != resident || record.transfer.phase != TransferPhase::Idle {
-                record.residency = resident;
-                record.transfer = crate::availability::TransferState::default();
-                record.freshness.local_verified_at_ms = Some(observed_at);
-                changed = true;
-            }
-        }
-        if changed && let Err(error) = registry.put(record) {
-            eprintln!("could not reconcile pinned record topology: {error}");
-        }
-    }
-
-    let mut fetches = Vec::new();
-    let mut more_due = false;
-    for candidate in candidates
-        .iter()
-        .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
-    {
-        // Policy is metadata-only and cheap to evaluate. Do it before probing
-        // the chunk store so an automatic workspace does not re-walk every
-        // manifest on each reconciliation tick.
-        let pinned = {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let pinned = matches!(
-                registry.effective_policy(candidate.record_id),
-                Ok(Some(AvailabilityPolicy::Pinned))
-            );
-            if !pinned
-                && let Some(mut record) = registry.get(candidate.record_id).cloned()
-                && (record.transfer.retry_count > 0
-                    || matches!(
-                        record.transfer.phase,
-                        TransferPhase::Queued | TransferPhase::Downloading
-                    ))
+            // Re-stamping a file that is still resident would rewrite the
+            // registry on every pass for nothing.
+            if record.residency == resident
+                && record.transfer == crate::availability::TransferState::default()
+                && record.freshness.local_verified_at_ms.is_some()
             {
-                record.transfer = crate::availability::TransferState::default();
-                let _ = registry.put(record);
+                return (None, false);
             }
-            pinned
-        };
-        if !pinned {
-            continue;
+            record.residency = resident;
+            record.transfer = crate::availability::TransferState::default();
+            record.freshness.local_verified_at_ms = Some(observed_at);
+            (Some(record), false)
         }
-
-        let Some(hash) = candidate.hash else {
-            continue;
-        };
-
-        let state = hydrator.sync_state(hash).await;
-        if state == crate::syncstate::SyncState::Local {
-            update_candidate_state(&registry, candidate, |record| {
-                record.residency = Residency::Resident {
-                    bytes: candidate.size,
-                };
-                record.transfer = crate::availability::TransferState::default();
-                record.freshness.local_verified_at_ms = Some(observed_at);
-            });
-            continue;
-        }
-        let partial = hydrator.residency(hash).await;
-        let resident_bytes = partial.hydrated_bytes.min(candidate.size);
-        let due = {
-            let mut registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(mut record) = registry.get(candidate.record_id).cloned() else {
-                continue;
-            };
+        PinnedProbe::Missing { resident_bytes } => {
             // The worker owns queued work.  Do not turn a current download
             // back into another request when a coalesced wake arrives.
             if record.transfer.phase == TransferPhase::Downloading {
-                continue;
+                return (None, false);
             }
             record.residency = if resident_bytes == 0 {
                 Residency::NotResident
@@ -5479,24 +5788,220 @@ async fn reconcile_pinned_hydration(
                 .transfer
                 .retry_at_ms
                 .is_none_or(|deadline| deadline <= observed_at);
-            if let Err(error) = registry.put(record) {
-                eprintln!("could not queue pinned hydration: {error}");
-                false
-            } else {
-                due
-            }
-        };
-        if due {
-            if fetches.len() < MAX_PINNED_FETCHES_PER_PASS {
-                fetches.push(candidate.clone());
-            } else {
-                more_due = true;
-            }
+            ((record != *current).then_some(record), due)
         }
     }
+}
 
+/// What one pass decided: the registry rows it writes, in order, the files
+/// whose fetch it starts, and what it leaves for the scheduler.
+#[derive(Default)]
+struct PinnedPassPlan {
+    writes: Vec<RecordAvailability>,
+    fetches: Vec<PinnedCandidate>,
+    outcome: PinnedPassOutcome,
+}
+
+/// Record the visible topology, then every pinned file's probed state, in
+/// `registry`'s memory; the caller commits. Topology goes first, so a pin on
+/// a stable directory covers children introduced by a later namespace
+/// generation and keeps covering them across restarts.
+fn plan_pinned_pass(
+    registry: &mut AvailabilityRegistry,
+    candidates: &[PinnedCandidate],
+    probes: &HashMap<collab_types::FileRecordId, PinnedProbe>,
+    observed_at: u64,
+) -> PinnedPassPlan {
+    let mut plan = PinnedPassPlan::default();
+    let mut unparented = 0_usize;
+    for candidate in candidates {
+        let Some(record) =
+            topology_update(registry.get(candidate.record_id), candidate, observed_at)
+        else {
+            continue;
+        };
+        // Ancestry stays fail-closed: a row whose parent is not a recorded
+        // directory would fail validation, so it waits for its parent.
+        if record.parent.is_some_and(|parent| {
+            registry
+                .get(parent)
+                .is_none_or(|parent| parent.kind != RecordKind::Directory)
+        }) {
+            unparented = unparented.saturating_add(1);
+            continue;
+        }
+        let _ = registry.put(record.clone());
+        plan.writes.push(record);
+    }
+    if unparented > 0 {
+        eprintln!("pinned hydration: {unparented} records wait for an unrecorded parent");
+    }
+
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
+    {
+        let Some(current) = registry.get(candidate.record_id).cloned() else {
+            continue;
+        };
+        let pinned = matches!(
+            registry.effective_policy(candidate.record_id),
+            Ok(Some(AvailabilityPolicy::Pinned))
+        );
+        if !pinned {
+            if current.transfer.retry_count > 0
+                || matches!(
+                    current.transfer.phase,
+                    TransferPhase::Queued | TransferPhase::Downloading
+                )
+            {
+                let mut record = current;
+                record.transfer = crate::availability::TransferState::default();
+                let _ = registry.put(record.clone());
+                plan.writes.push(record);
+            }
+            continue;
+        }
+        let Some(probe) = probes.get(&candidate.record_id).copied() else {
+            continue;
+        };
+        let (update, due) = pinned_state_update(&current, candidate, probe, observed_at);
+        if let Some(record) = update {
+            let _ = registry.put(record.clone());
+            plan.writes.push(record);
+        }
+        if !matches!(probe, PinnedProbe::Missing { .. })
+            || registry
+                .get(candidate.record_id)
+                .is_none_or(|record| record.transfer.phase != TransferPhase::Queued)
+        {
+            continue;
+        }
+        if due {
+            if plan.fetches.len() < MAX_PINNED_FETCHES_PER_PASS {
+                plan.fetches.push(candidate.clone());
+            } else {
+                plan.outcome.more_due = true;
+            }
+        } else if let Some(retry_at) = registry
+            .get(candidate.record_id)
+            .and_then(|record| record.transfer.retry_at_ms)
+        {
+            plan.outcome.next_retry_at_ms = Some(
+                plan.outcome
+                    .next_retry_at_ms
+                    .map_or(retry_at, |earliest| earliest.min(retry_at)),
+            );
+        }
+    }
+    plan
+}
+
+/// Commit a pass with one validation and one durable write of the registry
+/// (none when it changes nothing). Should the rows be invalid as a whole,
+/// the batch leaves memory and disk untouched and each row is committed on
+/// its own instead, so one bad row costs only itself.
+fn commit_pinned_pass(
+    registry: &Arc<Mutex<AvailabilityRegistry>>,
+    candidates: &[PinnedCandidate],
+    probes: &HashMap<collab_types::FileRecordId, PinnedProbe>,
+    observed_at: u64,
+) -> PinnedPassPlan {
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut plan = PinnedPassPlan::default();
+    let committed = registry.batch(|registry| {
+        plan = plan_pinned_pass(registry, candidates, probes, observed_at);
+    });
+    if let Err(error) = committed {
+        eprintln!(
+            "could not commit pinned hydration pass at once ({error}); committing per record"
+        );
+        let mut rejected = std::collections::HashSet::new();
+        for record in std::mem::take(&mut plan.writes) {
+            let record_id = record.record_id;
+            if let Err(error) = registry.put(record) {
+                eprintln!("could not reconcile pinned record: {error}");
+                rejected.insert(record_id);
+            }
+        }
+        plan.fetches
+            .retain(|candidate| !rejected.contains(&candidate.record_id));
+    }
+    plan
+}
+
+async fn reconcile_pinned_hydration(
+    namespace: &Arc<Mutex<Namespace>>,
+    hydrator: Arc<Hydrator>,
+    registry: Arc<Mutex<AvailabilityRegistry>>,
+    enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
+    wakes: tokio::sync::watch::Receiver<u64>,
+) -> PinnedPassOutcome {
+    let has_pinned_policy = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .has_pinned_policy();
+    if !has_pinned_policy {
+        return PinnedPassOutcome::default();
+    }
+    let candidates = {
+        let namespace = Arc::clone(namespace);
+        let enforcement = enforcement.cloned();
+        let walk = tokio::task::spawn_blocking(move || {
+            pinned_candidates(&namespace, enforcement.as_ref())
+        });
+        let Ok(candidates) = walk.await else {
+            return PinnedPassOutcome::default();
+        };
+        candidates
+    };
+    let observed_at = now_ms();
+
+    // Policy is metadata-only and cheap to evaluate. Do it before probing
+    // the chunk store so an automatic workspace does not re-walk every
+    // manifest on each reconciliation.
+    let pinned_files = {
+        let registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let parents = candidates
+            .iter()
+            .map(|candidate| (candidate.record_id, candidate.parent))
+            .collect::<HashMap<_, _>>();
+        candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.kind == RecordKind::File
+                    && candidate.hash.is_some()
+                    && covered_by_pin(&registry, &parents, candidate.record_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let mut probes = HashMap::with_capacity(pinned_files.len());
+    for candidate in &pinned_files {
+        let Some(hash) = candidate.hash else {
+            continue;
+        };
+        let probe = if hydrator.sync_state(hash).await == crate::syncstate::SyncState::Local {
+            PinnedProbe::Local
+        } else {
+            PinnedProbe::Missing {
+                resident_bytes: hydrator
+                    .residency(hash)
+                    .await
+                    .hydrated_bytes
+                    .min(candidate.size),
+            }
+        };
+        probes.insert(candidate.record_id, probe);
+    }
+
+    let plan = commit_pinned_pass(&registry, &candidates, &probes, observed_at);
     let mut in_flight = tokio::task::JoinSet::new();
-    for candidate in fetches {
+    for candidate in plan.fetches {
         in_flight.spawn(hydrate_pinned_candidate(
             candidate,
             Arc::clone(&hydrator),
@@ -5506,7 +6011,7 @@ async fn reconcile_pinned_hydration(
         ));
     }
     while in_flight.join_next().await.is_some() {}
-    more_due
+    plan.outcome
 }
 
 /// Run one member of a bounded scheduler batch.  All members observe the same
@@ -5684,17 +6189,19 @@ impl Filesystem for QuickFS {
     /// hidden by the view cost the same work and return the same `ENOENT`.
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let name = name.as_bytes();
-        let (found, child) = {
+        let (found, child, is_doc) = {
             let mut ns = self.ns();
             let found = ns.lookup(parent.0, name);
             let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
+            let is_doc = found
+                .as_ref()
+                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
             drop(ns);
-            (found, child)
+            (found, child, is_doc)
         };
         let in_view = child.is_some_and(|c| self.in_view(&c));
         match found {
             Some(attr) if in_view => {
-                let is_doc = self.ns().document_codec(attr.ino.0).is_some();
                 let mut attr = attr;
                 if attr.kind == FileType::Directory {
                     attr.nlink = self.visible_dir_nlink(attr.ino.0);
@@ -5706,60 +6213,9 @@ impl Filesystem for QuickFS {
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
-        // Reflect an in-flight write stage so stat() sees read-your-writes size.
-        let buf_len = self.staged_len(ino.0);
-        // Documents have no stored byte length — report the current export size
-        // (so a collaboratively-edited document isn't read truncated).
-        let is_doc = self.is_document(ino.0);
-        let doc_len = if buf_len.is_none() && is_doc {
-            self.document_export(ino.0).map(|b| b.len() as u64)
-        } else {
-            None
-        };
-        let open_handle = fh.and_then(|fh| {
-            self.open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&fh.0)
-                .filter(|handle| handle.ino == ino.0)
-                .cloned()
-        });
-        let live = self.ns().getattr(ino.0).is_some();
-        // Outside the live view there is nothing to describe, except an inode
-        // retained by this exact open kernel handle after unlink/replacement.
-        let visible = if live {
-            self.ino_in_view(ino.0)
-        } else {
-            open_handle
-                .as_ref()
-                .is_some_and(|handle| self.in_view(&handle.opened_path))
-        };
-        if !visible {
-            reply.error(to_errno(ENOENT));
-            return;
-        }
-        let found = {
-            let namespace = self.ns();
-            namespace.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| namespace.getattr_including_unlinked(ino.0))
-            })
-        };
-        match found {
-            Some(mut attr) => {
-                if let Some(len) = buf_len.or(doc_len) {
-                    attr.size = len;
-                    attr.blocks = len.div_ceil(512);
-                }
-                if attr.kind == FileType::Directory {
-                    // Matches the filtered listing: an identity granted
-                    // nothing sees an ordinary empty directory (nlink == 2).
-                    attr.nlink = self.visible_dir_nlink(ino.0);
-                }
-                reply.attr(&Self::ttl_for(is_doc), &attr);
-            }
-            None => reply.error(to_errno(ENOENT)),
+        match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
+            Ok((attr, is_doc)) => reply.attr(&Self::ttl_for(is_doc), &attr),
+            Err(e) => reply.error(to_errno(e)),
         }
     }
 
@@ -5849,7 +6305,7 @@ impl Filesystem for QuickFS {
         // Outside the view ⇒ `ENOENT`; in the view but not writable ⇒
         // `EROFS`, so opening for writing falls back to read-only.
         for access in required_accesses(flags.acc_mode()) {
-            if let Err(e) = self.check_access(ino.0, *access) {
+            if let Err(e) = self.check_path(&opened_path, *access) {
                 reply.error(to_errno(e));
                 return;
             }
@@ -5906,92 +6362,17 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let open_handle = self
-            .open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&fh.0)
-            .filter(|handle| handle.ino == ino.0)
-            .cloned();
-        // Live inodes use their current path. An unlinked/replaced inode has
-        // no path, so only the matching kernel handle may continue, with the
-        // access path captured when it was opened.
-        let live = self.ns().getattr(ino.0).is_some();
-        let access = if live {
-            self.check_access(ino.0, Access::Read)
-        } else if let Some(handle) = &open_handle {
-            self.check_path(&handle.opened_path, Access::Read)
-        } else {
-            Err(ENOENT)
-        };
-        if let Err(e) = access {
-            reply.error(to_errno(e));
-            return;
+        match self.plan_read(ino.0, fh.0, offset, size) {
+            ReadPlan::Error(e) => reply.error(to_errno(e)),
+            ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
+            ReadPlan::Local(data) => reply.data(&data),
+            ReadPlan::Remote(hash) => self.reply_remote(
+                hash,
+                (offset, u64::from(size)),
+                flags.0 & libc::O_NONBLOCK != 0,
+                reply,
+            ),
         }
-        // Read-your-writes from the stage, else a document's shared export.
-        if let Some(buffered) = self.read_buffered(ino.0, offset, size) {
-            self.reply_buffered(ino.0, buffered, reply);
-            return;
-        }
-
-        let hash = {
-            let ns = self.ns();
-            match ns.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| ns.getattr_including_unlinked(ino.0))
-            }) {
-                Some(attr) if attr.kind == FileType::RegularFile => ns.hash_for(ino.0),
-                Some(_) => {
-                    reply.error(to_errno(EISDIR));
-                    return;
-                }
-                None => {
-                    reply.error(to_errno(ENOENT));
-                    return;
-                }
-            }
-        };
-        let Some(hash) = hash else {
-            reply.data(&[]);
-            return;
-        };
-
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        let size = u64::from(size);
-        // Local bytes are answered inline. Bytes that must come from a peer
-        // are hydrated on the runtime and answered from there: the read
-        // still blocks its caller as POSIX expects, but no FUSE worker waits
-        // on the network, so a slow peer stalls only the readers of that file.
-        let local = {
-            let hydrator = Arc::clone(&hydrator);
-            tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size)))
-        };
-        if let Some(data) = local {
-            reply.data(&data);
-            return;
-        }
-        if flags.0 & libc::O_NONBLOCK != 0 {
-            // A non-blocking reader gets EAGAIN at once; the range keeps
-            // hydrating so a retry finds it local.
-            rt.spawn(async move {
-                if let Err(error) = hydrator.read(hash, offset, size).await {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                }
-            });
-            reply.error(to_errno(libc::EAGAIN));
-            return;
-        }
-        rt.spawn(async move {
-            match hydrator.read(hash, offset, size).await {
-                Ok(data) => reply.data(&data),
-                Err(error) => {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                    reply.error(to_errno(EIO));
-                }
-            }
-        });
     }
 
     #[allow(

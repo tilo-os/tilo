@@ -463,6 +463,7 @@ mod durable_local_matrix {
                         Subject::agent("scribe"),
                         collab_types::Scope::Action {
                             app: env.route.app_id.clone(),
+                            resource: "document-1:body".into(),
                             action: "erase".into(),
                         },
                         collab_types::Effect::Restrict,

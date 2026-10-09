@@ -982,12 +982,7 @@ impl Widget for MusicApp {
         let layout = taffy
             .layout(node)
             .expect("apply_layout runs against the same tree + node build_layout returned");
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
     }
 
     fn draw(
@@ -1927,7 +1922,7 @@ impl MusicApp {
                         "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
                         "sink": self.audio.actual_audio_sink_name(),
                         "position_ms": self.audio.position_ms(),
-                        "duration_ms": self.audio.duration_ms(),
+                        "duration_ms": self.observed_duration_ms(),
                         "error": self.playback_error,
                     })),
                     resources: Vec::new(),

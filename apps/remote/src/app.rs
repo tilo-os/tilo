@@ -969,13 +969,8 @@ impl RemoteApp {
     /// The time "last used" reads against, in milliseconds since the Unix
     /// epoch.
     fn now_ms(&self) -> i64 {
-        self.now_override.unwrap_or_else(|| {
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_or(0, |since| {
-                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                })
-        })
+        self.now_override
+            .unwrap_or_else(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX))
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a
@@ -2781,16 +2776,15 @@ impl Widget for SessionPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

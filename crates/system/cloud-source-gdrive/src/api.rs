@@ -4,11 +4,11 @@
 //! strings; the deserialisers here accept either form so a proxy or a future
 //! API revision that sends numbers does not break parsing.
 
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use cloud_source::{
     ContentHash, Error, ExportFormat, HashAlgorithm, Item, ItemId, ItemKind, NativeDocument,
-    Revision,
+    Revision, http,
 };
 use serde::{Deserialize, Deserializer};
 
@@ -107,7 +107,7 @@ impl File {
             } else {
                 None
             },
-            modified: self.modified_time.as_deref().and_then(parse_rfc3339),
+            modified: self.modified_time.as_deref().and_then(http::parse_rfc3339),
             revision: self.revision(),
             hashes: if kind == ItemKind::File {
                 self.hashes()
@@ -286,49 +286,26 @@ impl ErrorBody {
     }
 }
 
-/// Back off this long after a rate limit that carries no `Retry-After`:
-/// the first step of the exponential backoff Google documents.
-pub const DEFAULT_BACKOFF: Duration = Duration::from_secs(1);
-
-/// Map a failed response to a provider-neutral error. A 401 maps to
+/// Map a failed response to a provider-neutral error: Drive's 403 reasons
+/// here, every other status by [`http::classify`]. A 401 maps to
 /// [`Error::Unauthorized`]; reporting the rejection is the caller's job.
 pub fn classify(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Error {
     let parsed = ErrorBody::parse(body);
     let reason = parsed.reason().unwrap_or("");
     match (status, reason) {
         (401, _) => Error::Unauthorized,
-        (429, _) | (403, "userRateLimitExceeded" | "rateLimitExceeded") => Error::RateLimited {
-            retry_after: Some(retry_after.unwrap_or(DEFAULT_BACKOFF)),
-        },
-        // The project's daily quota: no point retrying within the hour.
-        (403, "dailyLimitExceeded" | "quotaExceeded") => Error::RateLimited { retry_after },
+        // A per-user rate limit, or the project's daily quota (no point
+        // retrying within the hour). Without a `Retry-After` the delay is
+        // the daemon's choice.
+        (
+            403,
+            "userRateLimitExceeded" | "rateLimitExceeded" | "dailyLimitExceeded" | "quotaExceeded",
+        ) => Error::RateLimited { retry_after },
         (403, "storageQuotaExceeded") => Error::InsufficientStorage,
         (403, "fileNotDownloadable") => Error::Unsupported("downloading a native document"),
-        (403, "exportSizeLimitExceeded") | (413, _) => Error::TooLarge,
-        (403, _) => Error::Forbidden,
-        (404 | 410, _) => Error::NotFound,
-        (412, _) => Error::Conflict { current: None },
-        (status, _) => Error::Status(status),
+        (403, "exportSizeLimitExceeded") => Error::TooLarge,
+        (status, _) => http::classify(status, retry_after).unwrap_or(Error::Status(status)),
     }
-}
-
-/// `Retry-After` in its delay-seconds form.
-pub fn parse_retry_after(value: &str) -> Option<Duration> {
-    value.trim().parse().ok().map(Duration::from_secs)
-}
-
-/// `Content-Range: bytes <first>-<last>/<total|*>` of a 206.
-pub fn parse_content_range(value: &str) -> Option<(std::ops::Range<u64>, Option<u64>)> {
-    let rest = value.trim().strip_prefix("bytes ")?;
-    let (span, total) = rest.split_once('/')?;
-    let (first, last) = span.split_once('-')?;
-    let first: u64 = first.trim().parse().ok()?;
-    let last: u64 = last.trim().parse().ok()?;
-    let total = match total.trim() {
-        "*" => None,
-        total => Some(total.parse().ok()?),
-    };
-    (last >= first).then_some((first..last.checked_add(1)?, total))
 }
 
 /// The committed length from a resumable upload's `Range: bytes=0-<last>`
@@ -337,14 +314,6 @@ pub fn parse_committed(range: Option<&str>) -> Option<u64> {
     let Some(range) = range else { return Some(0) };
     let last = range.trim().strip_prefix("bytes=0-")?;
     last.trim().parse::<u64>().ok()?.checked_add(1)
-}
-
-/// An RFC 3339 timestamp as Drive writes them (`2024-05-01T12:30:45.123Z`,
-/// or with a numeric offset).
-pub fn parse_rfc3339(text: &str) -> Option<SystemTime> {
-    chrono::DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(SystemTime::from)
 }
 
 /// Quote `value` for a Drive search query string literal.
@@ -378,6 +347,8 @@ fn int64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::E
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use super::*;
 
     /// A `files.get` response in the shape of the Drive v3 reference
@@ -514,8 +485,8 @@ mod tests {
         assert!(list.revisions[1].keep_forever);
         // The same instant written with an offset.
         assert_eq!(
-            parse_rfc3339("2024-01-03T03:04:05+01:00"),
-            parse_rfc3339("2024-01-03T02:04:05Z")
+            http::parse_rfc3339("2024-01-03T03:04:05+01:00"),
+            http::parse_rfc3339("2024-01-03T02:04:05Z")
         );
 
         let about: About = serde_json::from_str(
@@ -534,11 +505,11 @@ mod tests {
         let user_rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded","message":"User Rate Limit Exceeded"}],"code":403,"message":"User Rate Limit Exceeded"}}"#;
         assert!(matches!(
             classify(403, None, user_rate.as_bytes()),
-            Error::RateLimited { retry_after: Some(d) } if d == DEFAULT_BACKOFF
+            Error::RateLimited { retry_after: None }
         ));
         let rate = r#"{"error":{"errors":[{"domain":"usageLimits","reason":"rateLimitExceeded","message":"Rate Limit Exceeded"}],"code":429,"message":"Rate Limit Exceeded"}}"#;
         assert!(matches!(
-            classify(429, parse_retry_after("7"), rate.as_bytes()),
+            classify(429, http::parse_retry_after("7", SystemTime::now()), rate.as_bytes()),
             Error::RateLimited { retry_after: Some(d) } if d == Duration::from_secs(7)
         ));
         let auth = r#"{"error":{"errors":[{"domain":"global","reason":"authError","message":"Invalid Credentials","locationType":"header","location":"Authorization"}],"code":401,"message":"Invalid Credentials"}}"#;
@@ -571,34 +542,15 @@ mod tests {
         assert!(!ErrorBody::parse(not_found.as_bytes()).is_page_token_error());
         assert!(matches!(
             classify(503, None, b"<html>backend</html>"),
-            Error::Status(503)
+            Error::RateLimited { retry_after: None }
         ));
     }
 
     #[test]
     fn range_headers_parse() {
-        assert_eq!(
-            parse_content_range("bytes 1000-60999/100000"),
-            Some((1000..61_000, Some(100_000)))
-        );
-        assert_eq!(parse_content_range("bytes 0-0/*"), Some((0..1, None)));
-        assert_eq!(parse_content_range("bytes 5-4/10"), None);
         assert_eq!(parse_committed(None), Some(0));
         assert_eq!(parse_committed(Some("bytes=0-262143")), Some(262_144));
         assert_eq!(parse_committed(Some("bytes=5-9")), None);
-    }
-
-    #[test]
-    fn timestamps_parse_strictly() {
-        let epoch = parse_rfc3339("1970-01-01T00:00:00Z").unwrap();
-        assert_eq!(epoch, SystemTime::UNIX_EPOCH);
-        let leap = parse_rfc3339("2024-02-29T23:59:59.999999999Z").unwrap();
-        let since = leap.duration_since(SystemTime::UNIX_EPOCH).unwrap();
-        assert_eq!(since.as_secs(), 1_709_251_199);
-        assert_eq!(since.subsec_nanos(), 999_999_999);
-        assert!(parse_rfc3339("2024-13-01T00:00:00Z").is_none());
-        assert!(parse_rfc3339("yesterday").is_none());
-        assert!(parse_rfc3339("2024-01-01T00:00:00").is_none());
     }
 
     #[test]

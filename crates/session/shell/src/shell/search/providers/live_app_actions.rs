@@ -142,6 +142,11 @@ fn directory_start_ticket(
 /// Poll an admission from the frame loop until it answers or `deadline`
 /// passes. Dropped once answered or given up on, so a start still waiting
 /// sees nobody wants it and does not begin after the deadline.
+///
+/// The answer arrives on the broker's thread; it wakes the loop that made
+/// the ticket ([`invocation_wake`](crate::shell::search::invocation_wake)),
+/// so an idle desktop polls it again at once instead of on its next
+/// unrelated wake.
 fn admission_ticket(
     admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
     deadline: Instant,
@@ -149,11 +154,14 @@ fn admission_ticket(
     timed_out: impl Fn() -> ActionError + 'static,
 ) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
+    let waker = crate::shell::search::invocation_wake::waker();
     Rc::new(move || {
         let polled = admission
             .borrow_mut()
             .as_mut()
-            .map_or(PendingPoll::Abandoned, Pending::poll_ready);
+            .map_or(PendingPoll::Abandoned, |admission| {
+                crate::shell::search::invocation_wake::poll(admission, &waker)
+            });
         if !matches!(polled, PendingPoll::Waiting) || Instant::now() >= deadline {
             admission.borrow_mut().take();
         }
@@ -489,6 +497,31 @@ impl LiveAppActionsProvider {
         let mut provider = Self::new(broker.clone());
         provider.action_sessions = ActionSessionSource::fixture(broker);
         provider
+    }
+
+    /// Settles on the next change to any invocation's status after this
+    /// call. A control reply waiting for its job to settle sleeps on this
+    /// rather than polling the broker; polled with
+    /// [`invocation_wake`](crate::shell::search::invocation_wake), it wakes
+    /// the loop. `None` without a session runtime to watch from.
+    pub fn next_invocation_change(&self) -> Option<Pending<()>> {
+        // Subscribed before the caller reads the status, so a change racing
+        // that read still settles this.
+        let mut statuses = self.broker.invocation_changes();
+        let runtime = crate::session_runtime::runtime().ok()?;
+        let (signal, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            let moved = tokio::select! {
+                result = statuses.changed() => result.is_ok(),
+                () = signal.abandoned() => false,
+            };
+            // Otherwise the completer drops unanswered, which wakes a waiter
+            // still there all the same.
+            if moved {
+                signal.complete(());
+            }
+        }));
+        Some(change)
     }
 
     fn local_start(
@@ -1547,8 +1580,8 @@ impl LiveAppActionsProvider {
 
     pub fn capability_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
-        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
+    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str, &str)> {
+        let (app, permission, _cluster, _record, resource, action) = Self::result_parts(id)?;
         let permission = match permission {
             "none" => tilo_actions::PermissionRequirement::None,
             "read" => tilo_actions::PermissionRequirement::Read,
@@ -1558,7 +1591,7 @@ impl LiveAppActionsProvider {
             "admin" => tilo_actions::PermissionRequirement::Admin,
             _ => return None,
         };
-        Some((app, permission, action))
+        Some((app, permission, resource, action))
     }
 
     /// The application, room, record, resource, and operation represented by
@@ -2690,7 +2723,6 @@ pub(crate) fn fixture_with_directory_page(
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::{
@@ -2708,7 +2740,6 @@ mod tests {
     };
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use tilo_actions::remote::{
         ActionHostError, CataloguePage, CatalogueResource, CatalogueRow, pending,
     };
@@ -2736,7 +2767,8 @@ mod tests {
             .workspaces
             .push(Workspace::new(WorkspaceId(1), "Search fixture"));
         workspace_tree.desktop.active = WorkspaceId(1);
-        let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
+        let tree: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(workspace_tree);
         ChromeState::new_with_handle(tree)
     }
 

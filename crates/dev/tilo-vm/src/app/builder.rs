@@ -383,18 +383,19 @@ mod tests {
 
     const CACHE_PEER: &str = r#"
 import base64,json,sys
-hash,mode,log=sys.argv[1:]
+hash,mode,log,protocol=sys.argv[1:]
 print(json.dumps({"tilo_device_admin":{"device":"test","label":"test","route":"direct","via":"test","session":1}}),flush=True)
 received=0
 for line in sys.stdin:
  r=json.loads(line); m=r['method']
  with open(log,'a') as f: f.write(m+'\n')
  result={}; error=None
- if m=='hello': result={"protocol":8,"daemon_version":"test","root":"test","arch":"x86_64"}
+ if m=='hello': result={"protocol":int(protocol),"daemon_version":"test","root":"test","arch":"x86_64"}
  elif m=='layer.list': result=[{"hash":hash,"provenance":{"component":"shell"}}]
  elif m=='layer.verify':
   if mode in ('missing','corrupt','old'): error={"code":-32602,"message":mode}
   else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu'}}
+ elif m=='layer.upload.binary': error={"code":-32602,"message":"unknown optional method","hint":"legacy upload"}
  elif m=='layer.upload.begin': result={"upload":"fixture"}
  elif m=='layer.upload.chunk':
   received+=len(base64.b64decode(r['params']['data'])); result={"received":received}
@@ -406,7 +407,8 @@ for line in sys.stdin:
         let line = hypervisor::CommandLine::new("python3", &["-c", CACHE_PEER])
             .arg(hash)
             .arg(mode)
-            .arg(log.display().to_string());
+            .arg(log.display().to_string())
+            .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
         Remote::over_peer("test", &line).map(|(remote, _)| remote)
     }
 

@@ -2673,13 +2673,7 @@ impl Widget for ListRow {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        let rect = crate::widget::placed(&layout, origin);
         if rect != self.rect {
             self.dirty = true;
         }

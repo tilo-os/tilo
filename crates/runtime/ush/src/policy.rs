@@ -108,6 +108,12 @@ impl Policy {
             let Scope::NetHost(host) = &cap.scope else {
                 continue;
             };
+            // A stored grant that is not a host in the one grammar (an IP
+            // literal, written before addresses were refused) covers nothing.
+            if let Err(reason) = collab_types::caps::NetHostPattern::parse(host) {
+                tracing::warn!(%reason, "ignoring a network grant that is not a host");
+                continue;
+            }
             let resource = ResourceRef::NetHost(host.clone());
             if decide_capability(&actor, &resource, Verb::Read, &self.capabilities, now)
                 != CapDecision::Allow

@@ -75,13 +75,6 @@ fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
 fn document(title: &str) -> Vec<u8> {
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "title", title).unwrap();
@@ -291,7 +284,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), unix_now());
+            channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -371,7 +364,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), unix_now());
+        channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")

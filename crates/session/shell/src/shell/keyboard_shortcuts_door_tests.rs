@@ -65,7 +65,7 @@ impl Door {
         let membership = tree.shared();
         let broker = crate::shell::collab_broker::spawn_native_harness(
             socket.to_path_buf(),
-            std::sync::Arc::clone(&membership),
+            membership.clone(),
             Vec::new(),
         )
         .expect("bind the collaboration service");
@@ -295,10 +295,8 @@ fn rebinding_through_the_door_moves_what_the_chord_triggers() {
 
     // The compositor re-reads the saved table whenever the settings file
     // changes; this is that handoff.
-    let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_handle(
-        std::sync::Arc::clone(&door.membership),
-        false,
-    );
+    let (mut host, chrome) =
+        crate::shell::build_tilo_overlay_host_with_handle(door.membership.clone(), false);
     host.set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
         .expect("the saved table is valid");
     assert!(

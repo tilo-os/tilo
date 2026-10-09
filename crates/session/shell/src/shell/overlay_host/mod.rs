@@ -32,6 +32,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
+use crate::shell::quick_settings::refresh::QsField;
 use ui::TextRole;
 
 mod controller;
@@ -111,7 +112,7 @@ use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
 pub use crate::shell::peer_sync_overlay::{
-    InviteRecipientPath, PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot,
+    InvitationTerms, InviteRecipientPath, PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot,
     PendingInvitationSummary, RememberedInvitee,
 };
 use crate::shell::portal_dialog::PortalDialogController;
@@ -133,11 +134,11 @@ use tilo_desktop::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
+use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
-use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 use ui::widget::ButtonRole;
 
 #[derive(Debug)]
@@ -177,6 +178,14 @@ mod launcher_action_coverage_tests;
 )]
 #[path = "idle_io_animation_tests.rs"]
 mod idle_io_animation_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test reads one chrome borrow through to its last assertion"
+)]
+#[path = "qs_device_state_tests.rs"]
+mod qs_device_state_tests;
 
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not
@@ -278,9 +287,30 @@ pub type ClipboardManagerBridge = std::rc::Rc<
 /// Secret operations stay behind a narrow bridge to the certified personal
 /// fabric. This enum intentionally has no `Debug` implementation so a future
 /// diagnostic cannot accidentally format a passphrase.
+///
+/// Each carries the network's authentication mode as the last scan listed
+/// it, so the bridge never scans again on the compositor thread.
 pub enum WifiSecretAction {
-    Lookup { ssid: String },
-    Share { ssid: String, password: String },
+    Lookup {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+    },
+    Share {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+        password: String,
+    },
+}
+
+/// The authentication mode the last Wi-Fi scan listed for `ssid`.
+fn scanned_wifi_security(
+    networks: &[crate::shell::quick_settings::WifiNetwork],
+    ssid: &str,
+) -> Option<os_actions::WifiSecurity> {
+    networks
+        .iter()
+        .find(|network| network.ssid == ssid)
+        .map(|network| network.security)
 }
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
@@ -677,6 +707,7 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    pixel_aligned_strip_pan: bool,
     /// Workspace id the current `content` was built for.
     /// [`Self::resync_workspace_content`] rebuilds when this disagrees
     /// with `tree.active`. `None` means unbuilt/test stub: the
@@ -825,6 +856,10 @@ pub struct ShellOverlayHost {
     /// different workspace with unseen work opens Catch up once, so the user
     /// does not have to notice and decode a tiny unread badge after time away.
     activity_awareness_workspace: Option<u64>,
+    /// What the passive Activity awareness last refreshed from, and when.
+    /// A frame whose key is unchanged skips the refresh (and its tree write
+    /// lock and record reads) until [`ACTIVITY_AWARENESS_FALLBACK`] passes.
+    activity_refresh: ActivityRefreshGate,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as
     /// Catch up is shown or opened manually, so dismissal remains sticky.
@@ -994,6 +1029,16 @@ pub enum PeerSyncAction {
     /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+    /// Run one typed network request for an invitation action and return
+    /// its JSON output to the tracked caller. Nothing is shown or copied on
+    /// this screen: the caller may be a script, an agent or an assistive
+    /// tool, and an invitation token is a credential. `workspace` is the
+    /// active workspace the action was authorized in; the request fails
+    /// rather than act on a different one.
+    Network {
+        workspace: crate::shell::state::WorkspaceId,
+        request: PeerSyncRequest,
+    },
 }
 
 /// Rows the palette asks the registry for, shared round-robin between the
@@ -1320,6 +1365,62 @@ fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) ->
     entering
 }
 
+/// The longest the passive Activity awareness goes without a refresh while
+/// nothing it can observe cheaply has changed: a record rewritten on disk by
+/// an app, or the clock crossing the away recap's threshold, is caught here.
+const ACTIVITY_AWARENESS_FALLBACK: Duration = Duration::from_secs(1);
+
+/// Everything the passive Activity awareness reads that a frame can compare
+/// without the tree's write lock: chrome and external tree revisions, the
+/// active workspace, the desktop document's heads, the open records'
+/// content and the rooms' record corpus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActivityRefreshKey {
+    chrome_revision: u64,
+    external_revision: u64,
+    active: u64,
+    tree_heads: Vec<automerge::ChangeHash>,
+    tree_pending: usize,
+    records: String,
+    room_records: (u64, u64),
+}
+
+/// Decides when the passive Activity awareness refreshes: when its key
+/// moved, when asked to, or once [`ACTIVITY_AWARENESS_FALLBACK`] passed.
+#[derive(Debug, Default)]
+struct ActivityRefreshGate {
+    key: Option<ActivityRefreshKey>,
+    at: Option<Instant>,
+}
+
+impl ActivityRefreshGate {
+    /// Whether a frame with `key` at `now` must refresh; records the refresh
+    /// when it must.
+    fn due(&mut self, key: ActivityRefreshKey, force: bool, now: Instant) -> bool {
+        let stale = self
+            .at
+            .is_none_or(|at| now.saturating_duration_since(at) >= ACTIVITY_AWARENESS_FALLBACK);
+        if !force && !stale && self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.at = Some(now);
+        true
+    }
+
+    /// Refresh on the next frame whatever the key says.
+    fn invalidate(&mut self) {
+        self.key = None;
+    }
+
+    /// The state a refresh left behind is the state it saw.
+    fn settle(&mut self, key: ActivityRefreshKey) {
+        if self.key.is_some() {
+            self.key = Some(key);
+        }
+    }
+}
+
 fn take_pending_activity_reveal(
     pending: &mut Option<u64>,
     entering: bool,
@@ -1459,8 +1560,11 @@ impl CollaborationPreferences {
         }
     }
 
+    /// The settings section these preferences own as a whole.
+    const SECTION: &'static str = "collaboration";
+
     fn load() -> Self {
-        Self::from_values(&settings_store::load_section("collaboration"))
+        Self::from_values(&settings_store::load_section(Self::SECTION))
     }
 
     fn values(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -1555,18 +1659,26 @@ struct SearchFilterInputs {
 /// tests.
 type GroupsPerStrip = Vec<(StripId, Vec<(u64, Vec<u64>)>)>;
 
-/// `(brightness, volume, wifi, bluetooth, power, wired, battery)` — the
-/// scalar fields [`ShellOverlayHost::apply_fast_qs_reading`] pulls out of a
-/// [`crate::shell::quick_settings::refresh::FastReading`].
-type QsFastFields = (
-    Option<f32>,
-    Option<f32>,
-    Option<bool>,
-    Option<bool>,
-    Option<crate::shell::quick_settings::actions::PowerProfile>,
-    Option<crate::shell::quick_settings::actions::WiredInfo>,
-    Option<crate::shell::quick_settings::actions::BatteryInfo>,
-);
+/// The control a radio change writes.
+const fn radio_field(change: os_actions::RadioChange) -> QsField {
+    match change {
+        os_actions::RadioChange::Wifi(_) => QsField::Wifi,
+        os_actions::RadioChange::Airplane(_) => QsField::Airplane,
+    }
+}
+
+/// The panel's three-way profile, from the daemon's.
+const fn ui_power_profile(
+    profile: crate::shell::quick_settings::actions::PowerProfile,
+) -> crate::shell::quick_settings::PowerProfile {
+    use crate::shell::quick_settings::PowerProfile as UiPP;
+    use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+    match profile {
+        ActPP::Saver => UiPP::Saver,
+        ActPP::Balanced => UiPP::Balanced,
+        ActPP::Performance => UiPP::Performance,
+    }
+}
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
@@ -1891,6 +2003,12 @@ impl ShellOverlayHost {
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
+    /// Settles on the next change to any app invocation's status, for a
+    /// control reply waiting on its job. `None` before the broker attaches.
+    pub fn next_invocation_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_invocation_change()
+    }
+
     pub(crate) fn attach_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,
@@ -2203,6 +2321,7 @@ impl ShellOverlayHost {
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
+            pixel_aligned_strip_pan: false,
             content_built_for_ws: None,
             content_built_empty: None,
             workspace_content_layout_dirty: false,
@@ -2261,6 +2380,7 @@ impl ShellOverlayHost {
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
+            activity_refresh: ActivityRefreshGate::default(),
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
@@ -3125,6 +3245,14 @@ impl ShellOverlayHost {
         };
         let mut st = chrome.borrow_mut();
         if st.status != next {
+            // The bridge is the shell's one volume: a level that changed
+            // there — a media key, the poller, the panel's own read — moves
+            // the panel's slider too, so the two never show different values.
+            if st.status.volume != next.volume
+                && let Some(volume) = next.volume
+            {
+                st.quick_settings.volume = volume.level;
+            }
             st.status = next;
             st.bump();
         }
@@ -3567,30 +3695,83 @@ impl ShellOverlayHost {
                 PeerSyncAction::Tracked { request_id, action } => (Some(request_id), *action),
                 action => (None, action),
             };
-            match action {
+            let result = match action {
                 PeerSyncAction::IssueInvite => {
                     let request = self.peer_sync_overlay.issue_invite_request();
                     self.run_peer_sync_request(&request, false);
+                    Ok(serde_json::Value::Null)
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
                     let _ = copy;
                     self.open_invite_manager();
                     self.peer_sync_overlay.prompt_invite_for(name);
+                    Ok(serde_json::Value::Null)
                 }
-                PeerSyncAction::PromptInvite => self.open_invite_manager(),
-                PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                PeerSyncAction::PromptInvite => {
+                    self.open_invite_manager();
+                    Ok(serde_json::Value::Null)
+                }
+                PeerSyncAction::PromptConnect => {
+                    self.peer_sync_overlay.prompt_connect();
+                    Ok(serde_json::Value::Null)
+                }
+                PeerSyncAction::Network { workspace, request } => {
+                    self.run_network_action(workspace, &request)
+                }
                 #[expect(
                     clippy::unreachable,
                     reason = "the palette queues a tracked request around one plain action, never another tracked one"
                 )]
                 PeerSyncAction::Tracked { .. } => unreachable!("tracked requests are unwrapped"),
-            }
+            };
             if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
                 chrome
                     .borrow_mut()
-                    .complete_peer_sync_request(request_id, Ok(()));
+                    .complete_peer_sync_request(request_id, result);
             }
         }
+    }
+
+    /// Carry out one invitation action's network request against the
+    /// workspace it was authorized in, returning the action's JSON output.
+    /// Resend and cancel are scoped to that workspace's pending invitations,
+    /// so an id from another workspace is not pending here.
+    fn run_network_action(
+        &mut self,
+        workspace: crate::shell::state::WorkspaceId,
+        request: &PeerSyncRequest,
+    ) -> Result<serde_json::Value, String> {
+        let active = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|active| active.id)
+        });
+        if active != Some(workspace) {
+            return Err("the active workspace changed before the invitation request ran".into());
+        }
+        if let PeerSyncRequest::ResendInvitation(id) | PeerSyncRequest::CancelInvitation(id) =
+            request
+        {
+            let PeerSyncResponse::PendingInvitations(pending) =
+                self.peer_sync_call(PeerSyncRequest::ListPendingInvitations)?
+            else {
+                return Err("peer-sync answered an unexpected response".into());
+            };
+            if !pending.iter().any(|invite| &invite.id == id) {
+                return Err("invitation is no longer pending".into());
+            }
+        }
+        let outcome = self.peer_sync_call(request.clone());
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.refresh_pending_invitations();
+        }
+        crate::shell::peer_sync_overlay::network_action_output(request, outcome?)
     }
 
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
@@ -3934,7 +4115,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let snapshot = {
+        let (desktop, failures) = {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.desktop.active.raw();
@@ -3960,9 +4141,9 @@ impl ShellOverlayHost {
                 }
                 Some(_) => {}
             }
-            tree.clone()
+            (tree.desktop.clone(), st.record_creation_errors(&tree))
         };
-        let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
+        let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
             self.content_rebuild_owes_scene = true;
             self.start_workspace_switch_frames();
@@ -3970,40 +4151,43 @@ impl ShellOverlayHost {
         swapped
     }
 
-    /// Rebuilds the desktop surface for `snapshot` and replaces the row
+    /// Rebuilds the desktop surface for `desktop` and replaces the row
     /// pointer map with it. Tabs whose tile is unchanged in the same room
     /// keep their live hosts, so a strip added or removed beside them costs
-    /// no app state; a different workspace gets fresh content.
+    /// no app state; a different workspace gets fresh content. Takes the
+    /// desktop alone, with `failures` read beside it under the same tree
+    /// lock, so a workspace switch never copies the replication documents.
     fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
-        snapshot: &crate::shell::state::WorkspaceTree,
+        desktop: &crate::shell::state::DesktopTree,
+        failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
         let records = chrome.borrow().records().clone();
         if let Some(surface) = self.desktop_surface_mut() {
-            let surface_chrome = crate::shell::workspace_surface_chrome(snapshot, chrome);
+            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
             let state = chrome.borrow();
-            let failures = state.record_creation_errors(snapshot);
             surface.rebuild_retaining(
-                &snapshot.desktop,
+                desktop,
                 &records,
                 &mut crate::shell::NativeTileResolver {
                     inputs: &state.hosted_inputs,
-                    failures: &failures,
+                    failures,
                 },
                 surface_chrome,
             );
             for id in surface.strip_ids() {
                 if let Some(row) = surface.row_mut(id) {
                     for group in &mut row.groups {
-                        crate::shell::tab_documents::apply_creation_failures(group, &failures);
+                        crate::shell::tab_documents::apply_creation_failures(group, failures);
                     }
                 }
             }
             // The rebuild replaced every row; the old addresses are gone.
             self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
         } else {
-            let (root, ptrs) = crate::shell::build_workspace_root(snapshot, &records, chrome);
+            let (root, ptrs) =
+                crate::shell::build_desktop_root(desktop, &records, chrome, failures);
             // Settle outgoing components while the old root still owns them,
             // so their recovery reports survive the swap.
             self.desktop_close_reports
@@ -4019,8 +4203,8 @@ impl ShellOverlayHost {
             self.content = root;
             self.group_row_ptrs = ptrs;
         }
-        self.content_built_for_ws = Some(snapshot.desktop.active.raw());
-        self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
+        self.content_built_for_ws = Some(desktop.active.raw());
+        self.content_built_empty = desktop.active_workspace().map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -4627,8 +4811,12 @@ impl ShellOverlayHost {
             tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
             tilo_desktop::composition::ReconcileOutcome::Updated => true,
             tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
-                let snapshot = chrome.borrow().tree().clone();
-                self.rebuild_workspace_content(&chrome, &snapshot)
+                let (desktop, failures) = {
+                    let st = chrome.borrow();
+                    let tree = st.tree();
+                    (tree.desktop.clone(), st.record_creation_errors(&tree))
+                };
+                self.rebuild_workspace_content(&chrome, &desktop, &failures)
             }
         }
     }
@@ -5650,7 +5838,7 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for package_id in timed_out {
-            if crate::shell::peer_windows::mark_timed_out_host_restore(
+            if crate::shell::peer_windows::mark_timed_out_restore(
                 &mut chrome_handle.borrow().tree_mut(),
                 &package_id,
             ) {
@@ -5828,6 +6016,13 @@ impl ShellOverlayHost {
             let Some(notice) = event.failure_notice() else {
                 continue;
             };
+            if crate::shell::peer_windows::settle_local_restore(
+                &mut chrome_handle.borrow().tree_mut(),
+                &event.package_id,
+                &notice.body,
+            ) {
+                chrome_handle.borrow_mut().bump();
+            }
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
                 tilo_desktop::notifications::Notification::new(notice.title, notice.body)
@@ -8858,6 +9053,14 @@ impl ShellOverlayHost {
         Some(rect)
     }
 
+    /// Use whole-pixel strip positions only when the presenter requests them.
+    pub fn set_pixel_aligned_strip_pan(&mut self, enabled: bool) {
+        if self.pixel_aligned_strip_pan != enabled {
+            self.pixel_aligned_strip_pan = enabled;
+            self.content_rebuild_owes_scene = true;
+        }
+    }
+
     /// Every strip's horizontal pan, keyed by strip id, paired with its
     /// max — on a strip whose content fits the display the pan is pinned
     /// at zero, so "the viewport didn't move" needs the bound to mean
@@ -8871,7 +9074,7 @@ impl ShellOverlayHost {
                 // accessor — the pointer is captured from a `Box<GroupRow>`
                 // owned through the content tree, and the host outlives it.
                 let row: &GroupRow = unsafe { &*ptr };
-                (sid.0, row.scroll_x(), row.max_scroll_x())
+                (sid.0, row.drawn_scroll_x(), row.max_scroll_x())
             })
             .collect();
         out.sort_by_key(|(sid, _, _)| *sid);
@@ -9197,20 +9400,68 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Unpacks a [`QsReading::Fast`] payload, writing its non-scalar fields
-    /// (radios, VPNs, privacy) straight to chrome state and returning the
-    /// scalar ones for [`Self::apply_one_qs_reading`]'s shared apply chain
-    /// — split out to keep that function under the line-count ceiling.
-    fn apply_fast_qs_reading(
+    /// Applies a single quick-settings worker reading to chrome state and
+    /// bumps the revision — the per-iteration body of
+    /// [`Self::apply_quick_settings_readings`].
+    fn apply_one_qs_reading(
+        &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: Box<crate::shell::quick_settings::refresh::FastReading>,
-    ) -> QsFastFields {
+        reading: crate::shell::quick_settings::refresh::QsReading,
+    ) {
+        use crate::shell::quick_settings::refresh::QsReading;
+        match reading {
+            QsReading::Fast(reading) => self.apply_fast_qs_reading(st, *reading),
+            QsReading::Field(reading) => self.apply_qs_field_reading(st, reading),
+            QsReading::WifiNetworks(result) => {
+                st.quick_settings.wifi_scanning = false;
+                match result {
+                    Ok(nets) => {
+                        st.quick_settings.wifi_scan_error = None;
+                        Self::apply_qs_wifi_networks(st, nets);
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "tilo::os_actions", op = "list_wifi_networks", %error, "Wi-Fi scan failed");
+                        st.quick_settings.wifi_scan_error = Some(error);
+                    }
+                }
+            }
+            QsReading::BtDevices(Some(devs)) => {
+                use crate::shell::quick_settings::BtDevice;
+                st.quick_settings.bt_devices = devs
+                    .into_iter()
+                    .map(|d| BtDevice {
+                        name: d.name,
+                        address: d.mac,
+                        battery: d.battery,
+                        connected: d.connected,
+                    })
+                    .collect();
+            }
+            QsReading::BtDevices(None) => {}
+            QsReading::Firmware(updates) => {
+                st.quick_settings.firmware_updates = updates.map(|v| v.len());
+            }
+            QsReading::WifiJoin(join) => {
+                self.apply_wifi_join_result(st, join);
+                return;
+            }
+        }
+        st.bump();
+    }
+
+    /// Everything the panel shows, read on the open edge. Each field applies
+    /// only if actually read.
+    fn apply_fast_qs_reading(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        reading: crate::shell::quick_settings::refresh::FastReading,
+    ) {
         use crate::shell::quick_settings::refresh::FastReading;
         let FastReading {
             brightness,
             displays,
+            volume_available,
             volume,
-            wifi,
             bluetooth,
             bluetooth_available,
             power,
@@ -9220,147 +9471,136 @@ impl ShellOverlayHost {
             radios,
             privacy,
             vpns,
-        } = *reading;
+        } = reading;
         if let Some(profiles) = power_profiles {
-            use crate::shell::quick_settings::PowerProfile as UiPP;
-            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
-            st.quick_settings.power_profiles = profiles
-                .into_iter()
-                .map(|profile| match profile {
-                    ActPP::Saver => UiPP::Saver,
-                    ActPP::Balanced => UiPP::Balanced,
-                    ActPP::Performance => UiPP::Performance,
-                })
-                .collect();
+            st.quick_settings.power_profiles = profiles.into_iter().map(ui_power_profile).collect();
         }
-        st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
-        let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
-        if st.quick_settings.displays != displays {
-            st.quick_settings.displays = displays;
-            st.bump();
+        Self::apply_qs_brightness(st, brightness, displays);
+        if let Some(available) = volume_available {
+            st.quick_settings.volume_available = available;
         }
-        st.quick_settings.volume_available = volume.is_some();
+        self.apply_qs_volume(st, volume);
         if let Some(radios) = radios {
-            st.quick_settings.radios = radios;
+            self.apply_qs_radios(st, radios);
         }
         if let Some(vpns) = vpns {
             st.quick_settings.vpns = vpns;
         }
         st.quick_settings.bluetooth_available = bluetooth_available;
+        if let Some(on) = bluetooth {
+            st.quick_settings.bluetooth = on;
+        }
+        if let Some(wired) = wired {
+            st.quick_settings.wired = Some(wired);
+        }
+        if let Some(profile) = power {
+            st.quick_settings.power_profile = ui_power_profile(profile);
+        }
+        st.quick_settings.battery = battery;
         st.quick_settings.privacy = privacy;
-        (
-            brightness,
-            volume,
-            wifi,
-            bluetooth,
-            power,
-            wired,
-            Some(battery),
-        )
     }
 
-    /// Applies a single quick-settings worker reading to chrome state and
-    /// bumps the revision — the per-iteration body of
-    /// [`Self::apply_quick_settings_readings`], split out to keep that
-    /// function under the line-count ceiling.
-    fn apply_one_qs_reading(
-        &mut self,
+    /// The read-back of the one control the panel just wrote.
+    fn apply_qs_field_reading(
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        reading: crate::shell::quick_settings::refresh::QsReading,
+        reading: crate::shell::quick_settings::refresh::FieldReading,
     ) {
-        use crate::shell::quick_settings::refresh::QsReading;
-        let (brightness, volume, wifi, bluetooth, power, wired, battery, wifi_nets, bt_devices) =
-            match reading {
-                QsReading::Fast(reading) => {
-                    if let Some(radios) = reading.radios.as_ref() {
-                        self.qs_action_slot.observe_radio_availability(radios);
-                    }
-                    let (brightness, volume, wifi, bluetooth, power, wired, battery) =
-                        Self::apply_fast_qs_reading(st, reading);
-                    (
-                        brightness, volume, wifi, bluetooth, power, wired, battery, None, None,
-                    )
+        use crate::shell::quick_settings::refresh::FieldReading;
+        match reading {
+            FieldReading::Radios(Some(radios)) => self.apply_qs_radios(st, radios),
+            FieldReading::Bluetooth(Some(on)) => st.quick_settings.bluetooth = on,
+            FieldReading::Wired(Some(wired)) => st.quick_settings.wired = Some(wired),
+            FieldReading::Power(Some(profile)) => {
+                st.quick_settings.power_profile = ui_power_profile(profile);
+            }
+            FieldReading::Vpns(Some(vpns)) => st.quick_settings.vpns = vpns,
+            FieldReading::Brightness(brightness, displays) => {
+                Self::apply_qs_brightness(st, brightness, Some(displays));
+            }
+            FieldReading::Volume(volume) => self.apply_qs_volume(st, volume),
+            // Not read: leave the control as it is.
+            FieldReading::Radios(None)
+            | FieldReading::Bluetooth(None)
+            | FieldReading::Wired(None)
+            | FieldReading::Power(None)
+            | FieldReading::Vpns(None) => {}
+        }
+    }
+
+    /// Wi-Fi on/off is derived from the radio snapshot rather than read
+    /// again; a machine with no adapter leaves the switch alone.
+    fn apply_qs_radios(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        radios: os_actions::RadioState,
+    ) {
+        self.qs_action_slot.observe_radio_availability(&radios);
+        if let Ok(on) = os_actions::wifi_from_radios(&radios) {
+            st.quick_settings.wifi = on;
+        }
+        st.quick_settings.radios = radios;
+    }
+
+    /// `displays: None` means the monitor list was not read this time, so
+    /// neither the list nor the slider's availability changes.
+    fn apply_qs_brightness(
+        st: &mut crate::shell::chrome_state::ChromeState,
+        brightness: Option<f32>,
+        displays: Option<Vec<crate::shell::chrome_state::DisplayBrightness>>,
+    ) {
+        let brightness = match displays {
+            Some(displays) => {
+                st.quick_settings.brightness_available =
+                    brightness.is_some() || !displays.is_empty();
+                let brightness =
+                    brightness.or_else(|| displays.first().map(|display| display.level));
+                if st.quick_settings.displays != displays {
+                    st.quick_settings.displays = displays;
                 }
-                QsReading::WifiNetworks(result) => {
-                    st.quick_settings.wifi_scanning = false;
-                    match result {
-                        Ok(nets) => {
-                            st.quick_settings.wifi_scan_error = None;
-                            (None, None, None, None, None, None, None, Some(nets), None)
-                        }
-                        Err(error) => {
-                            tracing::warn!(target: "tilo::os_actions", op = "list_wifi_networks", %error, "Wi-Fi scan failed");
-                            st.quick_settings.wifi_scan_error = Some(error);
-                            st.bump();
-                            return;
-                        }
-                    }
-                }
-                QsReading::BtDevices(devs) => {
-                    (None, None, None, None, None, None, None, None, devs)
-                }
-                QsReading::Firmware(updates) => {
-                    st.quick_settings.firmware_updates = updates.map(|v| v.len());
-                    st.bump();
-                    return;
-                }
-                QsReading::WifiJoin(join) => {
-                    self.apply_wifi_join_result(st, join);
-                    return;
-                }
-            };
-        if let Some(v) = brightness {
-            st.quick_settings.brightness = v;
+                brightness
+            }
+            None => brightness,
+        };
+        if let Some(level) = brightness {
+            st.quick_settings.brightness = level;
         }
-        if let Some(v) = volume {
-            st.quick_settings.volume = v;
+    }
+
+    /// The tray's [`crate::shell::status::StatusBridge`] is the shell's one
+    /// volume: a reading goes there first, and the panel's slider mirrors it
+    /// (see [`Self::sync_status_from_bridge`]). Without a bridge — shots,
+    /// unit tests — the slider takes the reading directly.
+    fn apply_qs_volume(
+        &self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        volume: Option<os_actions::VolumeState>,
+    ) {
+        let Some(volume) = volume else {
+            return;
+        };
+        if let Some(bridge) = self.status_bridge.as_ref() {
+            bridge.set_volume(volume);
+            st.status.volume = Some(volume);
         }
-        if let Some(v) = wifi {
-            st.quick_settings.wifi = v;
-        }
-        if let Some(v) = bluetooth {
-            st.quick_settings.bluetooth = v;
-        }
-        if let Some(v) = wired {
-            st.quick_settings.wired = Some(v);
-        }
-        if let Some(v) = battery {
-            st.quick_settings.battery = v;
-        }
-        if let Some(p) = power {
-            use crate::shell::quick_settings::PowerProfile as UiPP;
-            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
-            st.quick_settings.power_profile = match p {
-                ActPP::Saver => UiPP::Saver,
-                ActPP::Balanced => UiPP::Balanced,
-                ActPP::Performance => UiPP::Performance,
-            };
-        }
-        if let Some(nets) = wifi_nets {
-            use crate::shell::quick_settings::WifiNetwork;
-            st.quick_settings.wifi_networks = nets
-                .into_iter()
-                .map(|n| WifiNetwork {
-                    ssid: n.ssid,
-                    signal: n.signal,
-                    secure: n.secure,
-                    connected: n.connected,
-                })
-                .collect();
-        }
-        if let Some(devs) = bt_devices {
-            use crate::shell::quick_settings::BtDevice;
-            st.quick_settings.bt_devices = devs
-                .into_iter()
-                .map(|d| BtDevice {
-                    name: d.name,
-                    address: d.mac,
-                    battery: d.battery,
-                    connected: d.connected,
-                })
-                .collect();
-        }
-        st.bump();
+        st.quick_settings.volume = volume.level;
+    }
+
+    fn apply_qs_wifi_networks(
+        st: &mut crate::shell::chrome_state::ChromeState,
+        nets: Vec<os_actions::WifiNetworkInfo>,
+    ) {
+        use crate::shell::quick_settings::WifiNetwork;
+        st.quick_settings.wifi_networks = nets
+            .into_iter()
+            .map(|n| WifiNetwork {
+                ssid: n.ssid,
+                signal: n.signal,
+                secure: n.secure,
+                security: n.security,
+                connected: n.connected,
+            })
+            .collect();
     }
 
     fn apply_wifi_join_result(
@@ -9382,13 +9622,18 @@ impl ShellOverlayHost {
                     network.connected = network.ssid == ssid;
                 }
                 st.quick_settings.wifi = true;
+                let security = scanned_wifi_security(&st.quick_settings.wifi_networks, &ssid);
                 let share_result = if shared_credential {
                     None
                 } else {
                     password.as_ref().and_then(|password| {
                         self.wifi_secret_bridge.as_ref().map(|bridge| {
+                            let security = security.ok_or_else(|| {
+                                "could not verify the connected Wi-Fi security mode".to_string()
+                            })?;
                             bridge(WifiSecretAction::Share {
                                 ssid: ssid.clone(),
+                                security,
                                 password: password.clone(),
                             })
                         })
@@ -10453,19 +10698,83 @@ impl ShellOverlayHost {
         };
         if let Some(request) = self.room_activity.narrative_request() {
             narrator.request(&request);
-            if let Some(narrative) = narrator.take_for(&request) {
-                let _ = self.room_activity.apply_generated_narrative(narrative);
+            if let Some(narrative) = narrator.take_for(&request)
+                && self.room_activity.apply_generated_narrative(narrative)
+            {
+                // The glance may quote it; publish on the next frame.
+                self.activity_refresh.invalidate();
             }
         }
     }
 
-    /// Keep passive chrome truthful while the sheet is closed. The source's
-    /// heads check makes the resting path constant-time; publishing is also a
-    /// no-op unless headline, unread count, or latest content id changed.
-    fn refresh_room_activity_awareness(&mut self) {
+    /// The passive awareness's [`ActivityRefreshKey`] now, read under the
+    /// tree's read lock.
+    fn activity_refresh_key(&self) -> Option<ActivityRefreshKey> {
+        use automerge::transaction::Transactable as _;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        let (external_revision, active, tree_heads, tree_pending) = {
+            let tree = state.tree();
+            (
+                tree.desktop.external_revision,
+                tree.desktop.active.raw(),
+                tree.doc.base_heads(),
+                tree.doc.pending_ops(),
+            )
+        };
+        Some(ActivityRefreshKey {
+            chrome_revision: state.revision,
+            external_revision,
+            active,
+            tree_heads,
+            tree_pending,
+            records: state.records().content_revision(),
+            room_records: self.room_records.borrow().revision(),
+        })
+    }
+
+    /// Record the shortcut runs the broker finished, each as one undoable
+    /// run in the workspace document. On the frame pump, never in paint;
+    /// the tree's write lock is taken only while a run waits.
+    fn record_finished_shortcut_runs(&mut self) {
+        if !self.room_activity.shortcut_runs_pending() {
+            return;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let state = chrome.borrow();
+        let records = state.records().clone();
+        let local = self.room_records.borrow();
+        let mut tree = state.tree_mut();
+        let recorded = self.room_activity.record_finished_shortcut_runs(
+            &mut tree,
+            &records,
+            &local,
+            Instant::now(),
+        );
+        if recorded {
+            tree.queue_save();
+        }
+    }
+
+    /// Keep passive chrome truthful while the sheet is closed. Runs only on
+    /// frames where something it reads may have moved (see
+    /// [`ActivityRefreshKey`]), when `force`d, or once a second; publishing
+    /// is a no-op unless headline, unread count, or latest content id changed.
+    fn refresh_room_activity_awareness(&mut self, force: bool) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let force = force || self.activity_pending_reveal.is_some();
+        let due = self
+            .activity_refresh_key()
+            .is_some_and(|key| self.activity_refresh.due(key, force, Instant::now()));
+        if !due {
+            self.refresh_history_narrative();
+            self.refresh_automatic_status();
+            return;
+        }
         let workspace = {
             let st = chrome.borrow();
             let records = st.records().clone();
@@ -10515,6 +10824,11 @@ impl ShellOverlayHost {
             }
         }
         self.refresh_automatic_status();
+        // What this refresh wrote itself (a commit, a published glance) is
+        // already reflected; only a later change needs another pass.
+        if let Some(key) = self.activity_refresh_key() {
+            self.activity_refresh.settle(key);
+        }
     }
 
     fn refresh_automatic_status(&mut self) {
@@ -12251,9 +12565,7 @@ impl ShellOverlayHost {
             };
             match edit {
                 tilo_desktop::text_entry::Edit::Cancel => {
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                 }
                 tilo_desktop::text_entry::Edit::Submit => {
                     let text = self
@@ -12262,9 +12574,7 @@ impl ShellOverlayHost {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let status = (!text.is_empty()).then_some(text);
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().push_presence_request(
                             crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
@@ -13764,7 +14074,7 @@ impl ShellOverlayHost {
             self.capture_studio.open();
         }
         if flags.collaborators {
-            self.handle_shell_collaborators_click(p, handled);
+            *handled = true;
             return true;
         }
         if flags.quick_settings {
@@ -13934,17 +14244,79 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Clicks inside the open collaborators dropdown: invite, join,
-    /// jump to room activity, or (falling through the specific rows)
-    /// swallow the click so content beneath doesn't grab it. Reached
-    /// only once `flags.collaborators` is true, at which point every
-    /// path absorbs the click.
-    fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
-        let hit = self.collaborators_overlay.hit_test(p);
-        self.apply_collaborators_hit(hit, handled);
+    fn route_collaborators_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let open = self.overlay_flags().collaborators;
+        if !open && !self.collaborators_overlay.wants_pointer_capture() {
+            return false;
+        }
+        if self.status_editing && matches!(event, WindowEvent::KeyboardInput { .. }) {
+            return false;
+        }
+        if self.status_editing
+            && let Some(selection) =
+                self.collaborators_overlay
+                    .status_pointer_selection(event, ctx, self.last_cursor)
+        {
+            self.status_selection = ui::text_selection::Selection {
+                anchor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.anchor,
+                ),
+                cursor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.cursor,
+                ),
+            };
+        }
+        let hit = self
+            .collaborators_overlay
+            .handle_event(event, ctx, open, self.last_cursor);
+        if let Some(hit) = hit {
+            self.apply_collaborators_hit(hit, ctx.handled);
+        }
+        if (*ctx.handled || matches!(event, WindowEvent::Focused(false)))
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            chrome.borrow_mut().bump();
+        }
+        *ctx.handled
+    }
+
+    fn begin_status_edit(&mut self) {
+        if self.status_editing {
+            return;
+        }
+        self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual) {
+            self.local_status.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.status_selection = ui::text_selection::Selection::collapsed(self.status_draft.len());
+        self.status_editing = true;
+    }
+
+    /// A status draft belongs to the visible People editor. Ending it never
+    /// publishes or changes the participant's existing status.
+    fn end_status_edit(&mut self) {
+        self.status_editing = false;
+        self.status_draft.clear();
+        self.status_selection = ui::text_selection::Selection::default();
     }
 
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
+        if matches!(
+            hit,
+            CollaboratorsHit::Dismiss
+                | CollaboratorsHit::Invite
+                | CollaboratorsHit::Join
+                | CollaboratorsHit::RoomActivity
+        ) {
+            self.end_status_edit();
+        }
         if matches!(
             hit,
             CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
@@ -13968,17 +14340,21 @@ impl ShellOverlayHost {
             return;
         }
         if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self.chrome.as_ref().and_then(|chrome| {
-                let state = chrome.borrow();
-                let local_user = state.active_local_user();
-                tilo_desktop::collaborators::collaborator_roster_rows(
-                    &state.tree().desktop,
-                    &local_user,
-                )
-                .get(index)
-                .filter(|row| row.followable)
-                .cloned()
-            });
+            let target = self
+                .collaborators_overlay
+                .follow_target(index)
+                .and_then(|id| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let local_user = state.active_local_user();
+                        tilo_desktop::collaborators::collaborator_roster_rows(
+                            &state.tree().desktop,
+                            &local_user,
+                        )
+                        .into_iter()
+                        .find(|row| row.id == id && row.followable)
+                    })
+                });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
                     self.set_followed_peer(None);
@@ -13991,15 +14367,7 @@ impl ShellOverlayHost {
         }
         match hit {
             CollaboratorsHit::EditStatus => {
-                self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
-                {
-                    self.local_status.clone().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                self.status_selection =
-                    ui::text_selection::Selection::collapsed(self.status_draft.len());
-                self.status_editing = true;
+                self.begin_status_edit();
                 *handled = true;
                 return;
             }
@@ -14149,7 +14517,9 @@ impl ShellOverlayHost {
             sharing: self.status_sharing,
             manual_status,
         };
-        if let Err(error) = settings_store::update_section("collaboration", preferences.values()) {
+        if let Err(error) =
+            settings_store::update_section(CollaborationPreferences::SECTION, preferences.values())
+        {
             tracing::warn!(%error, "collaboration preferences save failed");
         }
     }
@@ -14289,16 +14659,17 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
                 Self::finish_quick_settings_drill_in_click(chrome, outcome);
             }
+            // Wi-Fi and the hotspot are both the radio snapshot.
             crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Wifi);
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-action-failed", &[("action", action.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Wifi);
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
@@ -14375,14 +14746,14 @@ impl ShellOverlayHost {
             }
             VpnPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Vpn);
             }
             VpnPaneOutcome::ActionFailed { profile, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast_after_write();
+                self.qs_refresh.kick_field(QsField::Vpn);
             }
         }
     }
@@ -15578,15 +15949,13 @@ impl ShellOverlayHost {
         let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
-        let (label, result, osd) = match commit {
-            SliderCommit::Brightness(value_pct) => {
-                let result = actions.set_brightness(value_pct);
-                (
-                    "brightness",
-                    result,
-                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
-                )
-            }
+        let (field, result) = match commit {
+            SliderCommit::Brightness(value_pct) => (
+                QsField::Brightness,
+                actions
+                    .set_brightness(value_pct)
+                    .map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
+            ),
             SliderCommit::DisplayBrightness(index, value_pct) => {
                 let connector = self.chrome.as_ref().and_then(|chrome| {
                     chrome
@@ -15601,50 +15970,37 @@ impl ShellOverlayHost {
                     |connector| actions.set_display_brightness(&connector, value_pct),
                 );
                 (
-                    "brightness",
-                    result,
-                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
+                    QsField::Brightness,
+                    result.map(|()| crate::shell::osd::Osd::brightness(value_pct / 100.0)),
                 )
             }
             SliderCommit::Volume(value_pct) => {
-                let previous = self
-                    .status_bridge
-                    .as_ref()
-                    .and_then(|bridge| bridge.snapshot().volume);
-                let mut result = actions.set_volume(value_pct);
-                let should_unmute = value_pct > 0.0 && previous.is_some_and(|v| v.muted);
-                if result.is_ok() && should_unmute {
-                    result = actions.set_mute(false);
-                }
-                let muted = previous.is_some_and(|v| v.muted) && !should_unmute;
-                if result.is_ok()
-                    && let (Some(bridge), Some(_)) = (self.status_bridge.as_ref(), previous)
-                {
-                    bridge.set_volume(os_actions::VolumeState {
-                        level: (value_pct / 100.0).clamp(0.0, 1.0),
-                        muted,
-                    });
-                }
+                let bridge = self.status_bridge.as_ref();
+                let previous = bridge.and_then(|bridge| bridge.snapshot().volume);
                 (
-                    "volume",
-                    result,
-                    crate::shell::osd::Osd::volume(value_pct / 100.0, muted),
+                    QsField::Volume,
+                    crate::shell::media_keys::commit_volume(
+                        &crate::shell::media_keys::DispatcherAudio(&actions),
+                        bridge,
+                        previous,
+                        value_pct / 100.0,
+                    )
+                    .map(|(_, osd)| osd),
                 )
             }
         };
         match result {
-            Ok(()) => {
+            Ok(osd) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().show_osd(osd);
                 }
-                // A read sampled before this commit must not snap the
-                // slider back to where it was.
-                self.qs_refresh.kick_fast_after_write();
             }
             Err(error) => {
+                let volume = field == QsField::Volume;
+                let label = if volume { "volume" } else { "brightness" };
                 tracing::warn!(target: "tilo::os_actions", op = label, %error, "quick setting failed");
                 if let Some(chrome) = self.chrome.as_ref() {
-                    let title = if label == "volume" {
+                    let title = if volume {
                         t("host-qs-change-failed-volume")
                     } else {
                         t("host-qs-change-failed-brightness")
@@ -15653,11 +16009,12 @@ impl ShellOverlayHost {
                         .borrow_mut()
                         .push_notification(title, t("host-qs-change-failed-value-restored"));
                 }
-                // Reconcile the optimistic slider with authoritative device
-                // state. Worker completion wakes the idle compositor.
-                self.qs_refresh.kick_fast_after_write();
             }
         }
+        // Reconcile the optimistic slider with the device's own level; a
+        // read sampled before this commit must not snap the slider back.
+        // Worker completion wakes the idle compositor.
+        self.qs_refresh.kick_field(field);
     }
 
     #[allow(
@@ -15744,9 +16101,8 @@ impl ShellOverlayHost {
     /// Persist the rotation lock; the compositor's accelerometer worker
     /// reads it from the same settings document.
     fn save_rotation_lock(locked: bool) {
-        let mut values = serde_json::Map::new();
-        values.insert("rotation_lock".into(), serde_json::Value::Bool(locked));
-        if let Err(e) = settings_store::update_section("display", values) {
+        let origin = settings_store::ChangeOrigin::local("qs.rotation-lock");
+        if let Err(e) = settings_store::hardware::ROTATION_LOCK.set_by(locked, &origin) {
             tracing::warn!(error = %e, "rotation lock preference save failed");
         }
     }
@@ -15766,6 +16122,7 @@ impl ShellOverlayHost {
             )
             .set_bluetooth(v);
             self.finish_quick_settings_action(
+                QsField::Bluetooth,
                 "set_bluetooth",
                 t("host-qs-change-failed-bluetooth"),
                 result,
@@ -15777,6 +16134,7 @@ impl ShellOverlayHost {
             )
             .set_wired(v);
             self.finish_quick_settings_action(
+                QsField::Wired,
                 "set_wired",
                 t("host-qs-change-failed-wired"),
                 result,
@@ -15791,6 +16149,7 @@ impl ShellOverlayHost {
             )
             .set_hotspot(v);
             self.finish_quick_settings_action(
+                QsField::Hotspot,
                 "set_hotspot",
                 t("host-qs-change-failed-hotspot"),
                 result,
@@ -15802,15 +16161,15 @@ impl ShellOverlayHost {
             )
             .set_mobile_broadband(v);
             self.finish_quick_settings_action(
+                QsField::Mobile,
                 "set_mobile_broadband",
                 t("host-qs-change-failed-mobile"),
                 result,
             );
         }
         if let Some(v) = pending.night_light {
-            let mut values = serde_json::Map::new();
-            values.insert("night_light".into(), serde_json::Value::Bool(v));
-            if let Err(e) = settings_store::update_section("display", values) {
+            let origin = settings_store::ChangeOrigin::local("qs.night-light");
+            if let Err(e) = settings_store::hardware::NIGHT_LIGHT.set_by(v, &origin) {
                 tracing::warn!(error = %e, "night light preference save failed");
             }
         }
@@ -15827,6 +16186,7 @@ impl ShellOverlayHost {
             )
             .set_power_profile(mapped);
             self.finish_quick_settings_action(
+                QsField::Power,
                 "set_power_profile",
                 t("host-qs-change-failed-power"),
                 result,
@@ -15843,6 +16203,7 @@ impl ShellOverlayHost {
             Ok(None) => self.reconcile_quick_settings_radio(change),
             Err(error) => {
                 self.finish_quick_settings_action(
+                    radio_field(change),
                     match change {
                         os_actions::RadioChange::Wifi(_) => "set_wifi",
                         os_actions::RadioChange::Airplane(_) => "set_airplane_mode",
@@ -15858,7 +16219,7 @@ impl ShellOverlayHost {
     }
 
     fn reconcile_quick_settings_radio(&mut self, change: os_actions::RadioChange) {
-        self.qs_refresh.kick_fast_after_write();
+        self.qs_refresh.kick_field(radio_field(change));
         if change == os_actions::RadioChange::Wifi(true) && self.qs_refresh.os_reads_enabled() {
             if let Some(chrome) = &self.chrome {
                 let mut state = chrome.borrow_mut();
@@ -15880,7 +16241,7 @@ impl ShellOverlayHost {
         if job.result().is_some_and(|result| result.is_ok()) {
             self.reconcile_quick_settings_radio(job.change);
         } else {
-            self.qs_refresh.kick_fast_after_write();
+            self.qs_refresh.kick_field(radio_field(job.change));
         }
         true
     }
@@ -15890,6 +16251,7 @@ impl ShellOverlayHost {
     /// machine never entered.
     fn finish_quick_settings_action(
         &mut self,
+        field: QsField,
         operation: &'static str,
         failure_title: String,
         result: Result<(), String>,
@@ -15903,8 +16265,9 @@ impl ShellOverlayHost {
             }
         }
         // Even a successful daemon request can be normalized by hardware or
-        // policy. Read back the authoritative state; completion wakes paint.
-        self.qs_refresh.kick_fast_after_write();
+        // policy. Read back the authoritative state of what was written —
+        // only that; completion wakes paint.
+        self.qs_refresh.kick_field(field);
     }
 
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
@@ -16006,31 +16369,27 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            // Authority comes from the same function the `member.role.set` /
+            // `member.remove` actions call, not from `is_owner`: that flag
+            // only decides whether the sheet offering the choice is drawn.
             WorkspaceSettingsOutcome::SetMemberRole(user, role) => {
-                let changed = self.chrome.as_ref().is_some_and(|chrome| {
-                    chrome
-                        .borrow()
-                        .tree()
-                        .desktop
-                        .active_workspace()
-                        .and_then(|ws| ws.role_of(&user))
-                        != Some(role)
-                });
-                if is_owner
-                    && changed
-                    && let Some(chrome) = self.chrome.clone()
+                if let Some(chrome) = self.chrome.clone()
+                    && let Err(error) = crate::shell::membership::set_member_role(
+                        &mut chrome.borrow_mut(),
+                        &user,
+                        role,
+                    )
                 {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::set_member_role(ws, actor, &user, role)
-                    });
+                    tracing::debug!(%error, "member role change refused");
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
             WorkspaceSettingsOutcome::ConfirmRemoveMember(user) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::remove_member(ws, actor, &user)
-                    });
+                if let Some(chrome) = self.chrome.clone()
+                    && let Err(error) =
+                        crate::shell::membership::remove_member(&mut chrome.borrow_mut(), &user)
+                {
+                    tracing::debug!(%error, "member removal refused");
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
@@ -16065,16 +16424,22 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
-                    });
+                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
+                        },
+                    );
                 }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
-                    });
+                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
+                        },
+                    );
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
@@ -17268,6 +17633,7 @@ impl Widget for ShellOverlayHost {
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
         self.pump_shortcut_step_prompts();
+        self.record_finished_shortcut_runs();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -17732,6 +18098,7 @@ impl Widget for ShellOverlayHost {
             // &mut self → unaliased mutable access.
             unsafe {
                 let row = &mut *ptr;
+                row.set_pixel_aligned_scroll(self.pixel_aligned_strip_pan);
                 row.set_leading_inset(wheel_w);
                 row.set_output_spans(&settled_spans);
                 // App-owned call/navigation surfaces cross into this same
@@ -17774,14 +18141,14 @@ impl Widget for ShellOverlayHost {
                 // accessors — pointer captured from a `Box<GroupRow>`
                 // we own through the content tree, host outlives
                 // content, &mut self → unaliased read.
-                Some(unsafe { (&**ptr).scroll_x() })
+                Some(unsafe { (&**ptr).drawn_scroll_x() })
             };
             let active_scroll_x: f64 = scroll_of(top_strip)
                 .or_else(|| {
                     self.group_row_ptrs
                         .values()
                         .next()
-                        .map(|&ptr| unsafe { (&*ptr).scroll_x() })
+                        .map(|&ptr| unsafe { (&*ptr).drawn_scroll_x() })
                 })
                 .unwrap_or(0.0);
             // A summoned wheel places itself around the pointer in screen
@@ -17909,6 +18276,9 @@ impl Widget for ShellOverlayHost {
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.collaborators {
+            return self.collaborators_overlay.primary_vertical_scroll();
+        }
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
@@ -17928,7 +18298,12 @@ impl Widget for ShellOverlayHost {
         if self.primary_vertical_scroll().is_none() {
             return ui::widget::PrimaryScrollResult::Unsupported;
         }
-        let result = self.notification_center.apply_reading_scroll(action);
+        let result = if self.overlay_flags().collaborators {
+            self.collaborators_overlay
+                .apply_primary_vertical_scroll(action)
+        } else {
+            self.notification_center.apply_reading_scroll(action)
+        };
         if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
             && let Some(chrome) = &self.chrome
         {
@@ -17951,8 +18326,37 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        let people_open = self.overlay_flags().collaborators;
+        if !people_open {
+            self.end_status_edit();
+        }
+        if self
+            .collaborators_overlay
+            .consume_sequence_edge(event, people_open)
+        {
+            *ctx.handled = true;
+            return;
+        }
+
         if self.consume_workspace_rename_submit_edge(event) {
             *ctx.handled = true;
+            return;
+        }
+        if !self.overlay_flags().collaborators
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
             return;
         }
         // Print Screen has an explicit arbitration policy. It must run before
@@ -18412,6 +18816,23 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
+        if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
+            return;
+        }
         if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
             return;
         }
@@ -18476,6 +18897,23 @@ impl Widget for ShellOverlayHost {
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
+            return;
+        }
+        if !Self::is_pointer_event(event)
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
                     node_id: ctx.node_id,
                     taffy: ctx.taffy,
                 },
@@ -19822,7 +20260,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 11] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -19842,6 +20280,16 @@ impl ShellOverlayHost {
                 self.onboarding
                     .as_ref()
                     .and_then(Widget::next_wake_deadline),
+            ),
+            (
+                "people",
+                self.chrome.as_ref().and_then(|chrome| {
+                    if chrome.borrow().overlays.collaborators {
+                        self.collaborators_overlay.next_wake_deadline()
+                    } else {
+                        None
+                    }
+                }),
             ),
             ("content", self.content.next_wake_deadline()),
             (
@@ -19988,6 +20436,7 @@ impl ShellOverlayHost {
             || mirror_frame
             || markup_frame
             || notification_frame
+            || (self.overlay_flags().collaborators && self.collaborators_overlay.needs_animation_frame())
             || osd_frame
             || self.window_previews.changed()
     }
@@ -20066,64 +20515,6 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
-/// Applies a permission edit to the active workspace, then mirrors it
-/// into the replicated doc and flushes — without the mirror, a click
-/// would edit only the in-memory cache and the next boot would read the
-/// old answer back off disk. `edit` runs with the local user as actor.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "st stays borrowed for `actor` up front and `st.bump()` at the end; the inner \
-              `tree` guard it derives feeds `outcome`, which is exactly what decides whether \
-              that final bump runs"
-)]
-fn edit_active_workspace_caps<F>(chrome: &Chrome, edit: F) -> bool
-where
-    F: FnOnce(&mut crate::shell::state::Workspace, &crate::shell::state::UserId) -> CapEdit,
-{
-    let mut st = chrome.borrow_mut();
-    let actor = st.active_local_user();
-    let outcome = {
-        let mut tree = st.tree_mut();
-        let Some(ws_id) = tree.desktop.active_workspace().map(|w| w.id) else {
-            return false;
-        };
-        let Some(room) = tree.desktop.active_workspace().map(|w| w.room) else {
-            return false;
-        };
-        if !tree.governs_room(room) {
-            return false;
-        }
-        let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
-            return false;
-        };
-        let changed = edit(ws, &actor);
-        if changed.is_empty() {
-            None
-        } else {
-            let written: Vec<crate::shell::state::CapOverride> = ws
-                .capabilities
-                .iter()
-                .filter(|c| changed.granted.contains(&c.id))
-                .cloned()
-                .collect();
-            for cap in written {
-                tree.doc_insert_capability(ws_id, &cap);
-            }
-            for id in &changed.revoked {
-                tree.doc_revoke_capability(ws_id, id);
-            }
-            tree.queue_save();
-            Some(())
-        }
-    };
-    if outcome.is_some() {
-        st.bump();
-        true
-    } else {
-        false
-    }
-}
-
 /// Route a click on a grant-composer control. The pickers only move the
 /// draft; `Submit` is the one that writes, and it writes through
 /// [`tilo_desktop::workspace_settings::apply_grant_draft`] so the
@@ -20137,9 +20528,12 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     match hit {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
-            edit_active_workspace_caps(chrome, move |ws, actor| {
-                tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
-            });
+            let _ = crate::shell::membership::edit_active_workspace_caps(
+                &mut chrome.borrow_mut(),
+                move |ws, actor| {
+                    tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
+                },
+            );
         }
         ComposerHit::Subject => {
             let mut st = chrome.borrow_mut();
@@ -21183,11 +21577,13 @@ impl ShellOverlayHost {
                     ),
                     status_sharing: self.status_sharing,
                     status_editing: self.status_editing,
+                    status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
                 },
                 self.last_cursor,
             );
         } else {
+            self.end_status_edit();
             self.collaborators_overlay.clear();
         }
     }
@@ -21206,6 +21602,12 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        // The open window reads the pane every frame, and opening, closing
+        // or retargeting it changes what the passive glance shows.
+        let force_awareness = view_request.is_some()
+            || flags.room_activity
+            || self.room_activity_was_open
+            || self.activity_window_rect().is_some();
         if let Some((previous, request)) = view_request {
             // Finish against the outgoing admission before awareness refreshes
             // for the destination. A first open must not acknowledge its feed.
@@ -21228,7 +21630,7 @@ impl ShellOverlayHost {
         {
             chrome.borrow_mut().open_room_activity(None);
         }
-        self.refresh_room_activity_awareness();
+        self.refresh_room_activity_awareness(force_awareness);
         self.room_activity.observe_replay_presence(presence);
         let visible = self.activity_window_rect().is_some();
         if visible && !self.room_activity_was_open {
@@ -25328,6 +25730,8 @@ impl ShellOverlayHost {
                     let detail = match status.phase {
                         TetheringPhase::Requesting => t("qs-devices-tether-requesting"),
                         TetheringPhase::ConsentRequired => t("qs-devices-tether-consent"),
+                        TetheringPhase::Preparing => t("qs-devices-tether-preparing"),
+                        TetheringPhase::Connecting => t("qs-devices-tether-connecting"),
                         TetheringPhase::Active => match status.direction {
                             TetheringDirection::Requester => t("qs-devices-tether-requester"),
                             TetheringDirection::Provider => t("qs-devices-tether-provider"),
@@ -25955,16 +26359,26 @@ impl ShellOverlayHost {
         else {
             return false;
         };
-        let Some(ssid) = chrome
-            .borrow()
-            .quick_settings
-            .wifi_password
-            .as_ref()
-            .map(|prompt| prompt.ssid.clone())
-        else {
+        let scanned = {
+            let state = chrome.borrow();
+            state
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .and_then(|prompt| {
+                    scanned_wifi_security(&state.quick_settings.wifi_networks, &prompt.ssid)
+                        .map(|security| (prompt.ssid.clone(), security))
+                })
+        };
+        // A network the last scan did not list has no known mode to match a
+        // shared secret against.
+        let Some((ssid, security)) = scanned else {
             return false;
         };
-        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup { ssid: ssid.clone() }) else {
+        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup {
+            ssid: ssid.clone(),
+            security,
+        }) else {
             return false;
         };
         if let Some(prompt) = chrome.borrow_mut().quick_settings.wifi_password.as_mut() {

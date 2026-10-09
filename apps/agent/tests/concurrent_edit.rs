@@ -370,7 +370,10 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
 fn a_person_typing_and_the_agent_working_both_land() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn_with_agent_actions(&sock, &[(APP, "insert-table")]);
+    let _broker = typed_peer::spawn_with_agent_actions(
+        &sock,
+        &[(APP, typed_peer::WP_DOCUMENT, "insert-table")],
+    );
     tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 
     let room = typed_peer::room();

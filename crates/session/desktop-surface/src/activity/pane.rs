@@ -26,8 +26,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
-use ui::clock::{Duration, Instant, SystemTime};
 use ui::i18n::ArgValue;
+use ui::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
@@ -307,6 +307,33 @@ impl DetailAction {
 struct IndexedAgentRun {
     source_record: Option<RecordId>,
     run: AgentRun,
+}
+
+/// Where the pane's task list comes from: the workspace tree, the room
+/// owner's review snapshot (by identity), or nowhere while a required review
+/// is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskListOrigin {
+    Tree,
+    Review(usize),
+    Withheld,
+}
+
+/// What [`RoomActivityPane::tasks`] was last built from, so an unchanged
+/// list is not cloned and sorted again on every refresh.
+#[derive(Debug)]
+struct TaskListSource {
+    room: String,
+    origin: TaskListOrigin,
+    tree_tasks: Vec<WorkspaceTask>,
+}
+
+/// The agent runs a persisted record held at one revision, so an unchanged
+/// document on disk is not read and decoded again on every refresh.
+#[derive(Debug)]
+struct ColdAgentRuns {
+    revision: u64,
+    runs: Vec<AgentRun>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -764,6 +791,7 @@ pub struct RoomActivityPane {
     brief_expansion_started: Option<(usize, Instant)>,
     expanded_brief: Option<usize>,
     tasks: Vec<WorkspaceTask>,
+    task_source: Option<TaskListSource>,
     selected_task: Option<String>,
     task_rects: Vec<(String, Rect)>,
     new_task_rect: Option<Rect>,
@@ -814,6 +842,7 @@ pub struct RoomActivityPane {
     /// Task receipts live beside the records they describe. They are indexed
     /// here so selecting any affected change can explain the whole task.
     agent_runs: Vec<IndexedAgentRun>,
+    cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
     open_agent_records: HashSet<RecordId>,
 }
@@ -958,6 +987,7 @@ impl RoomActivityPane {
             expanded_brief: None,
             brief_expansion_started: None,
             tasks: Vec::new(),
+            task_source: None,
             selected_task: None,
             task_rects: Vec::new(),
             new_task_rect: None,
@@ -1004,6 +1034,7 @@ impl RoomActivityPane {
             narrative: None,
             narrative_request: None,
             agent_runs: Vec::new(),
+            cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
             open_agent_records: HashSet::new(),
         }
@@ -2095,6 +2126,7 @@ impl RoomActivityPane {
         self.replay_frames.clear();
         self.replay_playing = false;
         self.tasks.clear();
+        self.task_source = None;
         self.selected_task = None;
         self.close_task_composer();
         self.clear_comparison();
@@ -2115,7 +2147,11 @@ impl RoomActivityPane {
         reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
     )]
     pub fn refresh(&mut self, tree: &mut impl ActivityTree) {
-        tree.commit_activity_change();
+        // Commit only what was written: an empty commit on every refresh
+        // would still open and roll back a transaction each frame.
+        if tree.document().pending_ops() > 0 {
+            tree.commit_activity_change();
+        }
         if tree.document().pending_ops() > 0 {
             self.defer_pending_tree(tree);
             return;
@@ -2134,18 +2170,11 @@ impl RoomActivityPane {
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
-        self.tasks = tree
+        let origin = self.refresh_task_review();
+        let tree_tasks = tree
             .active_workspace()
-            .map(|workspace| workspace.tasks.clone())
-            .unwrap_or_default();
-        self.refresh_task_review();
-        self.tasks.sort_by(|left, right| {
-            (left.status != WorkspaceTaskStatus::Waiting)
-                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
-                .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+            .map_or(&[][..], |workspace| workspace.tasks.as_slice());
+        self.rebuild_tasks_if_changed(origin, tree_tasks);
         self.refresh_agent_startup();
         if self
             .selected_task
@@ -2295,6 +2324,39 @@ impl RoomActivityPane {
     fn agent_startup_state(&self, agent: &str) -> Option<&AgentStartup> {
         self.agent_startup
             .get(&(self.task_room.clone(), agent.to_string()))
+    }
+
+    /// Rebuild the sorted task list only when its source moved: the room,
+    /// the review snapshot it is read from, or the tree's tasks.
+    fn rebuild_tasks_if_changed(&mut self, origin: TaskListOrigin, tree_tasks: &[WorkspaceTask]) {
+        let unchanged = self.task_source.as_ref().is_some_and(|source| {
+            source.room == self.task_room
+                && source.origin == origin
+                && source.tree_tasks.as_slice() == tree_tasks
+        });
+        if unchanged {
+            return;
+        }
+        self.tasks = match origin {
+            TaskListOrigin::Tree => tree_tasks.to_vec(),
+            TaskListOrigin::Review(_) => match &self.task_review {
+                Some(Ok(snapshot)) => snapshot.tasks.clone(),
+                _ => Vec::new(),
+            },
+            TaskListOrigin::Withheld => Vec::new(),
+        };
+        self.tasks.sort_by(|left, right| {
+            (left.status != WorkspaceTaskStatus::Waiting)
+                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
+                .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        self.task_source = Some(TaskListSource {
+            room: self.task_room.clone(),
+            origin,
+            tree_tasks: tree_tasks.to_vec(),
+        });
     }
 
     fn refresh_agent_startup(&mut self) {
@@ -2595,9 +2657,6 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        if self.host.record_finished_runs(tree.document_mut(), records) {
-            tree.commit_activity_change();
-        }
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
@@ -2680,12 +2739,11 @@ impl RoomActivityPane {
             .flat_map(|held| held.keys())
             .filter_map(|id| RecordId::parse(id))
             .collect();
+        self.cold_agent_runs.retain(|id, _| record_ids.contains(id));
         for id in record_ids {
             let runs = records
                 .read(&id, ui::read_runs)
-                .or_else(|| {
-                    local.and_then(|source| source.load_record(&id).map(|doc| ui::read_runs(&doc)))
-                })
+                .or_else(|| local.and_then(|source| self.cold_agent_runs_of(source, &id)))
                 .unwrap_or_default();
             indexed.extend(runs.into_iter().map(|run| IndexedAgentRun {
                 source_record: Some(id.clone()),
@@ -2700,6 +2758,38 @@ impl RoomActivityPane {
         });
         indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
         self.agent_runs = indexed;
+    }
+
+    /// The agent runs persisted record `id` carries, read from `source` only
+    /// when its revision moved since the last read.
+    fn cold_agent_runs_of(
+        &mut self,
+        source: &dyn super::index::PersistedRecordHistory,
+        id: &RecordId,
+    ) -> Option<Vec<AgentRun>> {
+        let revision = source.revision(id);
+        if let Some(revision) = revision
+            && let Some(cached) = self.cold_agent_runs.get(id)
+            && cached.revision == revision
+        {
+            return Some(cached.runs.clone());
+        }
+        let runs = ui::read_runs(&source.load_record(id)?);
+        match revision {
+            Some(revision) => {
+                self.cold_agent_runs.insert(
+                    id.clone(),
+                    ColdAgentRuns {
+                        revision,
+                        runs: runs.clone(),
+                    },
+                );
+            }
+            None => {
+                self.cold_agent_runs.remove(id);
+            }
+        }
+        Some(runs)
     }
 
     pub fn set_excluded_apps(&mut self, apps: Vec<String>) {
@@ -8959,7 +9049,19 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
-        Scope::Action { app, action } => format!("{app}:{action}"),
+        Scope::Action {
+            app,
+            resource,
+            action,
+        } => format!("{app}:{resource}:{action}"),
+        Scope::ActionOnKind { app, kind, action } => t_args(
+            "activity-capability-action-on-kind",
+            &[
+                ("app", app.into()),
+                ("kind", kind.into()),
+                ("action", action.into()),
+            ],
+        ),
     }
 }
 

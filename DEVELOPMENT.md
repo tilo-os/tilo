@@ -346,6 +346,22 @@ Verify the received catalog locally without a network using
 Tests and executables running on the builder use its catalog directly.
 Applications do not download fonts at runtime.
 
+For optimized application iteration, use the existing `thin-app` profile:
+
+```sh
+cargo run --locked --profile thin-app -p ebook
+```
+
+This also builds standalone apps: no `thin` feature or dynamic SDK is required.
+It keeps optimization level 3, omits whole-program LTO, and compiles `tilo-ui`
+with sixteen codegen units. `cargo run --release -p ebook` uses the shipping
+profile's fat LTO and one codegen unit; every app edit repeats that final
+whole-program optimization even when the toolkit is fresh. Use `--release`
+for shipping-profile acceptance and measurements. Keep the same worktree and
+profile between edits so Cargo can reuse their outputs. The first `thin-app`
+build needs its own artifacts; it is not a warm edit measurement. The profile
+remains non-incremental and eligible for sccache.
+
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
 ```sh
@@ -1108,6 +1124,30 @@ example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
 Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
+Agent sessions identified by `CODEX_THREAD_ID`, `CODEX_SESSION_ID` or
+`CLAUDECODE` require a remote-only Cargo executor. Set `QCARGO_REMOTE_CARGO` in
+an untracked developer environment to one executable name or path. The executor
+accepts ordinary Cargo arguments and must fail on remote errors rather than
+compile locally. It may be any Cargo-compatible drop-in or a local adapter that
+configures the chosen remote build service; shell command strings are not
+accepted. Other unattended callers opt into this policy with
+`QCARGO_REMOTE_ONLY=1` in their own environment.
+
+The shim checks this policy before `QCARGO_BYPASS` and container routing. A
+missing executor or a builder failure fails visibly. It sets
+`QCARGO_REMOTE_ACTIVE=1` when invoking the executor: a returned Cargo call in the
+same policy context is rejected before compilation. Executors should not forward
+agent identity, `QCARGO_REMOTE_ONLY` or `QCARGO_REMOTE_ACTIVE` into remote builder
+processes, where ordinary Cargo must run locally. Human shells retain their
+local controls; metadata, formatting and dependency commands can still run
+without compiling. Invoking an absolute Rustup Cargo path bypasses the shim.
+This is a routing guard, not an operating-system execution boundary.
+
+Run `python3 tools/tests/test_cargo_shim_routing.py` for recording-stub routing
+checks; they never invoke Rust. `tools/tests/cargo_shim.sh` also uses stubs to
+verify cache/container environment handling. The separate real-Cargo cache
+policy tests belong on the builder, not on a remote-only development laptop.
+
 It also selects the sccache server, which this route requires: sccache's server
 executes rustc, so it must share the build's mount namespace or it cannot see that
 namespace's headers. distrobox shares the host network namespace and copies the host
@@ -1613,14 +1653,19 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
-  it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
-  `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
-  or on the image. The host package omits this file.
+- **No `/etc/tilo/desktop.toml`.** The host package omits it, so the compositor
+  uses its defaults unless `~/.config/tilo-desktop/desktop.toml` exists.
 
-`/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
-no such unit here, so the permission UI will talk about a path that is not
-mounted.
+`/var/workspace` is the image's `fs.service` mount. The Fedora host payload
+instead packages the existing daemon/admin tool and the user service
+`tilo-files-workspace.service`, using `~/.local/state/tilo/files/mount` on the
+standard XDG profile. It starts only for saved, signed and Files-authorized
+primary state; package installation never substitutes an empty namespace for
+missing recovery data. The host shell exports that root only through the
+launcher's existing capability filter. See [host Files preparation and
+recovery](os/docs/peer-sync.md#fedora-primary-files-service-and-explicit-first-run).
+The Settings Storage pane's host socket wiring is still pending; its image
+socket does not address this user service.
 
 Alongside Tilo packages, the shell scans `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories

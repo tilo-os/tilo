@@ -189,12 +189,53 @@ This covers a governance change on the hop that authenticated it. A relayed
 or delegated governance change — one a member forwards on the governor's
 behalf — needs the operation signed rather than the hop authenticated.
 
+### Reading governance
+
+`tilo_peer_state::room::governance_of` returns a named `RoomGovernance`:
+every governed value exactly as stored, capability and identity rows as
+their raw JSON blobs. Admission compares it byte for byte, so a changed but
+undecodable row is still a change. Decoded views of the same document state
+are cached on the native peer's `CachedDocument`: `policy()` (owner and
+decoded capabilities) and `identities()` (each identity row decoded). A
+document message is authorized from those caches, so it pays no JSON decode
+while the room's governance is unchanged.
+
+Effect receipts are compared by their stored bytes; a receipt is decoded
+only when its bytes differ from what is held. The native peer's receipt
+ledger keeps each receipt as received, never re-encoded.
+
+### Retention
+
+- **Identity admissions.** A governed identity row keeps its first
+  redemption receipt (`admission`) for good, since that is its admission
+  evidence. Of the later receipts (`admissions`) it keeps only the latest
+  `tilo_peer_state::governance::MAX_RETAINED_IDENTITY_ADMISSIONS` (8). No
+  replay protection is lost: every redemption also writes each receipt it
+  has seen into the per-invite `invitation_receipts_v1` ledger, in the same
+  transaction that drops one from the row. That ledger refuses a second
+  redemption of a spent invitation, from any device, and is never pruned.
+- **Effect receipts** are not pruned. They are immutable evidence ("omission
+  cannot erase old evidence"), and dropping one is safe only behind a
+  compaction checkpoint every peer agrees on, which does not exist yet.
+  Admission keeps their per-message cost flat instead: an unchanged receipt
+  is never decoded.
+
 ## Workspace hosts
 
 `crates/hosting/tilo-relay` is the persistent server tier. Despite the retained
 binary name, it is an authenticated Iroh workspace host, not a transport
 relay. Peers prove possession of certified device keys on the `tilo-relay/1`
 ALPN before subscribing.
+
+Devices talk to a host through `crates/hosting/tilo-relay-session`: the
+session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
+anti-entropy, room administration (`RoomAdminClient`) and the workspace join
+client (`WorkspaceJoinClient`). The shell, the action broker, joined rooms and
+the runtime depend on that crate alone; `tilo-relay` is the daemon, depends on
+the session crate and re-exports it under its historic paths, and appears in
+client crates only as a dev-dependency for tests that start a real host. The
+wire messages stay in `tilo-relay-protocol` and the frame codec in
+`tilo-relay-client`.
 
 The shell can attach a host with `ShellNetwork::connect_host`. For unattended
 configuration, `TILO_COLLAB_HOST` accepts an Iroh endpoint id or the JSON

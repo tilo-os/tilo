@@ -202,6 +202,40 @@ impl SecretBackend for SecretService {
         let (app, key) = (app.to_owned(), key.to_owned());
         on_bus(move || remove(&attributes(&app, &key)))
     }
+    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
+        if attributes.is_empty() {
+            return Ok(None);
+        }
+        on_bus({
+            let attributes: HashMap<String, String> = attributes
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect();
+            move || {
+                let attributes = attributes
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str()))
+                    .collect();
+                lookup(&attributes)
+            }
+        })
+    }
+    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
+        if attributes.is_empty() {
+            return Ok(());
+        }
+        let attributes: HashMap<String, String> = attributes
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        on_bus(move || {
+            let attributes = attributes
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect();
+            remove(&attributes)
+        })
+    }
 }
 
 /// Store `value` under `app` and `key` in the default collection.

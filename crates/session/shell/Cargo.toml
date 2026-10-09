@@ -69,7 +69,7 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.
 tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
@@ -206,7 +206,9 @@ tilo-projector = { path = "../../system/projector" }
 zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
-image = { workspace = true, features = ["jpeg", "png", "webp"] }
+# The status bar follows NetworkManager's signals instead of `nmcli monitor`.
+tilo-nm = { path = "../../system/tilo-nm" }
+image ={ workspace = true, features = ["jpeg", "png", "webp"] }
 # The shared preview decoder behind drag previews.
 tilo-thumbnail = { path = "../../media/thumbnail" }
 # Host applications ship SVG icons; rasterised at the size chrome paints them.
@@ -279,9 +281,9 @@ tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The authenticated relay client and co-edit session (`RelayClient`,
 # `RelayCoeditSession`) that carry workspace deltas through a home or
-# provider host, plus the Cloud native-owner path (workspace join, delivery
-# v3, peer actions, sync refresh).
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# provider host, plus room administration and the workspace join client.
+# The relay daemon itself (`tilo-relay`) is a dev-dependency only.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
@@ -312,6 +314,8 @@ tilo-search = { path = "../../sdk/search", features = ["disk"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Native Store publication through the same certified session fixture as Browser.
+store = { path = "../../../apps/store" }
 # Private feedback acceptance invokes the actual Chat action and receipt adapter.
 chat = { path = "../../../apps/chat", default-features = false }
 # Real native editor instances in certified multi-device continuity fixtures.

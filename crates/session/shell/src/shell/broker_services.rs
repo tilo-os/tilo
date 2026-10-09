@@ -435,8 +435,8 @@ fn stage_launch_content(
     {
         return Err("launch content failed integrity validation".into());
     }
-    let dir = xdg_paths::xdg::runtime_dir()
-        .unwrap_or_else(std::env::temp_dir)
+    let dir = tilo_paths::xdg::runtime_dir()
+        .ok_or("launch staging needs XDG_RUNTIME_DIR")?
         .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
     #[cfg(unix)]
@@ -1023,10 +1023,12 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         {
             return Err("explicit confirmation is required".into());
         }
+        // The resource the action is invoked on, as the catalogue checked it.
         if workspace.decide(
             &caller,
             &super::state::ResourceRef::Action {
                 app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                resource: resource.id.as_str().to_owned(),
                 action: request.action.into(),
             },
             super::state::Verb::Admin,
@@ -1107,21 +1109,25 @@ fn govern_elsewhere(
         Operation::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         } => DesktopCommand::GrantAppAction {
             app,
             target_app,
+            resource,
             action,
             lifetime,
         },
         Operation::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         } => DesktopCommand::RevokeAppAction {
             app,
             target_app,
+            resource,
             action,
         },
     };
@@ -1303,7 +1309,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             &request.room,
             &label(&request.app_id),
             &label(&request.target_app),
-            &request.action_label,
+            &format!("{} · {}", request.resource_label, request.action_label),
             answer.lifetime(),
         );
         let _ = tree.append_workspace_effect_receipt(
@@ -1527,13 +1533,13 @@ pub fn native_services(
         .zip(settings_store::installed_source())
         .map(|(tree, source)| {
             Arc::new(super::display_control::NativeDisplayControl {
-                tree: Arc::downgrade(tree),
+                tree: tree.downgrade(),
                 source,
             }) as Arc<dyn tilo_action_broker::services::DisplayControlServices>
         });
     let local_person = membership.as_ref().map(|tree| {
         Arc::new(super::local_person::NativeLocalPerson {
-            tree: Arc::downgrade(tree),
+            tree: tree.downgrade(),
         }) as Arc<dyn tilo_action_broker::services::LocalPersonServices>
     });
     HostServices {
@@ -1585,7 +1591,7 @@ fn launchable_catalogue_path() -> Option<std::path::PathBuf> {
     if cfg!(test) {
         return None;
     }
-    xdg_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
+    tilo_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
 }
 
 /// A broker over `membership` with the native services an action host

@@ -6914,10 +6914,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self
-                    .permissions
-                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
-                {
+                if !self.permissions.permits_invocation(
+                    &app_id,
+                    &address.resource,
+                    spec,
+                    arguments.as_ref(),
+                    argument,
+                ) {
                     return Err(crate::bound_dispatch::denied(spec));
                 }
                 crate::invocation_scope::check_continuation(
@@ -7058,6 +7061,7 @@ impl FrameHarness {
                 if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
+                    &intent.address.resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7167,6 +7171,7 @@ impl FrameHarness {
         if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
+            &address.resource,
             spec,
             arguments.as_ref(),
             None,
@@ -9138,15 +9143,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::percent(1.0),
                 },
                 ..Style::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy
@@ -9291,9 +9295,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -13680,12 +13682,7 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x + layout.size.width),
-                origin.y + f64::from(layout.location.y + layout.size.height),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(
@@ -13817,13 +13814,7 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::from_origin_size(
-                (
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(

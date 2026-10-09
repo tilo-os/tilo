@@ -120,6 +120,30 @@ pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Governance action taking such a grant back.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 
+/// The resource the workspace publishes its governance actions on, for the
+/// room `room`. An action grant names a resource, so a grant of a
+/// governance action names this one.
+#[must_use]
+pub fn governance_resource_id(room: &RoomId) -> String {
+    format!("workspace.permissions:{room}")
+}
+
+/// The resource the workspace publishes one permission profile on, named
+/// `name`, with that profile's own `profile.assign`. A grant of assigning
+/// that one profile names this resource.
+#[must_use]
+pub fn permission_profile_resource_id(room: &RoomId, name: &str) -> String {
+    format!(
+        "workspace.permission-profile:{room}:{}",
+        hex::encode(
+            blake3::hash(name.as_bytes())
+                .as_bytes()
+                .get(..12)
+                .unwrap_or_default()
+        )
+    )
+}
+
 /// A role's stable name, as a collaborator row records it
 /// ([`crate::Collaborator::role_id`]). Surfaces translate it for display
 /// through [`role_from_id`]; it is never shown as is.
@@ -366,7 +390,12 @@ impl Workspace {
     /// without `Admin` cannot widen anyone's access, including their
     /// own. `None` when the grantor lacks that authority.
     pub fn grant_as_at(&mut self, grantor: &UserId, cap: CapOverride, now: u64) -> Option<String> {
-        if !self.may_administer_at(grantor, now) {
+        // Workspace policy never matches an action-on-every-resource-of-a-kind
+        // scope, which only a shortcut's grant is checked against: as a
+        // workspace capability it would be a grant or restriction that does
+        // nothing.
+        if !self.may_administer_at(grantor, now) || matches!(cap.scope, Scope::ActionOnKind { .. })
+        {
             return None;
         }
         let cap = cap.granted_by(Principal::Person(grantor.clone()));
@@ -392,6 +421,17 @@ impl Workspace {
         )
     }
 
+    /// The governance action `action` of this workspace, as a capability
+    /// check names it.
+    #[must_use]
+    pub fn governance_action(&self, action: &str) -> ResourceRef {
+        ResourceRef::Action {
+            app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+            resource: governance_resource_id(&self.room),
+            action: action.into(),
+        }
+    }
+
     /// Actor-general form used by the broker. Agents and apps have no ambient
     /// role; they can manage profiles only when explicitly granted this exact
     /// governance action (or the containing governance app/workspace).
@@ -409,10 +449,7 @@ impl Workspace {
     ) -> Result<(), PermissionProfileMutationError> {
         if !self.allows_at(
             actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_SAVE_ACTION_ID.into(),
-            },
+            &self.governance_action(PROFILE_SAVE_ACTION_ID),
             Verb::Admin,
             now,
         ) {
@@ -476,23 +513,29 @@ impl Workspace {
         expiry: Expiry,
         now: u64,
     ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        if !self.allows_at(
-            actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_ASSIGN_ACTION_ID.into(),
-            },
-            Verb::Admin,
-            now,
-        ) {
-            return Err(PermissionProfileMutationError::NotAdministrator);
-        }
         let profile = self
             .permission_profiles
             .iter()
             .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
-            .cloned()
-            .ok_or(PermissionProfileMutationError::NotFound)?;
+            .cloned();
+        // Assigning is published on the workspace's permissions and on each
+        // profile's own resource: a grant on either reaches this profile.
+        let on_profile = profile.as_ref().map(|profile| ResourceRef::Action {
+            app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+            resource: permission_profile_resource_id(&self.room, &profile.name),
+            action: PROFILE_ASSIGN_ACTION_ID.into(),
+        });
+        if !self.allows_at(
+            actor,
+            &self.governance_action(PROFILE_ASSIGN_ACTION_ID),
+            Verb::Admin,
+            now,
+        ) && !on_profile
+            .is_some_and(|resource| self.allows_at(actor, &resource, Verb::Admin, now))
+        {
+            return Err(PermissionProfileMutationError::NotAdministrator);
+        }
+        let profile = profile.ok_or(PermissionProfileMutationError::NotFound)?;
         let grantor = actor
             .principals
             .iter()

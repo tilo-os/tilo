@@ -102,7 +102,10 @@ guest netns (owned by a user namespace the supervisor owns)
   `perm allow-host '*.example.com'` the domain and every name under it
   (recorded as `.example.com`, the capability vocabulary's spelling);
   `perm allow-host '*'` everything. An address cannot be granted: it would
-  bypass the resolver that decides.
+  bypass the resolver that decides. The grammar is the one every `NetHost`
+  grant is read with (`collab_types::caps::NetHostPattern`), so a host
+  allowed here means the same to an app; only `*` differs, by backend
+  (`docs/architecture/security.md`, "One grant grammar, two backends").
 - **No address literal gets through.** An address is reachable only after the
   stub answered it for a granted name, and only until the answer ages out.
   Connections already open survive that; new ones need a new answer.

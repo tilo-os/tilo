@@ -859,7 +859,7 @@ pub(crate) fn grant_file_manager_home(
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
     }
-    let Some(home) = xdg_paths::home() else {
+    let Some(home) = tilo_paths::home() else {
         return false;
     };
     let Some(ws) = tree
@@ -980,6 +980,44 @@ fn report_refused_launch(
     ActionError::Refused(format!("Couldn't open {display_name}: {message}"))
 }
 
+/// Reopening the app while its saved card is focused recovers that window
+/// and acknowledges queued/opening recovery without another document. Other activation keeps its
+/// ordinary placement; no failed sibling is selected by app identity alone.
+fn reopen_focused_local_card(chrome: &Chrome, package_id: &str) -> bool {
+    let target = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        crate::shell::window_actions::focused_group(&state).and_then(|focused| {
+            let workspace = tree.desktop.active_workspace()?;
+            workspace.strips.iter().find_map(|strip| {
+                let group = strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == focused)?;
+                let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
+                match &tab.tile {
+                    crate::shell::state::TileContent::LocalApp { app_id, .. }
+                        if launcher::app_id_matches_package(app_id, package_id) =>
+                    {
+                        Some((workspace.id, strip.id, group.id, tab.id, app_id.clone()))
+                    }
+                    _ => None,
+                }
+            })
+        })
+    };
+    let Some((workspace, strip, group, tab, app_id)) = target else {
+        return false;
+    };
+    let mut state = chrome.borrow_mut();
+    let accepted =
+        crate::shell::peer_windows::reopen_local_restore(&mut state.tree_mut(), tab, &app_id);
+    if accepted {
+        state.focus_tab(workspace, strip, group, tab);
+    }
+    accepted
+}
+
 fn launch_resolved_installed_app(
     chrome: &Chrome,
     app: &launcher::InstalledApp,
@@ -987,6 +1025,9 @@ fn launch_resolved_installed_app(
     let package_id = app.package_id.as_str();
     let display_name = app.display_name.as_str();
     grant_user_home_to_file_manager(chrome, package_id);
+    if reopen_focused_local_card(chrome, package_id) {
+        return Ok(());
+    }
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`.
     let already = {
@@ -1379,12 +1420,12 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -1417,7 +1458,7 @@ mod tests {
         tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
-        let handle = Arc::new(RwLock::new(tree));
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         let chrome = ChromeState::new_with_handle(handle.clone());
         let provider = ApplicationsProvider::new();
         let rows = provider.results_for(
@@ -1445,6 +1486,95 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn opening_the_focused_failed_app_reuses_its_saved_window() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: next_id(),
+            tabs: vec![Tab {
+                id: tab,
+                title: "Browser".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.browser".into(),
+                    label: "Browser".into(),
+                    note: "Failed to open".into(),
+                },
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        tree.remember_local_app_record(tab, 8183);
+        let records = tree.local_app_records.clone();
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let rows = ApplicationsProvider::new().results_for(
+            "browser",
+            vec![app("so.tilo.browser", "Browser")],
+            OpenTarget::Beside,
+        );
+        let mut doc = AutoCommit::new();
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("retry the focused saved window");
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("repeated activation while the saved recovery is queued");
+        let state = handle.read();
+        let tabs = &state.desktop.workspaces[0].strips[0].window_groups[0].tabs;
+        assert_eq!(tabs.len(), 1, "Applications must not create another tab");
+        assert_eq!(tabs[0].id, tab);
+        assert!(matches!(&tabs[0].tile, TileContent::LocalApp { note, .. } if note.is_empty()));
+        assert_eq!(state.local_app_records, records);
+        drop(state);
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab));
+        assert!(chrome.borrow().notifications().is_empty());
+        {
+            let mut state = handle.write();
+            let TileContent::LocalApp { note, .. } =
+                &mut state.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("the saved card remains local");
+            };
+            *note = crate::shell::peer_windows::OPENING.into();
+            drop(state);
+        }
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("opening recovery is already accepted");
+        let state = handle.read();
+        assert!(
+            matches!(&state.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            TileContent::LocalApp { note, .. } if note == crate::shell::peer_windows::OPENING)
+        );
+        assert_eq!(state.local_app_records, records);
+        drop(state);
+        assert!(chrome.borrow().notifications().is_empty());
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {

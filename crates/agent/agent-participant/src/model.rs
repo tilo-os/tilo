@@ -4,8 +4,9 @@
 //! steps is read exactly as [`crate::DirectPlanner`] reads it; any other
 //! text goes to a [`PlanModel`]. The model is `apps/agent`'s action
 //! discovery (`tilo_agent::tools` over a `tilo_agent::surface::Catalogue`):
-//! it lists and describes operations through read-only tools and finishes
-//! with a `plan` naming only operations those tools returned. Its answer is
+//! it is shown the published operations with the task, lists and describes
+//! more through read-only tools when it needs to, and finishes with a `plan`
+//! naming only operations it was shown. Its answer is
 //! untrusted: every step is mapped back to an offered address here, and then
 //! checked against the delegation and the app's door by the participant like
 //! any other step.
@@ -703,12 +704,17 @@ impl PlanModel for OpenAiModel {
         let mut run = [0_u8; 16];
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
+        // The published operations come with the task (and are revealed), so
+        // a task they answer is planned on the first turn.
+        let task = tilo_agent::model::action_user_turn(task, &[], catalogue, &mut revealed);
         let mut messages = vec![
             serde_json::json!({
                 "role": "system",
                 "content": "You drive Tilo apps only through the resource/action tools. \
-                    Discover operations with the listing tools before planning, describe any \
-                    operation that takes arguments, and finish by calling `plan` exactly once. \
+                    The task lists the operations published right now with their parameters: \
+                    when one of them does what is asked, plan it straight away. Use the listing \
+                    tools only for what that list leaves out, describe an operation only when \
+                    its arguments are unclear, and finish by calling `plan` exactly once. \
                     Preserve every argument's declared JSON type. Never invent an operation id \
                     or parameter. When an app you need is not open, plan its open operation and \
                     put the rest of the request in `then`.",
@@ -719,7 +725,7 @@ impl PlanModel for OpenAiModel {
             let body = self.target.shape(serde_json::json!({
                 "model": self.model,
                 "messages": messages,
-                "tools": openai::functions(&tilo_agent::tools::definitions(&revealed, most_steps)),
+                "tools": openai::functions(&tilo_agent::tools::definitions(most_steps)),
                 "tool_choice": "required",
                 "max_tokens": TURN_OUTPUT_TOKENS,
             }));
@@ -739,11 +745,16 @@ impl PlanModel for OpenAiModel {
             }
             messages.push(reply.message);
             for call in &reply.calls {
-                if call.name == tilo_agent::tools::PLAN {
-                    return tilo_agent::tools::read_plan(&call.input, &revealed, most_steps);
-                }
-                let result =
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                let result = if call.name == tilo_agent::tools::PLAN {
+                    // A refused plan goes back to the model with the reason
+                    // (and the shown ids it may have meant) for another try.
+                    match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
+                        Ok(answer) => return Ok(answer),
+                        Err(error) => tilo_agent::tools::plan_refused(&error),
+                    }
+                } else {
+                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
+                };
                 messages.push(openai::tool_result(call, &result));
             }
         }
@@ -995,6 +1006,78 @@ mod tests {
         assert_eq!(second["max_completion_tokens"], TURN_OUTPUT_TOKENS);
         assert_eq!(second["messages"][3]["role"], "tool");
         assert!(second.get("max_tokens").is_none());
+    }
+
+    /// A chat-completions answer calling `plan` with one step, `operation`.
+    fn plan_answer(id: &str, operation: &str) -> String {
+        let answer = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": id, "type": "function", "function": {"name": "plan",
+                "arguments": serde_json::json!({"steps": [{"operation": operation, "arguments": {}}],
+                    "why": "open", "then": "add a note"}).to_string()}}]}, "finish_reason": "tool_calls"}]});
+        http("200 OK", &answer.to_string())
+    }
+
+    fn standard(url: &str) -> OpenAiModel {
+        OpenAiModel::new(
+            url,
+            "pinned",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        )
+    }
+
+    /// The published operations come with the task, so a task they answer
+    /// is planned in ONE request — no listing or describing turn first.
+    #[test]
+    fn an_operation_the_task_turn_lists_is_planned_in_one_request() {
+        let offer = open_notes().offers[0].id();
+        let (url, sent) = endpoint(vec![plan_answer("c1", &offer)]);
+        let answer = standard(&url)
+            .choose("open notes then add a note", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer.clone()]);
+        let requests: Vec<(String, String)> = sent.try_iter().collect();
+        assert_eq!(requests.len(), 1, "one model turn");
+        let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        let task = first["messages"][1]["content"].as_str().unwrap();
+        assert!(task.contains(&offer), "{task}");
+        assert!(task.contains("open notes then add a note"), "{task}");
+        let system = first["messages"][0]["content"].as_str().unwrap();
+        assert!(!system.contains("before planning"), "{system}");
+    }
+
+    /// An id the conversation never showed is refused back to the model with
+    /// what to name instead; the corrected plan is taken. The tools are the
+    /// same bytes on every turn, so the prompt prefix stays cacheable.
+    #[test]
+    fn an_unshown_operation_is_refused_back_to_the_model_with_stable_tools() {
+        let offer = open_notes().offers[0].id();
+        let invented = "app.so.tilo.sheets#open";
+        let (url, sent) = endpoint(vec![plan_answer("c1", invented), plan_answer("c2", &offer)]);
+        let answer = standard(&url)
+            .choose("open notes then add a note", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer.clone()]);
+        let requests: Vec<serde_json::Value> = sent
+            .try_iter()
+            .map(|(_, body)| serde_json::from_str(&body).unwrap())
+            .collect();
+        assert_eq!(requests.len(), 2);
+        let refusal = &requests[1]["messages"][3];
+        assert_eq!(refusal["role"], "tool");
+        assert_eq!(refusal["tool_call_id"], "c1");
+        let text = refusal["content"].as_str().unwrap();
+        assert!(text.contains(invented), "{text}");
+        assert!(text.contains("nothing was performed"), "{text}");
+        assert!(
+            text.contains(&format!("Listed ids for that action: {offer}")),
+            "{text}"
+        );
+        let tools = |request: &serde_json::Value| serde_json::to_string(&request["tools"]).unwrap();
+        assert_eq!(tools(&requests[0]), tools(&requests[1]));
+        assert!(!tools(&requests[0]).contains("\"enum\""));
+        assert_eq!(requests[0]["messages"][0], requests[1]["messages"][0]);
     }
 
     #[test]

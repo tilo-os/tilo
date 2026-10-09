@@ -8,9 +8,11 @@
 //! the connection closes; the reader stops on EOF / decode error;
 //! either termination cancels the other via drop.
 
+mod access_audit;
 pub mod sync_refresh;
 
 use crate::store::bounded::Invariant;
+use access_audit::AccessAudit;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -500,9 +502,9 @@ where
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
-    let mut access_audit = tokio::time::interval(std::time::Duration::from_secs(1));
-    access_audit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    access_audit.tick().await;
+    let mut authority = crate::authority_epoch::subscribe();
+    authority.mark_unchanged();
+    let mut access_audit = AccessAudit::new();
 
     let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let session = SessionCtx {
@@ -544,17 +546,46 @@ where
             Arc<tokio::sync::OwnedSemaphorePermit>,
         )> = std::collections::VecDeque::new();
         let mut catching_up = false;
+        let mut reader_open = true;
         loop {
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
-                // Prefer an already-readable inbound frame over the periodic
-                // membership audit. After a live revoke the audit and a refused
-                // delta can become ready together; the delta must win so the
-                // peer still receives NotAuthorised rather than a bare close.
+                if !reader_open {
+                    // Keep the authenticated lease live until every owner job
+                    // admitted before the FIN has passed a durable barrier.
+                    for id in &subscribed {
+                        let workspace = session.workspaces.lock().await.get(id).cloned();
+                        if let Some(workspace) = workspace {
+                            let owner = crate::persistence::handle(&workspace).await;
+                            let done = owner
+                                .submit_prepared_wait(
+                                    1,
+                                    async { Ok(()) },
+                                    |_, ()| Ok(()),
+                                    |result| async { result },
+                                )
+                                .await?;
+                            crate::persistence::receipt(done).await?;
+                        }
+                    }
+                    return Ok::<(), PeerError>(());
+                }
+                // Prefer an already-readable inbound frame over the membership
+                // audit. After a live revoke the audit and a refused delta can
+                // become ready together; the delta must win so the peer still
+                // receives NotAuthorised rather than a bare close.
+                access_audit.cover(&subscribed);
                 tokio::select! {
                     biased;
-                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
+                    frame = reader.read_next() => {
+                        if let Some(frame) = frame? {
+                            (frame, None)
+                        } else {
+                            reader_open = false;
+                            continue;
+                        }
+                    },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
                     // for this connection is written, so its replay starts
@@ -567,7 +598,14 @@ where
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    () = tokio::time::sleep_until(access_audit.due()) => {
+                        let watched = audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?;
+                        access_audit.audited(&peer, &agents, &subscribed, watched);
+                        continue;
+                    }
+                    // The epoch's sender is a process-wide static and never
+                    // closes, so this cannot spin on an error.
+                    _ = authority.changed() => { access_audit.changed(); continue; }
                 }
             };
             match frame {
@@ -625,8 +663,8 @@ where
                             tokio::select! {
                                 biased;
                                 result = &mut operation => break result?,
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
                                     let can_route = private_may_overtake(&frame, blocked_room, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         // The state future may hold the authorization lane
@@ -705,8 +743,8 @@ where
                                     result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                                     break;
                                 }
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
                                     let can_route = private_may_overtake(&frame, None, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
@@ -908,38 +946,9 @@ fn private_may_overtake<'a>(
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
 }
 
-// Hash the same signed message bytes as the native publication cursor. This
-// target is opt-in: ordinary relay operation does not decode or hash for tracing.
-pub(crate) fn trace_native_publication(
-    phase: &str,
-    envelope: &Envelope,
-    recipient: Option<&[u8; 32]>,
-) {
-    if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
-        return;
-    }
-    let Envelope::Delta {
-        workspace_id,
-        author_device_public_key,
-        delta,
-        ..
-    } = envelope
-    else {
-        return;
-    };
-    let Some(payload) = crate::coedit::CoeditPayload::decode(delta) else {
-        return;
-    };
-    let (kind, body) = match payload {
-        crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
-        crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
-    };
-    tracing::debug!(target: "tilo_relay::native_publication",
-        phase, id = %blake3::hash(&body), kind, workspace_id,
-        author = %hex::encode(&author_device_public_key[..4]),
-        recipient = ?recipient.map(|key| hex::encode(&key[..4])),
-        "native relay publication hop");
-}
+// Both ends trace the same publication hop; the client side lives with the
+// session client.
+pub(crate) use tilo_relay_session::trace_native_publication;
 
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
@@ -1551,9 +1560,20 @@ fn authorize_replay_now(
     source: &StateSource,
     authority: &crate::persistence::ReplayAuthority,
 ) -> Result<(), StoreError> {
-    let members = store.load_membership()?;
+    // The in-memory set while the membership watch vouches for it; otherwise
+    // the file, as a fresh membership reload would read it.
+    let current = workspace.blocking_lock().membership_is_current();
+    let members = if current {
+        None
+    } else {
+        Some(store.load_membership()?)
+    };
     let runtime = workspace.blocking_lock();
-    let member = (members.contains(&source.peer.device_public_key)
+    let listed = members.as_ref().map_or_else(
+        || runtime.membership.contains(&source.peer.device_public_key),
+        |members| members.contains(&source.peer.device_public_key),
+    );
+    let member = (listed
         && runtime
             .membership_ceiling
             .as_ref()
@@ -1640,17 +1660,21 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
-/// Periodic membership + revocation re-check for every workspace this
-/// peer is subscribed to. Reloads membership from disk each tick —
-/// the only way a removal made while a device is connected takes
-/// effect promptly — and ends the session if the device's own cert
-/// was revoked or it fell out of membership.
+/// Membership + revocation re-check for every workspace this peer is
+/// subscribed to, run when [`AccessAudit`] says. Reloads membership
+/// from disk when the membership watch saw it change, or on every audit
+/// while no live watch covers the room, and ends the session if the
+/// device's own cert was revoked or it fell out of membership.
+///
+/// Returns whether every subscribed room's membership is change-notified,
+/// so the next audit can wait for a change instead of the disk.
 async fn audit_subscriber_access(
     revocations: &Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
-) -> Result<(), PeerError> {
+) -> Result<bool, PeerError> {
+    let mut watched = true;
     if revocations
         .read()
         .is_ok_and(|list| list.is_revoked(&peer.device_public_key))
@@ -1676,6 +1700,7 @@ async fn audit_subscriber_access(
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
+        watched &= workspace.membership_is_current();
         if peer.role == crate::auth::PeerRole::PeerRelay
             && peer.user_public_key != *session.own_user_public_key
         {
@@ -1705,7 +1730,7 @@ async fn audit_subscriber_access(
             ));
         }
     }
-    Ok(())
+    Ok(watched)
 }
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
@@ -2721,7 +2746,6 @@ impl ReplayPendingWork {
 struct CheckpointBatchInput {
     continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
-    delta: Vec<u8>,
     raw: Vec<u8>,
     channel: [u8; 32],
     incoming: [u8; 32],
@@ -2758,9 +2782,8 @@ fn new_checkpoint_batch(
                 "checkpoint batch contained non-delta",
             ));
         };
-        let delta = delta.clone();
-        let Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) =
-            crate::coedit::CoeditPayload::decode(&delta)
+        let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
         else {
             return Err(crate::persistence::error(
                 "checkpoint batch contained non-checkpoint",
@@ -2794,7 +2817,6 @@ fn new_checkpoint_batch(
         inputs.push(CheckpointBatchInput {
             continuity,
             envelope: Arc::new(envelope),
-            delta,
             raw,
             channel,
             incoming,
@@ -2916,6 +2938,7 @@ fn commit_log_and_materialize(
         .ok_or_else(|| crate::persistence::error("checkpoint sequence was not reserved"))?;
     let Envelope::Delta {
         author_device_public_key,
+        delta,
         ..
     } = &*input.envelope
     else {
@@ -2928,9 +2951,9 @@ fn commit_log_and_materialize(
         received_at_ns: sequence,
         author_device_hex: hex::encode(author_device_public_key),
         authored_at_ns: sequence,
-        delta_len: input.delta.len() as u64,
+        delta_len: delta.len() as u64,
     });
-    state.materialize(&input.delta);
+    state.materialize(delta);
     Ok(input
         .stage
         .as_ref()
@@ -4147,6 +4170,7 @@ async fn enqueue_checkpoint_prefix(
                         .invariant("checkpoint input missing")?;
                     let Envelope::Delta {
                         author_device_public_key,
+                        delta,
                         ..
                     } = &*input.envelope
                     else {
@@ -4163,7 +4187,7 @@ async fn enqueue_checkpoint_prefix(
                             &work_source,
                             *author_device_public_key,
                             role,
-                            input.delta.len(),
+                            delta.len(),
                         )
                         .await?
                     };
@@ -4385,6 +4409,65 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// Correlate admission and owner phases without retaining a signed payload.
+#[derive(Clone)]
+struct StateAdmissionTrace {
+    id: blake3::Hash,
+    kind: &'static str,
+    workspace_id: u64,
+    author: [u8; 4],
+}
+
+impl StateAdmissionTrace {
+    fn new(envelope: &Envelope) -> Option<Self> {
+        if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+            return None;
+        }
+        let Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } = envelope
+        else {
+            return None;
+        };
+        let payload = crate::coedit::CoeditPayload::decode(delta)?;
+        let (kind, body) = match payload {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+            crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+        };
+        let mut author = [0; 4];
+        author.copy_from_slice(&author_device_public_key[..4]);
+        Some(Self {
+            id: blake3::hash(&body),
+            kind,
+            workspace_id: *workspace_id,
+            author,
+        })
+    }
+
+    fn emit(&self, phase: &str) {
+        tracing::debug!(target: "tilo_relay::native_publication",
+            phase, id = %self.id, kind = self.kind,
+            workspace_id = self.workspace_id,
+            author = %hex::encode(self.author),
+            "native relay publication hop");
+    }
+}
+
+/// A dropped admission future must be distinguishable from a slow owner job.
+struct AdmissionWaitTrace(Option<StateAdmissionTrace>);
+
+impl Drop for AdmissionWaitTrace {
+    fn drop(&mut self) {
+        if let Some(trace) = &self.0 {
+            trace.emit("persistence_admission_cancelled");
+        }
+    }
+}
+
 /// Admit `envelope`, authored by this host's own device, through the
 /// workspace's ordered persistence owner, as a device's commit is admitted.
 /// Resolves with its host order once it is durable and published.
@@ -4478,6 +4561,8 @@ async fn enqueue_state_inner(
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
     trace_native_publication("persistence_admission_wait", &envelope, None);
+    let admission_trace = StateAdmissionTrace::new(&envelope);
+    let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
@@ -4496,6 +4581,8 @@ async fn enqueue_state_inner(
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let durable_sequence = durable.clone();
+    let operation_trace = admission_trace.clone();
+    let completion_trace = admission_trace.clone();
     let completion = Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
@@ -4569,6 +4656,9 @@ async fn enqueue_state_inner(
         },
         move |state, prepared| {
             if commit.is_none() {
+                if let Some(trace) = &operation_trace {
+                    trace.emit("persistence_owner_started");
+                }
                 let (recipients, sessions, session_lives, replay_targets, logical_offline_bytes) =
                     prepared.take().invariant("ordered recipients")?;
                 let envelope = envelope.take().invariant("admitted envelope")?;
@@ -4600,11 +4690,9 @@ async fn enqueue_state_inner(
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
                 let retention =
-                    crate::coedit::CoeditPayload::decode(delta).map(|payload| match payload {
-                        crate::coedit::CoeditPayload::Checkpoint { channel, .. } => (channel, None),
-                        crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                            (channel, Some(seq))
-                        }
+                    crate::coedit::retention_metadata(delta).map(|(channel, kind)| match kind {
+                        crate::coedit::RetentionKind::Checkpoint => (channel, None),
+                        crate::coedit::RetentionKind::Delta => (channel, Some(seq)),
                     });
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
@@ -4939,6 +5027,13 @@ async fn enqueue_state_inner(
                 Ok(commit)
             }
             .await;
+            if let Some(trace) = &completion_trace {
+                trace.emit(if result.is_ok() {
+                    "persistence_completed"
+                } else {
+                    "persistence_failed"
+                });
+            }
             if crate::persistence::correlated_diagnostics() && let Err(error) = &result {
                 tracing::info!(phase = "state_commit_error", error = %error);
             }
@@ -4950,7 +5045,22 @@ async fn enqueue_state_inner(
             result
         },
     ))
-    .await?;
+    .await;
+    wait_trace.0 = None;
+    let completion = match completion {
+        Ok(completion) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admitted");
+            }
+            completion
+        }
+        Err(error) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admission_failed");
+            }
+            return Err(error.into());
+        }
+    };
     Ok(AdmittedState {
         completion,
         sequence: durable,
@@ -5117,14 +5227,15 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
-    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+    // The tap hands the body to another task, so it needs the one owned copy;
+    // it is taken after the workspace lock is released.
+    let governor_tap = ws.lock().await.governor_tap.clone();
+    let governor = governor_tap.and_then(|tap| {
         let Envelope::Delta { delta, .. } = &env else {
             return None;
         };
-        match crate::coedit::CoeditPayload::decode(delta)? {
-            crate::coedit::CoeditPayload::Checkpoint { body, .. }
-            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
-        }
+        let (_, _, body) = crate::coedit::retention_view(delta)?;
+        Some((tap, body.to_vec()))
     });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
@@ -5737,11 +5848,13 @@ struct RemoteActionRoute {
 /// hand it to the addressed device's live connection, or — when addressed to
 /// this relay — to the app-serving plane. Never stored, never executed by the
 /// relay itself; every failure is answered as undeliverable so the sender
-/// need not wait out a timeout.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
+/// need not wait out a timeout, with a reason that leads with
+/// [`UnavailableReason::wire_token`].
+///
+/// Both ends are re-authorised on every frame under a fresh membership read
+/// with [`action_peer_admitted`], the rule the v2 private lane uses: the
+/// connection-local `subscribed` list alone goes stale the moment a device is
+/// removed, revoked, or its agent delegation lapses.
 async fn handle_remote_action(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -5749,38 +5862,71 @@ async fn handle_remote_action(
     route: RemoteActionRoute,
     frame: Vec<u8>,
 ) -> Option<Envelope> {
+    use UnavailableReason as U;
     let RemoteActionRoute {
         workspace_id,
         version,
         to,
     } = route;
-    let undeliverable = |reason: &str| {
+    let refuse = |reason: UnavailableReason, detail: &str| {
         Some(Envelope::RemoteActionUndeliverable {
             workspace_id,
             to_device_public_key: to,
-            reason: reason.to_string(),
+            reason: format!("{}: {detail}", reason.wire_token()),
         })
     };
     if version != crate::transport::REMOTE_ACTION_ENVELOPE_VERSION {
-        return undeliverable("unsupported remote action envelope version");
+        return refuse(
+            U::InvalidRequest,
+            "unsupported remote action envelope version",
+        );
     }
     if !subscribed.contains(&workspace_id) {
-        return undeliverable("sender is not subscribed to the workspace");
+        return refuse(
+            U::NotAuthorised,
+            "sender is not subscribed to the workspace",
+        );
     }
     if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
-        return undeliverable("remote action frame exceeds the limit");
+        return refuse(U::InvalidRequest, "remote action frame exceeds the limit");
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refuse(U::NotAuthorised, "workspace is not bound on this relay");
+    };
+    let Ok(mut wr) = crate::workspace_io::fresh_membership(&ws).await else {
+        return refuse(
+            U::AdmissionUnavailable,
+            "workspace membership is unreadable",
+        );
+    };
+    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
+        || !current_session(&wr, peer, session.outbound)
+    {
+        return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
     if to == *session.own_device_public_key {
+        // Never hold the room across the plane: it may take its time.
+        drop(wr);
         let Some(plane) = session.app_serving else {
-            return undeliverable("this host does not serve apps");
+            return refuse(U::UnsupportedPeer, "this host does not serve apps");
         };
         return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
-            .unwrap_or_else(undeliverable);
+            .unwrap_or_else(|(reason, detail)| refuse(reason, detail));
     }
-    let ws = {
-        let map = session.workspaces.lock().await;
-        map.get(&workspace_id).cloned()
+    // Every production subscription registers its authenticated peer beside
+    // its subscriber, so the addressee is re-authorised from it.
+    let Some(target) = wr.state_sessions.get(&to) else {
+        return refuse(
+            unavailable_target(&wr, &to),
+            "addressed device is not connected to the workspace",
+        );
     };
+    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err() {
+        return refuse(
+            U::NotAuthorised,
+            "addressed device may not act in the workspace",
+        );
+    }
     let stamped = Envelope::RemoteAction {
         workspace_id,
         version,
@@ -5789,14 +5935,15 @@ async fn handle_remote_action(
         from_user_public_key: peer.user_public_key,
         frame,
     };
-    let delivered = match ws {
-        Some(ws) => ws.lock().await.route_directed(&to, stamped),
-        None => false,
-    };
+    let delivered = wr.route_directed(&to, stamped);
+    drop(wr);
     if delivered {
         None
     } else {
-        undeliverable("addressed device is not connected to the workspace")
+        refuse(
+            U::Offline,
+            "addressed device is not connected to the workspace",
+        )
     }
 }
 
@@ -5840,16 +5987,22 @@ async fn route_record_content(
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when
-/// the frame cannot be used.
+/// the frame cannot be used. The caller was already admitted for the room
+/// by [`handle_remote_action`], agent delegation included.
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     plane: &dyn crate::app_serving::AppServingPlane,
     workspace_id: u64,
     frame: &[u8],
-) -> Result<Option<Envelope>, &'static str> {
+) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
     use tilo_actions::remote::{Caller, RemoteActionFrame};
-    let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
+    let request = RemoteActionFrame::decode(frame).map_err(|_| {
+        (
+            UnavailableReason::InvalidRequest,
+            "malformed remote action frame",
+        )
+    })?;
     let agent = session
         .agents
         .read()
@@ -5862,7 +6015,9 @@ fn serve_locally(
             peer.user_public_key,
             peer.device_public_key,
         ),
-        Some(None) => return Err("the agent was withdrawn"),
+        Some(None) => {
+            return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
+        }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
@@ -6142,6 +6297,26 @@ fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedP
         || wr.admitted_users.contains(&peer.user_public_key)
 }
 
+/// May this connection originate (or receive) a remote action in this room
+/// right now? One rule for v1 `RemoteAction` and v2 `Directed`: a current,
+/// unrevoked, trusted device certificate; an agent only inside its live
+/// delegation; and current room membership. Whether it is the caller's own
+/// session is a separate check, since only the caller's channel is known.
+fn action_peer_admitted(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+) -> Result<(), UnavailableReason> {
+    if !current_action_peer(peer, session)
+        || agent_admits(session.agents, &peer.device_public_key, workspace_id).is_err()
+        || !current_member(wr, peer)
+    {
+        return Err(UnavailableReason::NotAuthorised);
+    }
+    Ok(())
+}
+
 fn unavailable_target(
     wr: &crate::workspace::WorkspaceRuntime,
     target: &[u8; 32],
@@ -6200,8 +6375,8 @@ async fn private_membership<'a>(
     failure: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, crate::workspace::WorkspaceRuntime>, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !current_action_peer(peer, session)
-        || !current_member(&runtime, peer)
+    let workspace_id = runtime.store.workspace_id();
+    if action_peer_admitted(&runtime, peer, session, workspace_id).is_err()
         || !current_session(&runtime, peer, session.outbound)
     {
         return Err(PeerError::Protocol(failure.into()));
@@ -6381,7 +6556,8 @@ async fn route_private(
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some(ws) = private_workspace(action.room, peer, session).await? else {
+    let Some((workspace_id, ws)) = private_workspace_binding(action.room, peer, session).await?
+    else {
         return Ok(Some(U::NotAuthorised));
     };
     #[cfg(test)]
@@ -6391,8 +6567,7 @@ async fn route_private(
     }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
-    if !current_action_peer(peer, session)
-        || !current_member(&wr, peer)
+    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
         || !current_session(&wr, peer, session.outbound)
         || !wr
             .action_targets
@@ -6409,8 +6584,7 @@ async fn route_private(
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
     };
-    if !current_action_peer(&target.peer, session)
-        || !current_member(&wr, &target.peer)
+    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err()
         || target.room != action.room
         || !target.state_tx.same_channel(&sub.tx)
     {
@@ -7702,7 +7876,7 @@ mod private_transport_tests {
         let selection_count = shell_selection::track_selection_constructions(&store_root);
         let blocker_raw = producer_frame(&meta, &meta["baseline"][0], 1);
         let blocker = crate::transport::decode(&blocker_raw[4..]).unwrap();
-        let envelopes = meta["baseline"]
+        let envelopes = meta["checkpoint2"]
             .as_array()
             .unwrap()
             .iter()
@@ -7731,6 +7905,9 @@ mod private_transport_tests {
             );
             tokio::task::yield_now().await;
         }
+        // A clean FIN after complete authenticated frames must not discard
+        // those frames while the preceding admission is backpressured.
+        client_write.shutdown().await.unwrap();
         release_tx.send(()).unwrap();
         crate::persistence::receipt(held).await.unwrap();
         while selection_count.load(std::sync::atomic::Ordering::SeqCst) < 1 {
@@ -7745,12 +7922,32 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
+        let tail = envelopes.last().unwrap();
+        tilo_test_env::within("the buffered checkpoint tail to become durable", async {
+            loop {
+                let retained = workspace.lock().await.store.load_retained().unwrap();
+                if retained
+                    .iter()
+                    .any(|raw| crate::transport::decode(&raw[4..]).unwrap() == *tail)
+                {
+                    break;
+                }
+                assert!(
+                    !task.is_finished(),
+                    "peer ended before persisting the buffered tail"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         stop_tracking_reader_backlog(id);
         assert_eq!(shell_selection::selection_constructions(&store_root), 1);
+        tilo_test_env::within("peer to finish after clean FIN", task)
+            .await
+            .unwrap()
+            .unwrap();
         drain.abort();
         let _ = drain.await;
-        task.abort();
-        let _ = task.await;
     }
 
     async fn checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
@@ -10009,6 +10206,251 @@ mod private_transport_tests {
                 denied,
                 "operation {operation} authorized a certificate revoked during its membership read"
             );
+        }
+    }
+
+    /// Counts what reaches the app-serving plane; needs no reply.
+    #[derive(Default)]
+    struct CountingPlane(std::sync::atomic::AtomicUsize);
+
+    impl crate::app_serving::AppServingPlane for CountingPlane {
+        fn serve(
+            &self,
+            _workspace_id: u64,
+            _caller: &tilo_actions::remote::Caller,
+            _message: tilo_actions::remote::RemoteActionMessage,
+        ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>>
+        {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_device_remote_action_is_refused() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (host, _) = certified_device(&root, user.public_key, "host");
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let id = 11;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        wr.add_subscriber(Subscriber {
+            device_public_key: a.device_public_key,
+            role: a.role,
+            tx: atx.clone(),
+            disconnect: disconnect.clone(),
+        });
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let counting = Arc::new(CountingPlane::default());
+        let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &host.cert,
+            own_device_public_key: &host.cert.device_public_key,
+            app_serving: Some(&plane),
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: false,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
+        )
+        .encode()
+        .unwrap();
+        let route = || RemoteActionRoute {
+            workspace_id: id,
+            version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to: host.device_public_key,
+        };
+        let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A current member reaches the plane through this very path.
+        assert_eq!(
+            handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
+            None
+        );
+        assert_eq!(served(), 1);
+
+        // Revoked while its session (and its `subscribed` list) is still live.
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: a.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.write().unwrap().insert(entry).unwrap();
+        let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
+        let Some(Envelope::RemoteActionUndeliverable {
+            reason,
+            to_device_public_key,
+            ..
+        }) = refused
+        else {
+            panic!("a revoked device is answered as undeliverable, got {refused:?}");
+        };
+        assert_eq!(to_device_public_key, host.device_public_key);
+        assert_eq!(
+            UnavailableReason::from_wire_reason(&reason),
+            Some(UnavailableReason::NotAuthorised),
+            "{reason}"
+        );
+        assert_eq!(served(), 1, "a revoked device never reaches the plane");
+    }
+
+    #[tokio::test]
+    async fn route_private_refuses_an_agent_whose_delegation_expired() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        wr.admit_device(b.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (btx, _brx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (bp, mut bpr) = mpsc::channel(4);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        let (recipient_disconnect, _recipient_disconnect_rx) = mpsc::channel(1);
+        for (peer, tx, private, session_disconnect) in [
+            (&a, &atx, &ap, &disconnect),
+            (&b, &btx, &bp, &recipient_disconnect),
+        ] {
+            wr.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx: tx.clone(),
+                disconnect: session_disconnect.clone(),
+            });
+            wr.action_targets.insert(
+                peer.device_public_key,
+                ActionTarget {
+                    broker_host: None,
+                    broker_protocol: false,
+                    room,
+                    peer: peer.clone(),
+                    state_tx: tx.clone(),
+                    tx: private.clone(),
+                },
+            );
+        }
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(wr)),
+        )])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let agents = AgentRegistry::default();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
+            own_device_public_key: &a.cert.device_public_key,
+            app_serving: None,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: true,
+            private_tx: &ap,
+            revocations: &revocations,
+            live_bridge: None,
+            agents: &agents,
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
+        };
+        let action = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        // Signed for this room, already past its expiry: what a delegation
+        // looks like once its window closed under a live session.
+        let expired = |device: [u8; 32]| {
+            tilo_relay_protocol::agents::AgentDelegation::sign(
+                &root,
+                device,
+                "helper",
+                "Helper",
+                [1, 2, 3],
+                tilo_relay_protocol::agents::AgentScope {
+                    rooms: vec![room.to_string()],
+                    apps: Vec::new(),
+                    may_confirm: false,
+                },
+                1,
+                2,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+        assert!(matches!(bpr.try_recv(), Ok(PrivateOutbound::Delivery(_))));
+
+        for agent in [a.device_public_key, b.device_public_key] {
+            agents.write().unwrap().clear();
+            agents.write().unwrap().insert(agent, Some(expired(agent)));
+            assert_eq!(
+                route_private(&action, &a, &session).await.unwrap(),
+                Some(UnavailableReason::NotAuthorised),
+                "an expired agent at either end is refused per frame"
+            );
+            assert!(bpr.try_recv().is_err(), "nothing reaches the target");
         }
     }
 

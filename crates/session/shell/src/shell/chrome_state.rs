@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLockReadGuard;
 use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
@@ -350,8 +350,9 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// Read-only kernel battery snapshot for the quick status row.
-    pub battery: os_actions::BatteryInfo,
+    /// The top bar's battery reading — same type, same sysfs parser — so
+    /// the panel and the tray cannot disagree about the charge.
+    pub battery: tilo_power_mgmt::BatterySnapshot,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -444,22 +445,14 @@ impl Default for QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/tilo-power-supply",
-            )),
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -492,16 +485,7 @@ impl QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo {
-                present: false,
-                capacity: 0,
-                status: String::new(),
-                cycle_count: None,
-                on_ac: false,
-                full_capacity: None,
-                design_capacity: None,
-                charge_limit: None,
-            },
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -566,7 +550,7 @@ pub struct ChromeState {
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
-    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
     /// instead of silently borrowing the wrong thing; use
     /// [`Self::tree`] / [`Self::tree_mut`].
@@ -608,6 +592,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Which chrome this is, unique in the process. [`Self::revision`]
+    /// counts from zero in every chrome, so a cache keyed on it names the
+    /// chrome too.
+    instance: u64,
     /// Bumped when an appearance action writes the store so the live frame
     /// applies theme and locale on the next paint without waiting for the
     /// settings-file poll.
@@ -626,8 +614,11 @@ pub struct ChromeState {
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for `is_active_workspace_owner`. `None` is
-    /// production behaviour (always owner, no logged-in-user identity
-    /// yet); `Some(false)` exercises the disabled-Revoke path.
+    /// production behaviour: ownership is computed from the active
+    /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
+    /// path. It only decides which controls are offered; member role changes
+    /// and removals are authorized by `crate::shell::membership` whatever it
+    /// says.
     pub test_only_owner_override: Option<bool>,
     /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
@@ -729,7 +720,9 @@ pub struct ChromeState {
     tracked_record_requests: Vec<RecordRequest>,
     record_request_results: BTreeMap<u64, Result<(), String>>,
     next_record_request_id: u64,
-    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    /// Terminal results of tracked peer-sync requests: `Null` for one that
+    /// only presented something, the action output for a network request.
+    peer_sync_request_results: BTreeMap<u64, Result<serde_json::Value, String>>,
     next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
@@ -858,6 +851,10 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
@@ -992,7 +989,7 @@ impl ChromeState {
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,
-        result: Result<(), String>,
+        result: Result<serde_json::Value, String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
     }
@@ -1016,7 +1013,7 @@ impl ChromeState {
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<serde_json::Value, String>> {
         self.peer_sync_request_results.remove(&request_id)
     }
 
@@ -1377,7 +1374,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
-    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+    pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
 
@@ -1462,6 +1459,11 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// This chrome's identity, unique in the process; see `instance`.
+    pub(crate) fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// Persist-side appearance change: chrome rebuilds, and the live frame
@@ -3527,9 +3529,7 @@ mod active_tab_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
 
     fn tree_with(active_tab_id: u64) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
@@ -3584,21 +3584,21 @@ mod active_tab_tests {
     #[test]
     fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
         fn active_app_title_follows_group_active_tab() {
-            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
         fn active_tab_id_matches_the_active_tab_pointer() {
-            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), Some(100));
         }
 
         fn no_active_returns_none_instead_of_first_group() {
-            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3608,7 +3608,7 @@ mod active_tab_tests {
         fn without_active_strip_returns_none_not_first_strip() {
             let mut tree = tree_with(100);
             tree.desktop.active_strip.clear();
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3899,7 +3899,7 @@ mod active_tab_tests {
                 surface_id: 77,
             });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3943,7 +3943,7 @@ mod active_tab_tests {
                     label: "notes.ts".into(),
                 });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 

@@ -928,6 +928,8 @@ qs-devices-output-route = Local output · route current audio here
 qs-devices-output-bluetooth = Bluetooth { $codec } · route current audio here
 qs-devices-tether-requesting = Waiting for phone approval
 qs-devices-tether-consent = Allow once or decline
+qs-devices-tether-preparing = Starting this phone's hotspot
+qs-devices-tether-connecting = Joining the phone's hotspot
 qs-devices-tether-requester = Connected through this phone · select to disconnect
 qs-devices-tether-provider = Sharing this phone's connection · select to disconnect
 qs-devices-tether-denied = Declined on the phone
@@ -1444,6 +1446,18 @@ search-action-presence-status-sharing-set = Set status privacy
 search-action-presence-status-sharing-set-subtitle = Choose whether status is off, explicit-only, or automatically inferred
 search-action-peer-invite-named = Name collaborator and open invite
 search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
+search-action-member-role-set = Change a member's role
+search-action-member-role-set-subtitle = Make a workspace member a viewer, commenter, or editor
+search-action-member-remove = Remove a member
+search-action-member-remove-subtitle = Take a member out of this workspace and revoke everything they could do here
+search-action-invitation-issue = Create an invitation
+search-action-invitation-issue-subtitle = Mint an invitation to this workspace with a role and a lifetime
+search-action-invitation-list = List pending invitations
+search-action-invitation-list-subtitle = Show the invitations to this workspace nobody has redeemed yet
+search-action-invitation-resend = Resend an invitation
+search-action-invitation-resend-subtitle = Get a pending invitation's token again, without extending it
+search-action-invitation-cancel = Cancel an invitation
+search-action-invitation-cancel-subtitle = Revoke a pending invitation so it can no longer be redeemed
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
 search-action-record-bring = Add an item to this workspace
@@ -2230,8 +2244,6 @@ speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
 projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-service-exited = Projection service exited with { $status }
-projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
 projection-mode-unsupported = { $device } does not support { $mode } mode
 projection-service-unavailable = Projection service is unavailable
 projection-service-stopped = Projection service stopped
@@ -2267,6 +2279,7 @@ device-fabric-error-transfer-no-retry = nearby transfer is no longer retryable
 device-fabric-nearby-device = Nearby device
 device-fabric-error-output-gone = that audio output is no longer connected
 device-fabric-error-input-gone = that input is no longer connected
+device-fabric-error-audio-busy = audio changes are still being applied; try again in a moment
 device-fabric-error-spatial-unavailable = spatial calibration is unavailable
 device-fabric-error-proposal-stale = that calibration proposal is no longer current
 device-fabric-error-no-applied-calibration = there is no applied calibration to revert
@@ -2482,3 +2495,10 @@ task-review-provider = Task review
 
 shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
+
+shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-retry = Reopen window
+
+device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
+device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
+device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.

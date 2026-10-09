@@ -127,13 +127,13 @@ impl StoreImages {
 
 /// The user's synced files as the supervisor reaches them: the workspace the
 /// session names, else the filesystem daemon's mount at
-/// [`xdg_paths::WORKSPACE_MOUNT`], where the Files app reads them too. The
+/// [`tilo_paths::WORKSPACE_MOUNT`], where the Files app reads them too. The
 /// supervisor is the `tilo-ush` user service, started with no workspace in
 /// its environment and in the host's mount namespace, so the mount is what a
 /// normal session finds.
 pub fn synced_files() -> Option<PathBuf> {
-    xdg_paths::workspace_root().or_else(|| {
-        let mount = PathBuf::from(xdg_paths::WORKSPACE_MOUNT);
+    tilo_paths::workspace_root().or_else(|| {
+        let mount = PathBuf::from(tilo_paths::WORKSPACE_MOUNT);
         mount.is_dir().then_some(mount)
     })
 }
@@ -197,7 +197,7 @@ fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
 /// Returns why [`IMAGE_SOURCES_ENV`] or [`IMAGE_CACHE_ENV`] is unusable.
 pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
     let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV).filter(|s| !s.is_empty()) else {
-        return Ok(xdg_paths::xdg::cache_home()
+        return Ok(tilo_paths::xdg::cache_home()
             .filter(|cache| cache.is_absolute())
             .map(|cache| tilo_oci_images::OciImages::published(cache.join("tilo/env-images"))));
     };

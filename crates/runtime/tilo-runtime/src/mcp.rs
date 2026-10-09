@@ -1016,6 +1016,74 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let apps = page.into_iter().map(|(_, app)| app).collect::<Vec<_>>();
         Ok(json!({"apps":apps,"generation":generation,"next_after_peer":next_after_peer}))
     }
+
+    /// Reuse a live default presentation through its permission-checked view action.
+    /// Absence permits a new launch; a present but unready/refusing owner does not.
+    pub(crate) async fn activate_existing(&self, app_id: &str) -> Result<Option<u64>, String> {
+        let (_, instances) = self.instances().await?;
+        let Some((peer, _)) = instances.iter().rev().find(|(_, instance)| {
+            instance["app_id"].as_str() == Some(app_id)
+                && matches!(
+                    instance["record_id"].as_str(),
+                    Some("" | "derived:default@tab:0000000000000000")
+                )
+        }) else {
+            return Ok(None);
+        };
+        match self.activate_peer(*peer, app_id).await {
+            Ok(()) => Ok(Some(*peer)),
+            Err(reason) => {
+                // A disappearing provider is not an unready live owner. The
+                // process-lifetime lease still prevents launching a writer
+                // until the actual process exits.
+                let (_, current) = self.instances().await.map_err(|failure| {
+                    format!("could not confirm {app_id} owner exit: {failure}; owner retained")
+                })?;
+                if current.iter().any(|(live, _)| live == peer) {
+                    Err(reason)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    async fn activate_peer(&self, peer: u64, app_id: &str) -> Result<(), String> {
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(peer.to_string()),
+                needle: tilo_actions::remote::APPLICATION_ACTIVATE_ACTION.into(),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .map_err(|reason| format!("existing {app_id} window is not ready: {reason}"))?;
+        let address = page.rows.into_iter().filter_map(|row| row.action)
+            .find(|action| action.address.action == tilo_actions::remote::APPLICATION_ACTIVATE_ACTION
+                && action.kind == tilo_actions::OperationKind::View)
+            .map(|action| action.address)
+            .ok_or_else(|| format!("existing {app_id} window does not support activation; update its SDK or use its current window"))?;
+        let value = self
+            .invoke_one(OneCall {
+                peer_id: Some(peer),
+                app_id: None,
+                workspace: false,
+                revision: None,
+                resource: address.resource,
+                action: address.action,
+                arguments: serde_json::Map::new(),
+                invocation_id: None,
+                wait_ms: Some(3000),
+            })
+            .await?;
+        if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") {
+            Ok(())
+        } else {
+            Err(format!(
+                "existing {app_id} window did not acknowledge activation; its document owner was retained"
+            ))
+        }
+    }
     async fn live_peer(&self, peer: u64) -> Result<(), String> {
         if self
             .instances()
