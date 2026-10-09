@@ -105,6 +105,64 @@ pub trait ActionControls: Widget {
     }
 }
 
+/// The custody, drain and availability [`ActionControls`] methods of a
+/// widget whose only producer is its optional `self.action` emitter. Pass
+/// `custody` to leave availability to a widget that refreshes it itself.
+macro_rules! optional_emitter_controls {
+    () => {
+        crate::widget::controls::optional_emitter_controls!(custody);
+        fn refresh_control_action_availability(
+            &mut self,
+            allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+        ) {
+            if let Some(action) = &mut self.action {
+                action.refresh_availability(allowed);
+            }
+        }
+    };
+    (custody) => {
+        fn install_control_custody(
+            &mut self,
+            domain: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            if let Some(action) = &mut self.action {
+                let _ = action.install_custody(domain, attachment);
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            self.action
+                .as_mut()
+                .and_then(crate::widget::ActionEmitter::take)
+        }
+    };
+}
+pub(crate) use optional_emitter_controls;
+
+/// A value control's binding: its action, else the collaborative document
+/// key it writes, else its legacy change callback, else its semantic action.
+pub(crate) fn value_control_bindings<I>(
+    control_id: &str,
+    action: Option<&super::ActionEmitter<I>>,
+    document_key: Option<&str>,
+    has_callback: bool,
+) -> Vec<ControlBindingMetadata> {
+    if let Some(action) = action {
+        return vec![action.metadata(control_id)];
+    }
+    let kind = if let Some(key) = document_key {
+        ControlBindingKind::CollaborativeDocument(key.to_owned())
+    } else if has_callback {
+        ControlBindingKind::LegacyCallback
+    } else {
+        ControlBindingKind::SemanticAction(control_id.to_owned())
+    };
+    vec![ControlBindingMetadata {
+        control_id: control_id.to_owned(),
+        kind,
+    }]
+}
+
 fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
     let mut bindings = semantic_action_bindings(widget.accessibility());
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));

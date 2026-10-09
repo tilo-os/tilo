@@ -2489,18 +2489,7 @@ impl crate::resources::PublishesResources for ToggleGroup {
 }
 
 impl crate::widget::controls::ActionControls for ToggleGroup {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let Some(action) = &self.action else {
             // A choice kept in view state is made through the segments'
@@ -2518,14 +2507,6 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         (0..self.segments.len())
             .map(|index| action.metadata(self.segment_id(index)))
             .collect()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
     }
 }
 
