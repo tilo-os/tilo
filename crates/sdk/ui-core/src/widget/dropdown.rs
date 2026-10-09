@@ -1322,7 +1322,7 @@ impl Widget for Dropdown {
         } else {
             Dimension::auto()
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width,
                 height: Dimension::length(px(self.field_height + self.caption_height)),
@@ -1333,9 +1333,8 @@ impl Widget for Dropdown {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

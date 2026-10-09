@@ -703,7 +703,7 @@ impl Widget for Slider {
             reason = "a knob radius in logical pixels, far inside f32's range"
         )]
         let min_width = (KNOB_RADIUS * 12.0) as f32 * theme.ui_scale;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.interaction.minimum_target()),
@@ -714,9 +714,8 @@ impl Widget for Slider {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// Value, hover and drag change the paint, not this leaf's intrinsic size.
