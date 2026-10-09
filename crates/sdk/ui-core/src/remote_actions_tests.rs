@@ -34,9 +34,9 @@ fn target(action: &str) -> RemoteActionTarget {
 }
 
 /// Two catalogue pages; `done` completes at once, `slow` is still running
-/// the first time it is observed and done the next, `forbidden` is refused.
-/// It cannot signal changes, so it answers a waiting observe at once, as a
-/// host from before waits does.
+/// for its first [`RUNNING_LOOKS`] observes and done after, `forbidden` is
+/// refused. It cannot signal changes, so it answers a waiting observe at
+/// once, as a host from before waits does.
 #[derive(Default)]
 struct FakeHost {
     seen: Mutex<Vec<Caller>>,
@@ -82,13 +82,13 @@ impl ActionHost for FakeHost {
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let first = self
+        let running = self
             .observed
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            == 0;
+            < RUNNING_LOOKS;
         Some(InvocationState::new(
             *id,
-            if first {
+            if running {
                 InvocationUpdate::Accepted { invocation: *id }
             } else {
                 InvocationUpdate::Succeeded {
@@ -103,6 +103,10 @@ impl ActionHost for FakeHost {
         Ok(())
     }
 }
+
+/// How often `slow` is seen still running: once by the host's own look when
+/// the invoke asks to wait, once by the client's first waiting observe.
+const RUNNING_LOOKS: usize = 2;
 
 fn client() -> (Arc<FakeHost>, RemoteActions) {
     let host = Arc::new(FakeHost::default());

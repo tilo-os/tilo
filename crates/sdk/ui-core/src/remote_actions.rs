@@ -544,17 +544,17 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             };
             settle(inner, invocation, update)
         }
-        RemoteActionMessage::Update { invocation, state } => match state {
-            Some(state) => settle(inner, invocation, state.update),
-            None => {
-                if let Some(running) = inner.invocations.remove(&invocation) {
-                    running
-                        .answer
-                        .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
-                }
-                None
+        RemoteActionMessage::Update { invocation, state } => {
+            if let Some(state) = state {
+                return settle(inner, invocation, state.update);
             }
-        },
+            if let Some(running) = inner.invocations.remove(&invocation) {
+                running
+                    .answer
+                    .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
+            }
+            None
+        }
         RemoteActionMessage::CancelResponse { invocation, result } => {
             let running = inner.invocations.get_mut(&invocation)?;
             let answer = running.cancellation.as_ref()?;
