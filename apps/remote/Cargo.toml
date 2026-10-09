@@ -24,9 +24,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
 tilo-actions = { path = "../../crates/collab/actions" }
-# Tilo-device sessions consume the authenticated exact-target mesh placement;
-# Remote does not maintain a second host-selection implementation.
-tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Tilo-device connections store the target's endpoint id; only the key types

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::mesh::DeviceKey;
-use crate::{ComputeAccelerator, PowerAvailability, ServerAdvertisement};
+use crate::{ComputeAccelerator, ServerAdvertisement};
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -147,7 +147,7 @@ pub fn admit_compute_job(
         || worker.assignment_capacity == 0
         || worker.active_assignments >= worker.assignment_capacity
         || worker.energy_saver
-        || matches!(worker.power, PowerAvailability::Battery(percent) if percent <= 15)
+        || worker.power.is_critically_constrained()
     {
         return Err(ComputeError::WorkerUnavailable);
     }
@@ -1104,7 +1104,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{DeviceRole, ServiceCapabilities};
+    use crate::{DeviceRole, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;
@@ -1349,6 +1349,14 @@ mod tests {
                 admit_compute_job(&spec(), &candidate, 200),
                 Err(ComputeError::WorkerUnavailable)
             );
+            // The threshold is the mesh's one battery rule, not a local copy.
+            candidate.power = PowerAvailability::Battery(15);
+            assert_eq!(
+                admit_compute_job(&spec(), &candidate, 200),
+                Err(ComputeError::WorkerUnavailable)
+            );
+            candidate.power = PowerAvailability::Battery(16);
+            assert_eq!(admit_compute_job(&spec(), &candidate, 200), Ok(()));
             candidate = worker();
             candidate.accelerators.clear();
             assert_eq!(
