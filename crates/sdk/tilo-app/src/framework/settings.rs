@@ -217,11 +217,17 @@ impl ViewStorage {
         super::record::answer(&doors, me, payload)
     }
 
-    /// The settings section `T` held as a record, opened on first use.
+    /// The settings section `T` held as a record, opened on first use: a
+    /// record of the person's, whose edits they undo and redo, or in a
+    /// window that keeps nothing of theirs (a private one) one that lives as
+    /// long as the window.
     pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Option<Rc<Held<T>>>
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
+        if let Some(person) = &self.person {
+            return person.open_section(settings.clone(), self.device());
+        }
         if let Some(open) = self.sections.borrow().get(&TypeId::of::<T>()) {
             return Rc::clone(open).downcast::<Held<T>>().ok();
         }

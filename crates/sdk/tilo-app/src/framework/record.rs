@@ -329,7 +329,7 @@ where
 }
 
 /// The public id of the action `action` is, as its encoded form names it.
-fn action_id<A: Serialize>(action: &A) -> String {
+pub(crate) fn action_id<A: Serialize>(action: &A) -> String {
     serde_json::to_value(action)
         .ok()
         .and_then(|value| {

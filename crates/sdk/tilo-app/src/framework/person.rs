@@ -8,6 +8,9 @@ use std::rc::Rc;
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 
+use tilo_resource::Fields;
+use ui_core::storage::{ChangeOrigin, Scope, Settings, SettingsRevision, SettingsSchema};
+
 use super::live::Live;
 use super::record::{Held, RecordDoor};
 use tilo_resource::{Invoke, Resource};
@@ -203,7 +206,7 @@ impl<P: Resource> PersonRecord<P> {
 }
 
 /// An open record: the app that owns it, and its kind.
-type OpenKey = (&'static str, &'static str);
+type OpenKey = (&'static str, String);
 
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonRecord`] per resource kind.
@@ -225,14 +228,18 @@ pub(crate) struct PersonState {
 
 /// One open record as the root publishes it.
 struct Published {
-    kind: &'static str,
-    label: &'static str,
+    /// The id it is published under.
+    id: String,
+    label: String,
     /// Its field edits and verbs, as the door reaches them.
     door: Rc<dyn RecordDoor>,
-    /// Take back (`true`) or redo (`false`) one of the person's steps.
-    /// Whether there was one.
-    step: Box<dyn Fn(bool) -> bool>,
+    /// Take back (`true`) or redo (`false`) one of the person's steps, for
+    /// the invoker named. Whether there was one.
+    step: Step,
 }
+
+/// Take back (`true`) or redo (`false`) one step for the invoker named.
+type Step = Box<dyn Fn(bool, &str) -> bool>;
 
 /// The operation type of a person record's undo and redo.
 pub(crate) const HISTORY_TYPE: &str = "tilo.app.person-history";
@@ -243,7 +250,7 @@ const MAX_STEPS: i64 = 50;
 /// What a person record's undo or redo was asked.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct HistoryRequest {
-    kind: String,
+    record: String,
     undo: bool,
     steps: Option<i64>,
 }
@@ -254,8 +261,8 @@ pub(crate) fn resource_id(kind: &str) -> String {
     format!("person:{kind}")
 }
 
-fn history_spec(kind: &'static str, label: &'static str, undo: bool) -> tilo_actions::ActionSpec {
-    let mut spec = history_operation(kind, label, undo);
+fn history_spec(record: &str, label: &str, undo: bool) -> tilo_actions::ActionSpec {
+    let mut spec = history_operation(record.to_owned(), label, undo);
     spec.contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({
             "type": "object",
@@ -265,11 +272,7 @@ fn history_spec(kind: &'static str, label: &'static str, undo: bool) -> tilo_act
     spec
 }
 
-fn history_operation(
-    kind: &'static str,
-    label: &'static str,
-    undo: bool,
-) -> tilo_actions::ActionSpec {
+fn history_operation(record: String, label: &str, undo: bool) -> tilo_actions::ActionSpec {
     let (id, verb) = if undo {
         ("undo", "Undo")
     } else {
@@ -293,7 +296,7 @@ fn history_operation(
             tilo_actions::EncodedAction::encode_operation(
                 HISTORY_TYPE,
                 &HistoryRequest {
-                    kind: kind.to_owned(),
+                    record: record.clone(),
                     undo,
                     steps: args.integer("steps"),
                 },
@@ -348,7 +351,7 @@ impl PersonState {
     /// The person's record of `P` that the app `owner` keeps, opened on
     /// first use, and whether this app changes it.
     fn open_of<P: Resource>(&self, owner: &'static str, edits: bool) -> Option<PersonRecord<P>> {
-        if let Some(open) = self.opened.borrow().get(&(owner, P::KIND)) {
+        if let Some(open) = self.opened.borrow().get(&(owner, P::KIND.to_owned())) {
             return open
                 .clone()
                 .downcast::<Shared<P>>()
@@ -380,12 +383,47 @@ impl PersonState {
             })
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unavailable"))
             .ok()?;
+        let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
+        let held = Rc::new(held::<P>(&shared, edits)?);
+        *shared.held.borrow_mut() = Some(Rc::clone(&held));
+        if !own {
+            self.opened.borrow_mut().insert(
+                (owner, P::KIND.to_owned()),
+                Rc::clone(&shared) as Rc<dyn Any>,
+            );
+            return Some(PersonRecord { shared });
+        }
+        let weak = Rc::downgrade(&shared);
+        self.published.borrow_mut().push(Published {
+            id: resource_id(P::KIND),
+            label: P::LABEL.to_owned(),
+            door: held,
+            step: Box::new(move |undo, _| {
+                weak.upgrade().is_some_and(|shared| {
+                    let record = PersonRecord { shared };
+                    if undo { record.undo() } else { record.redo() }
+                })
+            }),
+        });
+        self.opened.borrow_mut().insert(
+            (owner, P::KIND.to_owned()),
+            Rc::clone(&shared) as Rc<dyn Any>,
+        );
+        Some(PersonRecord { shared })
+    }
+
+    /// `record` read as `P`, followed from now on.
+    fn shared_of<P: Resource>(
+        &self,
+        record: StoredRecord,
+        owner: Option<&'static str>,
+    ) -> Option<Rc<Shared<P>>> {
         let state = record.read(P::read)?.ok()?;
         let heads = record.heads();
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
             record,
-            owner: (!edits).then_some(owner),
+            owner,
             app_id: self.app_id,
             app_title: self.app_title,
             me: self.me.clone(),
@@ -394,34 +432,86 @@ impl PersonState {
             revision: Cell::new(0),
             held: RefCell::new(None),
         });
-        let held = Rc::new(held::<P>(&shared, edits)?);
-        *shared.held.borrow_mut() = Some(Rc::clone(&held));
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
         }));
-        if !own {
-            self.opened
-                .borrow_mut()
-                .insert((owner, P::KIND), Rc::clone(&shared) as Rc<dyn Any>);
-            return Some(PersonRecord { shared });
+        Some(shared)
+    }
+
+    /// The settings section `T` held as a record of the person's, opened on
+    /// first use: its edits are their steps, undone and redone like any of
+    /// theirs, and each writes the section's value to the settings document
+    /// with what made it and who. A device-local section has a record per
+    /// device, as its values do.
+    pub(crate) fn open_section<T>(
+        &self,
+        settings: Settings<T>,
+        device: Option<&str>,
+    ) -> Option<Rc<Held<T>>>
+    where
+        T: Resource<State = T> + Fields + SettingsSchema,
+    {
+        // A record kind is a plain label: letters, digits, `.`, `_`, `-`.
+        let kind = match (T::SCOPE, device) {
+            (Scope::DeviceLocal, Some(device)) => {
+                let device: String = device
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                format!("settings.{}.device-{device}", T::KIND)
+            }
+            _ => format!("settings.{}", T::KIND),
+        };
+        let key = (self.app_id, kind.clone());
+        if let Some(open) = self.opened.borrow().get(&key) {
+            return Rc::clone(open).downcast::<Held<T>>().ok();
         }
-        let weak = Rc::downgrade(&shared);
+        let current = settings.get();
+        let record = self
+            .records
+            .open_record(RecordKind::new(kind), |doc| {
+                T::initialize(doc).map_err(|error| error.to_string())?;
+                current
+                    .write_fields(doc, &tilo_resource::__private::ROOT)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings record unavailable"))
+            .ok()?;
+        let shared = self.shared_of::<T>(record, None)?;
+        let section = Rc::new(Section {
+            settings,
+            seen: Cell::new(None),
+        });
+        // The section's record lives as long as the section is held.
+        let held = Rc::new(section_held(&shared, &section)?);
+        let stepping = Rc::downgrade(&shared);
         self.published.borrow_mut().push(Published {
-            kind: P::KIND,
-            label: P::LABEL,
-            door: held,
-            step: Box::new(move |undo| {
-                weak.upgrade().is_some_and(|shared| {
+            id: held.id().to_owned(),
+            label: T::LABEL.to_owned(),
+            door: Rc::clone(&held) as Rc<dyn RecordDoor>,
+            step: Box::new(move |undo, by| {
+                stepping.upgrade().is_some_and(|shared| {
                     let record = PersonRecord { shared };
-                    if undo { record.undo() } else { record.redo() }
+                    let stepped = if undo { record.undo() } else { record.redo() };
+                    if stepped {
+                        let action = if undo { "undo" } else { "redo" };
+                        section.write(&record.shared, action, by);
+                    }
+                    stepped
                 })
             }),
         });
         self.opened
             .borrow_mut()
-            .insert((owner, P::KIND), Rc::clone(&shared) as Rc<dyn Any>);
-        Some(PersonRecord { shared })
+            .insert(key, Rc::clone(&held) as Rc<dyn Any>);
+        Some(held)
     }
 
     /// Read every open record that moved. Whether one did.
@@ -443,8 +533,8 @@ impl PersonState {
                 published
                     .door
                     .publish()
-                    .with_action(history_spec(published.kind, published.label, true))
-                    .with_action(history_spec(published.kind, published.label, false))
+                    .with_action(history_spec(&published.id, &published.label, true))
+                    .with_action(history_spec(&published.id, &published.label, false))
             })
             .collect()
     }
@@ -471,13 +561,21 @@ impl PersonState {
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
+        let invoker = ui_core::invocation_scope::current_invoker()
+            .unwrap_or_else(|| ActionInvoker::actor(&self.me));
+        if invoker.actor != self.me && invoker.on_behalf_of.as_deref() != Some(self.me.as_str()) {
+            return Err(format!(
+                "`{}` is {}'s own; only they change it",
+                request.record, self.me
+            ));
+        }
         let published = self.published.borrow();
         let record = published
             .iter()
-            .find(|published| published.kind == request.kind)
-            .ok_or_else(|| format!("no record of yours is open as {}", request.kind))?;
+            .find(|published| published.id == request.record)
+            .ok_or_else(|| format!("no record of yours is open as {}", request.record))?;
         let mut taken = 0;
-        while taken < steps && (record.step)(request.undo) {
+        while taken < steps && (record.step)(request.undo, &invoker.actor) {
             taken = taken.saturating_add(1);
         }
         if taken == 0 {
@@ -489,7 +587,7 @@ impl PersonState {
         }
         Ok(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({ "steps": taken })),
-            resources: vec![resource_id(record.kind)],
+            resources: vec![record.id.clone()],
         })
     }
 
@@ -529,6 +627,100 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Option<Held<P>> {
                 .upgrade()
                 .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
             PersonRecord { shared }.apply_as(action, invoker)
+        },
+    ))
+}
+
+/// A settings section kept as a record: the section it writes, and the
+/// version of the settings document the record last followed.
+struct Section<T> {
+    settings: Settings<T>,
+    seen: Cell<Option<SettingsRevision>>,
+}
+
+impl<T> Section<T>
+where
+    T: Resource<State = T> + Fields + SettingsSchema,
+{
+    /// Write the record's value to the settings document, as `action` by
+    /// `by`.
+    fn write(&self, shared: &Shared<T>, action: &str, by: &str) {
+        let Some(Ok(value)) = shared
+            .record
+            .read(|doc| T::read_fields(doc, &tilo_resource::__private::ROOT))
+        else {
+            return;
+        };
+        let origin = ChangeOrigin::action(format!("{}/{action}", T::KIND)).by(by.to_owned());
+        if let Err(error) = self.settings.set_by(&value, Some(&origin)) {
+            tracing::warn!(kind = T::KIND, %error, "settings section not written");
+        }
+        self.seen.set(Some(self.settings.revision()));
+    }
+
+    /// Take into the record what was written to the settings document
+    /// elsewhere (another window, the Settings app, another device): content
+    /// from outside, nobody's step.
+    fn follow(&self, shared: &Shared<T>) {
+        let revision = self.settings.revision();
+        if self.seen.get() == Some(revision) {
+            return;
+        }
+        self.seen.set(Some(revision));
+        let stored = self.settings.get();
+        let held = shared
+            .record
+            .read(|doc| T::read_fields(doc, &tilo_resource::__private::ROOT).ok())
+            .flatten();
+        if held.is_some_and(|held| {
+            tilo_resource::Model::to_json(&held) == tilo_resource::Model::to_json(&stored)
+        }) {
+            return;
+        }
+        if let Err(error) = shared.record.edit(false, |doc| {
+            stored
+                .write_fields(doc, &tilo_resource::__private::ROOT)
+                .map_err(|error| error.to_string())
+        }) {
+            tracing::warn!(kind = T::KIND, %error, "settings record did not follow the section");
+        }
+    }
+}
+
+/// The settings section `section`, kept in the record `shared`, as views
+/// and the door edit it.
+fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section<T>>) -> Option<Held<T>>
+where
+    T: Resource<State = T> + Fields + SettingsSchema,
+{
+    section.follow(shared);
+    let live = Live::new(
+        shared
+            .record
+            .read(tilo_resource::Reader::<T>::read)?
+            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings record unreadable"))
+            .ok()?,
+    );
+    let (following, following_section) = (Rc::clone(shared), Rc::clone(section));
+    let (applying, applying_section) = (Rc::clone(shared), Rc::clone(section));
+    Some(Held::new(
+        format!("settings:{}", T::KIND),
+        T::LABEL.to_owned(),
+        true,
+        live,
+        move |live: &Live<T>| {
+            following_section.follow(&following);
+            if let Some(Err(error)) = following.record.read(|doc| live.sync(doc)) {
+                tracing::warn!(kind = T::KIND, %error, "settings record unreadable");
+            }
+        },
+        move |action: &T::Action, invoker: &ActionInvoker| {
+            PersonRecord {
+                shared: Rc::clone(&applying),
+            }
+            .apply_as(action, invoker)?;
+            applying_section.write(&applying, &super::record::action_id(action), &invoker.actor);
+            Ok(())
         },
     ))
 }
