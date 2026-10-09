@@ -398,6 +398,16 @@ bytes = 4194304
 
 When the runtime shrinks, both gates print the lower budget to commit.
 
+What the runtime may carry is a rule of its own. It holds the SDK, crates
+several apps share and engines too heavy for their one app's tapp, never an
+OS daemon or other OS-internal crate (the filesystem, the launcher, the app
+host, the install CLI, the peer transport) and nothing no app reaches. An app
+that calls into such a crate links it itself and gets only the code it calls;
+the Store, for one, depends on `app-host` without its default `service`
+feature. `tools/policy/check_runtime_dylib_surface.py` (CI / fast quality)
+resolves the runtime with the default collection the way the release does and
+fails on either.
+
 ## OS image size
 
 Every install downloads the OS image and every update pulls its changed
