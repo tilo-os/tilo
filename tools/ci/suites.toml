@@ -381,13 +381,15 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml"]
+# acceptance/records.py writes its records through tools/perf/record.py.
+inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml", "tools/perf/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_records.py",
   "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
   "scripts/vm-acceptance/test_app_cohort.py",
