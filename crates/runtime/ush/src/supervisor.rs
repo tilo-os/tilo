@@ -923,15 +923,7 @@ fn serve_guest_session(
         return Ok(Served::Refused);
     }
 
-    open_environment(
-        stream,
-        writer,
-        store,
-        host_root,
-        environment.as_deref(),
-        &record,
-        req,
-    )
+    open_environment(stream, writer, store, host_root, environment, &record, req)
 }
 
 /// Build the guest of an environment on this device on a fresh pty and hand
