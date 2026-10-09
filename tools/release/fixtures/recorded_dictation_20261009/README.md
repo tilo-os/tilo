@@ -9,7 +9,7 @@ rootless builder driver with independently checked limits and an owned startup g
 They intentionally retain this task's exact builder, artifact, result and source
 identities. Reusing a result name fails. They are historical fixture snapshots,
 not a command to install or activate dictation. For another execution, rebuild the
-current binaries through rcargo, verify the pinned public inputs and official RPM
+current binaries through ${CARGO_DROP_IN}, verify the pinned public inputs and official RPM
 signature, use fresh result/CID/gate names and record the actual source head and
 hashes. Preserve the sandbox and all bounds from the qualification plan.
 

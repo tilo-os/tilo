@@ -15,7 +15,7 @@ never executed. The actual library is source-built. No Tilo dependency or lock
 version changes, installation or persistent grant were needed.
 
 The build is `wasmtime-c-api --no-default-features --features cranelift`, release,
-two jobs, through `rcargo --no-fallback --no-fetch +1.97.1`. WASI, asynchronous
+two jobs, through `${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1`. WASI, asynchronous
 execution, caches and parallel compilation are absent. The upstream licence is
 Apache-2.0 WITH LLVM-exception; the public Whistle module/model notices are
 Apache-2.0. Review binaries remain private, uninstalled artifacts.
@@ -238,7 +238,7 @@ replays, not concurrent recognition and application journeys.
 
 All five production-output insertion regressions pass (0.665 seconds combined;
 426 unrelated tests filtered). Python Ruff/syntax and changed-file formatting
-pass. The final required `rcargo check --locked -p shell --tests` was attempted
+pass. The final required `${CARGO_DROP_IN} check --locked -p shell --tests` was attempted
 but could not run: the remote builder reported its volume 95% full, above its
 80% admission watermark. The same integration test target compiled successfully
 for the five-test run (19.52 seconds), but this is not reported as a successful
@@ -280,7 +280,7 @@ hashes, measured public replies, fixture custody and cleanup. First-batch and
 earlier prototype receipts are identified rather than relabeled as final-source
 measurements. The held branch preserves the rejected V8 profile unchanged.
 
-Build the official source C API in its separate checkout through rcargo; compile
+Build the official source C API in its separate checkout through ${CARGO_DROP_IN}; compile
 `tools/release/fixtures/whistle_aot_factory.cpp` and `whistle_aot_review.cpp` on
 the builder against its generated headers/library, using `-L`/`-lwasmtime` and
 `$ORIGIN` rpath. Never link the library by absolute filename: its private output

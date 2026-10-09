@@ -90,7 +90,7 @@ runtime dependency is introduced. The candidate remains held.
 ## Validation
 
 Executed: five focused production worker tests and one native compositor endpoint
-commit regression passed through rcargo. C++ compilation used strict warnings;
+commit regression passed through ${CARGO_DROP_IN}. C++ compilation used strict warnings;
 JavaScript syntax, Python Ruff/py_compile, Rust formatting and diff whitespace
 checks passed. The required `shell --tests` compile check passed in 35.49 seconds, and strict
 all-target Clippy for model-service and shell passed in 3m07s. Clippy initially

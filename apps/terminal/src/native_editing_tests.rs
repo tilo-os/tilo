@@ -4,18 +4,15 @@ mod native_editing_tests {
     use runtime_portal::editor::{self, Lease, Request};
     use std::time::{Duration, Instant};
 
-    fn fixture() -> (TerminalWidget, editor::Socket) {
+    fn fixture() -> std::io::Result<(TerminalWidget, editor::Socket)> {
         let (mut widget, _, _) = crate::tests::build_test_widget_io();
         widget.set_focus(true);
-        let (socket, producer) = editor::Socket::pair().unwrap();
-        producer.read_timeout(Some(Duration::from_secs(2))).unwrap();
-        widget.native_editor = Some(
-            crate::native_editor::Client::new(
-                socket,
-                Arc::new(Mutex::new(ui::WakeHandle::default())),
-            )
-            .unwrap(),
-        );
+        let (socket, producer) = editor::Socket::pair()?;
+        producer.read_timeout(Some(Duration::from_secs(2)))?;
+        widget.native_editor = Some(crate::native_editor::Client::new(
+            socket,
+            Arc::new(Mutex::new(ui::WakeHandle::default())),
+        )?);
         let mut frame = editor::encode(
             1,
             &Request::Replace {
@@ -30,27 +27,32 @@ mod native_editing_tests {
                 transaction: 1,
                 text: String::new(),
             },
-        )
-        .unwrap();
-        frame[5] = 0;
-        frame[6] = 2;
-        frame[7] = 4;
-        frame[8..16].fill(0);
-        producer.send(&frame).unwrap();
+        )?;
+        frame
+            .get_mut(5..8)
+            .ok_or_else(|| std::io::Error::other("missing editor status header"))?
+            .copy_from_slice(&[0, 2, 4]);
+        frame
+            .get_mut(8..16)
+            .ok_or_else(|| std::io::Error::other("missing editor request header"))?
+            .fill(0);
+        producer.send(&frame)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         while widget.ime_purpose() != Some(winit::window::ImePurpose::Normal) {
-            assert!(
-                Instant::now() < deadline,
-                "native announcement was not observed"
-            );
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "native announcement was not observed",
+                ));
+            }
             std::thread::sleep(Duration::from_millis(2));
         }
-        (widget, producer)
+        Ok((widget, producer))
     }
 
     #[test]
     fn native_editor_redisplay_preserves_lease_but_keyboard_input_revokes_it() {
-        let (mut widget, producer) = fixture();
+        let (mut widget, producer) = fixture().expect("qualified native editor fixture");
         let original = widget.ime_edit_fingerprint(&[9; 32]);
         assert!(original.is_some());
         widget.feed(b"\rPROOF> ");
@@ -73,7 +75,7 @@ mod native_editing_tests {
 
     #[test]
     fn native_editor_ordinary_ime_waits_for_exact_ack_without_pty_fallback() {
-        let (mut widget, producer) = fixture();
+        let (mut widget, producer) = fixture().expect("qualified native editor fixture");
         let writes = widget.attach_input_probe();
         widget.commit_ordinary_ime("界");
         assert!(
@@ -129,7 +131,7 @@ mod native_editing_tests {
 
     #[test]
     fn native_editor_menu_and_read_only_state_refuse_capture_and_commit() {
-        let (mut widget, producer) = fixture();
+        let (mut widget, producer) = fixture().expect("qualified native editor fixture");
         assert!(widget.start_deferred_text().is_some());
         widget
             .context_menu
@@ -157,7 +159,7 @@ mod native_editing_tests {
     }
     #[test]
     fn canceled_original_capture_cannot_send_after_platform_handoff() {
-        let (mut widget, producer) = fixture();
+        let (mut widget, producer) = fixture().expect("qualified native editor fixture");
         let original = widget.start_deferred_text().unwrap();
         original.cancel();
         let receipt = widget.commit_deferred_text("private words").unwrap();

@@ -1,11 +1,19 @@
+# Portable view of a frozen qualification driver; original bytes are indexed
+# in docs/architecture/dictation-execution-environment-index.json.
+# This does not qualify current source or select/install a model.
+import os, re
+if not os.path.isabs(os.environ['TILO_QUALIFICATION_BUILD_ROOT']):
+    raise ValueError('an explicit absolute owned build root is required')
+if not re.fullmatch(r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', os.environ['TILO_QUALIFICATION_CONTAINER_IMAGE']):
+    raise ValueError('an explicit immutable qualified container image is required')
 import hashlib,json,os,re,subprocess,time
 from pathlib import Path
-b=Path('/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c');s=b/'src';out=s/'target/dictation-recorded-compositor-20261009'
+b=Path(os.environ['TILO_QUALIFICATION_BUILD_ROOT']).resolve();s=b/'src';out=s/'target/dictation-recorded-compositor-20261009'
 cid=out/'run-r15.cid';log=out/'run-r15.log';assert not cid.exists() and not log.exists(),'fresh qualification required'
 binaries={n:{'bytes':(b/'target'/p).stat().st_size,'sha256':hashlib.file_digest((b/'target'/p).open('rb'),'sha256').hexdigest()} for n,p in [('shell','debug/shell'),('browser_fixture','debug/examples/browser-text-input-qualification'),('worker','debug/tilo-speech-worker'),('witness','debug/examples/speech_qualify')]}
 names=['crates/sdk/ui-core/src/app/host_commands.rs','crates/sdk/ui-core/src/widget/webview.rs','Cargo.lock','apps/notes/src/app.rs','crates/session/shell/src/compositor/dictation.rs','crates/session/shell/src/compositor/dictation/runtime.rs','crates/session/shell/src/compositor/audio_capture.rs','crates/sdk/ui-core/examples/browser_text_input_qualification.rs','crates/sdk/ui-core/src/webview/text_input.rs','apps/browser/chromium/src/page_automation.js']
 receipt={'source_head':'b21d60d2914b704c982e99727f2a42a38d158ebc','source_state':'uncommitted guarded native-history key-release fix','binaries':binaries,'sources':{n:hashlib.sha256((s/n).read_bytes()).hexdigest() for n in names},'live_microphone':False,'installed':False,'limits':{'cpus':2,'memory_bytes':3*1024**3,'pids':256,'runtime_seconds':240},'driver_hashes':{n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ['recorded-inner.py','recorded-outer.py']}}
-command=['podman','run','--rm','--cidfile',str(cid),'--timeout','240','--network=none','--memory=3g','--cgroup-conf=memory.swap.max=0','--cpus=2','--pids-limit=256','--security-opt','label=disable','--user','0:0','--volume',f'{b}:{b}:ro','--entrypoint','python3','localhost/rcargo-image:829fe8206c9212a2',str(out/'recorded-outer.py'),str(b)]
+command=['podman','run','--rm','--cidfile',str(cid),'--timeout','240','--network=none','--memory=3g','--cgroup-conf=memory.swap.max=0','--cpus=2','--pids-limit=256','--security-opt','label=disable','--user','0:0','--volume',f'{b}:{b}:ro','--entrypoint','python3',os.environ['TILO_QUALIFICATION_CONTAINER_IMAGE'],str(out/'recorded-outer.py'),str(b)]
 cpus=sorted(os.sched_getaffinity(0))[:2];assert len(cpus)==2;receipt['cpu_affinity']=cpus
 gate=out/'run-r15.gate';assert not gate.exists()
 wrapper="import pathlib,time,runpy,sys; p=pathlib.Path(sys.argv[1]); deadline=time.monotonic()+20\nwhile not p.exists():\n if time.monotonic()>deadline: raise SystemExit('resource gate not released')\n time.sleep(.05)\nsys.argv=sys.argv[2:];runpy.run_path(sys.argv[0],run_name='__main__')"

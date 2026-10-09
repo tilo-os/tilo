@@ -72,7 +72,7 @@ referenced prior V8 ledger. No generated or downloaded runtime is committed.
 Build the protocol adapter through the supported remote build tool:
 
 ```sh
-rcargo --no-fallback --no-fetch build --locked -p local-model-service \
+${CARGO_DROP_IN} --no-fallback --no-fetch build --locked -p local-model-service \
   --no-default-features --features whistle-v8-review --example whistle_v8_worker_review
 ```
 

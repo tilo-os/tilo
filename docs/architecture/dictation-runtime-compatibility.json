@@ -37,7 +37,7 @@
         "bytes": 9899160,
         "sha256": "1f555a4de3615521c6a4779784afb32c858befa17975c74c05d1f9717ffa3c3a"
       },
-      "build": "rcargo --no-fallback --no-fetch build --locked -p local-model-service --no-default-features --features whistle-v8-review --example whistle_v8_worker_review"
+      "build": "${CARGO_DROP_IN} --no-fallback --no-fetch build --locked -p local-model-service --no-default-features --features whistle-v8-review --example whistle_v8_worker_review"
     },
     "scope_before": {
       "low": 0,
@@ -208,5 +208,15 @@
     "ruff_and_python_syntax": "passed",
     "custody_tests": "2 passed, 0 skipped on final source",
     "shell_tests_compile": "passed, 1.08 seconds"
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "e0a9f2496c7bd259c549230f3fbc088e3c1c4a89",
+    "original_sha256": "932fe6d15a6a5f56f8bb1f48693eec8c8957e974d97729c05eb7211f090f20d9",
+    "original_path": "docs/architecture/dictation-runtime-compatibility.json",
+    "normalized_string_fields": [
+      "$.kernel_qualification.source_receipt.build"
+    ]
   }
 }

@@ -268,14 +268,14 @@
             "-Wextra",
             "-Werror",
             "-isystem",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
             "-Wl,-rpath,$ORIGIN",
-            "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+            "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
             "-pthread",
             "-o",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
           ],
           "installed": false
         },
@@ -507,14 +507,14 @@
             "-Wextra",
             "-Werror",
             "-isystem",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
             "-Wl,-rpath,$ORIGIN",
-            "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+            "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
             "-pthread",
             "-o",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
           ],
           "installed": false
         },
@@ -718,14 +718,14 @@
             "-Wextra",
             "-Werror",
             "-isystem",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
             "-Wl,-rpath,$ORIGIN",
-            "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+            "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
             "-pthread",
             "-o",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
           ],
           "installed": false
         },
@@ -929,14 +929,14 @@
             "-Wextra",
             "-Werror",
             "-isystem",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
             "-Wl,-rpath,$ORIGIN",
-            "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+            "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
             "-pthread",
             "-o",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
           ],
           "installed": false
         },
@@ -1148,14 +1148,14 @@
             "-Wextra",
             "-Werror",
             "-isystem",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
             "-Wl,-rpath,$ORIGIN",
-            "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+            "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
             "-pthread",
             "-o",
-            "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+            "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
           ],
           "installed": false
         },
@@ -1245,14 +1245,14 @@
         "-Wextra",
         "-Werror",
         "-isystem",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-public-20261008-9868/headers",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
+        "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+        "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/whistle_v8_review.cpp",
+        "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/libnode.so.127",
         "-Wl,-rpath,$ORIGIN",
-        "-Wl,-rpath-link,/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
+        "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10",
         "-pthread",
         "-o",
-        "/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c/src/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
+        "${BUILD_ROOT}/target/dictation-whistle-v8-endpoint-public-20261009-1f10/v8-review"
       ],
       "installed": false
     },
@@ -1312,8 +1312,8 @@
     "javascript_syntax": "passed",
     "production_worker_regressions": "5 passed after lint correction",
     "production_compositor_regression": "1 passed; 2219 unrelated tests filtered out",
-    "shell_all_tests_compile": "rcargo --no-fallback --no-fetch check --locked -p shell --tests passed in 35.49 seconds",
-    "strict_clippy": "rcargo --no-fallback --no-fetch clippy --locked -p local-model-service -p shell --all-targets -- -D warnings passed in 3m07s after moving the mock assertion into the test",
+    "shell_all_tests_compile": "${CARGO_DROP_IN} --no-fallback --no-fetch check --locked -p shell --tests passed in 35.49 seconds",
+    "strict_clippy": "${CARGO_DROP_IN} --no-fallback --no-fetch clippy --locked -p local-model-service -p shell --all-targets -- -D warnings passed in 3m07s after moving the mock assertion into the test",
     "reproduction": "Current-source endpoint and lifecycle modes passed; missing repeat and canceled commit observations rejected",
     "owned_services": "Eight owned endpoint/lifecycle/reproduction services inactive"
   },
@@ -1660,5 +1660,46 @@
       "tilo-dictation-whistle-endpoint-en-us-0-r2-1f10-20261009": "inactive",
       "tilo-dictation-whistle-endpoint-es-419-0-r2-1f10-20261009": "inactive"
     }
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "ddd3617885868b09120a6628b2faee76e9918e4b",
+    "original_sha256": "253f2edb58721921173dd5afec058dcb54e3652f6464ac46a7f5714bb98269d9",
+    "original_path": "docs/architecture/dictation-whistle-v8-endpoint-review.json",
+    "normalized_string_fields": [
+      "$.cases[0].measurement.adapter_receipt.command[7]",
+      "$.cases[0].measurement.adapter_receipt.command[8]",
+      "$.cases[0].measurement.adapter_receipt.command[9]",
+      "$.cases[0].measurement.adapter_receipt.command[11]",
+      "$.cases[0].measurement.adapter_receipt.command[14]",
+      "$.cases[1].measurement.adapter_receipt.command[7]",
+      "$.cases[1].measurement.adapter_receipt.command[8]",
+      "$.cases[1].measurement.adapter_receipt.command[9]",
+      "$.cases[1].measurement.adapter_receipt.command[11]",
+      "$.cases[1].measurement.adapter_receipt.command[14]",
+      "$.cases[2].measurement.adapter_receipt.command[7]",
+      "$.cases[2].measurement.adapter_receipt.command[8]",
+      "$.cases[2].measurement.adapter_receipt.command[9]",
+      "$.cases[2].measurement.adapter_receipt.command[11]",
+      "$.cases[2].measurement.adapter_receipt.command[14]",
+      "$.cases[3].measurement.adapter_receipt.command[7]",
+      "$.cases[3].measurement.adapter_receipt.command[8]",
+      "$.cases[3].measurement.adapter_receipt.command[9]",
+      "$.cases[3].measurement.adapter_receipt.command[11]",
+      "$.cases[3].measurement.adapter_receipt.command[14]",
+      "$.cases[4].measurement.adapter_receipt.command[7]",
+      "$.cases[4].measurement.adapter_receipt.command[8]",
+      "$.cases[4].measurement.adapter_receipt.command[9]",
+      "$.cases[4].measurement.adapter_receipt.command[11]",
+      "$.cases[4].measurement.adapter_receipt.command[14]",
+      "$.lifecycle.adapter.command[7]",
+      "$.lifecycle.adapter.command[8]",
+      "$.lifecycle.adapter.command[9]",
+      "$.lifecycle.adapter.command[11]",
+      "$.lifecycle.adapter.command[14]",
+      "$.verification.shell_all_tests_compile",
+      "$.verification.strict_clippy"
+    ]
   }
 }

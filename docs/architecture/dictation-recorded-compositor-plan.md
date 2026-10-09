@@ -10,8 +10,8 @@ This is not Whistle-specific or physical-microphone acceptance.
 
 ## Target and isolation
 
-Run on the existing remote x86_64 review builder in this task's own rcargo tree,
-`/srv/rcargo/p/23a3d92b5603/w/a87aa1f3353c`, not the connected laptop's real desktop.
+Run on the existing remote x86_64 review builder in this task's own ${CARGO_DROP_IN} tree,
+`${BUILD_ROOT}`, not the connected laptop's real desktop.
 The connected laptop is Bazzite 44, x86_64; it currently has neither the fixed-path
 speech executable nor the image catalogue/key files required by this candidate.
 Do not install them there to make the fixture pass.
@@ -20,7 +20,7 @@ Use the existing hardware-disabled PipeWire/WirePlumber fixture, which previousl
 passed assembled capture, original-field insertion, native history, cancellation
 and focus retirement (the 6 October checkpoints in `dictation.md`). Rebuild current
 Shell and the maintained SDK `browser-text-input-qualification --native-fixture`
-through rcargo, with no local fallback. Bind the pinned CEF qualification runtime
+through ${CARGO_DROP_IN}, with no local fallback. Bind the pinned CEF qualification runtime
 read-only into the disposable namespace. The direct native fixture proves the
 compositor contract without first rebuilding the signed thin-app publisher path.
 Qualification of the installed signed app remains separate.

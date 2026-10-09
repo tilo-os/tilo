@@ -27,7 +27,7 @@ review-only adapter using the already locked Wasmi 1.1.0 interpreter. It authent
 both input artifacts, bounds linear memory and output, supplies only the declared
 host imports, refuses filesystem access and retains one engine between chunks.
 The external observer separately enforces native threads, address space and deadline.
-All builds used rcargo without local fallback.
+All builds used ${CARGO_DROP_IN} without local fallback.
 
 ## Actual words and resources
 

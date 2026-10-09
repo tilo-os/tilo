@@ -2344,6 +2344,14 @@ paragraph assertions are extended as part of this fix. A separate native typing
 control verifies that dictation undo retains text typed immediately beforehand.
 The 20 focused shell dictation integration cases also passed (0.502 seconds).
 
+Portable evidence views are indexed in `dictation-execution-environment-index.json`.
+The original committed bytes remain addressable by commit, Git blob and SHA-256;
+only execution-environment tokens are normalized in these views. Recorded source
+and driver hashes still identify the original executions, not a new qualification.
+Frozen launchers require an explicit owned build root and immutable container image.
+The current browser/worker driver requires `--container-image` with an OCI image ID
+or repository digest and records that pin in each receipt.
+
 `qualify_dictation_browser_worker.py` runs an authenticated public-audio image
 worker concurrently with a private real-browser field lease. Existing resource
 and custody checks remain intact; bounded worker replies are forwarded as they
