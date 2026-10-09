@@ -677,11 +677,7 @@ impl AgentParticipant {
     /// when no tab shows it, beside the view the agent worked in last, so
     /// the people see where it acts ([`crate::desk`]).
     fn show_on_desk(&mut self, route: &DocumentRoute) {
-        let desktop = DocumentRoute {
-            app_id: DESKTOP_APP.to_owned(),
-            cluster_id: self.room.clone(),
-            record: DESKTOP_RECORD.to_owned(),
-        };
+        let desktop = desktop_route(&self.room);
         let Some(record) = self.apps.get(route).map(|app| app.record().to_owned()) else {
             return;
         };
@@ -706,19 +702,30 @@ impl AgentParticipant {
             beside: beside.as_deref(),
         };
         let author = format!("agent:{}", self.identity.delegation.agent_id);
-        let Some(change) = crate::desk::place_view(
-            self.durable.get(&desktop).map_or(&[][..], Vec::as_slice),
-            &author,
-            &view,
-        ) else {
+        let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
+        let change = match self.unopened.desktop() {
+            Some(doc) => place(doc),
+            None => self
+                .apps
+                .get(&desktop)
+                .and_then(|app| app.read(place))
+                .flatten(),
+        };
+        let Some(change) = change else {
             return;
         };
-        match self.peer.publish(
-            desktop.clone(),
-            &collab_types::DocumentMutation::Incremental(change.clone()),
-        ) {
-            Ok(()) => self.durable.entry(desktop).or_default().push(change),
-            Err(error) => tracing::warn!(%error, "agent: its view did not reach the desk"),
+        let mutation = collab_types::DocumentMutation::Incremental(change.clone());
+        if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
+            tracing::warn!(%error, "agent: its view did not reach the desk");
+            return;
+        }
+        match self.apps.get(&desktop) {
+            Some(app) => {
+                if let Err(error) = app.apply(&mutation) {
+                    tracing::warn!(%error, "agent: the desk it holds did not take its view");
+                }
+            }
+            None => self.unopened.receive(desktop, change),
         }
     }
 

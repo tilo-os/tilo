@@ -264,6 +264,11 @@ impl Unopened {
         people_first(known, on_desktop, &self.arrived)
     }
 
+    /// The shared desktop as merged, while no replica holds it.
+    pub(super) fn desktop(&self) -> Option<&AutoCommit> {
+        self.desktop.as_ref().map(|live| &live.doc)
+    }
+
     /// The records.
     pub(super) fn routes(&self) -> Vec<DocumentRoute> {
         let mut routes: Vec<DocumentRoute> = self.held.keys().cloned().collect();

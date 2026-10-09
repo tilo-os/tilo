@@ -884,7 +884,7 @@ async fn certified_local_host_open_list_and_invoke_cost() {
                     let workspace = &mut tree.workspaces[0];
                     for n in 0..receipts {
                         let context = tilo_actions::ActionContext {
-                            action_label: format!("Succeeded · Rename document {n}"),
+                            purpose: Some(format!("Rename document {n}")),
                             ..tilo_actions::ActionContext::default()
                         };
                         workspace.effect_receipts.push(

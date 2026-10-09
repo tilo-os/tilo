@@ -11,7 +11,6 @@
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ReadDoc as _, ScalarValue, Value};
-use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
@@ -37,14 +36,11 @@ pub(crate) struct View<'a> {
     pub beside: Option<&'a str>,
 }
 
-/// The change that puts `view` on the shared desktop the `changes` build,
-/// written by `author`; `None` when a tab already shows the record, or the
-/// room has no shared desktop.
-pub(crate) fn place_view(changes: &[Vec<u8>], author: &str, view: &View<'_>) -> Option<Vec<u8>> {
-    let mut doc = AutoCommit::new();
-    for bytes in changes {
-        let _ = doc.load_incoming(bytes);
-    }
+/// The change that puts `view` on the shared `desktop`, written by
+/// `author`; `None` when a tab already shows the record, or the room has no
+/// shared desktop.
+pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
+    let mut doc = desktop.clone();
     let Ok(Some((Value::Scalar(value), _))) = doc.get(automerge::ROOT, DESKTOP_KEY) else {
         return None;
     };
@@ -138,6 +134,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
     use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
 
     fn tab(id: u64, app: &str) -> Tab {
@@ -194,11 +191,16 @@ mod tests {
         doc.save()
     }
 
-    fn read(changes: &[Vec<u8>]) -> SharedDesktop {
+    fn merged(changes: &[Vec<u8>]) -> AutoCommit {
         let mut doc = AutoCommit::new();
         for bytes in changes {
             doc.load_incoming(bytes).unwrap();
         }
+        doc
+    }
+
+    fn read(changes: &[Vec<u8>]) -> SharedDesktop {
+        let doc = merged(changes);
         let text = doc
             .get(automerge::ROOT, DESKTOP_KEY)
             .unwrap()
@@ -216,7 +218,7 @@ mod tests {
             record: "files-record",
             beside: Some("notes-record"),
         };
-        let change = place_view(&changes, "agent:scribe", &view).expect("a tab is added");
+        let change = place_view(&merged(&changes), "agent:scribe", &view).expect("a tab is added");
         changes.push(change);
         let desktop = read(&changes);
         let task = &desktop.tree.workspaces[0].strips[1];
@@ -241,7 +243,7 @@ mod tests {
             "the person's strip is untouched"
         );
         assert!(
-            place_view(&changes, "agent:scribe", &view).is_none(),
+            place_view(&merged(&changes), "agent:scribe", &view).is_none(),
             "a record already on the desk stays where it is"
         );
     }
@@ -254,6 +256,6 @@ mod tests {
             record: "files-record",
             beside: None,
         };
-        assert!(place_view(&[], "agent:scribe", &view).is_none());
+        assert!(place_view(&AutoCommit::new(), "agent:scribe", &view).is_none());
     }
 }

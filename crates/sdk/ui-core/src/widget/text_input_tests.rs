@@ -4598,7 +4598,7 @@ fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
         assert!(drive(
             &mut input,
             &mut doc,
-            &char_key_event(key),
+            &crate::synthetic_input::char_key(key),
             Modifiers::default()
         ));
         typing_frame(&mut input, &mut tr, &theme);
