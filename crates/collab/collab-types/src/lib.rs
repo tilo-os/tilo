@@ -121,8 +121,8 @@ pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
     SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id,
-    document_channel_id, live_artifact_id, validate_document_payload_route,
-    validate_whole_document_payload_route,
+    document_channel_id, live_artifact_id, next_unordered_document_sequence,
+    validate_document_payload_route, validate_whole_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
