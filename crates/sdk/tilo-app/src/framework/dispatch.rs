@@ -638,6 +638,24 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// Apply a field edit (`p.title.splice(..)`) or a verb to the document
+    /// `edits` lends, now, as [`Self::apply_now`] applies a typed action: for
+    /// an editor that must see its own edit before the next keystroke.
+    ///
+    /// # Errors
+    /// Returns why the submission does not build, or as [`Self::apply_now`].
+    pub fn submit_now(
+        &self,
+        edits: &mut Edits<'_>,
+        submit: impl Submit<R>,
+    ) -> Result<(), ActionError> {
+        let action = submit
+            .into_invoke()
+            .and_then(|invoke| invoke.build(tilo_resource::origin_now_ms()))
+            .map_err(ActionError::Refused)?;
+        self.apply_now(edits, &action)
+    }
+
     /// Apply one typed action to the document `edits` lends — an event's,
     /// or a settle pass's — now, attributed to the participant, with history
     /// recording what the action did.

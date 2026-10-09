@@ -85,3 +85,48 @@ fn typing_into_a_form_changes_no_document_and_submitting_invokes_the_verb_once()
     assert_eq!(app.state().bookmarks.len(), 1);
     assert_eq!(app.versions().len(), versions + 1);
 }
+
+/// The bookmarks again, showing the one a search hit or an agent opens.
+struct OpeningApp;
+
+thread_local! {
+    static OPENED: std::cell::RefCell<Vec<Id>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl ResourceApp for OpeningApp {
+    type Resource = Bookmarks;
+    const ID: &'static str = "so.tilo.test-opening";
+    const TITLE: &'static str = "Bookmarks";
+
+    fn view(cx: &mut ViewCx<Bookmarks>) -> Element {
+        let live = cx.live().clone();
+        cx.on_open_item(move |item| {
+            if !live.with(|bookmarks| bookmarks.bookmarks.contains(item)) {
+                return Err(Refusal::new("that bookmark is gone"));
+            }
+            OPENED.with(|opened| opened.borrow_mut().push(item.clone()));
+            Ok(())
+        });
+        Box::new(Column::new())
+    }
+}
+
+#[test]
+fn opening_an_item_shows_it_or_says_why_not() {
+    let mut app = TestApp::<OpeningApp>::new().unwrap();
+    app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
+        .unwrap();
+    let id = app.state().bookmarks.ids().next().cloned().unwrap();
+    let anchor = format!("test.bookmarks/bookmarks/{id}");
+    app.call("open", serde_json::json!({ "anchor": anchor }))
+        .unwrap();
+    assert_eq!(OPENED.with(|opened| opened.borrow().clone()), [id]);
+    let gone = app.call(
+        "open",
+        serde_json::json!({ "anchor": "test.bookmarks/bookmarks/nothing" }),
+    );
+    assert!(
+        matches!(&gone, Err(error) if error.to_string().contains("that bookmark is gone")),
+        "{gone:?}"
+    );
+}

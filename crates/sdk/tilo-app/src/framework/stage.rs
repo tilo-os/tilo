@@ -37,7 +37,7 @@ use super::root::ResourceRoot;
 
 type Stage = Box<dyn FnMut(Option<&str>)>;
 type StageList = Vec<(Weak<()>, Stage)>;
-type Opener = Box<dyn FnMut(&str)>;
+type Opener = Box<dyn FnMut(&str) -> Result<(), String>>;
 type OpenerList = Vec<(Weak<()>, Opener)>;
 
 /// The view-state callbacks of one app's views — how each stages a
@@ -110,10 +110,22 @@ impl Stages {
             .any(|(alive, _)| alive.strong_count() > 0)
     }
 
-    /// Show the item at `anchor` in every view that opens items. Returns
-    /// whether any did.
-    pub(crate) fn open(&self, anchor: &str) -> bool {
-        run_live(&self.openers, |open| open(anchor))
+    /// Show the item at `anchor` in every view that opens items.
+    ///
+    /// # Errors
+    /// Returns why not, when no view opens items or every one refused it.
+    pub(crate) fn open(&self, anchor: &str) -> Result<(), String> {
+        let mut opened = false;
+        let mut refusal = None;
+        let ran = run_live(&self.openers, |open| match open(anchor) {
+            Ok(()) => opened = true,
+            Err(reason) => refusal = Some(reason),
+        });
+        match (ran, opened, refusal) {
+            (false, ..) => Err("this app does not open items".into()),
+            (true, true, _) | (true, false, None) => Ok(()),
+            (true, false, Some(reason)) => Err(reason),
+        }
     }
 }
 

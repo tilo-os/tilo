@@ -70,3 +70,30 @@ fn dragging_a_bound_slider_is_one_undo_step_and_the_next_drag_another() {
         app.state().level
     );
 }
+
+/// A hand-built editor over the same field, splicing it in place.
+struct EditorApp;
+
+impl ResourceApp for EditorApp {
+    type Resource = Mixer;
+    const ID: &'static str = "so.tilo.test-mixer-editor";
+    const TITLE: &'static str = "Mixer";
+
+    fn view(cx: &mut ViewCx<Mixer>) -> Element {
+        Box::new(tilo_app::framework::TextControl::at(
+            TextInput::local().with_id("name"),
+            cx.dispatcher(),
+            cx.paths().name,
+        ))
+    }
+}
+
+#[test]
+fn a_text_control_at_a_path_splices_the_field_and_undoes_a_word() {
+    let mut app = TestApp::<EditorApp>::new().unwrap();
+    app.harness().click_named("name").unwrap();
+    app.harness().type_text("Bass");
+    assert_eq!(app.state().name, "Bass");
+    assert!(app.undo());
+    assert_eq!(app.state().name, "");
+}

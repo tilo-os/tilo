@@ -1405,6 +1405,9 @@ pub(crate) fn encode_resource_action(
 /// provider supplied it at emission; this is deliberately not History custody.
 #[derive(Clone, PartialEq)]
 struct OrdinaryConfirmationSnapshot {
+    /// The origin time the intent was built at; it is built at the same
+    /// time again to tell whether anything else about it changed.
+    built_at: i64,
     resource_id: String,
     resource_kind: String,
     action_id: String,
@@ -1449,7 +1452,12 @@ impl OrdinaryConfirmation {
             &resource.kind,
             &resource.label,
         );
-        let snapshot = Self::snapshot(&resources, &address, &arguments)?;
+        let snapshot = Self::snapshot(
+            &resources,
+            &address,
+            &arguments,
+            tilo_resource::origin_now_ms(),
+        )?;
         Ok(Self {
             target,
             address,
@@ -1463,6 +1471,7 @@ impl OrdinaryConfirmation {
         resources: &[tilo_actions::Resource],
         address: &tilo_actions::ActionAddress,
         arguments: &ControlContinuationArguments,
+        built_at: i64,
     ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
         let (resource, spec) = unique_control_spec(resources, address)?;
         let (argument, json) = arguments.as_door_arguments();
@@ -1470,11 +1479,14 @@ impl OrdinaryConfirmation {
             validate_deferred_arguments(spec, json, argument)?;
             PreparedActionIntent::Deferred(DeferredIntent::capture(spec)?)
         } else {
-            PreparedActionIntent::Encoded(encode_resource_action(
-                resources, address, json, argument,
-            )?)
+            // An action carries the time it was built; the confirmation is
+            // of the same action whenever the person confirms it.
+            PreparedActionIntent::Encoded(tilo_resource::with_origin_clock(built_at, || {
+                encode_resource_action(resources, address, json, argument)
+            })?)
         };
         Ok(OrdinaryConfirmationSnapshot {
+            built_at,
             resource_id: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             action_id: spec.id.clone(),
@@ -1513,7 +1525,12 @@ impl OrdinaryConfirmation {
     ) -> Result<(), tilo_actions::DoorError> {
         self.validate_owner(domain)?;
         let resources = resources_for_control_target(root, doc, &self.target, &self.address)?;
-        let mut current = Self::snapshot(&resources, &self.address, &self.arguments)?;
+        let mut current = Self::snapshot(
+            &resources,
+            &self.address,
+            &self.arguments,
+            self.snapshot.built_at,
+        )?;
         // Absence at emission is not retroactively replaced with provider proof.
         if self.snapshot.continuation.is_none() {
             current.continuation = None;

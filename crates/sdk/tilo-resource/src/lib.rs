@@ -160,6 +160,7 @@ pub use resource::{
     ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
     SearchWeight, SharedRecord, bind_declaration, build_action, declaration_spec, default_search,
     encode, origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
+    with_origin_clock,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};

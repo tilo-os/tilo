@@ -376,8 +376,32 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// person picks the hit, or when an agent invokes the resource's `open`
     /// action. Select the item, switch to its page, scroll it into view:
     /// set the [`LocalState`]s that show it, as the person's own input would.
-    pub fn on_open(&self, open: impl FnMut(&str) + 'static) {
-        self.stages.push_opener(self.alive.clone(), Box::new(open));
+    pub fn on_open(&self, mut open: impl FnMut(&str) + 'static) {
+        self.stages.push_opener(
+            self.alive.clone(),
+            Box::new(move |anchor| {
+                open(anchor);
+                Ok(())
+            }),
+        );
+    }
+
+    /// Show the item of the resource a search hit or an agent's `open`
+    /// names: `open` runs with its id, and refuses one it cannot show (an
+    /// item that no longer exists), which the person or agent is told.
+    /// Anchors that name no item of the resource are refused for it.
+    pub fn on_open_item(
+        &self,
+        mut open: impl FnMut(&Id) -> Result<(), tilo_resource::Refusal> + 'static,
+    ) {
+        self.stages.push_opener(
+            self.alive.clone(),
+            Box::new(move |anchor| {
+                let (_, item) = tilo_resource::items::item_of_resource::<R>(anchor)
+                    .ok_or_else(|| format!("`{anchor}` is not an item of {}", R::LABEL))?;
+                open(&item).map_err(|refusal| refusal.0)
+            }),
+        );
     }
 
     /// Open the platform search with `request`, narrowed to this app or one

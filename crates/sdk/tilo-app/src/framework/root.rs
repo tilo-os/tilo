@@ -1316,9 +1316,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 .get(OPEN_ANCHOR)
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
-            if !self.stages.open(anchor) {
-                return Err("this app does not open items".into());
-            }
+            self.stages.open(anchor)?;
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
@@ -1478,7 +1476,7 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) {
-        if !self.stages.open(action_id) {
+        if self.stages.open(action_id).is_err() {
             ui_core::search::capability::activate_search_result(
                 self.content.as_mut(),
                 action_id,

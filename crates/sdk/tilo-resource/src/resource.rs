@@ -911,7 +911,7 @@ pub fn origin_now_ms() -> i64 {
 }
 
 /// Run `f` with the origin clock reading `now_ms`.
-pub(crate) fn with_origin_clock<T>(now_ms: i64, f: impl FnOnce() -> T) -> T {
+pub fn with_origin_clock<T>(now_ms: i64, f: impl FnOnce() -> T) -> T {
     struct Restore(Option<i64>);
     impl Drop for Restore {
         fn drop(&mut self) {

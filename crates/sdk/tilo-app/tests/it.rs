@@ -11,6 +11,8 @@ pub mod actors;
 pub mod attached_view;
 #[path = "child_resources.rs"]
 pub mod child_resources;
+#[path = "confirmation.rs"]
+pub mod confirmation;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
 #[path = "effects.rs"]
