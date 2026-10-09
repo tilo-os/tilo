@@ -80,6 +80,20 @@ class CheckAggregateTests(unittest.TestCase):
             )
             return result.returncode, summary.read_text() if summary.exists() else ""
 
+    def test_wasm_qualification_uses_native_arm_without_losing_main_x86(self):
+        job = section(self.workflow, "wasm", 2)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}", job)
+        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
+        self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
+        self.assertIn('run: bash tools/ci/check-wasm.sh', job)
+        self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
+        self.assertIn("timeout-minutes: 90", job)
+        # Native x86/ARM matrices and their warning flags remain independent.
+        for name in ("test", "check", "clippy"):
+            self.assertIn("runs-on: ${{ matrix.runner }}", section(self.workflow, name, 2))
+
     def test_native_admission_observes_security_without_losing_main_results(self):
         # Evaluate the actual workflow predicates. This deliberately supports only
         # the small boolean/comparison grammar used here, rejecting new syntax.
