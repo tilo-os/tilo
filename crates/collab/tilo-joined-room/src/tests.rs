@@ -2,6 +2,7 @@
 use crate::testing::{APP, ROOM, raw_fixture};
 use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::{
     path::PathBuf,
@@ -206,7 +207,7 @@ fn edit_from_view(
     let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
-    chat.commit();
+    chat.commit_edit("fixture", "topic");
     let message = view.peer().clone().publish_incremental(
         APP,
         "",
@@ -681,20 +682,22 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", topic).unwrap();
-            chat.commit();
+            chat.commit_edit("fixture", "topic");
             Ok(chat.save_after(&before))
         })
         .unwrap();
     let key = member();
+    let mutation = DocumentMutation::Incremental(changes);
     let mut envelope = SignedOp::new_unsigned(
-        DocumentMutation::Incremental(changes).encode().unwrap(),
+        mutation.encode().unwrap(),
         document_artifact_id(APP, ROOM, ""),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         document_attestation_id(APP, ROOM, ""),
         OpClass::Splice,
         joined.now,
         next_unordered_document_sequence(joined.now),
-    );
+    )
+    .with_claims(collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap());
     sign_op(&mut envelope, &key).unwrap();
     OwnerCommitRequest {
         room: ROOM.into(),

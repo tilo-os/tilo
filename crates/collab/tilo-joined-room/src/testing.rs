@@ -230,6 +230,7 @@ pub fn raw_fixture_at(
     let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
+    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
             room_changes: seed_room(ROOM, &governor, &[governor.clone(), host.clone()]).unwrap(),

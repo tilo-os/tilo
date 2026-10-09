@@ -15,6 +15,7 @@ use crate::store::{
 };
 use crate::transport::Envelope;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use tilo_peer_state::{StatePeer, TransportOrigin};
 
 // ---- shared drivers -------------------------------------------------------
@@ -434,6 +435,9 @@ fn synthetic_signed(
         collab_types::OpClass::Splice,
         now,
         seq,
+    )
+    .with_claims(
+        collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap_or_default(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
@@ -1292,7 +1296,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     let mut branch_a = automerge::AutoCommit::load(&baseline).unwrap();
     branch_a.set_actor(automerge::ActorId::from(vec![71]));
     branch_a.put(automerge::ROOT, "candidate", "A").unwrap();
-    branch_a.commit();
+    branch_a.commit_edit("fixture", "candidate");
     let candidate = synthetic_signed(
         &key,
         authority.room(),
@@ -1312,7 +1316,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     branch_b.set_actor(automerge::ActorId::from(vec![72]));
     let baseline_heads = branch_b.get_heads();
     branch_b.put(automerge::ROOT, "fallback", "B").unwrap();
-    branch_b.commit();
+    branch_b.commit_edit("fixture", "fallback");
     let tail = incremental(
         &key,
         &authority,
@@ -1936,12 +1940,12 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
     let baseline_heads = branch.get_heads();
     branch.put(automerge::ROOT, "first", "T1").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "first");
     let t1_heads = branch.get_heads();
     let t1_bytes = changes_since(&mut branch, &baseline_heads);
     let t1 = incremental(&key, &authority, t1_bytes, seq + 1, now);
     branch.put(automerge::ROOT, "second", "T2").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "second");
     let t2_bytes = changes_since(&mut branch, &t1_heads);
     let t2 = incremental(&key, &authority, t2_bytes, seq + 2, now);
     let (tmp, store) = bound_store(authority.clone());
@@ -2066,7 +2070,7 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
     let old_heads = branch.get_heads();
     branch.put(automerge::ROOT, "uncovered", "T2").unwrap();
-    branch.commit();
+    branch.commit_edit("fixture", "uncovered");
     let tail_bytes = changes_since(&mut branch, &old_heads);
     let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
     let tail = incremental(&key, &authority, tail_bytes, document_seq(&cp2[1]), now);
@@ -2179,7 +2183,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
         branch
             .put(automerge::ROOT, format!("tail-{i}"), u64::from(i))
             .unwrap();
-        branch.commit();
+        branch.commit_edit("fixture", "fixture");
         let bytes = changes_since(&mut branch, &heads);
         tilo_automerge::ApplyIncoming::load_incoming(&mut expected, &bytes).unwrap();
         tails.push(incremental(
@@ -2234,7 +2238,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
     for (offset, (field, value)) in [("first", "T1"), ("second", "T2")].into_iter().enumerate() {
         let heads = branch.get_heads();
         branch.put(automerge::ROOT, field, value).unwrap();
-        branch.commit();
+        branch.commit_edit("fixture", "fixture");
         let bytes = changes_since(&mut branch, &heads);
         tails.push(incremental(
             &key,
@@ -2301,7 +2305,7 @@ fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
             branch
                 .put(automerge::ROOT, format!("case-{i}"), u64::from(i))
                 .unwrap();
-            branch.commit();
+            branch.commit_edit("fixture", "fixture");
             let bytes = changes_since(&mut branch, &heads);
             tails.push(incremental(
                 &key,

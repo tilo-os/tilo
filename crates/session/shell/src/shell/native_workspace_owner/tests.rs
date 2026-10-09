@@ -2,6 +2,7 @@
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::{sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
@@ -623,7 +624,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", "A real native local edit").unwrap();
-            chat.commit();
+            chat.commit_edit("fixture", "topic");
             let changes = chat
                 .get_changes(&before)
                 .into_iter()

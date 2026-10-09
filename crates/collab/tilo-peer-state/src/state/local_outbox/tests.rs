@@ -3,6 +3,7 @@ use crate::InputDisposition;
 use crate::TransportOrigin;
 use automerge::AutoCommit;
 use automerge::ROOT;
+use collab_types::CommitNamed as _;
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
 
@@ -49,7 +50,7 @@ fn local_edit(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, name, name).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     if !snapshot {
         return peer
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
@@ -381,7 +382,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
     unrelated.set_actor(automerge::ActorId::from(vec![99; 32]));
     let before = unrelated.get_heads();
     unrelated.put(ROOT, "same-value", "same-value").unwrap();
-    unrelated.commit();
+    unrelated.commit_edit("fixture", "same-value");
     let second = member
         .publish_incremental(
             "test.app",
@@ -633,6 +634,7 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     let (mut governor, mut member, governor_key, key, _, now) = fixture();
     let mut second = AutoCommit::new();
     second.put(ROOT, "second-seed", true).unwrap();
+    second.commit_edit("fixture", "second-seed");
     governor
         .publish_document("test.app", "tab:2", second.save(), &governor_key, now)
         .unwrap();
@@ -644,6 +646,7 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     ));
     let heads = second.get_heads();
     second.put(ROOT, "legacy-second", true).unwrap();
+    second.commit_edit("fixture", "legacy-second");
     let _missing_second = member
         .publish_incremental("test.app", "tab:2", second.save_after(&heads), &key, now)
         .unwrap();

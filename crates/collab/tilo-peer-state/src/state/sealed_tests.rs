@@ -2,6 +2,7 @@
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
+use collab_types::CommitNamed as _;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -292,7 +293,7 @@ fn edit(peer: &StatePeer, value: &str) -> Vec<u8> {
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "value", value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     DocumentMutation::Incremental(doc.save_after(&heads))
         .encode()
         .unwrap()
@@ -374,6 +375,11 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
     let mut plain = envelope_of(sealed(&holder, &a, 2, b"ciphertext"));
     plain.encryption = None;
     plain.payload = plaintext.clone();
+    plain.claims = collab_types::mutation_claims(
+        &DocumentMutation::decode(&plaintext).unwrap(),
+        collab_types::record_unit,
+    )
+    .unwrap();
     collab_types::sign_op(&mut plain, &a).unwrap();
     refused(holder.clone(), plain, "a cleartext write");
     let (member_key, member) = {

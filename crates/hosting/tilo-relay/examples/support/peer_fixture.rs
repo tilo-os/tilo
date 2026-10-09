@@ -96,6 +96,6 @@ pub fn fixture_writer_insert(
         },
     )
     .map_err(|e| e.to_string())?;
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, "word-processor", "body");
     peer.publish_incremental(app, record.as_str(), doc.save_after(&before), key, now)
 }

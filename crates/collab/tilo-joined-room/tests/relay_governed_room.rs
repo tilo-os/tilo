@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use collab_types::CommitNamed as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -174,7 +175,7 @@ impl Native {
                 let mut doc = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
                 let heads = doc.get_heads();
                 doc.put(ROOT, key, value).unwrap();
-                doc.commit();
+                doc.commit_edit("fixture", "fixture");
                 view.peer().clone().publish_incremental(
                     APP,
                     "",
@@ -369,7 +370,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
     // Alice writes; Bob's native owner admits it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = alice_peer
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop_key, SystemTime::now())
         .unwrap();

@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
@@ -221,7 +222,7 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     let seed = SeedState {
         room_changes: seed_room(room, &ac, &[ac.clone(), bc.clone()]).unwrap(),
         documents: vec![SeedDocument {
@@ -277,7 +278,7 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", 1).unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -343,7 +344,7 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
     .unwrap();
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -596,7 +597,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             ),
         )
         .unwrap();
-    room_doc.commit();
+    room_doc.commit_edit("fixture", "fixture");
     restored
         .receive_from(
             TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
@@ -910,7 +911,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         authority_key.verifying_key().to_bytes().to_vec(),
     ));
     legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
-    legacy.commit();
+    legacy.commit_edit("fixture", "invitation_receipts_v1");
     base.receive_from(
         TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
         NeighbourMsg::SyncResp {
@@ -1079,7 +1080,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
         automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt([99; 32], [100; 32])).unwrap()),
     )
     .unwrap();
-    left.commit();
+    left.commit_edit("fixture", "fixture");
     right.set_actor(automerge::ActorId::from(vec![101; 32]));
     right
         .put(
@@ -1090,7 +1091,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
             ),
         )
         .unwrap();
-    right.commit();
+    right.commit_edit("fixture", "fixture");
     let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
         changes: branch
             .get_changes(&base_heads)
@@ -1154,7 +1155,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "other", "B").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "other");
     let old = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1219,7 +1220,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut doc = AutoCommit::load(&reload.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "new", "B2").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let next = reload
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -1293,7 +1294,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
     if let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatch {
         let mut replacement = AutoCommit::new();
         replacement.put(ROOT, "attack", true).unwrap();
-        replacement.commit();
+        replacement.commit_edit("fixture", "attack");
         envelope.payload = collab_types::DocumentMutation::Snapshot(replacement.save())
             .encode()
             .unwrap();
@@ -1329,7 +1330,7 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     };
     let mut doc = room::candidate(None, &changes).unwrap();
     doc.delete(ROOT, coverage::FIELD_V2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let legacy = NeighbourMsg::SyncResp {
         room: room.clone(),
         changes: doc
@@ -1644,7 +1645,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let mut doc = AutoCommit::load(&native.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "new", "forbidden").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "new");
     let op = native
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -1819,7 +1820,7 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
             .put_object(ROOT, "text", automerge::ObjType::Text)
             .unwrap();
         doc.splice_text(&text, 0, 0, "saved once").unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "fixture");
         let original = client
             .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
             .unwrap();
@@ -1970,13 +1971,13 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
@@ -2053,13 +2054,13 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
     let before = document.get_heads();
     document.put(ROOT, "first", "A").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "first");
     let first = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
     let before = document.get_heads();
     document.put(ROOT, "second", "B").unwrap();
-    document.commit();
+    document.commit_edit("fixture", "second");
     let second = author
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
@@ -2115,14 +2116,14 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
         .put_object(ROOT, "text", automerge::ObjType::Text)
         .unwrap();
     doc.splice_text(&text, 0, 0, "one ").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let first = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     let recent = now + Duration::from_secs(290);
     let before = doc.get_heads();
     doc.splice_text(&text, 4, 0, "two").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "fixture");
     let second = client
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, recent)
         .unwrap();
@@ -2224,7 +2225,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "joined", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "joined");
     let message = existing
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
         .unwrap();
@@ -2470,7 +2471,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
             automerge::ScalarValue::Bytes(vec![0]),
         )
         .unwrap();
-    candidate.commit();
+    candidate.commit_edit("fixture", "fixture");
     let changes = candidate
         .get_changes(&[])
         .into_iter()
@@ -2511,7 +2512,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     .unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", 1).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     native
         .install_seed(
             SeedState {
@@ -2607,7 +2608,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let heads = browser.document_heads("test.app", "tab:1").unwrap();
     assert_eq!(heads, doc.get_heads());
     doc.put(ROOT, "value", 2).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "value");
     let local = browser
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
@@ -2679,7 +2680,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
         .unwrap();
     doc.put(&tab, "title", "Original").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000001").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let mut peer =
         StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
     peer.install_seed(
@@ -2701,7 +2702,7 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     ));
     doc.put(&tab, "title", "Stolen").unwrap();
     doc.put(&tab, "record_id", "tab:0000000000000012").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "record_id");
     let result = peer.receive(
         b.verifying_key().to_bytes(),
         NeighbourMsg::SyncResp {
@@ -2752,7 +2753,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, "foreign", "original effect").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "foreign");
     let change = doc.save_after(&heads);
     let original = governor
         .publish_incremental(app, record, change.clone(), &b, now)
@@ -2801,7 +2802,7 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     before = governor.clone();
     let mut new = AutoCommit::new();
     new.put(ROOT, "created", true).unwrap();
-    new.commit();
+    new.commit_edit("fixture", "created");
     governor
         .publish_document("new.app", "new-record", new.save(), &a, now)
         .unwrap();

@@ -673,6 +673,24 @@ pub fn init_scoped(
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
+    // A stamp written on its own is the record's genesis and is committed
+    // as one; written with other pending operations, it is part of the
+    // change those make, which names itself.
+    let alone = doc.pending_ops() == 0;
+    let stamped = stamp_scoped(doc, id, kind, home, room);
+    if alone && stamped && doc.pending_ops() != 0 {
+        commit_genesis(doc);
+    }
+    stamped
+}
+
+fn stamp_scoped(
+    doc: &mut AutoCommit,
+    id: &RecordId,
+    kind: &RecordKind,
+    home: &str,
+    room: Option<&str>,
+) -> bool {
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
         return false;
@@ -716,6 +734,15 @@ pub fn init_scoped(
         let _ = doc.put_object(&m, "refs", ObjType::List);
     }
     true
+}
+
+/// Commit what a brand-new record starts with (its identity, references and
+/// first content) as its genesis, which names itself as such.
+fn commit_genesis(doc: &mut AutoCommit) {
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+    );
 }
 
 /// The identity stamped into `doc`, if it holds a record.
@@ -2010,7 +2037,7 @@ impl RecordSet {
             }
             owner.validate_schema(&doc)?;
             validate_identity(&doc, want, &self.home)?;
-            doc.commit();
+            commit_genesis(&mut doc);
             let owner = Rc::new(owner);
             let autosave = app_state::DocWriter::start_new(&owner, &mut doc)?;
             (doc, autosave)
@@ -2189,7 +2216,7 @@ impl RecordStore {
             .merge_incoming(&mut preserved)
             .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
         seed(&mut document).map_err(RecordOpenError::Initialization)?;
-        document.commit();
+        commit_genesis(&mut document);
         validate_identity(&document, checkout, &workspace.id)?;
         let bytes = document.save();
         initialization
@@ -2623,7 +2650,11 @@ fn genesis(
     if made.get_actor() != &actor {
         return Err(RecordOpenError::IdentityMismatch);
     }
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0),
+    );
     let changes = made.get_changes(&[]);
     let mut created = AutoCommit::new().with_actor(doc.get_actor().clone());
     ApplyIncoming::apply_incoming(&mut created, changes)
@@ -2705,7 +2736,7 @@ impl RecordReservation {
         seed(&mut doc).map_err(RecordOpenError::Initialization)?;
         owner.validate_schema(&doc)?;
         validate_identity(&doc, &self.checkout, &workspace)?;
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut set = self.store.0.borrow_mut();
         if set
             .pending
@@ -3194,7 +3225,7 @@ impl RecordStore {
                 &RecordRef::new(target.id.clone(), relation.clone()),
             );
         }
-        doc.commit();
+        commit_genesis(&mut doc);
         let mut autosave = owner.map(|owner| owner.writer());
         if let Some(error) = autosave
             .as_ref()

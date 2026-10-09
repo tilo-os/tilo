@@ -4970,8 +4970,22 @@ async fn send_document_mutation(
 /// from the history entry the executor wrote into it. A change something
 /// other than the executor wrote cannot be claimed; its op then carries no
 /// claims, which a receiver deciding claims refuses.
+#[cfg_attr(
+    debug_assertions,
+    expect(
+        clippy::panic,
+        reason = "a debug build's check that every change this device makes is claimed"
+    )
+)]
 fn origin_claims(mutation: &collab_types::DocumentMutation) -> Vec<collab_types::ChangeClaim> {
     collab_types::mutation_claims(mutation, collab_types::record_unit).unwrap_or_else(|error| {
+        #[cfg(debug_assertions)]
+        if let collab_types::DocumentMutation::Incremental(bytes) = mutation
+            && collab_types::parse_changes(bytes).is_ok()
+            && let Err(unnamed) = collab_types::claim::named_changes(bytes)
+        {
+            panic!("a document change this device made names no action: {unnamed}");
+        }
         tracing::warn!(%error, "collab: a document change carries no claim");
         Vec::new()
     })
@@ -10620,7 +10634,7 @@ mod tests {
             let heads = document.base_heads();
             let snapshot = document.save();
             document.put(automerge::ROOT, "body", "after").unwrap();
-            document.commit();
+            collab_types::CommitNamed::commit_edit(&mut document, "fixture", "body");
             let delta = document.save_after(&heads);
             // The route refuses documents until it is joined and its document
             // mode is resolved; the first refused attempt starts that join.

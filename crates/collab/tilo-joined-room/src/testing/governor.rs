@@ -87,6 +87,7 @@ impl TestGovernor {
             automerge::ObjType::Map,
         )
         .unwrap();
+        collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
         peer.install_seed(
             SeedState {
                 room_changes: seed_room(&room, &governor, std::slice::from_ref(&governor)).unwrap(),

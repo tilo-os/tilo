@@ -147,6 +147,12 @@ fn prepare_edit(
             code_editor::actions::text_edit_action(FILE, base, expected)
                 .apply(&mut document)
                 .unwrap();
+            // Applied here without the executor, so the test names the step.
+            collab_types::CommitNamed::commit_edit(
+                &mut document,
+                cold_code::PROJECT_KIND,
+                "buffers",
+            );
             Ok(document.save_after(&before))
         })
         .unwrap();

@@ -270,7 +270,12 @@ impl PersonRecord {
             .with_history(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
                 let value = edit(doc)?;
-                doc.commit();
+                // The closure writes the record directly, naming no finer
+                // action than an edit of the whole record.
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default()
+                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                );
                 if undoable {
                     history.record_committed_action_authored(doc, before, None, None, Some(author));
                 } else {

@@ -1,6 +1,7 @@
 use super::*;
 use crate::room::media;
 use automerge::{ObjType, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -184,7 +185,7 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
         4 => chat.put(&object, "archived", true).unwrap(),
         _ => chat.put(&object, "name", "new title").unwrap(),
     }
-    chat.commit();
+    chat.commit_edit("fixture", "name");
     let changes = chat
         .get_changes(&heads)
         .iter()
@@ -992,8 +993,8 @@ fn room_media_signed_present_policy_schema_matrix_is_rejected_atomically() {
     branch
         .put(ROOT, media::FIELD, "hidden malformed conflict")
         .unwrap();
-    doc.commit();
-    branch.commit();
+    doc.commit_edit("fixture", "fixture");
+    branch.commit_edit("fixture", "fixture");
     doc.reset_diff_cursor();
     branch.reset_diff_cursor();
     doc.merge_incoming(&mut branch).unwrap();

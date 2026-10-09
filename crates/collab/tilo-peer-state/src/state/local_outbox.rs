@@ -443,7 +443,8 @@ impl StatePeer {
             now,
             seq,
             encryption,
-        );
+        )
+        .with_claims(envelope.claims.clone());
         collab_types::sign_op(&mut renewal, key).map_err(err)?;
         let mut candidate = self.clone();
         candidate.admit_new_local_document(

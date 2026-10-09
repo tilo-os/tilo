@@ -603,6 +603,7 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     let base = branch.get_heads();
     branch.set_actor(automerge::ActorId::from(vec![71; 32]));
     branch.put(ROOT, "small-independent", true).unwrap();
+    branch.commit_edit("fixture", "small-independent");
     let large = local_edit(&mut member, &key, now, true, &"large".repeat(500));
     let small = member
         .publish_incremental("test.app", "tab:1", branch.save_after(&base), &key, now)

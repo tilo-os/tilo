@@ -8,6 +8,7 @@
 use super::*;
 use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use tilo_action_broker::channel_encryption::{
@@ -609,7 +610,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "topic", "written in the runtime").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -661,7 +662,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let mut doc = AutoCommit::load(&chat).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "secret", SECRET).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "secret");
     let message = joined
         .owner
         .with_current(room, |view| {
@@ -767,7 +768,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         assert!(manager.is_connected(), "{:?}", manager.state());
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", SDK_WRITTEN).unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "text");
         assert!(
             manager.send(ui::collaboration::CollabRequest::document_snapshot(
                 doc.save()

@@ -7,7 +7,7 @@ use tilo_actions::Action as _;
 use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
 
 /// The kind of the record a Code Editor project is.
-const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
+pub(super) const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
 
 pub(super) const APP: &str = "so.tilo.code-editor";
 pub(super) const RECORD: &str = "tab:000000000000002a";
@@ -158,6 +158,8 @@ fn source_document(directory: &Path) -> AutoCommit {
             code_editor::actions::record_text_action(FILE, BODY)
                 .apply(document)
                 .unwrap();
+            // Applied here without the executor, so the test names the step.
+            collab_types::CommitNamed::commit_edit(document, PROJECT_KIND, "buffers");
             assert_eq!(
                 body(document),
                 BODY,
@@ -474,17 +476,17 @@ pub(super) fn unordered_document_message(
 ) -> NeighbourMsg {
     let room = room.to_string();
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mutation = collab_types::DocumentMutation::Incremental(changes);
     let mut envelope = collab_types::SignedOp::new_unsigned(
-        collab_types::DocumentMutation::Incremental(changes)
-            .encode()
-            .unwrap(),
+        mutation.encode().unwrap(),
         collab_types::document_artifact_id(APP, &room, RECORD),
         author,
         collab_types::document_attestation_id(APP, &room, RECORD),
         collab_types::OpClass::Splice,
         now,
         collab_types::next_unordered_document_sequence(now),
-    );
+    )
+    .with_claims(collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap());
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
         peer: tilo_peer_state::peer_handle(author.as_bytes()),
@@ -513,6 +515,7 @@ fn offline_edit(
             code_editor::actions::text_edit_action(FILE, BODY, text)
                 .apply(&mut document)
                 .unwrap();
+            collab_types::CommitNamed::commit_edit(&mut document, PROJECT_KIND, "buffers");
             Ok(document.save_after(&heads))
         })
         .unwrap();

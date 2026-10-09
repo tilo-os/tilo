@@ -39,6 +39,31 @@ struct RecoveryHistory {
     original_sequence: u64,
 }
 
+/// The unsigned envelope re-sending a route's whole recovered history,
+/// claiming each of its changes.
+fn history_envelope(
+    room: &str,
+    route: &Route,
+    history: &automerge::Automerge,
+    author: Ed25519PublicKey,
+    timestamp: SystemTime,
+    sequence: u64,
+) -> Result<SignedOp, String> {
+    let mutation = DocumentMutation::Incremental(history.save());
+    let claims =
+        collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
+    Ok(SignedOp::new_unsigned(
+        mutation.encode().map_err(err)?,
+        collab_types::document_artifact_id(&route.app, room, &route.record),
+        author,
+        collab_types::document_attestation_id(&route.app, room, &route.record),
+        OpClass::Splice,
+        timestamp,
+        sequence,
+    )
+    .with_claims(claims))
+}
+
 impl StatePeer {
     fn recovery_obligations(
         &self,
@@ -138,17 +163,14 @@ impl StatePeer {
             // byte except time/sequence is the actual future wire representation.
             // u64::MAX reserves sequence width. Serde SystemTime encodes u64
             // seconds/u32 nanos: maximum postcard widths 10+5 rather than 1+1.
-            let envelope = SignedOp::new_unsigned(
-                DocumentMutation::Incremental(history.doc.save())
-                    .encode()
-                    .map_err(err)?,
-                collab_types::document_artifact_id(&route.app, &self.core.room, &route.record),
+            let envelope = history_envelope(
+                &self.core.room,
+                route,
+                &history.doc,
                 Ed25519PublicKey::from_bytes(selected),
-                collab_types::document_attestation_id(&route.app, &self.core.room, &route.record),
-                OpClass::Splice,
                 SystemTime::UNIX_EPOCH,
                 u64::MAX,
-            );
+            )?;
             let shape = NeighbourMsg::AppDocument {
                 peer: peer_handle(&selected),
                 app_id: route.app.clone(),
@@ -470,25 +492,14 @@ impl StatePeer {
                     .unwrap_or(0)
                     .checked_add(1)
                     .ok_or("recovery projection sequence exhausted")?;
-                let mut envelope = SignedOp::new_unsigned(
-                    DocumentMutation::Incremental(history.doc.save())
-                        .encode()
-                        .map_err(err)?,
-                    collab_types::document_artifact_id(
-                        &route.app,
-                        &candidate.core.room,
-                        &route.record,
-                    ),
+                let mut envelope = history_envelope(
+                    &candidate.core.room,
+                    route,
+                    &history.doc,
                     author,
-                    collab_types::document_attestation_id(
-                        &route.app,
-                        &candidate.core.room,
-                        &route.record,
-                    ),
-                    OpClass::Splice,
                     now,
                     sequence,
-                );
+                )?;
                 let role = candidate.recovery_current_role(route, &envelope, now)?;
                 collab_types::sign_op(&mut envelope, key).map_err(err)?;
                 let channel =

@@ -17,6 +17,7 @@
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -85,7 +86,7 @@ fn edit(
     ));
     let heads = doc.get_heads();
     doc.put(ROOT, field, value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", field);
     owner
         .publish_incremental(app, record, doc.save_after(&heads), key, now)
         .unwrap()

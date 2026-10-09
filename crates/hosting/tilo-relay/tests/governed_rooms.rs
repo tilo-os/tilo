@@ -17,6 +17,7 @@
 use std::time::{Duration, SystemTime};
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
@@ -119,7 +120,7 @@ fn write(
     let mut doc = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, key, value).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", key);
     peer.publish_incremental(APP, "", doc.save_after(&heads), key_pair, SystemTime::now())
         .unwrap()
 }
@@ -270,7 +271,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     // Alice writes; Bob's replica verifies and applies it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from Alice").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "topic");
     let message = alice_peer
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
@@ -288,7 +289,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     let mut doc = AutoCommit::load(&bob_peer.document(APP, "").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "reply", "from Bob").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "reply");
     let message = bob_peer
         .publish_incremental(
             APP,

@@ -9,6 +9,7 @@
 )]
 use super::*;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use tilo_peer_state::{NeighbourMsg, StatePeer};
 
 struct Recovery {
@@ -59,6 +60,9 @@ fn signed(
         collab_types::OpClass::Splice,
         now,
         seq,
+    )
+    .with_claims(
+        collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap_or_default(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
@@ -139,7 +143,7 @@ impl Recovery {
         b.set_actor(automerge::ActorId::from(vec![72]));
         let heads = b.get_heads();
         b.put(automerge::ROOT, "fallback", "B").unwrap();
-        b.commit();
+        b.commit_edit("fixture", "fallback");
         let tail = signed(
             key,
             room,

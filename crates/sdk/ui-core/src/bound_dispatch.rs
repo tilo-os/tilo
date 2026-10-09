@@ -2625,7 +2625,10 @@ impl RecordActionState {
             // Legacy widget input is not wrapped in a bound action frame.
             // Persistence must still close that transaction or DocWriter sees
             // unchanged heads and silently writes only the earlier snapshot.
-            doc.commit();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
         }
     }
     /// Explicit external mutable loans (merge/import/revision/legacy history)

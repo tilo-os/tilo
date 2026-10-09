@@ -89,6 +89,7 @@ pub mod door;
 pub mod entry;
 pub mod envelope;
 pub mod executor;
+pub mod framework;
 pub mod interaction;
 pub mod key;
 pub mod optimistic;
@@ -125,6 +126,7 @@ pub use executor::{
     current_step, dispatch, dispatch_by, dispatch_by_with_context, dispatch_with_context,
     invoking_context, open_step, replay, settle_compensation, verify_change,
 };
+pub use framework::FrameworkChange;
 pub use interaction::{
     ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionAnchor,
     InteractionGridRange, InteractionPhase, InteractionTextRange, InteractionUpdate,

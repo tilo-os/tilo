@@ -8,6 +8,7 @@
     reason = "each voice test binary uses a different subset of these fixtures"
 )]
 
+use collab_types::CommitNamed as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -284,7 +285,7 @@ pub async fn create_voice_channel(
     let channel = chat.put_object(&channels, CHANNEL, ObjType::Map).unwrap();
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "native").unwrap();
-    chat.commit();
+    chat.commit_edit("fixture", "workspace");
     let message = peer
         .publish_incremental(
             CHAT,

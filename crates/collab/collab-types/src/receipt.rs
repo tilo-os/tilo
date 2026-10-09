@@ -116,6 +116,13 @@ pub fn claim_node(
         }),
         ClaimedAction::Framework(FrameworkChange::Genesis) => resource.action("create"),
         ClaimedAction::Framework(FrameworkChange::Migrate) => resource.action("migrate"),
+        // Every member derives the same empty structure, so whoever may edit
+        // the record may make it; a native edit is claimed as an edit of the
+        // whole record, never as itself.
+        ClaimedAction::Framework(FrameworkChange::Structure | FrameworkChange::Native) => {
+            resource.action("field-edit")
+        }
+        ClaimedAction::Framework(FrameworkChange::Transfer) => resource.action("move"),
         // A group is decided member by member; its own node is the record.
         ClaimedAction::Group(_) => resource,
     }
@@ -162,7 +169,7 @@ fn published_kind(
                 .ok_or_else(|| ReceiptRefusal::NotPublished(format!("{action}")))
         }
         ClaimedAction::Edit { kind, path } => {
-            if kind != surface.kind() || !surface.editable(path) {
+            if (!kind.is_empty() && kind != surface.kind()) || !surface.editable(path) {
                 return Err(ReceiptRefusal::NotPublished(format!(
                     "field edit at {}",
                     unit_label(path)

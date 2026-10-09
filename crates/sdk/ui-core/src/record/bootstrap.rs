@@ -47,6 +47,8 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
         ObjType::Text => b"text\0",
         _ => return None,
     };
+    // Reading the change graph closes the open transaction.
+    close_pending(doc);
     let head = creation(doc, parent)?;
     let address = format!("{parent}\0{key}");
     let actor = actor(head, domain, address.as_bytes());
@@ -65,9 +67,25 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
         return None;
     }
     let object = made.put_object(parent, key, kind).ok()?;
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
+            .with_time(0),
+    );
     doc.merge_incoming(&mut made).ok()?;
     Some(object)
+}
+
+/// Reading the change graph and merging close the open transaction. What it
+/// holds was written directly and names no finer action than an edit of the
+/// whole record, so it is committed as one before the slot joins.
+fn close_pending(doc: &mut AutoCommit) {
+    if doc.pending_ops() != 0 {
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+    }
 }
 
 /// Seed a newly constructed Text once for this exact initial byte sequence.
@@ -78,6 +96,7 @@ pub fn seed_text(doc: &mut AutoCommit, object: &ObjId, seed: &str) -> Option<()>
     if seed.is_empty() {
         return Some(());
     }
+    close_pending(doc);
     let head = creation(doc, object)?;
     let digest = Sha256::digest(seed.as_bytes());
     let actor = actor(head, b"initial-text\0", digest.as_slice());
@@ -93,7 +112,11 @@ pub fn seed_text(doc: &mut AutoCommit, object: &ObjId, seed: &str) -> Option<()>
         return None;
     }
     made.splice_text(object, 0, 0, seed).ok()?;
-    made.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    made.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Structure.change_message())
+            .with_time(0),
+    );
     doc.merge_incoming(&mut made).ok()?;
     Some(())
 }

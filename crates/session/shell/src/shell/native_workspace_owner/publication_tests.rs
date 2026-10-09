@@ -5,6 +5,7 @@
 use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
@@ -28,7 +29,7 @@ fn edit(
             ));
             let heads = doc.get_heads();
             doc.put(ROOT, "offline-edit", value).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "offline-edit");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -920,7 +921,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
                 AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "large-offline");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",

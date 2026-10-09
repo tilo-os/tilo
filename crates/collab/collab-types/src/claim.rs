@@ -13,6 +13,7 @@
 //! [`permissions.md`]: ../../../../docs/architecture/permissions.md
 
 use serde::{Deserialize, Serialize};
+pub use tilo_actions::FrameworkChange;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
 
 /// A storage unit, as the path from the record's root to the unit's root
@@ -53,15 +54,6 @@ pub enum ClaimedAction {
     Framework(FrameworkChange),
 }
 
-/// Changes made by the framework rather than by an app's action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FrameworkChange {
-    /// What a brand-new record starts with: its genesis and first content.
-    Genesis,
-    /// A storage migration to the model's current version.
-    Migrate,
-}
-
 /// Why a change cannot be claimed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ClaimError {
@@ -69,6 +61,10 @@ pub enum ClaimError {
     /// other than the executor wrote it.
     #[error("the change names no action")]
     Unnamed,
+    /// A change of a payload names no action, described so its producer
+    /// can be found.
+    #[error("{0}: the change names no action")]
+    UnnamedChange(String),
     /// The payload's changes do not parse.
     #[error("the changes do not parse: {0}")]
     Unparsable(String),
@@ -93,10 +89,9 @@ impl ClaimedAction {
         let item = context.item.as_ref().map(|item| item.id.clone());
         match &context.what {
             Some(what) => Self::of_did(what, &kind, item),
-            None if !context.change.is_step() && context.action.is_none() => {
-                Ok(Self::Framework(FrameworkChange::Genesis))
-            }
-            None => Err(ClaimError::Unnamed),
+            // An entry that names no finer action (a window's own commit of
+            // what its widgets wrote) is an edit of the whole record.
+            None => Ok(Self::whole_record_edit(kind)),
         }
     }
 
@@ -136,6 +131,16 @@ impl ClaimedAction {
         })
     }
 
+    /// An edit of the whole record of kind `kind`; an empty kind is the
+    /// record's own.
+    #[must_use]
+    pub fn whole_record_edit(kind: String) -> Self {
+        Self::Edit {
+            kind,
+            path: Vec::new(),
+        }
+    }
+
     /// Every verb or field edit the action is made of: itself, or the
     /// members of a group.
     pub fn members(&self) -> Vec<&Self> {
@@ -158,12 +163,17 @@ impl ChangeClaim {
         message: Option<&str>,
         units: Vec<UnitPath>,
     ) -> Result<Self, ClaimError> {
-        let context = message
-            .and_then(ActionContext::from_change_message)
-            .ok_or(ClaimError::Unnamed)?;
+        let message = message.ok_or(ClaimError::Unnamed)?;
+        let action = match FrameworkChange::from_change_message(message) {
+            Some(FrameworkChange::Native) => ClaimedAction::whole_record_edit(String::new()),
+            Some(change) => ClaimedAction::Framework(change),
+            None => ClaimedAction::of(
+                &ActionContext::from_change_message(message).ok_or(ClaimError::Unnamed)?,
+            )?,
+        };
         Ok(Self {
             change: hash,
-            action: ClaimedAction::of(&context)?,
+            action,
             units,
         })
     }
@@ -190,7 +200,14 @@ pub fn claims_of(
 ) -> Result<Vec<ChangeClaim>, ClaimError> {
     changes
         .iter()
-        .map(|change| ChangeClaim::of_change(change.hash().0, change.message(), units(change)))
+        .map(|change| {
+            ChangeClaim::of_change(change.hash().0, change.message(), units(change)).map_err(
+                |error| match error {
+                    ClaimError::Unnamed => ClaimError::UnnamedChange(describe(change)),
+                    other => other,
+                },
+            )
+        })
         .collect()
 }
 
@@ -214,6 +231,128 @@ pub fn mutation_claims(
     match mutation {
         crate::op::DocumentMutation::Snapshot(_) => Ok(Vec::new()),
         crate::op::DocumentMutation::Incremental(bytes) => claims_of(&parse_changes(bytes)?, units),
+    }
+}
+
+/// Committing changes that name what they do, where no app's executor makes
+/// them: a test standing in for an app, writing a record directly.
+pub trait CommitNamed {
+    /// Commit the pending operations as a field edit of `field` on a record
+    /// of kind `kind`.
+    fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash>;
+}
+
+impl CommitNamed for automerge::AutoCommit {
+    fn commit_edit(&mut self, kind: &str, field: &str) -> Option<automerge::ChangeHash> {
+        let context = ActionContext {
+            what: Some(Did::Edit(tilo_actions::FieldEdit {
+                ty: kind.to_owned(),
+                field: field.to_owned(),
+                path: vec![PathStep::Field(field.to_owned())],
+                op: tilo_actions::EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            ..ActionContext::for_resource(kind, kind, kind)
+        };
+        let mut options = automerge::transaction::CommitOptions::default();
+        if let Some(message) = context.change_message() {
+            options.set_message(message);
+        }
+        self.commit_with(options)
+    }
+}
+
+/// A fresh record of kind `kind` whose one change sets `field` to `value`,
+/// as an incremental mutation with its claims: a stand-in for an app's write.
+///
+/// # Errors
+/// [`ClaimError::Unparsable`] when the field cannot be written.
+pub fn field_edit_mutation(
+    kind: &str,
+    field: &str,
+    value: &str,
+) -> Result<(crate::op::DocumentMutation, Vec<ChangeClaim>), ClaimError> {
+    use automerge::transaction::Transactable as _;
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(automerge::ROOT, field, value)
+        .map_err(|error| ClaimError::Unparsable(error.to_string()))?;
+    doc.commit_edit(kind, field);
+    let mutation = crate::op::DocumentMutation::Incremental(doc.save_after(&[]));
+    let claims = mutation_claims(&mutation, record_unit)?;
+    Ok((mutation, claims))
+}
+
+/// A change as its producer would recognise it: who wrote it, after what,
+/// its first operations and its message.
+fn describe(change: &automerge::Change) -> String {
+    let written: Vec<String> = change
+        .decode()
+        .operations
+        .iter()
+        .take(4)
+        .map(|op| format!("{:?} {:?}", op.key, op.action))
+        .collect();
+    format!(
+        "change {} by {} after {} deps ({} ops: {}), message {:?}",
+        change.hash(),
+        change.actor_id(),
+        change.deps().len(),
+        change.len(),
+        written.join(", "),
+        change.message()
+    )
+}
+
+/// The changes of an incremental payload, each naming what it does.
+///
+/// # Errors
+/// Bytes that do not parse, or the first change that names nothing,
+/// described with what it writes so its producer can be found.
+pub fn named_changes(bytes: &[u8]) -> Result<Vec<automerge::Change>, String> {
+    let changes = parse_changes(bytes).map_err(|error| error.to_string())?;
+    for change in &changes {
+        if let Err(error) = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()) {
+            return Err(format!("{}: {error}", describe(change)));
+        }
+    }
+    Ok(changes)
+}
+
+/// Whether `op` claims every change it carries, as its author must before
+/// signing: a cleartext incremental document op names one claim per change,
+/// in order. Ops that carry no document changes (snapshots, segments of a
+/// larger mutation, other artifacts) and sealed ops, whose changes the
+/// signer cannot read here, have nothing to check.
+///
+/// # Errors
+/// The first change that names no action or has no claim, described.
+pub fn check_claimed(op: &crate::op::SignedOp) -> Result<(), String> {
+    if op.encryption.is_some() {
+        return Ok(());
+    }
+    let Ok(crate::op::DocumentMutation::Incremental(bytes)) =
+        crate::op::DocumentMutation::decode(&op.payload)
+    else {
+        return Ok(());
+    };
+    // Bytes that are not changes are refused by every receiver; this check
+    // is about changes that do not say what they are.
+    if parse_changes(&bytes).is_err() {
+        return Ok(());
+    }
+    let changes = named_changes(&bytes)?;
+    let carried: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
+    let made: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
+    if carried == made {
+        Ok(())
+    } else {
+        Err(format!(
+            "the op claims {} changes for the {} it carries",
+            carried.len(),
+            made.len()
+        ))
     }
 }
 
@@ -357,5 +496,87 @@ mod tests {
             ChangeClaim::of_change([0; 32], Some("free text"), Vec::new()),
             Err(ClaimError::Unnamed)
         );
+    }
+
+    #[test]
+    fn framework_changes_and_unspecific_entries_are_claimed_for_what_they_are() {
+        let claim = |message: &str| ChangeClaim::of_change([0; 32], Some(message), Vec::new());
+        assert_eq!(
+            claim(&FrameworkChange::Genesis.change_message())
+                .unwrap()
+                .action,
+            ClaimedAction::Framework(FrameworkChange::Genesis)
+        );
+        assert_eq!(
+            claim(&FrameworkChange::Transfer.change_message())
+                .unwrap()
+                .action,
+            ClaimedAction::Framework(FrameworkChange::Transfer)
+        );
+        // A window's own commit names no finer action than the whole record.
+        assert_eq!(
+            claim(&FrameworkChange::Native.change_message())
+                .unwrap()
+                .action,
+            ClaimedAction::whole_record_edit(String::new())
+        );
+        let unspecific = ActionContext {
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            ..ActionContext::for_resource("notes/1", "note", "Note")
+        };
+        assert_eq!(
+            claim(&unspecific.change_message().unwrap()).unwrap().action,
+            ClaimedAction::whole_record_edit("note".into())
+        );
+    }
+
+    fn op_of(mutation: &crate::op::DocumentMutation) -> crate::op::SignedOp {
+        crate::op::SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            crate::op::document_artifact_id("app", "room", "record"),
+            crate::Ed25519PublicKey::from_bytes([7; 32]),
+            crate::op::document_attestation_id("app", "room", "record"),
+            crate::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        )
+    }
+
+    /// The origin check every signer runs: each change of a cleartext
+    /// incremental op names its action and is claimed, in order.
+    #[test]
+    fn an_op_must_claim_every_change_it_carries() {
+        use automerge::transaction::Transactable;
+        let (mutation, claims) = field_edit_mutation("note", "title", "a").unwrap();
+        assert_eq!(check_claimed(&op_of(&mutation).with_claims(claims)), Ok(()));
+        assert!(
+            check_claimed(&op_of(&mutation))
+                .unwrap_err()
+                .contains("claims 0 changes for the 1")
+        );
+        let mut raw = automerge::AutoCommit::new();
+        raw.put(automerge::ROOT, "title", "a").unwrap();
+        raw.commit();
+        let unnamed = crate::op::DocumentMutation::Incremental(raw.save_after(&[]));
+        let error = check_claimed(&op_of(&unnamed)).unwrap_err();
+        assert!(error.contains("names no action"), "{error}");
+        assert!(
+            error.contains("\"title\""),
+            "the producer is findable: {error}"
+        );
+        // Nothing to check: a snapshot, and bytes that are not changes.
+        let snapshot = crate::op::DocumentMutation::Snapshot(raw.save());
+        assert_eq!(check_claimed(&op_of(&snapshot)), Ok(()));
+        let junk = crate::op::DocumentMutation::Incremental(vec![1, 2, 3]);
+        assert_eq!(check_claimed(&op_of(&junk)), Ok(()));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "not all claimed")]
+    fn a_debug_build_refuses_to_sign_an_unclaimed_change() {
+        let (mutation, _) = field_edit_mutation("note", "title", "a").unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let _ = crate::crypto::sign_op(&mut op_of(&mutation), &key);
     }
 }

@@ -20,6 +20,7 @@
 //! `original-foreign.postcard`.
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -193,7 +194,7 @@ pub(crate) fn generate() -> ShellSelectionFixture {
     let heads = doc.get_heads();
     doc.put(ROOT, "foreign_once", "original signed change")
         .unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "foreign_once");
     let original = sender
         .publish_incremental(
             WRITER.0,
