@@ -592,6 +592,17 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
     }
 }
 
+/// The id of the published resource, at any depth, that offers `action`.
+fn published_with_action(resources: &[tilo_actions::Resource], action: &str) -> Option<String> {
+    resources.iter().find_map(|resource| {
+        if resource.actions.iter().any(|offered| offered.id == action) {
+            Some(resource.id.as_str().to_owned())
+        } else {
+            published_with_action(&resource.children, action)
+        }
+    })
+}
+
 /// TIL-652: a caller that names no revision is admitted against the one the
 /// owner resolved the action at, and the broker binds the admission to the
 /// revision that resolution names. When the directory moves on between that
@@ -616,13 +627,15 @@ fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
         // `bump` with no revision, as the broker asks for a caller naming
         // none.
         let resources = app.publication_resources();
-        let counter = resources
-            .iter()
-            .find(|resource| resource.actions.iter().any(|action| action.id == "bump"))
-            .expect("the counter publishes bump")
-            .id
-            .as_str()
-            .to_owned();
+        let counter = published_with_action(&resources, "bump").unwrap_or_else(|| {
+            panic!(
+                "the counter publishes bump: {:?}",
+                resources
+                    .iter()
+                    .map(|resource| resource.id.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
         let descriptors = tilo_actions::door::survey(&resources);
         app.capture_action_directory_snapshot(&resources, &descriptors);
         let resolution = app.resolve_action_directory("", &counter, "bump");
