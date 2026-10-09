@@ -1168,11 +1168,12 @@ fn start_input_server(
     })
 }
 
-/// The desktop layout under `~/.config/tilo`: the tree, its document and
-/// the document's meta, and the action invocations recorded against it.
-const DESKTOP_STATE: [&str; 4] = [
+/// The desktop layout under `~/.config/tilo`: the tree, its document, the
+/// document's log and meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 5] = [
     "state.json",
     "state.automerge",
+    "state.automerge.log",
     "state.automerge.meta",
     "state.json.invocations",
 ];
