@@ -1,4 +1,5 @@
 """Execute the real check workflow's aggregate, including intentional skips."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -78,6 +79,127 @@ class CheckAggregateTests(unittest.TestCase):
                 capture_output=True, text=True,
             )
             return result.returncode, summary.read_text() if summary.exists() else ""
+
+    def test_manual_wasm_diagnostic_executes_production_commands_with_bounded_selection(self):
+        diagnostic = (ROOT / ".forgejo/workflows/wasm-check-qualification.yml").read_text()
+        self.assertEqual(section(diagnostic, "on", 0).splitlines()[0], "  workflow_dispatch:")
+        self.assertNotIn("  push:", diagnostic)
+        self.assertNotIn("  pull_request:", diagnostic)
+        self.assertEqual(section(diagnostic, "env", 0).rstrip(), section(self.workflow, "env", 0).rstrip())
+        self.assertEqual(section(diagnostic, "builder", 2).rstrip(), section(self.workflow, "builder", 2).rstrip())
+        original = section(self.workflow, "wasm", 2)
+        job = section(diagnostic, "wasm", 2)
+
+        def scripts(body):
+            result = []
+            lines = body.splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith("        run: "):
+                    value = line.removeprefix("        run: ")
+                    if value == "|":
+                        block = []
+                        for following in lines[index + 1:]:
+                            if following.strip() and not following.startswith("          "):
+                                break
+                            block.append(following.removeprefix("          "))
+                        value = "\n".join(block).rstrip()
+                    result.append(value)
+            return result
+
+        self.assertEqual(scripts(job), scripts(original))
+        names = lambda body: set(re.findall(r"(?m)^      - name: (.+)$", body))
+        self.assertEqual(names(job), names(original) - {"Merge onto the tested main"})
+        self.assertIn("WEB_EXAMPLES: example-counter", job)
+        self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+        self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", job)
+
+    def test_wasm_qualification_uses_native_arm_without_losing_main_x86(self):
+        job = section(self.workflow, "wasm", 2)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}", job)
+        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
+        self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
+        self.assertIn('run: bash tools/ci/check-wasm.sh', job)
+        self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
+        self.assertIn("timeout-minutes: 90", job)
+        # Native x86/ARM matrices and their warning flags remain independent.
+        for name in ("test", "check", "clippy"):
+            self.assertIn("runs-on: ${{ matrix.runner }}", section(self.workflow, name, 2))
+
+    def test_native_admission_observes_security_without_losing_main_results(self):
+        # Evaluate the actual workflow predicates. This deliberately supports only
+        # the small boolean/comparison grammar used here, rejecting new syntax.
+        values = {
+            "github.event_name": "pull_request",
+            "needs.builder.result": "success",
+            "needs.select.result": "success",
+            "needs.security.result": "success",
+            "needs.select.outputs.security_required": "true",
+            "needs.select.outputs.rust_required": "true",
+            "needs.select.outputs.check_required": "true",
+            "needs.select.outputs.android_required": "true",
+            "needs.select.outputs.wasm_required": "true",
+            "needs.policy.result": "success",
+            "needs.builder.outputs.affected": "true",
+        }
+
+        def admitted(job, cancelled=False, **changes):
+            expression = re.search(r"(?m)^    if: \$\{\{ (.+) \}\}$", job).group(1)
+            for key, value in sorted({**values, **changes}.items(), key=lambda item: -len(item[0])):
+                expression = expression.replace(key, repr(value))
+            expression = expression.replace("!cancelled()", repr(not cancelled))
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            parsed = ast.parse(expression, mode="eval")
+            for node in ast.walk(parsed):
+                self.assertIsInstance(node, (ast.Expression, ast.BoolOp, ast.Compare,
+                                              ast.Constant, ast.And, ast.Or, ast.Eq, ast.NotEq))
+            return eval(compile(parsed, "workflow-native-if", "eval"), {"__builtins__": {}})
+
+        for name in ("test", "check", "clippy", "android", "wasm"):
+            with self.subTest(job=name):
+                job = section(self.workflow, name, 2)
+                self.assertIn("needs: [builder, select, security]", job)
+                self.assertTrue(admitted(job))
+                for status in ("failure", "cancelled", "skipped", "", "running"):
+                    self.assertFalse(admitted(job, **{"needs.security.result": status}))
+                    # Every main commit retains the selected native diagnostics.
+                    self.assertTrue(admitted(job, **{"github.event_name": "push",
+                                                     "needs.security.result": status}))
+                self.assertFalse(admitted(job, cancelled=True))
+                for event in ("pull_request", "push"):
+                    for prerequisite in ("builder", "select"):
+                        for status in ("failure", "cancelled", "skipped", ""):
+                            self.assertFalse(admitted(job, **{"github.event_name": event,
+                                                             f"needs.{prerequisite}.result": status}))
+                self.assertTrue(admitted(job, **{"needs.select.outputs.security_required": "false",
+                                                 "needs.security.result": "skipped"}))
+                for required, result in (("", "success"), ("false", "success"), ("false", "failure")):
+                    self.assertFalse(admitted(job, **{"needs.select.outputs.security_required": required,
+                                                      "needs.security.result": result}))
+                applicability = "android" if name == "android" else "wasm" if name == "wasm" else "rust"
+                self.assertFalse(admitted(job, **{f"needs.select.outputs.{applicability}_required": "false"}))
+                if name == "check":
+                    self.assertFalse(admitted(job, **{"needs.select.outputs.check_required": "false"}))
+                # Skipped native work cannot turn a failed security gate green.
+                self.assertNotEqual(self.aggregate(security="failure", affected="skipped")[0], 0)
+
+        sdk = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
+        for name in ("linux", "web", "web-size"):
+            with self.subTest(sdk_job=name):
+                job = section(sdk, name, 2)
+                self.assertIn("needs: [builder, policy]", job)
+                self.assertTrue(admitted(job))
+                for status in ("failure", "cancelled", "skipped", "", "running"):
+                    self.assertFalse(admitted(job, **{"needs.policy.result": status}))
+                    self.assertTrue(admitted(job, **{"github.event_name": "push",
+                                                     "needs.policy.result": status}))
+                self.assertFalse(admitted(job, cancelled=True))
+                self.assertFalse(admitted(job, **{"needs.builder.outputs.affected": "false"}))
+                for event in ("pull_request", "push"):
+                    for status in ("failure", "cancelled", "skipped", ""):
+                        self.assertFalse(admitted(job, **{"github.event_name": event,
+                                                         "needs.builder.result": status}))
 
     def test_aggregate_passes_only_explained_skips_and_fails_every_other_outcome(self):
         with self.subTest(phase='intentional design skip passes with explanation'):
@@ -273,22 +395,23 @@ class CheckAggregateTests(unittest.TestCase):
             for name, matrix in (("test", "matrix"), ("clippy", "clippy_matrix")):
                 with self.subTest(job=name):
                     job = section(self.workflow, name, 2)
-                    self.assertIn("if: needs.select.outputs.rust_required == 'true'\n", job)
-                    self.assertIn("needs: [builder, select]", job)
+                    self.assertIn("needs.select.outputs.rust_required == 'true' }}\n", job)
+                    self.assertIn("needs: [builder, select, security]", job)
                     self.assertIn(
                         f"fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.{matrix} ||", job)
                     self.assertIn('{"include":[{"runner":"runner"}]}', job)
             check = section(self.workflow, "check", 2)
             condition = ("needs.select.outputs.rust_required == 'true' && "
                          "needs.select.outputs.check_required == 'true'")
-            self.assertIn(f"if: {condition}\n", check)
-            self.assertIn("needs: [builder, select]", check)
+            self.assertIn(f"&& {condition} }}}}\n", check)
+            self.assertIn("needs: [builder, select, security]", check)
             self.assertIn(f"fromJSON({condition} && needs.select.outputs.check_matrix ||", check)
             self.assertIn('{"include":[{"runner":"runner"}]}', check)
             clippy = section(self.workflow, "clippy", 2)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", clippy)
             self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", check)
-            self.assertIn("key: cargo-deps-", clippy)
+            self.assertIn("key: ${{ steps.rust-build.outputs.cargo-cache-key }}", clippy)
+            self.assertIn("cargo-download-cache-hit: ${{ steps.rust-build.outputs.cargo-cache-hit }}", clippy)
             checks = section(self.workflow, "checks", 2)
             self.assertIn("if: always()", checks)
             self.assertIn(
@@ -306,8 +429,8 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("android_required: ${{ steps.plan.outputs.android_required }}", select_job)
             self.assertIn("android_packages: ${{ steps.plan.outputs.android_packages }}", select_job)
             android = section(self.workflow, "android", 2)
-            self.assertIn("if: needs.select.outputs.android_required == 'true'\n", android)
-            self.assertIn("needs: [builder, select]", android)
+            self.assertIn("needs.select.outputs.android_required == 'true' }}\n", android)
+            self.assertIn("needs: [builder, select, security]", android)
             self.assertIn("image: ${{ needs.builder.outputs.image }}", android)
             self.assertIn("bash tools/ci/install-android-ndk.sh", android)
             for target in ("aarch64-linux-android", "x86_64-linux-android"):
@@ -317,7 +440,7 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("WASM_REQUIRED: ${{ needs.select.outputs.wasm_required }}", checks)
             self.assertIn("wasm_packages: ${{ steps.plan.outputs.wasm_packages }}", select_job)
             wasm = section(self.workflow, "wasm", 2)
-            self.assertIn("if: needs.select.outputs.wasm_required == 'true'\n", wasm)
+            self.assertIn("needs.select.outputs.wasm_required == 'true' }}\n", wasm)
             self.assertIn("image: ${{ needs.builder.outputs.image }}", wasm)
             self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
             self.assertIn("--target wasm32-unknown-unknown", wasm)

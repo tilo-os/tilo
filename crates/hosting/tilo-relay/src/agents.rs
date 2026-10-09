@@ -108,6 +108,8 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(delegation.agent_device_public_key, Some(delegation.clone()));
+        // A replacement may narrow an earlier delegation's rooms.
+        crate::authority_epoch::bump();
         Ok(())
     }
 
@@ -116,6 +118,7 @@ impl AgentHostLink for RelayAgentLink {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent_device_public_key, None);
+        crate::authority_epoch::bump();
     }
 }
 

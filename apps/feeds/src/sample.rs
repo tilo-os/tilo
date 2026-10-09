@@ -452,6 +452,7 @@ fn feed(
         folder,
         order,
         kind,
+        certificate_pin: None,
     });
     id
 }

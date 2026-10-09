@@ -1,9 +1,20 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two dumb buffers ping-ponged via `page_flip`, falling back to `dirty_framebuffer/set_crtc`.
-//! Not zero-copy (smithay's `DrmCompositor` drives GLES, not vello); pixel order: vello's
-//! `Rgba8Unorm` swizzles to framebuffer `Xrgb8888` in [`super::paint::VelloDrmBridge::paint_into_xrgb8888`].
+//! two buffer rings per output, each ping-ponged via `page_flip`:
+//!
+//! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output, imported as
+//!   Vulkan render targets. Vello renders the output's part of the scene straight into the back
+//!   slot ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a normal transform, no
+//!   ICC profile, a hardware cursor plane, page-flip events, and the renderer on this card.
+//! - **Readback**: two dumb buffers allocated at modeset, falling back to
+//!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
+//!   the GPU and written on the CPU (rotated, colour-managed, swizzled from vello's
+//!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
+//!   frame failed, present this way.
+//!
+//! smithay's `DrmCompositor` drives GLES, not vello, so neither ring uses it.
 //!
 //! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
 //! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
@@ -328,7 +339,7 @@ impl Drop for GbmScanoutBuffers {
 /// flip event arrives.  Consequently there is no renderable image while a
 /// flip is pending on a two-slot swapchain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectScanoutState {
+pub(super) struct DirectScanoutState {
     front: usize,
     pending: Option<usize>,
 }
@@ -343,7 +354,13 @@ pub struct DirectScanoutTargets {
     /// cannot change the framebuffer format, so HDR targets become visible
     /// through one `set_crtc` before flips take over.
     crtc_bound: bool,
+    /// KMS accepted a frame rendered into one of these targets; until then the
+    /// CRTC still shows the dumb front.
+    presented: bool,
     state: DirectScanoutState,
+    /// When the pending flip was queued. An output whose flip nothing waits for (it is
+    /// slower than the output pacing the frames) is demoted once that flip is overdue.
+    flip_queued_at: Option<Instant>,
 }
 
 /// Result of handing a completed imported target to KMS.
@@ -381,17 +398,27 @@ fn retirement_after_poll(
 }
 
 impl DirectScanoutTargets {
-    /// Build both targets transactionally. No CRTC state changes here.
+    /// Build both targets transactionally, the size of the output they show
+    /// (`output_size`, its extent in the scene). No CRTC state changes here.
     ///
     /// # Errors
     ///
-    /// Fails when GBM cannot allocate the scanout buffers or the renderer
-    /// cannot import either of them.
+    /// Fails when the output's extent is not the scanout mode, GBM cannot
+    /// allocate the scanout buffers, or the renderer cannot import either of
+    /// them.
     pub fn new(
         scanout: &DrmScanout,
         bridge: &VelloDrmBridge,
         format: ScanoutFormat,
+        output_size: (u32, u32),
     ) -> Result<Self, String> {
+        let mode = scanout.size();
+        if mode != output_size {
+            return Err(format!(
+                "scanout mode {}x{} is not the output's {}x{} extent",
+                mode.0, mode.1, output_size.0, output_size.1
+            ));
+        }
         let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
         let fourcc = match format {
             ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
@@ -424,15 +451,33 @@ impl DirectScanoutTargets {
             buffers,
             format,
             crtc_bound: false,
+            presented: false,
             // The dumb-buffer front remains visible until the first complete
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
+            flip_queued_at: None,
         })
     }
 
     pub fn format(&self) -> ScanoutFormat {
         self.format
+    }
+
+    /// A queued flip onto one of these targets has not retired yet.
+    pub fn flip_pending(&self) -> bool {
+        self.state.pending.is_some()
+    }
+
+    /// When the pending flip was queued, while one is.
+    pub fn flip_queued_at(&self) -> Option<Instant> {
+        self.state.pending.and(self.flip_queued_at)
+    }
+
+    /// KMS has accepted a frame from these targets, so the CRTC no longer shows
+    /// the dumb front.
+    pub fn presented(&self) -> bool {
+        self.presented
     }
 
     pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
@@ -446,7 +491,7 @@ impl DirectScanoutTargets {
 }
 
 impl DirectScanoutState {
-    const fn new(front: usize) -> Self {
+    pub(super) const fn new(front: usize) -> Self {
         Self {
             front,
             pending: None,
@@ -455,7 +500,7 @@ impl DirectScanoutState {
 
     /// Reserve the only slot which is not currently owned by scanout.  The
     /// caller must render successfully before handing it to [`Self::submit`].
-    fn render_slot(self) -> Option<usize> {
+    pub(super) fn render_slot(self) -> Option<usize> {
         self.pending
             .is_none()
             .then_some(1usize.saturating_sub(self.front))
@@ -464,7 +509,7 @@ impl DirectScanoutState {
     /// Transfer a successfully rendered slot to KMS.  This records ownership
     /// only after `page_flip` itself succeeds; a rejected flip remains safely
     /// renderable on the next attempt.
-    fn submit(&mut self, slot: usize) -> bool {
+    pub(super) fn submit(&mut self, slot: usize) -> bool {
         if self.render_slot() != Some(slot) {
             return false;
         }
@@ -484,7 +529,7 @@ impl DirectScanoutState {
 
     /// Retire the queued flip.  Only now is the old front released back to the
     /// renderer and the queued target promoted to the visible front.
-    fn complete(&mut self) -> bool {
+    pub(super) fn complete(&mut self) -> bool {
         let Some(front) = self.pending.take() else {
             return false;
         };
@@ -711,6 +756,10 @@ pub struct CardHandle {
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
+///
+/// `Clone` because the runtime keeps the last forced probe's snapshots, so
+/// a settings change re-applies the arrangement without probing again.
+#[derive(Clone)]
 pub struct ConnectorSnapshot {
     pub connector_id: u32,
     pub handle: connector::Handle,
@@ -936,6 +985,11 @@ impl CardHandle {
     }
 
     /// Ask the hardware what is connected now; `force_probe` is on since a hotplug event is precisely when cached connector state is stale.
+    ///
+    /// A forced probe of every connector, plus an EDID read each, is slow
+    /// (hundreds of milliseconds per DP-MST sink) and runs on the input
+    /// thread. Only startup and udev hotplug call this; everything else
+    /// reads the runtime's copy of the last result.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         let res = match self.card.resource_handles() {
             Ok(r) => r,
@@ -1206,7 +1260,7 @@ pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
         PathBuf::from("/usr/local/share/color/icc"),
         PathBuf::from("/var/lib/colord/icc"),
     ];
-    if let Some(data) = xdg_paths::xdg::data_home() {
+    if let Some(data) = tilo_paths::xdg::data_home() {
         roots.push(data.join("icc"));
         roots.push(data.join("color/icc"));
     }
@@ -3191,6 +3245,8 @@ impl DrmScanout {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
                     self.flip_submission = self.flip_submission.wrapping_add(1);
+                    targets.presented = true;
+                    targets.flip_queued_at = Some(Instant::now());
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -3259,6 +3315,7 @@ impl DrmScanout {
             ));
         }
         targets.crtc_bound = true;
+        targets.presented = true;
         eprintln!(
             "tilo compositor: DRM HDR on connector={} path=direct format={:?}",
             u32::from(self.connector),
@@ -3277,6 +3334,7 @@ impl DrmScanout {
             self.log_flip_completion();
             self.flip_pending = false;
             let _ = targets.state.complete();
+            targets.flip_queued_at = None;
         }
     }
 

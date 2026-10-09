@@ -39,8 +39,8 @@ use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
     Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
-    ModalLayout, ModalSpec, SegmentedFace, SidebarDrawer, TextInput, TextInputKind, ToggleGroup,
-    Toolbar, Widget,
+    ModalLayout, ModalSpec, SegmentedFace, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, SidebarDrawer, TextInput, TextInputKind, ToggleGroup, Toolbar, Widget,
 };
 
 use crate::changes::{self, ChangesHit};
@@ -244,9 +244,8 @@ pub struct GitClientApp {
     preferences: Option<ui::framework::Setting<Settings>>,
     control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound and none was reachable at launch — the app shows
-    /// the honest "open a repository" empty state rather than any placeholder
-    /// data. Cleared once a repo is opened (via the path field or at startup).
+    /// No repository is bound: keep the "open a repository" empty state
+    /// until an explicit path or restored record selects a repository.
     awaiting_repo: bool,
     /// Which embedded text field holds focus, if any.
     focus: Option<Field>,
@@ -318,6 +317,7 @@ pub struct GitClientApp {
 
     /// The pointer, while it is over the window.
     pointer: Option<Point>,
+    segmented_touch: SegmentedTouch,
     /// The host's keyboard conventions (which modifier is the command key).
     conventions: ui::platform::PlatformConventions,
 
@@ -518,6 +518,7 @@ impl GitClientApp {
             syntax_pressed,
             staged: Staged::Nothing,
             pointer: None,
+            segmented_touch: SegmentedTouch::default(),
             conventions: ui::platform::PlatformConventions::default(),
             targets: Vec::new(),
             semantic: Vec::new(),
@@ -1901,6 +1902,62 @@ impl GitClientApp {
         self.confirm = None;
     }
 
+    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
+        if self.confirm.is_some() || self.drawer_is_modal() {
+            return (Vec::new(), Vec::new());
+        }
+        let screens = self
+            .targets
+            .iter()
+            .filter_map(|target| matches!(target.hit, Hit::Screen(_)).then_some(target.rect))
+            .collect();
+        let layouts = self
+            .targets
+            .iter()
+            .filter_map(|target| matches!(target.hit, Hit::DiffLayout(_)).then_some(target.rect))
+            .collect();
+        (screens, layouts)
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let (screens, layouts) = self.segmented_rects();
+        let selected_screen = Screen::ALL
+            .iter()
+            .position(|screen| *screen == self.screen)
+            .unwrap_or(0);
+        let layout = self
+            .preferences
+            .as_ref()
+            .map_or(self.settings.diff_layout, |preferences| {
+                preferences.get().diff_layout
+            });
+        let selected_layout = usize::from(layout == DiffLayout::SideBySide);
+        let groups = [
+            SegmentedTouchGroup::new(0, &screens, selected_screen),
+            SegmentedTouchGroup::new(1, &layouts, selected_layout),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { group, index } = result {
+            let hit = if group == 0 {
+                Screen::ALL.get(index).copied().map(Hit::Screen)
+            } else {
+                [DiffLayout::Unified, DiffLayout::SideBySide]
+                    .get(index)
+                    .copied()
+                    .map(Hit::DiffLayout)
+            };
+            if let Some(hit) = hit {
+                self.activate(hit, edits);
+            }
+        }
+        result.handled()
+    }
+
     /// Do what `hit` names: the one path pointer presses, keys and
     /// assistive actions share.
     fn activate(&mut self, hit: Hit, _doc: &mut ui::widget::Edits<'_>) {
@@ -2704,12 +2761,7 @@ impl Widget for GitClientApp {
         // Real fallback rather than a panic if `node` somehow doesn't
         // belong to this tree, matching every `ui` widget's `apply_layout`.
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(&layout, origin);
         // The drawer adopts the new width now, so the next press is tested
         // against the layout the next paint shows.
         self.drawer.resolve(self.rect);
@@ -2796,6 +2848,12 @@ impl Widget for GitClientApp {
             *ctx.handled = true;
             return;
         }
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
+        }
         let mut input = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -2869,6 +2927,18 @@ impl Widget for GitClientApp {
             }
             _ => {}
         }
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        let (screens, layouts) = self.segmented_rects();
+        screens
+            .iter()
+            .chain(&layouts)
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active()
     }
 
     fn name(&self) -> &'static str {
@@ -3508,20 +3578,11 @@ impl GitClientApp {
                     return;
                 }
                 self.opened.clone_from(&state.repository);
-                match &state.repository {
-                    Some(path) => {
-                        if !self.bind_repository(std::path::Path::new(path)) {
-                            self.last_error = Some(format!("No git repository at {path}"));
-                            self.open_input.set_text(path);
-                        }
-                    }
-                    None if first => {
-                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                        if !self.bind_repository(&cwd) {
-                            self.open_input.set_text(&cwd.to_string_lossy());
-                        }
-                    }
-                    None => {}
+                if let Some(path) = &state.repository
+                    && !self.bind_repository(std::path::Path::new(path))
+                {
+                    self.last_error = Some(format!("No git repository at {path}"));
+                    self.open_input.set_text(path);
                 }
             }
             RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
@@ -3885,6 +3946,23 @@ impl GitClientApp {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    #[test]
+    fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
+        let mut app = GitClientApp::new();
+        let mut state = crate::doc::GitClientState::default();
+        app.present_state(&state);
+        assert!(app.awaiting_repo);
+        assert!(app.repo_path.is_none());
+        assert!(app.model.branches.is_empty());
+        assert!(app.model.commits.is_empty());
+        let repository = tempfile::tempdir().unwrap();
+        git2::Repository::init(repository.path()).unwrap();
+        state.repository = Some(repository.path().to_string_lossy().into_owned());
+        app.present_state(&state);
+        assert!(!app.awaiting_repo);
+        assert_eq!(app.repo_path.as_deref(), Some(repository.path()));
+    }
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.

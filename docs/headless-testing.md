@@ -8,6 +8,26 @@ Three layers, each useful on its own:
 2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
+Native application publication also has compositor-free integration fixtures:
+
+```bash
+cargo test --locked -p shell --lib shell::in_process::tests::authorized_
+cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+```
+
+The Browser and Store fixtures provision a disposable identity and run the actual
+identity service, collaboration broker, original application factory and directory
+RPC. Browser retains its primary document, browsing history and address book. All
+three use the certified person's own room, so publication must wait for their
+initial joins to become ready. Store must publish `inspect-catalogue` through the
+same authorized context. No application action is invoked.
+
+This qualifies matching-room publication. It does not qualify an application
+spanning a foreground workspace and a separate person room: a certification for
+one room cannot authorize the other. The broker's cross-workspace rejection stays
+covered independently. Installed control-socket timeouts require separate runtime
+evidence; an empty query alone does not establish absent publication.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.
@@ -291,6 +311,15 @@ renders on demand. A viewer that streams frames attaches with
 `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
 session with `TILO_HEADLESS_WATCH=1`.
 
+While watched, headless requests the producer's retained-damage proof. A matching
+empty damage list first validates the previous image with the existing bounded
+screenshot renderer; later unchanged frames reuse that completed RGBA buffer
+without a render or readback. First and changed frames keep the dense path.
+Missing predecessors, unversioned scene edits, viewer detach/reattach and material
+or HDR frames redraw. A replacement backend starts uncached at its new size.
+Presentation remains synchronous; snapshots cannot race queued renderer work.
+This reduces watched headless work, not physical display input-to-photon latency.
+
 ## End-to-end recipe — "click, snapshot, look"
 
 **The fastest path: run the example script.**
@@ -388,6 +417,7 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | Env var | Effect |
 |---|---|
 | `TILO_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `TILO_FRAME_CPU_TRACE=/private/path.csv` | numeric companion for painted ticks: phase CPU and bracketed clock anchors |
 | `TILO_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
 | `TILO_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
@@ -397,6 +427,36 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
 written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+
+For a source-matched performance fixture, opt into `TILO_FRAME_CPU_TRACE` through
+its supported launch configuration. Use a new, separate file in the fixture
+owner's private directory; an existing file is refused instead of overwritten.
+This leaves the original frame CSV and its parsers unchanged;
+join the companion's `seq` and `start_us` to the original rows. It records no
+application payload, titles, paths or identities. No extra clock reads or writes
+occur when this option is absent.
+
+The companion measures calling-thread and aggregate process CPU separately for
+layout, scene construction, submission and the layout-start-to-submit-return
+interval. The layout label includes the existing focus/output/accessibility
+reconciliation. Process
+CPU includes parallel renderer **and other background threads**. A low thread CPU
+value alone cannot identify GPU waiting, host scheduling or TCG overhead. Compare
+the paired guest/host CPU and scheduling counters as well. `present_async=1`
+means submit timings cover enqueueing, rather than the render worker's completion.
+Subtract the labelled wall phases from `paint_wall_us` to retain visibility of
+capture and control work between them; never call that residual GPU time.
+
+`anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings;
+`anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket.
+Subtract that offset from both monotonic endpoints to bound the tick start; retain
+rounding uncertainty as well as the bracket width.
+Correlate UTC with the collector's paired host/guest clock samples and retain
+their uncertainty. Guest and host monotonic epochs differ, and UTC can step.
+Unavailable CPU or monotonic clocks are blank, not zero. The companion flushes
+its first painted row and then once per second, retains no sample history, and
+stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
+no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
 ## Where to look in source
 
@@ -473,6 +533,32 @@ contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
 step pass only when the door refuses with that code (`unknown_action`,
 `invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
 `action_failed`), so a scenario can prove a refusal as well as a success.
+An optional `"results":"target/drive-results.json"` retains the actual return
+from each explicit `invoke`, in order. The version 1 JSON envelope contains
+`author` and `entries`; each entry carries its resource/action `address` and
+one `status`: `completed` with the original typed `output` (`value` and
+`resources`), `accepted`, or `refused` with the door's `code` and `message`.
+`accepted` records admission, not background completion. An expected refusal
+still appears as `refused` when its scenario step passes. Arguments and
+confirmation phrases are not copied into this envelope; returned data and
+error messages may themselves be sensitive, so retention is opt-in.
+
+Retention admits at most 4,096 entries and 16 MiB of JSON. Exceeding a limit
+fails the scenario and records `retention_error` with the retained prefix;
+the last operation may already have run, and its omitted result must not be
+interpreted as a refusal. The journal stays failed for subsequent invocations.
+The file records invocations, not overall scenario success; check the exit status
+and audit report as well. Without `results`, the existing behavior is unchanged.
+
+For a framework resource's existing `render` action, the returned content
+address identifies the actual offscreen PNG in the ordinary ContentStore.
+Run with an explicit owned `--data-dir target/drive-profile` to keep those
+bytes after exit (`target/drive-profile/content/<first-two-hash-characters>/<hash>`).
+The default temporary profile is removed on exit. This is a render of the
+imported state, distinct from a seeded `--shots` fixture. The normal desktop's
+`tilo-control` already preserves returned action payloads; this option brings
+the standalone scenario driver to the same semantic result contract.
+
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
 the live host does. `crates/session/installer/tests/headless_wizard.rs` runs

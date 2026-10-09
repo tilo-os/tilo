@@ -12,6 +12,7 @@ description = "Lightweight startup-timing capture for Tilo apps."
 test-support = []
 
 [dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 web-time = { version = "1", features = ["serde"] }
 serde.workspace = true

@@ -461,6 +461,159 @@ mod availability_control_tests {
         close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pin_worker_idle_tick_does_not_walk_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("idle-pin").unwrap()));
+        let (folder, last) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let mut last = ROOT_INO;
+            for index in 0..8 {
+                last = namespace
+                    .create_file(folder, format!("empty-{index}"), None, 0, 1)
+                    .unwrap();
+            }
+            (folder, namespace.record_id_for(last).unwrap())
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let repair = Duration::from_millis(20);
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration_every(repair);
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        wait_for_availability(&registry, last, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+        // Let the pass that observes the worker's own registry writes run.
+        tokio::time::sleep(repair.saturating_mul(10)).await;
+
+        let walks = || namespace.lock().unwrap().node_entry_read_count();
+        let settled = walks();
+        tokio::time::sleep(repair.saturating_mul(25)).await;
+        assert_eq!(
+            walks(),
+            settled,
+            "ticks with nothing changed must not walk the namespace"
+        );
+
+        // A change that arrives without a wake (as a remote apply does) is
+        // still repaired by the next tick.
+        let late = {
+            let mut namespace = namespace.lock().unwrap();
+            let ino = namespace
+                .create_file(folder, "arrived-remotely", None, 0, 2)
+                .unwrap();
+            namespace.record_id_for(ino).unwrap()
+        };
+        wait_for_availability(&registry, late, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+        assert!(walks() > settled);
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn first_pin_pass_persists_registry_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let local = store.write_content(b"already here").await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("pin-once").unwrap()));
+        let (folder, empty, resident) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let mut empty = ROOT_INO;
+            for index in 0..1_000 {
+                empty = namespace
+                    .create_file(folder, format!("empty-{index:04}"), None, 0, 1)
+                    .unwrap();
+            }
+            let resident = namespace
+                .create_file(folder, "resident.txt", Some(&local), 12, 1)
+                .unwrap();
+            (
+                folder,
+                namespace.record_id_for(empty).unwrap(),
+                namespace.record_id_for(resident).unwrap(),
+            )
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let persists = || registry.lock().unwrap().persist_count();
+
+        let before = persists();
+        let outcome = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes.clone(),
+        )
+        .await;
+        assert_eq!(
+            persists().saturating_sub(before),
+            1,
+            "a pass over a 1 000-record pinned folder commits the registry once"
+        );
+        assert!(!outcome.more_due);
+        {
+            let registry = registry.lock().unwrap();
+            assert_eq!(
+                registry.get(empty).unwrap().residency,
+                Residency::Resident { bytes: 0 }
+            );
+            assert_eq!(
+                registry.get(resident).unwrap().residency,
+                Residency::Resident { bytes: 12 }
+            );
+            assert_eq!(
+                registry.effective_policy(resident).unwrap(),
+                Some(AvailabilityPolicy::Pinned)
+            );
+            drop(registry);
+        }
+
+        let before = persists();
+        let _ = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes,
+        )
+        .await;
+        assert_eq!(
+            persists(),
+            before,
+            "a pass that finds everything current writes nothing"
+        );
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
     #[tokio::test]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
         // Phase `retry_transfer_runs_off_thread_and_persists_completion`.
@@ -1544,6 +1697,79 @@ mod predictive_tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn acl_index_incremental_matches_full_rebuild() {
+        const ME: [u8; 32] = [0xA9; 32];
+        let (namespace, fs) = fixture().await;
+        let visible = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let visible = ns.create_dir(ROOT_INO, "visible", 1).unwrap();
+            for index in 0..64 {
+                ns.create_file(visible, format!("shown-{index:03}"), None, 0, 1)
+                    .unwrap();
+                ns.create_file(ROOT_INO, format!("hidden-{index:03}"), None, 0, 1)
+                    .unwrap();
+            }
+            drop(ns);
+            visible
+        };
+        let mut policy = WorkspaceAcl::new();
+        policy.grant_read(ME, "/visible");
+        let handle = AclHandle::new(policy);
+        let fs = fs.with_acl(handle.clone(), ME);
+        let rows = || {
+            namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .indexed_record_count()
+        };
+        let initial = fs.acl_visible_record_index().unwrap();
+        assert_eq!(initial.acl_evaluations, rows());
+
+        // A notification that moved no row keeps the retained view as is.
+        fs.refresh_acl_visible_record_index();
+        assert!(Arc::ptr_eq(
+            &initial,
+            &fs.acl_visible_record_index().unwrap()
+        ));
+
+        // A new row and a moved row are the only ones judged again.
+        let revealed = {
+            let mut ns = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ns.create_file(visible, "late.txt", None, 0, 2).unwrap();
+            assert!(ns.rename(ROOT_INO, "hidden-000", visible, "revealed.txt", 2));
+            ns.entry_at("visible/revealed.txt").unwrap().record_id
+        };
+        fs.refresh_acl_visible_record_index();
+        let incremental = fs.acl_visible_record_index().unwrap();
+        assert_eq!(incremental.acl_evaluations, 2);
+        assert!(incremental.by_id.contains_key(&revealed));
+
+        // Judging every row from scratch agrees row for row.
+        *fs.acl_visible_record_index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        fs.refresh_acl_visible_record_index();
+        let full = fs.acl_visible_record_index().unwrap();
+        assert_eq!(full.acl_evaluations, rows());
+        assert_eq!(full.records, incremental.records);
+        assert_eq!(full.hidden, incremental.hidden);
+        assert_eq!(full.revision, incremental.revision);
+
+        // A new ACL revision judges every row again.
+        let mut widened = WorkspaceAcl::new();
+        widened.grant_read(ME, "/");
+        handle.replace(widened);
+        fs.refresh_acl_visible_record_index();
+        let regranted = fs.acl_visible_record_index().unwrap();
+        assert_eq!(regranted.acl_evaluations, rows());
+        assert!(regranted.hidden.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -1707,6 +1933,137 @@ mod history_integration_tests {
             baseline.content_hash,
             Some(collab_types::ContentHash(*original_hash.as_bytes()))
         );
+    }
+
+    fn history_fs(
+        dir: &tempfile::TempDir,
+        endpoint: &Endpoint,
+        namespace: Namespace,
+    ) -> (QuickFS, Arc<crate::history::FileHistoryStore>) {
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::store::ContentStore::memory()),
+        ));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let history = Arc::new(
+            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
+        );
+        let actor = FileActor {
+            person: Ed25519PublicKey([1; 32]),
+            device: Ed25519PublicKey([2; 32]),
+        };
+        let fs = QuickFS::new(Arc::new(Mutex::new(namespace)), hydrator, heuristics)
+            .with_history(history.clone(), actor)
+            .unwrap();
+        (fs, history)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_versions_are_fetchable() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let mut namespace = Namespace::new("documents").unwrap();
+        let doc = namespace
+            .create_document(crate::namespace::ROOT_INO, "notes.md", "md", 1)
+            .unwrap();
+        let record_id = namespace.record_id_for(doc).unwrap();
+        let (fs, history) = history_fs(&dir, &endpoint, namespace);
+        assert!(fs.is_document(doc));
+
+        let edits: [&[u8]; 2] = [b"# One\n\nfirst\n", b"# Two\n\nsecond\n"];
+        for edit in edits {
+            assert_eq!(fs.commit_bytes(doc, edit), Ok(()));
+        }
+        let snapshot = history.snapshot(record_id).unwrap();
+        let edited = snapshot
+            .versions
+            .iter()
+            .filter(|version| version.provenance == FileProvenance::Edit)
+            .count();
+        assert_eq!(edited, edits.len());
+        let mut read = Vec::new();
+        for version in &snapshot.versions {
+            let Some(hash) = version.content_hash else {
+                assert_ne!(version.provenance, FileProvenance::Edit);
+                continue;
+            };
+            let bytes = fs
+                .hydrator
+                .read(Hash::from(hash.0), 0, u64::MAX)
+                .await
+                .expect("every recorded document version is fetchable");
+            assert_eq!(
+                fs.history_version_preview(doc, version.id).unwrap(),
+                bytes,
+                "history previews the version's own payload"
+            );
+            read.push(bytes);
+        }
+        for edit in edits {
+            assert!(
+                read.iter().any(|bytes| bytes == edit),
+                "{:?} is readable from history",
+                String::from_utf8_lossy(edit)
+            );
+        }
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restoring_a_qdoc_appends_a_crdt_revision_of_the_current_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let mut namespace = Namespace::new("documents").unwrap();
+        let ino = namespace
+            .create_file(crate::namespace::ROOT_INO, "notes.qdoc", None, 0, 1)
+            .unwrap();
+        let record_id = namespace.record_id_for(ino).unwrap();
+        let (fs, history) = history_fs(&dir, &endpoint, namespace);
+
+        let mut document = tilo_doc::Document::new();
+        let block = document.insert_block(None, "paragraph");
+        document.splice_text(&block, 0, 0, "first");
+        let first = document.save();
+        assert_eq!(fs.commit_bytes(ino, &first), Ok(()));
+        let first_version = history.snapshot(record_id).unwrap().heads[0];
+        document.splice_text(&block, 5, 0, " and second");
+        let second = document.save();
+        assert_eq!(fs.commit_bytes(ino, &second), Ok(()));
+
+        fs.restore_version(ino, first_version).unwrap();
+
+        let restored = fs.read_full_blocking(ino).unwrap();
+        assert_ne!(
+            restored, first,
+            "a restore is a new revision, not old bytes"
+        );
+        assert_eq!(
+            tilo_doc::Document::load(&restored).unwrap().materialize(),
+            tilo_doc::Document::load(&first).unwrap().materialize()
+        );
+        let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
+        for head in automerge::AutoCommit::load(&second).unwrap().get_heads() {
+            assert!(
+                restored_doc.get_change_by_hash(&head).is_some(),
+                "the restore continues the current document's history"
+            );
+        }
+        let snapshot = history.snapshot(record_id).unwrap();
+        let head = snapshot
+            .versions
+            .iter()
+            .find(|version| snapshot.heads.contains(&version.id))
+            .unwrap();
+        assert_eq!(
+            head.provenance,
+            FileProvenance::Restore {
+                from: first_version
+            }
+        );
+        assert_eq!(fs.history_version_preview(ino, head.id).unwrap(), restored);
+        drop(fs);
+        endpoint.close().await;
     }
 }
 
@@ -2975,5 +3332,686 @@ mod record_publisher_integration_tests {
             true,
         )
         .await;
+    }
+}
+
+/// Counts the bytes each thread allocates (cumulative, never decremented),
+/// so a test can bound what a read path copies.
+mod allocation_count {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    pub struct Counting;
+
+    std::thread_local! {
+        static ALLOCATED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn add(bytes: usize) {
+        // A thread being torn down has no counter left; nothing is measured there.
+        let _ = ALLOCATED.try_with(|count| count.set(count.get().saturating_add(bytes as u64)));
+    }
+
+    // SAFETY: every call forwards to the system allocator with the caller's
+    // arguments; the counter only records sizes.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(layout.size());
+            // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract, which `System` shares.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            add(layout.size());
+            // SAFETY: as for `alloc`.
+            unsafe { System.alloc_zeroed(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` came from this allocator, i.e. from `System`, with this layout.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            add(new_size);
+            // SAFETY: as for `dealloc`, and the caller upholds `realloc`'s size contract.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    /// Bytes this thread allocated while running `run`.
+    pub fn allocated_by(run: impl FnOnce()) -> u64 {
+        let before = ALLOCATED.with(Cell::get);
+        run();
+        ALLOCATED.with(Cell::get).saturating_sub(before)
+    }
+}
+
+/// FUSE writes stage per inode and read the committed content only where
+/// a read or the commit needs it.
+mod write_stage_tests {
+    use super::*;
+
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+    use iroh::protocol::Router;
+
+    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect()
+    }
+
+    /// A peer serving committed content, and a mount on another endpoint
+    /// that knows the files by namespace entry only.
+    struct Remote {
+        dir: tempfile::TempDir,
+        router: Router,
+        source: Endpoint,
+        client: Endpoint,
+        source_store: ContentStore,
+        namespace: Arc<Mutex<Namespace>>,
+        fs: QuickFS,
+    }
+
+    impl Remote {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let source = Endpoint::bind(presets::Minimal).await.unwrap();
+            let source_store = ContentStore::memory();
+            let router = Router::builder(source.clone())
+                .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+                .spawn();
+            let client = Endpoint::bind(presets::Minimal).await.unwrap();
+            let hydrator = Arc::new(Hydrator::new(
+                client.clone(),
+                Arc::new(ContentStore::memory()),
+            ));
+            hydrator.add_peer(source.addr());
+            let namespace = Arc::new(Mutex::new(Namespace::new("stage-client").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+            let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+                .with_write_stage_dir(dir.path().join("stage"));
+            Self {
+                dir,
+                router,
+                source,
+                client,
+                source_store,
+                namespace,
+                fs,
+            }
+        }
+
+        /// A file whose committed content only the peer holds.
+        async fn file(&self, name: &str, bytes: &[u8]) -> (u64, Hash) {
+            let hash = self
+                .source_store
+                .write_content(bytes)
+                .await
+                .unwrap()
+                .unwrap();
+            let ino = self
+                .namespace
+                .lock()
+                .unwrap()
+                .create_file(ROOT_INO, name, Some(&hash), bytes.len() as u64, 1)
+                .unwrap();
+            (ino, hash)
+        }
+
+        /// Content bytes this mount has received from peers.
+        fn fetched(&self) -> u64 {
+            let (ranges, blobs) = self.fs.hydrator.received_bytes();
+            ranges.saturating_add(blobs)
+        }
+
+        async fn committed(&self, ino: u64) -> Vec<u8> {
+            let hash = self.fs.ns().hash_for(ino);
+            match hash {
+                Some(hash) => self.fs.hydrator.read(hash, 0, u64::MAX).await.unwrap(),
+                None => Vec::new(),
+            }
+        }
+
+        async fn close(self) {
+            drop(self.fs);
+            self.router.shutdown().await.unwrap();
+            self.source.close().await;
+            self.client.close().await;
+            drop(self.dir);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn append_to_remote_file_fetches_only_the_tail() {
+        const LEN: usize = 64 * 1024 * 1024;
+        let remote = Remote::new().await;
+        let original = pseudo(LEN, 0x217);
+        let (ino, base) = remote.file("video.mp4", &original).await;
+        assert_eq!(remote.fetched(), 0);
+
+        assert_eq!(remote.fs.write_buffer(ino, LEN as u64, b"!"), Ok(1));
+        let fetched = remote.fetched();
+        assert!(
+            fetched <= u64::from(crate::content::MAX_CHUNK_LEN),
+            "appending one byte fetched {fetched} bytes of a {LEN}-byte remote file"
+        );
+        let stage = remote.fs.stage(ino).unwrap();
+        assert!(stage.lock().is_file_backed());
+        assert_eq!(
+            remote.fs.presented_attr(ino).unwrap().0.size,
+            LEN as u64 + 1,
+            "stat sees the staged length"
+        );
+        // Read-your-writes across the boundary: the base's tail comes from
+        // the peer, the appended byte from the stage.
+        let StagedRead::Missing(missing) = remote
+            .fs
+            .read_staged(ino, LEN as u64 - 3, 16)
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("the base's tail is not local");
+        };
+        let tail = missing.finish(&remote.fs.hydrator).await.unwrap();
+        assert_eq!(&tail[..3], &original[LEN - 3..]);
+        assert_eq!(&tail[3..], b"!");
+
+        assert_eq!(remote.fs.flush_inode(ino), Ok(()));
+        let mut expected = original;
+        expected.push(b'!');
+        let reference = ContentStore::memory();
+        let previous = reference.write_content(&expected[..LEN]).await.unwrap();
+        assert_eq!(previous, Some(base));
+        let expected_hash = reference
+            .write_content_after(&expected, previous)
+            .await
+            .unwrap();
+        assert_eq!(remote.fs.ns().hash_for(ino), expected_hash);
+        assert_eq!(
+            blake3::hash(&remote.committed(ino).await),
+            blake3::hash(&expected)
+        );
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn truncate_to_zero_does_not_hydrate() {
+        let remote = Remote::new().await;
+        let (unopened, _) = remote.file("big.iso", &pseudo(3 * 1024 * 1024, 1)).await;
+        let (rewritten, _) = remote.file("notes.txt", &pseudo(300_000, 2)).await;
+        let (open, _) = remote.file("open.bin", &pseudo(2 * 1024 * 1024, 3)).await;
+
+        // `: > big.iso` on a file nobody has open commits it empty.
+        assert_eq!(remote.fs.truncate_inode(unopened, 0), Ok(()));
+        // `open(O_TRUNC)` then a write: the truncation commits, the write
+        // stages over nothing.
+        assert_eq!(remote.fs.truncate_inode(rewritten, 0), Ok(()));
+        assert_eq!(remote.fs.write_buffer(rewritten, 0, b"fresh"), Ok(5));
+        // A truncation of an open file only shortens its stage.
+        assert_eq!(remote.fs.write_buffer(open, 7, b"x"), Ok(1));
+        assert_eq!(remote.fs.truncate_inode(open, 0), Ok(()));
+        assert_eq!(remote.fs.presented_attr(open).unwrap().0.size, 0);
+        assert_eq!(remote.fs.flush_inode(rewritten), Ok(()));
+        assert_eq!(remote.fs.flush_inode(open), Ok(()));
+
+        assert_eq!(remote.fetched(), 0, "no truncation read what it dropped");
+        assert_eq!(remote.fs.ns().hash_for(unopened), None);
+        assert_eq!(remote.fs.ns().getattr(unopened).unwrap().size, 0);
+        assert_eq!(remote.fs.ns().hash_for(open), None);
+        assert_eq!(remote.committed(rewritten).await, b"fresh");
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn truncating_an_unopened_remote_file_reads_only_the_kept_prefix() {
+        let remote = Remote::new().await;
+        let original = pseudo(6 * 1024 * 1024, 4);
+        let (ino, _) = remote.file("log.bin", &original).await;
+        assert_eq!(remote.fs.truncate_inode(ino, 1000), Ok(()));
+        let fetched = remote.fetched();
+        assert!(
+            fetched <= u64::from(crate::content::MAX_CHUNK_LEN),
+            "keeping 1000 bytes fetched {fetched}"
+        );
+        assert_eq!(remote.committed(ino).await, &original[..1000]);
+        remote.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreachable_base_fails_the_commit_and_never_truncates() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("offline").unwrap()));
+        let elsewhere = ContentStore::memory()
+            .write_content(&pseudo(200_000, 5))
+            .await
+            .unwrap()
+            .unwrap();
+        let ino = namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "remote.txt", Some(&elsewhere), 200_000, 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            .with_write_stage_dir(dir.path().join("stage"));
+
+        // The write is accepted: it does not need the base.
+        assert_eq!(fs.write_buffer(ino, 200_000, b"tail"), Ok(4));
+        // The commit does, and no peer has it: close reports the failure and
+        // the committed content is untouched, never replaced by zeros.
+        assert_eq!(fs.flush_inode(ino), Err(EIO));
+        assert_eq!(fs.ns().hash_for(ino), Some(elsewhere));
+        assert_eq!(fs.ns().getattr(ino).unwrap().size, 200_000);
+        assert!(fs.read_full_blocking(ino).is_err());
+        assert_eq!(fs.staged_len(ino), Some(200_004), "the written bytes stay");
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn large_flush_does_not_block_other_inode_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("contention").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics)
+            .with_write_stage_dir(dir.path().join("stage"));
+        let (large, delta) = fs.create_empty_file(ROOT_INO, "large.bin").unwrap();
+        fs.publish(delta);
+        let (small, delta) = fs.create_empty_file(ROOT_INO, "small.txt").unwrap();
+        fs.publish(delta);
+        let payload = pseudo(16 * 1024 * 1024, 6);
+        assert_eq!(
+            fs.write_buffer(large, 0, &payload),
+            Ok(u32::try_from(payload.len()).unwrap())
+        );
+        assert_eq!(fs.write_buffer(small, 0, b"other inode"), Ok(11));
+
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        *fs.commit_pause.lock().unwrap() = Some(Arc::new(move |ino| {
+            if ino == large {
+                entered_tx.send(()).unwrap();
+                let _ = release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(tilo_test_env::hang_bound());
+            }
+        }));
+        let handle = &tokio::runtime::Handle::current();
+        let fs = &fs;
+        tokio::task::block_in_place(|| {
+            std::thread::scope(|scope| {
+                let flushing = scope.spawn(move || {
+                    let _runtime = handle.enter();
+                    fs.flush_inode(large)
+                });
+                entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                // `large` is mid-commit with its stage locked. Another
+                // inode's read, write and stat must not wait for it.
+                let (done_tx, done) = std::sync::mpsc::channel();
+                let other = scope.spawn(move || {
+                    let _runtime = handle.enter();
+                    let ReadPlan::Buffered(BufferedRead::Staged(Ok(StagedRead::Ready(read)))) =
+                        fs.plan_read(small, 0, 0, 64)
+                    else {
+                        panic!("the small file is staged and complete");
+                    };
+                    let wrote = fs.write_buffer(small, 11, b"!");
+                    let len = fs.staged_len(small);
+                    done_tx.send(()).unwrap();
+                    (read, wrote, len)
+                });
+                let finished = done.recv_timeout(tilo_test_env::hang_bound());
+                release.send(()).unwrap();
+                assert!(
+                    finished.is_ok(),
+                    "another inode's read waited for a large commit"
+                );
+                let (read, wrote, len) = other.join().unwrap();
+                assert_eq!(read, b"other inode");
+                assert_eq!(wrote, Ok(1));
+                assert_eq!(len, Some(12));
+                assert_eq!(flushing.join().unwrap(), Ok(()));
+            });
+        });
+        let committed = fs.ns().hash_for(large).unwrap();
+        let bytes = fs.hydrator.read(committed, 0, u64::MAX).await.unwrap();
+        assert_eq!(
+            blake3::hash(&bytes),
+            blake3::hash(&payload),
+            "the large file committed its bytes"
+        );
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn document_read_does_not_clone_per_chunk() {
+        const CHUNK: u32 = 128 * 1024;
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
+        let doc = namespace
+            .lock()
+            .unwrap()
+            .create_document(ROOT_INO, "big.md", "md", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        assert!(fs.is_document(doc));
+
+        // About 4 MiB of markdown, written and committed the way an editor
+        // saves it, then closed.
+        let paragraph = "Collaboration lives below applications. ".repeat(50);
+        let mut text = String::new();
+        while text.len() < 4 * 1024 * 1024 + 64 * 1024 {
+            text.push_str(&paragraph);
+            text.push_str("\n\n");
+        }
+        assert_eq!(
+            fs.write_buffer(doc, 0, text.as_bytes()),
+            Ok(u32::try_from(text.len()).unwrap())
+        );
+        assert_eq!(fs.flush_inode(doc), Ok(()));
+        fs.settle_last_close(doc, true);
+        assert!(fs.stage(doc).is_none());
+
+        // `stat` exports once; a change to another file keeps that export.
+        let size = fs.presented_attr(doc).unwrap().0.size;
+        assert!(size >= 4 * 1024 * 1024, "export is {size} bytes");
+        let exported = fs.document_export(doc).unwrap();
+        namespace
+            .lock()
+            .unwrap()
+            .create_file(ROOT_INO, "unrelated.txt", None, 0, 2)
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()),
+            "a change elsewhere in the namespace re-exported the document"
+        );
+
+        let mut read = Vec::with_capacity(exported.len());
+        let allocated = allocation_count::allocated_by(|| {
+            let mut offset = 0_u64;
+            while offset < size {
+                match fs.plan_read(doc, 0, offset, CHUNK) {
+                    ReadPlan::Buffered(BufferedRead::Shared(bytes, range)) => {
+                        read.extend_from_slice(&bytes[range]);
+                    }
+                    _ => panic!("a document read is served from its export"),
+                }
+                offset += u64::from(CHUNK);
+            }
+        });
+        assert_eq!(
+            blake3::hash(&read),
+            blake3::hash(&exported),
+            "the chunks reassemble the export"
+        );
+        assert!(
+            allocated <= 2 * size,
+            "reading a {size}-byte document in {CHUNK}-byte chunks allocated {allocated} bytes"
+        );
+
+        // An edit of the document itself is a new export.
+        assert_eq!(fs.write_buffer(doc, 0, b"# Title\n\n"), Ok(9));
+        assert_eq!(fs.flush_inode(doc), Ok(()));
+        fs.settle_last_close(doc, true);
+        assert!(!Arc::ptr_eq(&exported, &fs.document_export(doc).unwrap()));
+        drop(fs);
+        endpoint.close().await;
+    }
+}
+
+/// A FUSE `read` and `getattr` of a local file read the inode under one
+/// namespace lock, and that single read still enforces every visibility
+/// rule the separate lookups did: ACL revocation, a move out of the view,
+/// unlink, and the open-handle exception for an unlinked inode.
+#[cfg(test)]
+mod read_lock_tests {
+    use super::*;
+    use crate::acl::WorkspaceAcl;
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+
+    const ME: [u8; 32] = [0xB7; 32];
+    const BYTES: &[u8] = b"local bytes served without a peer";
+
+    struct Fixture {
+        endpoint: Endpoint,
+        namespace: Arc<Mutex<Namespace>>,
+        fs: QuickFS,
+        shared: u64,
+        file: u64,
+    }
+
+    /// A mount over a namespace holding `/shared/a.txt`, whose content is
+    /// already in the local store.
+    async fn fixture() -> Fixture {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hash = store.write_content(BYTES).await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+        let (shared, file) = {
+            let mut ns = lock_namespace(&namespace);
+            let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+            let file = ns
+                .create_file(shared, "a.txt", Some(&hash), BYTES.len() as u64, 1)
+                .unwrap();
+            drop(ns);
+            (shared, file)
+        };
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+        let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+        Fixture {
+            endpoint,
+            namespace,
+            fs,
+            shared,
+            file,
+        }
+    }
+
+    fn shared_read_policy() -> WorkspaceAcl {
+        let mut acl = WorkspaceAcl::new();
+        acl.grant_read(ME, "/shared");
+        acl
+    }
+
+    fn locks(fs: &QuickFS) -> usize {
+        fs.namespace_locks.load(Ordering::Relaxed)
+    }
+
+    /// What the FUSE `read` callback would reply with.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Reply {
+        Data(Vec<u8>),
+        Errno(i32),
+    }
+
+    fn data() -> Reply {
+        Reply::Data(BYTES.to_vec())
+    }
+
+    /// The whole file through the production read planner.
+    fn read_all(fs: &QuickFS, ino: u64, fh: u64) -> Reply {
+        match fs.plan_read(ino, fh, 0, 4096) {
+            ReadPlan::Local(data) => Reply::Data(data),
+            ReadPlan::Error(errno) => Reply::Errno(errno),
+            ReadPlan::Buffered(_) => panic!("a file with no stage was answered from a buffer"),
+            ReadPlan::Remote(_) => panic!("locally stored content was sent to a peer"),
+        }
+    }
+
+    fn lock_namespace(namespace: &Arc<Mutex<Namespace>>) -> std::sync::MutexGuard<'_, Namespace> {
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_takes_namespace_lock_once() {
+        // Without an ACL, and with one (the path is then built and checked).
+        for acl in [None, Some(shared_read_policy())] {
+            let Fixture {
+                endpoint, fs, file, ..
+            } = fixture().await;
+            let fs = match acl {
+                Some(acl) => fs.with_acl(acl, ME),
+                None => fs,
+            };
+            let before = locks(&fs);
+            assert_eq!(read_all(&fs, file, 0), data());
+            assert_eq!(
+                locks(&fs) - before,
+                1,
+                "a read of local content takes the namespace lock exactly once"
+            );
+            drop(fs);
+            endpoint.close().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn getattr_of_a_file_takes_namespace_lock_once() {
+        let Fixture {
+            endpoint, fs, file, ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        let before = locks(&fs);
+        let (attr, is_doc) = fs.attr_for_request(file, None).unwrap();
+        assert_eq!(locks(&fs) - before, 1);
+        assert_eq!(attr.size, BYTES.len() as u64);
+        assert_eq!(attr.kind, FileType::RegularFile);
+        assert!(!is_doc);
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_after_acl_revoke_is_enoent() {
+        let Fixture {
+            endpoint, fs, file, ..
+        } = fixture().await;
+        let handle = AclHandle::new(shared_read_policy());
+        let fs = fs.with_acl(handle.clone(), ME);
+        assert_eq!(read_all(&fs, file, 0), data());
+
+        handle.replace(WorkspaceAcl::new());
+        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_after_rename_out_of_view_is_enoent() {
+        let Fixture {
+            endpoint,
+            namespace,
+            fs,
+            shared,
+            file,
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        assert_eq!(read_all(&fs, file, 0), data());
+
+        assert!(lock_namespace(&namespace).rename(shared, "a.txt", ROOT_INO, "a.txt", 2));
+        assert_eq!(read_all(&fs, file, 0), Reply::Errno(ENOENT));
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+
+        assert!(lock_namespace(&namespace).rename(ROOT_INO, "a.txt", shared, "a.txt", 3));
+        assert_eq!(
+            read_all(&fs, file, 0),
+            data(),
+            "moving back into the view makes the file readable again"
+        );
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unlinked_file_reads_only_through_its_open_handle() {
+        let Fixture {
+            endpoint,
+            namespace,
+            fs,
+            file,
+            ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        let fh = 7;
+        fs.open_file_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                fh,
+                OpenFileHandleState {
+                    ino: file,
+                    opened_path: "/shared/a.txt".to_string(),
+                    writable: false,
+                },
+            );
+        assert!(lock_namespace(&namespace).remove(file));
+
+        assert_eq!(
+            read_all(&fs, file, fh),
+            data(),
+            "the handle opened before the unlink keeps reading"
+        );
+        assert_eq!(
+            fs.attr_for_request(file, Some(fh))
+                .map(|(attr, _)| attr.size),
+            Ok(BYTES.len() as u64)
+        );
+        assert_eq!(
+            read_all(&fs, file, 0),
+            Reply::Errno(ENOENT),
+            "no handle, no read"
+        );
+        assert_eq!(fs.attr_for_request(file, None).err(), Some(ENOENT));
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_of_a_directory_is_eisdir() {
+        let Fixture {
+            endpoint,
+            fs,
+            shared,
+            ..
+        } = fixture().await;
+        let fs = fs.with_acl(shared_read_policy(), ME);
+        assert_eq!(read_all(&fs, shared, 0), Reply::Errno(EISDIR));
+        drop(fs);
+        endpoint.close().await;
     }
 }

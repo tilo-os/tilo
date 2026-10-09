@@ -74,7 +74,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         .as_ref()
         .ok_or("room governance missing")?;
     let (_, owner, caps) = room::extract_governed_fields(room);
-    let identities = room::governance_of(Some(room)).3;
+    let identities = room::governance_of(Some(room)).identities;
     let policy = crate::cached_document::PolicyData {
         owner,
         caps,
@@ -233,6 +233,7 @@ fn bounded_current_member_copies_all_capability_fields() {
         Scope::NetHost(long.clone()),
         Scope::Action {
             app: long.clone(),
+            resource: long.clone(),
             action: long.clone(),
         },
         Scope::Room(long.clone()),

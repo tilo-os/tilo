@@ -1,0 +1,31 @@
+[Unit]
+Description=Tilo primary Files workspace on a host desktop
+PartOf=tilo-graphical-session.target
+# Never create an empty namespace merely because the desktop was installed.
+ConditionPathExists=%S/tilo/files/namespace.bin
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tilo-files-workspace
+# Tickets remain in the existing private Files cache, never in the journal.
+StandardOutput=null
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=2s
+RuntimeDirectory=tilo/files-workspace
+RuntimeDirectoryMode=0700
+ExecStop=-/usr/bin/fusermount3 -u -z %S/tilo/files/mount
+# Remove only the generated empty mountpoint after unmount/failure. A nonempty
+# directory is preserved by rmdir, so unavailable data cannot look like an
+# empty mounted workspace to apps.
+ExecStopPost=-/usr/bin/rmdir %S/tilo/files/mount
+TimeoutStopSec=20s
+# FUSE must be visible to applications in the host mount namespace, as in
+# the existing image fs.service. Mount-namespace hardening hides the mount.
+# fusermount3 also needs its normal unprivileged-user privilege transition.
+UMask=0077
+LimitCORE=0
+KeyringMode=private
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

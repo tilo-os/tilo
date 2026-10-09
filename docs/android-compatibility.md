@@ -1,6 +1,6 @@
 # Android applications on Tilo: execution and remaining gaps
 
-Status at 2026-10-07; native ARM64 qualification used published main `e40be46f15fe`. **An unchanged Android APK executes
+Status at 2026-10-08; native ARM64 qualification used published main `e40be46f15fe`. **An unchanged Android APK executes
 through Tilo's production compositor and launcher.** Arity 1.1 rendered
 `123+456 = 579`, saved its state on tab close, restored it on relaunch, and
 rendered `234+567 = 801` with separate state in a second workspace. This is
@@ -14,9 +14,10 @@ qualification or general Android application support.
 
 ## Reference and runtime
 
-The bookmark name **Vinix** was supplied without a URL. The likely reference is
-[vlang/vinix](https://github.com/vlang/vinix); the bookmark's identity remains
-unconfirmed. Its [Android documentation](https://github.com/vlang/vinix/blob/master/docs/android.md)
+The bookmark reference **Vinix** is confirmed as [vlang/vinix](https://github.com/vlang/vinix):
+the bookmarked post <https://x.com/v_language/status/2106302325950488863>
+links [vinix-os.org](https://vinix-os.org/), which links that repository
+(checked 2026-10-07; see issue #3476). Its [Android documentation](https://github.com/vlang/vinix/blob/master/docs/android.md)
 and [build inputs](https://github.com/vlang/vinix/blob/master/build-support/android/build.py)
 identify ATL/ART and the original Arity artifact. Vinix's reported ARM64 results
 and kernel adaptations do not establish Tilo compatibility.
@@ -365,6 +366,35 @@ This qualifies a self-stopping started service in the existing isolated APK
 process. Sticky restarts, bound-client lifetimes, process-loss recovery and service survival after closing an activity
 still need separate app journeys. This run did not exercise new file grants or
 their revocation, signed OS admission, physical devices or ARM64.
+
+On 2026-10-08, the unchanged signed `QueuedServiceActivity` APK reproduced a
+second defect on actual native ARM64 ART: two starts followed immediately by
+`stopService` returned false, and both canceled commands subsequently ran.
+The [Android service implementation](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/am/ActiveServices.java)
+tracks accepted starts separately from running instances and clears pending work
+when bringing a service down. For this ATL main-looper path, the patch tracks
+pending request IDs and fences canceled callbacks before creation and dispatch.
+Later starts keep increasing IDs; a repeated stop with no work returns false.
+
+The same APK then passed with the changed framework: immediate stop true,
+neither canceled command dispatched, subsequent starts 3 and 4 completed, and
+both created instances were destroyed exactly once on the main looper. Three
+close/relaunch visits preserved the first workspace's private history; another
+workspace began independently. Frames, ordered activity lifecycle, denied
+camera permission, Landlock and no-new-privileges were checked. The original
+service fixture also passed, as did the unchanged foreground fixture's ongoing
+notification ownership, normal stop/restart, open-descriptor interruption after
+grant withdrawal, stable output bytes and denied revoked relaunch.
+
+The queued APK SHA-256 is
+`e09ccaec3e0bd3e25efa3a792874feccbf7b42f7df0974caf993c66ec1256cb1`;
+the changed ARM64 runtime receipt is
+`398b3b7ef6a7e2f34c2cdab5decb8519127fb9c25b1476a383402bdedad930dc`.
+Use `run_service_journey.py --queued-starts` with the pinned inputs and the
+explicit queued activity. Reports, images, signing material and runtime payloads
+remain outside Git. These runs used the existing remote builder with software
+graphics; physical hardware, signed OS admission and bound-service lifetime are
+still untested by this case.
 
 ## Foreground worker and live grant withdrawal
 

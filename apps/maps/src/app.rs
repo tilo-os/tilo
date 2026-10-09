@@ -37,7 +37,8 @@ use ui::tokens::{Metrics, TextRole};
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, CardFace, ChipStyle, ContextMenu, ControlSize,
     EmptyState, EmptyStateContent, Interaction, ListRowFace, MenuItem, NumberStepperFace,
-    PropertyListFace, PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, ToggleGroup, Tone,
+    PropertyListFace, PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, SegmentedTouch,
+    SegmentedTouchGroup, SegmentedTouchResult, ToggleGroup, Tone,
 };
 use ui::widget::{FloatingSurfaceProvider, Widget};
 
@@ -196,6 +197,7 @@ pub struct MapsApp {
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
+    segmented_touch: SegmentedTouch,
     /// Floating zoom/location/traffic stack. Owns geometry, drawing,
     /// hit-testing, traffic UI state, and shared tooltip timing.
     map_controls: MapControls,
@@ -537,6 +539,7 @@ impl MapsApp {
             dispatch: None,
             offline_areas: None,
             last_mouse: Point::ZERO,
+            segmented_touch: SegmentedTouch::default(),
             map_controls: MapControls::default(),
             place_search,
             search_opener: ui::search::SearchOpener::new(),
@@ -2071,6 +2074,57 @@ impl MapsApp {
     }
 
     // --- click dispatch ----------------------------------------------------
+    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
+        if self.info_sheet.modal_capture().is_some()
+            || self.offline_panel.is_open()
+            || self.overflow.is_open()
+        {
+            return (Vec::new(), Vec::new());
+        }
+        let modes = self
+            .click_targets
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, Hit::Mode(_)).then_some(*rect))
+            .collect();
+        let times = self
+            .click_targets
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, Hit::TransitTimeMode(_)).then_some(*rect))
+            .collect();
+        (modes, times)
+    }
+
+    fn handle_segmented_touch(&mut self, touch: &winit::event::Touch, scale: f64) -> bool {
+        let (modes, times) = self.segmented_rects();
+        let selected = TravelMode::ALL
+            .iter()
+            .position(|mode| *mode == self.model.mode)
+            .unwrap_or(0);
+        let groups = [
+            SegmentedTouchGroup::new(0, &modes, selected),
+            SegmentedTouchGroup::new(
+                1,
+                &times,
+                usize::from(self.model.transit_time.mode == TransitTimeMode::Arrive),
+            ),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { group, index } = result {
+            let hit = if group == 0 {
+                TravelMode::ALL.get(index).copied().map(Hit::Mode)
+            } else {
+                [TransitTimeMode::Depart, TransitTimeMode::Arrive]
+                    .get(index)
+                    .copied()
+                    .map(Hit::TransitTimeMode)
+            };
+            if let Some(hit) = hit {
+                self.dispatch(&hit);
+            }
+        }
+        result.handled()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per Hit variant; the length is the number of click \
@@ -4621,12 +4675,7 @@ impl Widget for MapsApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         // Arm the first POI fetch once a real viewport exists (live app only).
         if self.online
             && self.poi_fetched_bounds.is_none()
@@ -4698,6 +4747,12 @@ impl Widget for MapsApp {
         if self
             .info_sheet
             .handle_event(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor)
         {
             *ctx.handled = true;
             return;
@@ -4989,8 +5044,13 @@ impl Widget for MapsApp {
         self.rect
     }
 
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        let (modes, times) = self.segmented_rects();
+        modes.iter().chain(&times).any(|rect| rect.contains(point))
+    }
+
     fn wants_pointer_capture(&self) -> bool {
-        self.navigation_placement.is_dragging()
+        self.navigation_placement.is_dragging() || self.segmented_touch.is_active()
     }
 
     fn modal_capture(&self) -> Option<Rect> {

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{
@@ -76,15 +76,6 @@ fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], primary: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -103,7 +94,9 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: now_ns().saturating_sub(1_000_000_000),
+        issued_at_ns: tilo_clock::try_unix_now_ns()
+            .unwrap()
+            .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
     };

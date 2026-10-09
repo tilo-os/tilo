@@ -43,8 +43,14 @@ enum Command {
     },
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
-    /// List the example apps `tilo-app new --from-example` starts from.
-    Examples,
+    /// List examples, inspect one, or read its embedded source without a checkout.
+    Examples {
+        /// One example from `tilo-app examples`.
+        name: Option<String>,
+        /// Read an embedded file, such as README.md, src/lib.rs or tests/app.rs.
+        #[arg(long, requires = "name")]
+        file: Option<String>,
+    },
     /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
@@ -1099,7 +1105,9 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Guide { topic } => Ok(guide::run(topic, interactive)),
         Command::New(args) => run_new(args, interactive),
-        Command::Examples => Ok(list_examples()),
+        Command::Examples { name, file } => {
+            run_examples(name.as_deref(), file.as_deref(), interactive)
+        }
         Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
@@ -1204,7 +1212,7 @@ impl Command {
         match self {
             Self::Guide { .. } => "guide",
             Self::New(_) => "new",
-            Self::Examples => "examples",
+            Self::Examples { .. } => "examples",
             Self::Add(_) => "add",
             Self::Locale(_) => "locale",
             Self::Scenario(_) => "scenario",
@@ -2799,15 +2807,41 @@ fn list_templates() -> Value {
     json!({ "templates": templates })
 }
 
-fn list_examples() -> Value {
-    for example in tilo_app_cli::examples::ALL {
-        let web = if example.web { "" } else { " (native only)" };
-        println!("{:<17} {}{web}", example.name, example.concept);
-        println!("{:<17} {}", "", example.summary);
+fn run_examples(name: Option<&str>, file: Option<&str>, human: bool) -> Result<Value> {
+    let Some(name) = name else {
+        return Ok(list_examples(human));
+    };
+    let details = tilo_app_cli::examples::details(name, file)?;
+    if human {
+        if let Some(content) = details.get("content").and_then(Value::as_str) {
+            print!("{content}");
+        } else {
+            let example = tilo_app_cli::examples::find(name)?;
+            println!(
+                "{} — {}\n{}",
+                example.name, example.concept, example.summary
+            );
+            println!("\nStart with `tilo-app new NAME --from-example {name}`.");
+            println!("Read a file with `tilo-app examples {name} --file PATH`:\n");
+            for (path, _) in example.files {
+                println!("  {path}");
+            }
+        }
     }
-    println!(
-        "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
-    );
+    Ok(details)
+}
+
+fn list_examples(human: bool) -> Value {
+    if human {
+        for example in tilo_app_cli::examples::ALL {
+            let web = if example.web { "" } else { " (native only)" };
+            println!("{:<17} {}{web}", example.name, example.concept);
+            println!("{:<17} {}", "", example.summary);
+        }
+        println!(
+            "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
+        );
+    }
     json!({ "examples": tilo_app_cli::examples::examples_json() })
 }
 
@@ -2869,7 +2903,7 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(conflicting).is_err(), "{conflicting:?}");
         }
-        let listed = list_examples();
+        let listed = list_examples(false);
         assert_eq!(
             listed["examples"].as_array().map(Vec::len),
             Some(tilo_app_cli::examples::ALL.len())

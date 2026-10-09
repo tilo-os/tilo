@@ -703,7 +703,7 @@ fn create_window_render_prepared(
         ),
         None => (RenderContext::new(), None),
     };
-    let mut surface = pollster::block_on(render_cx.create_surface(
+    let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
         window.clone(),
         size.width.max(1),
         size.height.max(1),
@@ -3330,6 +3330,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if app.poll_model_invocations() {
             request_primary_redraw();
+        }
+        // Reveal requests must not wait on rendering an occluded/minimized
+        // window: consume them as soon as its admitted actions are polled.
+        if crate::component_lifecycle::take_window_activation_intent(app.root_widget.as_ref()) {
+            window.set_minimized(false);
+            window.focus_window();
+            window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+            tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
         }
         app.publish_playback_handoff();
 

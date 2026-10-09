@@ -40,6 +40,8 @@ mod published_invocation;
 mod resolved_invocation;
 #[path = "workspace_memberships.rs"]
 mod workspace_memberships;
+#[path = "workspace_tasks.rs"]
+mod workspace_tasks;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
     DocumentBytes, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
@@ -84,9 +86,9 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
+    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
+    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -107,8 +109,8 @@ struct AuthorizedDocumentRoute {
     payload: collab_types::RoutedDocumentPayload,
 }
 
-const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
-const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
+/// How long a peer that began its protocol header has to finish it.
+const LAUNCH_MARKER_COMPLETION: Duration = Duration::from_millis(300);
 
 fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
     if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
@@ -728,10 +730,7 @@ fn admit_verified_join(
         tree,
         route,
         verified,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "legacy clock unavailable")?
-            .as_secs(),
+        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
 fn admit_verified_join_at(
@@ -800,10 +799,7 @@ fn admit_agent_delegation(
         route,
         admitted,
         agent_id,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "legacy clock unavailable")?
-            .as_secs(),
+        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
 fn admit_agent_delegation_at(
@@ -1012,34 +1008,11 @@ enum ContextEnvelope {
     Handoff(Vec<u8>),
 }
 
+/// One inert operation published by a live application connection: the one
+/// exported-action shape `runtime-collab` decodes off the wire, typed.
+pub use runtime_collab::ExportedAction as PublishedAction;
 /// Input contract published for one live application action.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PublishedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-/// One inert operation published by a live application connection.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PublishedAction {
-    pub resource: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: tilo_actions::OperationKind,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub contract: tilo_actions::ActionContract,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: PublishedInput,
-}
+pub use runtime_collab::ExportedInput as PublishedInput;
 
 fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<(), capnp::Error> {
     if action.operation_kind != tilo_actions::OperationKind::View {
@@ -1058,32 +1031,6 @@ fn validate_view_action_binding(action: &PublishedAction, role: &str) -> Result<
         )));
     }
     Ok(())
-}
-
-fn decode_semantic_identity(
-    row: runtime_collab::collab_capnp::exported_action::Reader<'_>,
-) -> Result<Option<tilo_actions::ResourceSemanticIdentity>, capnp::Error> {
-    if !row.has_semantic_identity() {
-        return Ok(None);
-    }
-    let identity = row.get_semantic_identity()?;
-    let kind = identity.get_kind()?;
-    let key = identity.get_key()?;
-    if kind.len() > tilo_actions::ResourceSemanticIdentity::MAX_KIND_BYTES
-        || key.len() > tilo_actions::ResourceSemanticIdentity::MAX_KEY_BYTES
-    {
-        return Err(capnp::Error::failed(
-            "oversized resource semantic identity".into(),
-        ));
-    }
-    let identity = tilo_actions::ResourceSemanticIdentity::new(kind.to_str()?, key.to_str()?)
-        .ok_or_else(|| capnp::Error::failed("invalid resource semantic identity".into()))?;
-    if identity.kind != row.get_resource_kind()?.to_str()? {
-        return Err(capnp::Error::failed(
-            "resource semantic identity kind mismatch".into(),
-        ));
-    }
-    Ok(Some(identity))
 }
 
 fn validate_resource_range_binding(
@@ -1281,6 +1228,7 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
+    execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
 }
 
@@ -1321,7 +1269,7 @@ struct PendingInvocation {
     caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
-    network_evidence: Option<tilo_relay::client::CertifiedAction>,
+    network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     journal_key: Option<InvocationKey>,
@@ -1359,7 +1307,7 @@ struct PreparedEffectCommit {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
-    network: Option<tilo_relay::client::CertifiedAction>,
+    network: Option<tilo_relay_session::client::CertifiedAction>,
     policy_time: Option<crate::peer_actions::PolicyTime>,
     admitted: AdmittedJoinIdentity,
 }
@@ -1468,6 +1416,13 @@ impl CapnpBrokerState {
 /// the caller an edit its effect submits is admitted as.
 #[derive(Clone)]
 enum ContinuingCaller {
+    /// Host-admitted native person, revalidated for every continuation.
+    NativePerson {
+        room: String,
+        certificate: Box<tilo_user_identity::DeviceCert>,
+        time: crate::peer_actions::PolicyTime,
+        direct: tilo_actions::remote::Caller,
+    },
     /// A caller the door knew directly.
     Caller(tilo_actions::remote::Caller),
     /// A certified caller, its certificate checked again each time.
@@ -1506,6 +1461,20 @@ impl ContinuingCaller {
 
     fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
+            InvocationCaller::NativePerson {
+                room,
+                certificate,
+                time,
+                ..
+            } => Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                    certificate.user_public_key,
+                ))
+                .in_room(room.clone()),
+            },
             InvocationCaller::Certified {
                 caller,
                 foreign_restriction,
@@ -1531,6 +1500,20 @@ impl ContinuingCaller {
         match (caller, origin) {
             (
                 Some(direct),
+                Some(InvocationCaller::NativePerson {
+                    room,
+                    certificate,
+                    time,
+                    ..
+                }),
+            ) => Some(Self::NativePerson {
+                room: room.clone(),
+                certificate: Box::new(certificate.clone()),
+                time: time.clone(),
+                direct: direct.clone(),
+            }),
+            (
+                Some(direct),
                 Some(InvocationCaller::Certified {
                     caller,
                     foreign_restriction,
@@ -1553,6 +1536,17 @@ impl ContinuingCaller {
     /// foreign-device cap wherever that device does not govern the room.
     fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
         match self {
+            Self::NativePerson {
+                room,
+                certificate,
+                time,
+                direct,
+            } => {
+                state.checked_policy_time(Some(time)).ok()?;
+                state.current_native_person(room, certificate).ok()?;
+                (direct.execution_id().is_none() || direct.execution_is_live())
+                    .then(|| direct.clone())
+            }
             Self::Caller(caller) => Some(caller.clone()),
             Self::Certified {
                 caller,
@@ -1745,6 +1739,11 @@ impl CapnpBrokerState {
             .get("app_id")
             .and_then(serde_json::Value::as_str)
             .ok_or("journal app invalid")?;
+        let resource = record
+            .intent
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("journal resource invalid")?;
         let action = record
             .intent
             .get("action")
@@ -1753,6 +1752,7 @@ impl CapnpBrokerState {
         self.authorize_invocation_permission(
             &caller.room,
             app,
+            resource,
             action,
             contract.permission,
             &current.broker_actor(),
@@ -1814,7 +1814,7 @@ impl CapnpBrokerState {
             return Err("invalid invocation target or bounds".into());
         }
         if let Some(record) = self.verified_invocation_status(caller, request.invocation)? {
-            if record.intent["request"] != request.intent() {
+            if !record.admitted_request_is(&request.intent()) {
                 return Err("invocation identity reused with different intent".into());
             }
             return Ok(record);
@@ -2081,10 +2081,16 @@ impl DirectoryReply {
     /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
     /// patience ran out, `Err(Unavailable)` once it stopped asking.
     async fn awaited<T>(
-        &self,
+        &mut self,
         answer: impl std::future::Future<Output = T>,
     ) -> Result<T, ActionDirectoryBridgeError> {
-        await_while_asked(self.patience(), || !self.is_closed(), answer).await
+        let patience = self.patience();
+        match self {
+            Self::Oneshot(sender) => await_while_asked(patience, sender.closed(), answer).await,
+            Self::Pending(completer) => {
+                await_while_asked(patience, completer.abandoned(), answer).await
+            }
+        }
     }
 
     fn is_closed(&self) -> bool {
@@ -2105,26 +2111,19 @@ impl DirectoryReply {
 }
 
 /// `answer`, or why it stopped being awaited: `patience` ran out
-/// (`TimedOut`) or `asking` turned false (`Unavailable`).
+/// (`TimedOut`) or the asker went away — `gone` resolved — (`Unavailable`).
+/// The asker's departure is an event, so a cancelled request is released
+/// at once rather than on the next check.
 async fn await_while_asked<T>(
     patience: Duration,
-    asking: impl Fn() -> bool,
+    gone: impl std::future::Future<Output = ()>,
     answer: impl std::future::Future<Output = T>,
 ) -> Result<T, ActionDirectoryBridgeError> {
-    const ASKER_CHECK: Duration = Duration::from_millis(100);
-    let deadline = tokio::time::sleep(patience);
-    tokio::pin!(answer, deadline);
-    let mut check = tokio::time::interval(ASKER_CHECK);
-    loop {
-        tokio::select! {
-            value = &mut answer => return Ok(value),
-            () = &mut deadline => return Err(ActionDirectoryBridgeError::TimedOut),
-            _ = check.tick() => {
-                if !asking() {
-                    return Err(ActionDirectoryBridgeError::Unavailable);
-                }
-            }
-        }
+    tokio::select! {
+        biased;
+        value = answer => Ok(value),
+        () = gone => Err(ActionDirectoryBridgeError::Unavailable),
+        () = tokio::time::sleep(patience) => Err(ActionDirectoryBridgeError::TimedOut),
     }
 }
 
@@ -2157,22 +2156,23 @@ mod directory_patience_tests {
             .expect("test runtime");
         runtime.block_on(async {
             let busy = Duration::from_millis(300);
-            let answered = await_while_asked(Duration::from_secs(5), || true, async {
-                tokio::time::sleep(busy).await;
-                7
-            })
-            .await;
+            let answered =
+                await_while_asked(Duration::from_secs(5), std::future::pending(), async {
+                    tokio::time::sleep(busy).await;
+                    7
+                })
+                .await;
             assert_eq!(answered, Ok(7), "a busy owner is waited for");
 
             let hung = await_while_asked(
                 Duration::from_millis(200),
-                || true,
+                std::future::pending(),
                 std::future::pending::<()>(),
             )
             .await;
             assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
 
-            let reply = DirectoryReply::Pending(completer);
+            let mut reply = DirectoryReply::Pending(completer);
             drop(answer);
             let abandoned = tilo_test_env::within(
                 "an abandoned asker stops the wait",
@@ -2181,6 +2181,42 @@ mod directory_patience_tests {
             .await;
             assert_eq!(abandoned, Err(ActionDirectoryBridgeError::Unavailable));
         });
+    }
+
+    /// An asker that goes away — a shell surface dropping its oneshot, a
+    /// remote caller dropping its answer — releases the directory request
+    /// the moment it does. The clock is paused: any timer the wait armed
+    /// to notice would have to advance it, and none may.
+    #[tokio::test(start_paused = true)]
+    async fn directory_wait_ends_immediately_when_asker_drops() {
+        let (shell, receiver) = tokio::sync::oneshot::channel();
+        let (completer, answer) =
+            tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
+        for (mut reply, asker) in [
+            (
+                DirectoryReply::Oneshot(shell),
+                Box::new(receiver) as Box<dyn Send>,
+            ),
+            (DirectoryReply::Pending(completer), Box::new(answer)),
+        ] {
+            let started = tokio::time::Instant::now();
+            let owner_never_answers = reply.awaited(std::future::pending::<()>());
+            tokio::pin!(owner_never_answers);
+            assert!(
+                futures::poll!(owner_never_answers.as_mut()).is_pending(),
+                "the asker is still there"
+            );
+            drop(asker);
+            assert_eq!(
+                owner_never_answers.await,
+                Err(ActionDirectoryBridgeError::Unavailable)
+            );
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "the departure woke the wait; no timer had to notice it"
+            );
+        }
     }
 }
 
@@ -2439,7 +2475,9 @@ const DIRECTORY_MAX_IDENTIFIER_BYTES: usize = 512;
 const DIRECTORY_MAX_KIND_BYTES: usize = 256;
 const DIRECTORY_MAX_LABEL_BYTES: usize = 4 * 1024;
 const DIRECTORY_MAX_DESCRIPTION_BYTES: usize = 8 * 1024;
-const DIRECTORY_MAX_CONTRACT_BYTES: usize = 32 * 1024;
+// A directory row's contract, parameter declarations and presentation are
+// bounded where they are decoded (`runtime_collab::MAX_DIRECTORY_*_WIRE_BYTES`);
+// this bounds the argument an invocation carries.
 const DIRECTORY_MAX_PARAMS_BYTES: usize = 32 * 1024;
 const DIRECTORY_MAX_QUERY_REVISION_BYTES: usize = 512;
 const DIRECTORY_MAX_QUERY_NEEDLE_BYTES: usize = 4 * 1024;
@@ -2551,100 +2589,6 @@ fn validate_directory_target_input(
             DIRECTORY_MAX_CONFIRMATION_BYTES,
             true,
         )?;
-    }
-    Ok(())
-}
-
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    if let Some(identity) = &descriptor.semantic_identity {
-        let mut out = out.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    if let Some(view) = &descriptor.view {
-        let mut out = out.reborrow().init_view();
-        out.set_id(&view.id);
-        out.set_label(&view.label);
-        out.set_description(view.description.as_deref().unwrap_or(""));
-        out.set_open_action(&view.open_action);
-        out.set_primary(view.primary);
-        if let Some(range) = &view.range {
-            let mut range_out = out.reborrow().init_range();
-            range_out.set_action(&range.action);
-            range_out.set_start_param(&range.start_param);
-            range_out.set_end_param(&range.end_param);
-            range_out.set_unit_param(&range.unit_param);
-        }
-        if let Some(mount) = &view.mount {
-            let mut out = out.init_mount();
-            out.set_action(&mount.action);
-            out.set_capability_param(&mount.capability_param);
-            out.set_view_param(&mount.view_param);
-        }
-    }
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
-fn write_directory_page(
-    mut out: runtime_collab::collab_capnp::action_directory_page::Builder<'_>,
-    page: &runtime_collab::ActionDirectoryPage,
-) -> Result<(), capnp::Error> {
-    out.set_revision(&page.revision);
-    out.set_next_cursor(&page.next_cursor);
-    out.set_exhausted(page.exhausted);
-    out.set_stale_cursor(page.stale_cursor);
-    out.set_budget_exhausted(page.budget_exhausted);
-    let len = u32::try_from(page.rows.len())
-        .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
-    let mut rows = out.reborrow().init_rows(len);
-    for (index, row) in page.rows.iter().enumerate() {
-        write_directory_row(
-            rows.reborrow()
-                .get(u32::try_from(index).unwrap_or(u32::MAX)),
-            row,
-        );
     }
     Ok(())
 }
@@ -2809,7 +2753,11 @@ pub struct CapnpBrokerState {
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Monotonic generation for shell-side retained action projections.
-    surface_generation: AtomicU64,
+    /// Every change to a published surface moves it; a change to an
+    /// application's invocation stream notifies its receivers without
+    /// moving it. A launch waiting for an app to publish an action and open
+    /// its stream wakes on either.
+    surface_changes: tokio::sync::watch::Sender<u64>,
     /// Last launchable projection per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
@@ -2846,8 +2794,9 @@ pub struct CapnpBrokerState {
     /// Steps of interactive shortcut runs waiting for their person.
     step_prompts: crate::automation::StepPrompts,
     /// Bumped whenever a pending or completed invocation changes, so hosts
-    /// can refresh retained invocation projections exactly when needed.
-    invocation_generation: AtomicU64,
+    /// can refresh retained invocation projections exactly when needed and
+    /// a waiter on a running invocation wakes when it may have moved.
+    invocation_generation: tokio::sync::watch::Sender<u64>,
     execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
@@ -3057,6 +3006,8 @@ impl CapnpBrokerState {
         clear!(self.task_subscribers);
         clear!(self.pending_task_runs);
         clear!(self.workers);
+        // A launch waiting for an app to publish learns the broker stopped.
+        self.invocation_streams_changed();
         #[cfg(test)]
         clear!(self.thread_callbacks);
         match self.peer_action_rx.lock() {
@@ -3321,7 +3272,7 @@ impl CapnpBrokerState {
     ) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -3375,12 +3326,19 @@ impl CapnpBrokerState {
             failure: &self.owner_commit_failure,
             complete: false,
         };
-        self.publisher
-            .commit_owner(request, record_kind)
-            .await
-            .map_err(capnp::Error::failed)?;
+        let result = self.publisher.commit_owner(request, record_kind).await;
         waiting.complete = true;
-        Ok(())
+        match result {
+            Ok(_) => Ok(()),
+            Err(reason) => {
+                // The owner answered: retain its actual refusal/failure for
+                // later clients instead of labeling this as a dropped RPC.
+                if let Ok(mut failure) = self.owner_commit_failure.lock() {
+                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
+                }
+                Err(capnp::Error::failed(reason))
+            }
+        }
     }
 
     async fn commit_effect_before_terminal(
@@ -3591,7 +3549,7 @@ impl CapnpBrokerState {
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 surfaces: Mutex::new(HashMap::new()),
-                surface_generation: AtomicU64::new(0),
+                surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
@@ -3617,7 +3575,7 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
-                invocation_generation: AtomicU64::new(0),
+                invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
@@ -3709,6 +3667,7 @@ impl CapnpBrokerState {
         if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
             stable.insert(peer_id);
         }
+        self.invocation_streams_changed();
         rx
     }
 
@@ -3730,7 +3689,7 @@ impl CapnpBrokerState {
                     .into_iter()
                     .map(|surface| (surface.peer_id, surface)),
             );
-            self.surface_generation.fetch_add(1, Ordering::Relaxed);
+            self.surfaces_changed();
         }
     }
 
@@ -3853,7 +3812,27 @@ impl CapnpBrokerState {
     /// clones the potentially large application action inventory.
     #[must_use]
     pub fn published_surfaces_generation(&self) -> u64 {
-        self.surface_generation.load(Ordering::Relaxed)
+        *self.surface_changes.borrow()
+    }
+
+    /// Record that a published surface changed: the generation moves and
+    /// every launch waiting for its app to publish wakes.
+    fn surfaces_changed(&self) {
+        self.surface_changes
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// Wake every launch waiting for its app's invocation stream after one
+    /// opened or closed. Retained projections do not depend on streams, so
+    /// the generation stays.
+    fn invocation_streams_changed(&self) {
+        self.surface_changes.send_modify(|_| {});
+    }
+
+    /// A receiver that sees every later surface or invocation-stream change;
+    /// what exists so far counts as seen, so check readiness after taking it.
+    pub(crate) fn publisher_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.surface_changes.subscribe()
     }
 
     /// Clone the nonblocking bridge used by shell search.  Sending only
@@ -3946,7 +3925,7 @@ impl CapnpBrokerState {
                         actor,
                         cluster_id,
                         query,
-                        reply,
+                        mut reply,
                     } => {
                         if reply.is_closed() {
                             return;
@@ -3973,7 +3952,7 @@ impl CapnpBrokerState {
                         revision,
                         resource,
                         action,
-                        reply,
+                        mut reply,
                     } => {
                         if reply.is_closed() {
                             return;
@@ -4001,7 +3980,7 @@ impl CapnpBrokerState {
                         target,
                         argument,
                         confirmation,
-                        reply,
+                        mut reply,
                     } => {
                         if reply.is_closed() {
                             return;
@@ -4327,19 +4306,11 @@ impl CapnpBrokerState {
         cluster_id: &str,
         actor: &BrokerActor,
         app_id: &str,
+        resource: &str,
         action: &str,
-        contract_json: &str,
+        contract: &tilo_actions::ActionContract,
     ) -> Result<bool, capnp::Error> {
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
-        if contract_json.is_empty() || contract_json.len() > DIRECTORY_MAX_CONTRACT_BYTES {
-            return Err(capnp::Error::failed(
-                "action directory contract must be non-empty and bounded".into(),
-            ));
-        }
-        let contract = serde_json::from_str::<tilo_actions::ActionContract>(contract_json)
-            .map_err(|error| {
-                capnp::Error::failed(format!("invalid action directory contract: {error}"))
-            })?;
         let Some(verb) = (match contract.permission {
             tilo_actions::PermissionRequirement::None => None,
             tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
@@ -4366,6 +4337,7 @@ impl CapnpBrokerState {
             &caller,
             &ResourceRef::Action {
                 app: app_id.to_string(),
+                resource: resource.to_string(),
                 action: action.to_string(),
             },
             verb,
@@ -4449,6 +4421,7 @@ impl CapnpBrokerState {
                             &caller,
                             &ResourceRef::Action {
                                 app: surface.app_id.clone(),
+                                resource: action.resource.clone(),
                                 action: action.action.clone(),
                             },
                             verb,
@@ -4551,7 +4524,7 @@ impl CapnpBrokerState {
 
     /// Invalidate retained discovery only after a real service-surface mutation.
     fn publish_changed_action_catalogue(&self) {
-        self.surface_generation.fetch_add(1, Ordering::Relaxed);
+        self.surfaces_changed();
         self.publish_action_catalogue();
     }
 
@@ -4888,6 +4861,23 @@ impl CapnpBrokerState {
                     .as_ref()
                     .ok_or("original policy clock unavailable")?,
             )
+        } else if let Some(InvocationCaller::NativePerson {
+            room,
+            certificate,
+            time,
+            ..
+        }) = &origin
+        {
+            self.current_native_person(room, certificate)?;
+            if room != &offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != principal_id_for_root(certificate.user_public_key)
+            {
+                return Err(
+                    "original native person does not match the invocation route or actor".into(),
+                );
+            }
+            Some(time)
         } else {
             None
         };
@@ -4932,6 +4922,7 @@ impl CapnpBrokerState {
         self.authorize_invocation_permission(
             &offered.0.route.cluster_id,
             &offered.0.app_id,
+            &offered.1.resource,
             &offered.1.action,
             offered.1.contract.permission,
             actor,
@@ -5009,7 +5000,11 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let authoritative = durable
             .map(DurableContext::invocation)
-            .or_else(|| execution.as_ref().map(ExecutionScope::invocation));
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+            .or(match &origin {
+                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
+                _ => None,
+            });
         if requested.is_some_and(|requested| {
             requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
         }) {
@@ -5049,7 +5044,8 @@ impl CapnpBrokerState {
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
-                "action": offered.1.action, "revision": revision });
+                "resource": offered.1.resource, "action": offered.1.action,
+                "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
             }
@@ -5125,7 +5121,7 @@ impl CapnpBrokerState {
                 cancellation_fence: Arc::new(AtomicBool::new(false)),
             },
         );
-        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        self.invocation_changed();
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -5140,7 +5136,7 @@ impl CapnpBrokerState {
         {
             let removed = registry.remove(&id);
             drop(registry);
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
                     &pending,
@@ -5174,7 +5170,20 @@ impl CapnpBrokerState {
     /// Changes whenever a pending or completed invocation changes.
     #[must_use]
     pub fn invocations_generation(&self) -> u64 {
-        self.invocation_generation.load(Ordering::Relaxed)
+        *self.invocation_generation.borrow()
+    }
+
+    /// Record that a pending or completed invocation changed, waking every
+    /// [`Self::invocation_changes`] waiter.
+    fn invocation_changed(&self) {
+        self.invocation_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    /// A receiver that sees every later invocation change; what it has seen
+    /// so far counts as seen.
+    pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.invocation_generation.subscribe()
     }
 
     /// Read one current receipt without surveying or disclosing another
@@ -5331,7 +5340,7 @@ impl CapnpBrokerState {
                 job.activity.as_ref(),
                 ExecutionStatus::CancellationRequested,
             );
-            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+            self.invocation_changed();
         }
         drop(pending);
         self.cancellation_requests
@@ -5362,6 +5371,34 @@ impl CapnpBrokerState {
                 subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
             })
         })
+    }
+
+    fn admitted_task_execution_budget(
+        &self,
+        cluster_id: &str,
+        task: &tilo_desktop_model::WorkspaceTask,
+    ) -> Result<Option<collab_types::task_budget::TaskExecutionBudget>, String> {
+        if let Some(owner) = self
+            .services
+            .workspace_memberships
+            .as_ref()
+            .filter(|owner| owner.requires_room(cluster_id))
+        {
+            let native = owner.task_snapshot(cluster_id)?;
+            if !native.tasks.iter().any(|current| current == task) {
+                return Err("the native task changed before budget admission".into());
+            }
+            let control = native
+                .controls
+                .get(&task.id)
+                .ok_or("native task control is absent")?;
+            if let Some(budget) = control.execution_budget {
+                budget.validate()?;
+            }
+            Ok(control.execution_budget)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Mint and deliver one live-only task run. No durable/offline queue is
@@ -5406,6 +5443,7 @@ impl CapnpBrokerState {
         if task.status.is_finished() {
             return Err("a finished task cannot be launched".into());
         }
+        let execution_budget = self.admitted_task_execution_budget(cluster_id, &task)?;
         let (peer_id, tx) = self
             .task_subscribers
             .lock()
@@ -5435,6 +5473,7 @@ impl CapnpBrokerState {
                     return Err("a manual task cannot be dispatched to an agent".into());
                 }
             },
+            execution_budget,
             action_context: context.clone(),
         })
         .map_err(|_| "the assigned agent task stream closed".to_string())?;
@@ -5672,7 +5711,7 @@ impl CapnpBrokerState {
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
-            self.surface_generation.fetch_add(1, Ordering::Relaxed);
+            self.surfaces_changed();
         }
         if let Ok(mut roots) = self.action_directory_roots.lock() {
             roots.remove(&peer_id);
@@ -5681,8 +5720,11 @@ impl CapnpBrokerState {
         if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
             capabilities.remove(&peer_id);
         }
-        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
-            subscribers.remove(&peer_id);
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock()
+            && subscribers.remove(&peer_id).is_some()
+        {
+            drop(subscribers);
+            self.invocation_streams_changed();
         }
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
@@ -6880,6 +6922,7 @@ fn app_settings_capability(
         ));
     };
     let app_id = route.app_id.clone();
+    let display = private_display_control(state, &route, &identity);
     // Personal vocabulary stays on this device. Admission to a workspace is
     // insufficient: only the host's private local worker descriptor of the
     // authenticated person receives the read/edit projection.
@@ -6896,8 +6939,106 @@ fn app_settings_capability(
         Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
     Ok(capnp_rpc::new_client(
         runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate)
-            .with_dictionary_owner(dictionary_owner),
+            .with_dictionary_owner(dictionary_owner)
+            .with_display(display),
     ))
+}
+
+fn private_display_control(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
+) -> Option<runtime_collab::settings::host::DisplayControl> {
+    if route.app_id != "so.tilo.settings" || identity.agent_id.is_some() {
+        return None;
+    }
+    let registration = identity.worker_registration.clone()?;
+    if registration.route != *route
+        || identity.certificate.as_ref() != Some(&registration.certificate)
+    {
+        return None;
+    }
+    let service = state.services.display_control.clone()?;
+    let state = state.clone();
+    let route = route.clone();
+    let identity = identity.clone();
+    Some(Arc::new(move |command, origin| {
+        if !state.is_accepting() {
+            return Err("The display host has closed.".into());
+        }
+        state
+            .revalidate_admission(&route, &identity)
+            .map_err(|error| error.to_string())?;
+        if !state
+            .host_workers
+            .lock()
+            .map_err(|_| "Settings worker registry is unavailable.")?
+            .values()
+            .any(|worker| worker.worker_registration.as_ref() == Some(&registration))
+        {
+            return Err("The admitted Settings worker has closed.".into());
+        }
+        if command.len() > 64 * 1024 {
+            return Err("The display request exceeds its wire bound.".into());
+        }
+        let certificate = match origin {
+            runtime_collab::settings::DisplayOrigin::LocalHost => registration.certificate.clone(),
+            runtime_collab::settings::DisplayOrigin::Published(bytes) => {
+                let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(bytes));
+                let (peer, original) = {
+                    let workers = state
+                        .host_workers
+                        .lock()
+                        .map_err(|_| "Settings worker registry is unavailable.")?;
+                    let peer = workers
+                        .iter()
+                        .find_map(|(peer, worker)| {
+                            (worker.worker_registration.as_ref() == Some(&registration))
+                                .then_some(*peer)
+                        })
+                        .ok_or("The admitted Settings worker has closed.")?;
+                    drop(workers);
+                    let pending = state
+                        .pending_invocations
+                        .lock()
+                        .map_err(|_| "Original display invocation registry is unavailable.")?;
+                    let mut matching = pending.values().filter(|value| {
+                        value.peer_id == peer && value.update.invocation() == invocation
+                    });
+                    let entry = matching
+                        .next()
+                        .ok_or("The original display invocation is not retained.")?;
+                    if matching.next().is_some() || entry.cancellation_requested_at.is_some() {
+                        return Err("The original display invocation is no longer live.".into());
+                    }
+                    let original = entry
+                        .original
+                        .clone()
+                        .ok_or("Original display authority is unavailable.")?;
+                    drop(pending);
+                    (peer, original)
+                };
+                original.display_caller(
+                    &state,
+                    peer,
+                    &registration,
+                    serde_json::from_slice::<settings_store::display_control::DisplayCommand>(
+                        command,
+                    )
+                    .map_err(|_| "The display command is invalid.")?
+                    .mutates(),
+                )?
+            }
+        };
+        service.command(
+            &crate::services::DisplayControlContext {
+                room: route.cluster_id.clone(),
+                root: certificate.user_public_key,
+                device: certificate.device_public_key,
+            },
+            command,
+        )
+    }))
 }
 
 /// The `LiveActivity` capability of the app `route` certifies, over the
@@ -8121,10 +8262,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the RPC validates and installs one complete published action surface"
-    )]
     fn publish_actions(
         self: Rc<Self>,
         params: channel_handle::PublishActionsParams,
@@ -8149,16 +8286,15 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             let rows = request.get_actions()?;
             let mut actions = Vec::with_capacity(rows.len() as usize);
-            for index in 0..rows.len() {
-                let row = rows.get(index);
-                let resource = row.get_resource()?.to_str()?.to_owned();
-                let action = row.get_action()?.to_str()?.to_owned();
-                if resource.is_empty()
-                    || action.is_empty()
-                    || resource.contains(tilo_actions::KEY_SEP)
-                    || action.contains(tilo_actions::KEY_SEP)
+            for row in rows {
+                let published = runtime_collab::decode_exported_action(row)?;
+                if published.resource.is_empty()
+                    || published.action.is_empty()
+                    || published.resource.contains(tilo_actions::KEY_SEP)
+                    || published.action.contains(tilo_actions::KEY_SEP)
                     || actions.iter().any(|candidate: &PublishedAction| {
-                        candidate.resource == resource && candidate.action == action
+                        candidate.resource == published.resource
+                            && candidate.action == published.action
                     })
                 {
                     return Err(capnp::Error::failed(
@@ -8166,109 +8302,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                             .into(),
                     ));
                 }
-                let description = row.get_description()?.to_str()?.to_owned();
-                let input = match row.get_input()?.which()? {
-                    action_input::Which::None(()) => PublishedInput::None,
-                    action_input::Which::Text(text) => PublishedInput::Text {
-                        prompt: text.get_prompt()?.to_str()?.to_owned(),
-                        placeholder: text.get_placeholder()?.to_str()?.to_owned(),
-                        wants_content: text.get_wants_content(),
-                    },
-                };
-                let view = row
-                    .has_view()
-                    .then(|| row.get_view())
-                    .transpose()?
-                    .map(|view| {
-                        let description = view.get_description()?.to_str()?.to_owned();
-                        Ok::<_, capnp::Error>(tilo_actions::ResourceViewDescriptor {
-                            id: view.get_id()?.to_str()?.to_owned(),
-                            label: view.get_label()?.to_str()?.to_owned(),
-                            description: (!description.is_empty()).then_some(description),
-                            open_action: view.get_open_action()?.to_str()?.to_owned(),
-                            primary: view.get_primary(),
-                            range: view
-                                .has_range()
-                                .then(|| view.get_range())
-                                .transpose()?
-                                .map(|range| {
-                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewRangeSpec {
-                                        action: range.get_action()?.to_str()?.to_owned(),
-                                        start_param: range.get_start_param()?.to_str()?.to_owned(),
-                                        end_param: range.get_end_param()?.to_str()?.to_owned(),
-                                        unit_param: range.get_unit_param()?.to_str()?.to_owned(),
-                                    })
-                                })
-                                .transpose()?,
-                            mount: view
-                                .has_mount()
-                                .then(|| view.get_mount())
-                                .transpose()?
-                                .map(|mount| {
-                                    Ok::<_, capnp::Error>(tilo_actions::ResourceViewMountSpec {
-                                        action: mount.get_action()?.to_str()?.to_owned(),
-                                        capability_param: mount
-                                            .get_capability_param()?
-                                            .to_str()?
-                                            .to_owned(),
-                                        view_param: mount.get_view_param()?.to_str()?.to_owned(),
-                                    })
-                                })
-                                .transpose()?,
-                        })
-                    })
-                    .transpose()?;
-                actions.push(PublishedAction {
-                    resource,
-                    semantic_identity: decode_semantic_identity(row)?,
-                    action,
-                    resource_kind: row.get_resource_kind()?.to_str()?.to_owned(),
-                    resource_label: row.get_resource_label()?.to_str()?.to_owned(),
-                    action_label: row.get_action_label()?.to_str()?.to_owned(),
-                    description: (!description.is_empty()).then_some(description),
-                    operation_kind: match row.get_operation_kind()?.to_str()? {
-                        "" | "document" => tilo_actions::OperationKind::Document,
-                        "effect" => tilo_actions::OperationKind::Effect,
-                        "view" => tilo_actions::OperationKind::View,
-                        other => {
-                            return Err(capnp::Error::failed(format!(
-                                "unknown exported operation kind `{other}`"
-                            )));
-                        }
-                    },
-                    params: {
-                        let json = row.get_params_json()?.to_str()?;
-                        if json.is_empty() {
-                            Vec::new()
-                        } else {
-                            serde_json::from_str(json).map_err(|error| {
-                                capnp::Error::failed(format!(
-                                    "invalid exported action parameters: {error}"
-                                ))
-                            })?
-                        }
-                    },
-                    contract: {
-                        let json = row.get_contract_json()?.to_str()?;
-                        if json.is_empty() {
-                            match row.get_operation_kind()?.to_str()? {
-                                "view" => tilo_actions::ActionContract::view(),
-                                _ => tilo_actions::ActionContract::default(),
-                            }
-                        } else {
-                            serde_json::from_str(json).map_err(|error| {
-                                capnp::Error::failed(format!(
-                                    "invalid exported action contract: {error}"
-                                ))
-                            })?
-                        }
-                    },
-                    view,
-                    input,
-                });
-                let published = actions.last().ok_or_else(|| {
-                    capnp::Error::failed("published action disappeared during validation".into())
-                })?;
                 if published.resource_kind.trim().is_empty()
                     || published.resource_label.trim().is_empty()
                     || published.action_label.trim().is_empty()
@@ -8296,6 +8329,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         )));
                     }
                 }
+                actions.push(published);
             }
             validate_resource_view_descriptors(&actions)?;
             let surface = PublishedSurface {
@@ -8311,7 +8345,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
-            state.surface_generation.fetch_add(1, Ordering::Relaxed);
+            state.surfaces_changed();
             state.publish_action_catalogue();
             Ok(())
         })
@@ -8527,7 +8561,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 page,
                 max_results,
             )?;
-            write_directory_page(results.get().init_page(), &page)?;
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)?;
             Ok(())
         })
     }
@@ -8595,6 +8629,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             ));
         }
         drop(admission);
+        self.state.invocation_streams_changed();
         // The app the launcher attested, else the one this channel names.
         let (app, room) = self
             .lease
@@ -9026,6 +9061,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
+        // The session's normal tracing filter passes only errors. Its flight
+        // recorder captures stderr; report numeric metadata without changing
+        // that filter or exporting any authorized catalogue contents.
+        eprintln!(
+            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+            initial.len()
+        );
         let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.peer_id, (cluster, actor, tx));
@@ -9641,8 +9683,9 @@ fn permits_directory_row(
                 || descriptor.resource_kind != row.resource_kind
                 || descriptor.resource_label != row.resource_label
                 || row.has_children
-                || row.visibility_action.as_deref() != Some(action)
-                || row.visibility_contract_json != descriptor.contract_json
+                || row.visibility.as_ref().is_none_or(|visibility| {
+                    visibility.action != *action || visibility.contract != descriptor.contract
+                })
             {
                 return Err(capnp::Error::failed(
                     "directory action row does not match its descriptor".into(),
@@ -9664,22 +9707,6 @@ fn permits_directory_row(
             {
                 return Err(capnp::Error::failed(
                     "invalid action directory description".into(),
-                ));
-            }
-            if !matches!(
-                descriptor.operation_kind.as_str(),
-                "document" | "effect" | "view"
-            ) {
-                return Err(capnp::Error::failed(
-                    "invalid action directory operation kind".into(),
-                ));
-            }
-            if descriptor.params_json.len() > DIRECTORY_MAX_PARAMS_BYTES
-                || serde_json::from_str::<Vec<tilo_actions::ActionParam>>(&descriptor.params_json)
-                    .is_err()
-            {
-                return Err(capnp::Error::failed(
-                    "invalid action directory parameters".into(),
                 ));
             }
             match &descriptor.input {
@@ -9709,19 +9736,19 @@ fn permits_directory_row(
                 cluster_id,
                 actor,
                 app_id,
+                &row.resource,
                 action,
-                &descriptor.contract_json,
+                &descriptor.contract,
             )
         }
         (None, None) => {
-            if row.visibility_action.is_none() || row.visibility_contract_json.is_empty() {
+            let Some(visibility) = &row.visibility else {
                 return Err(capnp::Error::failed(
                     "directory resource row has no visibility contract".into(),
                 ));
-            }
-            let visibility_action = row.visibility_action.as_deref().unwrap_or_default();
+            };
             validate_directory_identifier(
-                visibility_action,
+                &visibility.action,
                 "visibility action",
                 DIRECTORY_MAX_IDENTIFIER_BYTES,
                 true,
@@ -9730,8 +9757,9 @@ fn permits_directory_row(
                 cluster_id,
                 actor,
                 app_id,
-                visibility_action,
-                &row.visibility_contract_json,
+                &row.resource,
+                &visibility.action,
+                &visibility.contract,
             )
         }
         _ => Err(capnp::Error::failed(
@@ -9798,78 +9826,7 @@ fn published_directory_action(
             "invalid directory resource semantic identity".into(),
         ));
     }
-    let operation_kind = match descriptor.operation_kind.as_str() {
-        "document" => tilo_actions::OperationKind::Document,
-        "effect" => tilo_actions::OperationKind::Effect,
-        "view" => tilo_actions::OperationKind::View,
-        _ => {
-            return Err(capnp::Error::failed(
-                "invalid directory operation kind".into(),
-            ));
-        }
-    };
-    let params = serde_json::from_str(&descriptor.params_json)
-        .map_err(|error| capnp::Error::failed(format!("invalid directory parameters: {error}")))?;
-    let contract = serde_json::from_str(&descriptor.contract_json)
-        .map_err(|error| capnp::Error::failed(format!("invalid directory contract: {error}")))?;
-    let input = match &descriptor.input {
-        runtime_collab::ExportedInput::None => PublishedInput::None,
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => PublishedInput::Text {
-            prompt: prompt.clone(),
-            placeholder: placeholder.clone(),
-            wants_content: *wants_content,
-        },
-    };
-    let view = descriptor
-        .view
-        .as_ref()
-        .map(|view| tilo_actions::ResourceViewDescriptor {
-            id: view.id.clone(),
-            label: view.label.clone(),
-            description: view.description.clone(),
-            open_action: view.open_action.clone(),
-            primary: view.primary,
-            range: view
-                .range
-                .as_ref()
-                .map(|range| tilo_actions::ResourceViewRangeSpec {
-                    action: range.action.clone(),
-                    start_param: range.start_param.clone(),
-                    end_param: range.end_param.clone(),
-                    unit_param: range.unit_param.clone(),
-                }),
-            mount: view
-                .mount
-                .as_ref()
-                .map(|mount| tilo_actions::ResourceViewMountSpec {
-                    action: mount.action.clone(),
-                    capability_param: mount.capability_param.clone(),
-                    view_param: mount.view_param.clone(),
-                }),
-        });
-    Ok(PublishedAction {
-        resource: descriptor.resource.clone(),
-        semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-            tilo_actions::ResourceSemanticIdentity {
-                kind: identity.kind.clone(),
-                key: identity.key.clone(),
-            }
-        }),
-        action: descriptor.action.clone(),
-        resource_kind: descriptor.resource_kind.clone(),
-        resource_label: descriptor.resource_label.clone(),
-        action_label: descriptor.action_label.clone(),
-        description: descriptor.description.clone(),
-        operation_kind,
-        params,
-        contract,
-        view,
-        input,
-    })
+    Ok(descriptor.clone())
 }
 
 fn revalidate_workspace_control(
@@ -9948,9 +9905,7 @@ fn handle_signed_op_send_for_artifact(
     };
     match validation {
         Ok(()) => {
-            let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
-                mls_vault.clone_from(&ch.mls_vault);
                 ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
@@ -9959,13 +9914,6 @@ fn handle_signed_op_send_for_artifact(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
-            }
-            if envelope.op_class == collab_types::OpClass::Compaction
-                && let Some(metadata) = envelope.encryption
-                && let Some(vault) = mls_vault
-                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-            {
-                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
             if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -10673,6 +10621,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 run_id: run.run_id,
                 lease: run.lease,
                 planning: run.planning,
+                execution_budget: run.execution_budget,
                 action_context: serde_json::to_value(run.action_context)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             };
@@ -11684,48 +11633,85 @@ pub async fn dial_capnp_for_test(
 /// header. Raw endpoint diagnostics intentionally omit the launcher marker;
 /// only a marker-bearing connection is subject to shell-process attestation.
 async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, capnp::Error> {
-    for _ in 0..LAUNCH_RECORD_RACE_RETRIES {
-        stream.readable().await.map_err(|error| {
+    let incomplete =
+        || capnp::Error::failed("collaboration peer sent an incomplete protocol header".into());
+    // A peer that has not begun is waited for as before; one that began has
+    // `LAUNCH_MARKER_COMPLETION` to send the rest.
+    let mut complete_by = None;
+    loop {
+        let ready = stream.ready(tokio::io::Interest::READABLE);
+        let ready = match complete_by {
+            None => ready.await,
+            Some(deadline) => tokio::time::timeout_at(deadline, ready)
+                .await
+                .map_err(|_| incomplete())?,
+        }
+        .map_err(|error| {
             capnp::Error::failed(format!("collaboration socket unreadable: {error}"))
         })?;
-        let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
-        // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
-        // the live socket for this entire call. MSG_PEEK leaves the Cap'n
-        // Proto header untouched for legacy/raw clients.
-        let read = unsafe {
-            libc::recv(
-                stream.as_raw_fd(),
-                marker.as_mut_ptr().cast(),
-                marker.len(),
-                libc::MSG_PEEK | libc::MSG_DONTWAIT,
-            )
-        };
-        let marker_len = libc::ssize_t::try_from(marker.len())
-            .map_err(|_| capnp::Error::failed("launcher header exceeds ssize_t".into()))?;
-        if read >= marker_len {
-            return Ok(marker == collab_types::local_transport::COLLAB_LAUNCH_MAGIC);
+        let mut partial = false;
+        // A peek that finds only part of the marker reports `WouldBlock`, so
+        // the socket's readiness clears and the next bytes wake this loop.
+        match stream.try_io(tokio::io::Interest::READABLE, || {
+            peek_launch_marker(stream, &mut partial)
+        }) {
+            Ok(marker) => return Ok(marker == collab_types::local_transport::COLLAB_LAUNCH_MAGIC),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if partial {
+                    if ready.is_read_closed() {
+                        return Err(incomplete());
+                    }
+                    complete_by.get_or_insert_with(|| {
+                        tokio::time::Instant::now()
+                            .checked_add(LAUNCH_MARKER_COMPLETION)
+                            .unwrap_or_else(tokio::time::Instant::now)
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(capnp::Error::disconnected(
+                    "collaboration peer closed before its protocol header".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(capnp::Error::failed(format!(
+                    "could not inspect collaboration protocol header: {error}"
+                )));
+            }
         }
-        if read == 0 {
-            return Err(capnp::Error::disconnected(
-                "collaboration peer closed before its protocol header".into(),
-            ));
-        }
-        if read < 0
-            && !matches!(
-                std::io::Error::last_os_error().kind(),
-                std::io::ErrorKind::WouldBlock
-            )
-        {
-            return Err(capnp::Error::failed(format!(
-                "could not inspect collaboration protocol header: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
     }
-    Err(capnp::Error::failed(
-        "collaboration peer sent an incomplete protocol header".into(),
-    ))
+}
+
+/// Peek at the launch marker without consuming it: the whole marker, or
+/// `WouldBlock` — with `partial` set when some of it has arrived — or
+/// `UnexpectedEof` when the peer closed without sending anything.
+fn peek_launch_marker(
+    stream: &tokio::net::UnixStream,
+    partial: &mut bool,
+) -> std::io::Result<[u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()]> {
+    let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
+    // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
+    // the live socket for this entire call. MSG_PEEK leaves the Cap'n
+    // Proto header untouched for legacy/raw clients.
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            marker.as_mut_ptr().cast(),
+            marker.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    let Ok(read) = usize::try_from(read) else {
+        return Err(std::io::Error::last_os_error());
+    };
+    if read == 0 {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    if read < marker.len() {
+        *partial = true;
+        return Err(std::io::ErrorKind::WouldBlock.into());
+    }
+    Ok(marker)
 }
 
 /// A launcher's handoff, read whole: the stream is now where the app's
@@ -11787,56 +11773,50 @@ async fn authenticate_launcher_handoff(
         });
     }
 
-    // `spawn_launch` records immediately after `Command::spawn`; the child
-    // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct tilo-launcher command never obtains a record and fails
-    // closed instead of becoming a way around admin/admission checks.
-    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        let launch = services
-            .launcher
-            .as_ref()
-            .map(|service| {
-                service.authenticated_launch(pid, &handoff.app_id, &handoff.workspace_id)
-            })
-            .transpose()
-            .map_err(|error| LaunchRefusal {
-                error: capnp::Error::failed(error),
-                peer: peer.clone(),
-                answerable: !handoff.executing_peer,
-            })?
-            .flatten();
-        if let Some(launch) = launch {
-            #[cfg(target_os = "linux")]
-            let media_process = if handoff.executing_peer {
-                Some(
-                    process_binding::bind(stream, media_process, services, pid, &handoff)
-                        .await
-                        .map_err(|error| LaunchRefusal {
-                            error,
-                            peer: peer.clone(),
-                            answerable: false,
-                        })?,
-                )
-            } else {
-                media_process
-            };
-            #[cfg(not(target_os = "linux"))]
-            if handoff.executing_peer {
-                return Err(LaunchRefusal {
-                    error: capnp::Error::failed("executing custody requires Linux".into()),
-                    peer,
-                    answerable: false,
-                });
-            }
-            return Ok(native_media::LocalAppConnection::from_launch(
-                handoff,
-                media_process,
-                launch,
-            ));
+    // Every host records a launch before it releases the launcher's
+    // registration gate (`launcher::registration_gate`), so the record exists
+    // before the launcher can connect, and one look decides. A direct
+    // tilo-launcher command never obtains a record and is refused at once
+    // instead of becoming a way around admin/admission checks.
+    let launch = services
+        .launcher
+        .as_ref()
+        .map(|service| service.authenticated_launch(pid, &handoff.app_id, &handoff.workspace_id))
+        .transpose()
+        .map_err(|error| LaunchRefusal {
+            error: capnp::Error::failed(error),
+            peer: peer.clone(),
+            answerable: !handoff.executing_peer,
+        })?
+        .flatten();
+    if let Some(launch) = launch {
+        #[cfg(target_os = "linux")]
+        let media_process = if handoff.executing_peer {
+            Some(
+                process_binding::bind(stream, media_process, services, pid, &handoff)
+                    .await
+                    .map_err(|error| LaunchRefusal {
+                        error,
+                        peer: peer.clone(),
+                        answerable: false,
+                    })?,
+            )
+        } else {
+            media_process
+        };
+        #[cfg(not(target_os = "linux"))]
+        if handoff.executing_peer {
+            return Err(LaunchRefusal {
+                error: capnp::Error::failed("executing custody requires Linux".into()),
+                peer,
+                answerable: false,
+            });
         }
-        if attempt < LAUNCH_RECORD_RACE_RETRIES {
-            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
-        }
+        return Ok(native_media::LocalAppConnection::from_launch(
+            handoff,
+            media_process,
+            launch,
+        ));
     }
     let error = if services.launcher.is_none() {
         "collaboration launch cannot be attested: this broker has no launcher service"
@@ -12447,6 +12427,172 @@ pub mod tests {
         );
     }
 
+    /// What tilo-launcher writes first on its collaboration connection: the
+    /// marker, then the framed handoff naming the app and room.
+    #[cfg(test)]
+    fn launcher_handoff_bytes(app_id: &str, room: &str) -> (Vec<u8>, Vec<u8>) {
+        let handoff = serde_json::to_vec(&serde_json::json!({
+            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": app_id,
+            "workspace_id": room,
+        }))
+        .expect("handoff json");
+        (
+            collab_types::local_transport::COLLAB_LAUNCH_MAGIC.to_vec(),
+            launcher::services::COLLAB_LAUNCH_FRAMING
+                .encode(&handoff)
+                .expect("framed handoff"),
+        )
+    }
+
+    /// Records launches as a host does, before it releases the launcher.
+    #[cfg(test)]
+    struct RecordedLaunches(Mutex<Vec<(u32, String, String)>>);
+    #[cfg(test)]
+    impl crate::services::LauncherServices for RecordedLaunches {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            Vec::new()
+        }
+        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            Err("this broker launches nothing".into())
+        }
+        fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
+            self.0
+                .lock()
+                .expect("records")
+                .iter()
+                .any(|(recorded, a, r)| *recorded == pid && a == app && r == room)
+        }
+    }
+
+    /// Attestation is one look at the launch record: a launcher whose host
+    /// recorded it (before releasing its registration gate) is attested at
+    /// once, and a process with the marker but no record — someone running
+    /// tilo-launcher by hand — is refused at once, without a retry window.
+    /// The clock is paused, so any wait would show as elapsed time.
+    #[tokio::test(start_paused = true)]
+    async fn launcher_attestation_decides_on_one_look() {
+        use tokio::io::AsyncWriteExt as _;
+        const APP: &str = "so.tilo.calculator";
+        const ROOM: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+        let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
+        let services = HostServices {
+            launcher: Some(Arc::clone(&launches) as Arc<dyn crate::services::LauncherServices>),
+            ..Default::default()
+        };
+        let (marker, handoff) = launcher_handoff_bytes(APP, ROOM);
+        for recorded in [false, true] {
+            let (mut broker_end, mut launcher_end) =
+                tokio::net::UnixStream::pair().expect("socket pair");
+            if recorded {
+                launches.0.lock().expect("records").push((
+                    std::process::id(),
+                    APP.to_owned(),
+                    ROOM.to_owned(),
+                ));
+            }
+            launcher_end.write_all(&marker).await.expect("marker");
+            launcher_end.write_all(&handoff).await.expect("handoff");
+            let started = tokio::time::Instant::now();
+            let attested = authenticate_launcher_handoff(&mut broker_end, &services).await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "attestation waited (recorded: {recorded})"
+            );
+            match attested {
+                Ok(_) => assert!(recorded, "an unrecorded launcher was attested"),
+                Err(refusal) => {
+                    assert!(
+                        !recorded,
+                        "a recorded launcher was refused: {}",
+                        refusal.error
+                    );
+                    assert!(
+                        refusal
+                            .error
+                            .to_string()
+                            .contains("not an authenticated shell-managed process"),
+                        "{}",
+                        refusal.error
+                    );
+                }
+            }
+        }
+    }
+
+    /// A launch marker that arrives in pieces is read once it is whole —
+    /// the later bytes wake the read — and the stream is left untouched; one
+    /// left unfinished is refused after its completion window, and a peer
+    /// that hangs up mid-marker is refused when it hangs up, rather than
+    /// either holding the connection.
+    #[tokio::test]
+    async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
+        use tokio::io::AsyncWriteExt as _;
+        let marker = collab_types::local_transport::COLLAB_LAUNCH_MAGIC;
+        let (head, tail) = marker.split_at(marker.len() / 2);
+        let pause = LAUNCH_MARKER_COMPLETION / 6;
+
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        let started = tokio::time::Instant::now();
+        launcher_end.write_all(head).await.expect("first half");
+        let tail = tail.to_vec();
+        let rest = tokio::spawn(async move {
+            tokio::time::sleep(pause).await;
+            launcher_end.write_all(&tail).await.expect("second half");
+            launcher_end
+        });
+        assert!(
+            has_collab_launch_marker(&broker_end)
+                .await
+                .expect("a whole marker")
+        );
+        assert!(
+            started.elapsed() < LAUNCH_MARKER_COMPLETION,
+            "the second half completed the marker, took {:?}",
+            started.elapsed()
+        );
+        let _launcher_end = rest.await.expect("writer");
+        let mut kept = vec![0_u8; marker.len()];
+        broker_end.readable().await.expect("readable");
+        broker_end
+            .try_read(&mut kept)
+            .expect("the marker is still unread");
+        assert_eq!(kept, marker, "peeking leaves the stream untouched");
+
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        launcher_end.write_all(head).await.expect("first half");
+        let started = tokio::time::Instant::now();
+        let unfinished = has_collab_launch_marker(&broker_end).await;
+        assert!(
+            unfinished
+                .expect_err("an unfinished marker is refused")
+                .to_string()
+                .contains("incomplete protocol header")
+        );
+        assert!(
+            started.elapsed() >= LAUNCH_MARKER_COMPLETION,
+            "an unfinished marker has its completion window"
+        );
+        drop(launcher_end);
+
+        let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().expect("socket pair");
+        launcher_end.write_all(head).await.expect("first half");
+        drop(launcher_end);
+        let started = tokio::time::Instant::now();
+        assert!(
+            has_collab_launch_marker(&broker_end)
+                .await
+                .expect_err("a peer that hung up mid-marker is refused")
+                .to_string()
+                .contains("incomplete protocol header")
+        );
+        assert!(
+            started.elapsed() < LAUNCH_MARKER_COMPLETION,
+            "the hang-up is an event, not the end of the completion window"
+        );
+    }
+
     #[test]
     fn public_sink_can_drop_its_broker_without_self_join_or_early_unlink() {
         let directory = tempfile::tempdir().expect("temporary socket directory");
@@ -12989,17 +13135,17 @@ pub mod tests {
     }
 
     impl TestActionDirectory {
-        fn contract_json(&self) -> String {
+        fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::view();
             contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
-            serde_json::to_string(&contract).expect("test action contract")
+            contract
         }
 
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
-            let contract_json = self.contract_json();
+            let contract = self.contract();
             let descriptor = runtime_collab::ExportedAction {
                 semantic_identity: None,
                 resource: "workspace:atlas".into(),
@@ -13008,9 +13154,9 @@ pub mod tests {
                 resource_label: "Atlas".into(),
                 action_label: "Open Atlas".into(),
                 description: Some("Open the Atlas workspace".into()),
-                operation_kind: "view".into(),
-                params_json: "[]".into(),
-                contract_json: contract_json.clone(),
+                operation_kind: tilo_actions::OperationKind::View,
+                params: Vec::new(),
+                contract: contract.clone(),
                 input: runtime_collab::ExportedInput::None,
                 view: None,
             };
@@ -13019,12 +13165,14 @@ pub mod tests {
                 resource: descriptor.resource.clone(),
                 resource_kind: descriptor.resource_kind.clone(),
                 resource_label: descriptor.resource_label.clone(),
-                resource_presentation_json: String::new(),
+                presentation: None,
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
                 has_children: false,
-                visibility_action: Some("open".into()),
-                visibility_contract_json: contract_json,
+                visibility: Some(runtime_collab::RowVisibility {
+                    action: "open".into(),
+                    contract,
+                }),
             }
         }
     }
@@ -13053,7 +13201,7 @@ pub mod tests {
                 stale_cursor: false,
                 budget_exhausted: false,
             };
-            write_directory_page(results.get().init_page(), &page)
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
                 .expect("test directory page encodes");
             Promise::ok(())
         }
@@ -13068,7 +13216,11 @@ pub mod tests {
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
-                    write_directory_row(out.reborrow().init_found(), &state.row());
+                    runtime_collab::write_action_directory_row(
+                        out.reborrow().init_found(),
+                        &state.row(),
+                    )
+                    .expect("test directory row encodes");
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),
@@ -13534,11 +13686,12 @@ pub mod tests {
             let mut identity = descriptor.init_semantic_identity();
             identity.set_kind(kind);
             identity.set_key(key);
-            decode_semantic_identity(
+            runtime_collab::decode_exported_action(
                 message
                     .get_root_as_reader::<exported_action::Reader<'_>>()
                     .unwrap(),
             )
+            .map(|action| action.semantic_identity)
         };
         assert_eq!(
             decode("chat.agent", "chat.person:scribe").unwrap(),
@@ -13555,6 +13708,110 @@ pub mod tests {
             .unwrap()
             .kind = "person".into();
         assert!(published_directory_action(&row).is_err());
+    }
+
+    /// A directory whose container row carries a visibility contract the
+    /// broker cannot read, beside a well-formed action row.
+    #[cfg(test)]
+    struct UndecodableVisibilityDirectory {
+        row: runtime_collab::ActionDirectoryRow,
+    }
+
+    #[allow(
+        refining_impl_trait,
+        reason = "the generated Cap'n Proto test endpoint has the same concrete Promise shape as production endpoints"
+    )]
+    #[cfg(test)]
+    impl action_directory::Server for UndecodableVisibilityDirectory {
+        fn query(
+            self: Rc<Self>,
+            _params: action_directory::QueryParams,
+            mut results: action_directory::QueryResults,
+        ) -> Promise<(), capnp::Error> {
+            let container = runtime_collab::ActionDirectoryRow {
+                parent_resource: String::new(),
+                resource: "workspace:folder".into(),
+                resource_kind: "workspace".into(),
+                resource_label: "Folder".into(),
+                presentation: None,
+                action: None,
+                descriptor: None,
+                has_children: true,
+                visibility: Some(runtime_collab::RowVisibility {
+                    action: "open".into(),
+                    contract: tilo_actions::ActionContract::view(),
+                }),
+            };
+            let page = runtime_collab::ActionDirectoryPage {
+                revision: "directory-r1".into(),
+                rows: vec![self.row.clone(), container],
+                next_cursor: Vec::new(),
+                exhausted: true,
+                stale_cursor: false,
+                budget_exhausted: false,
+            };
+            let mut out = results.get().init_page();
+            runtime_collab::write_action_directory_page(out.reborrow(), &page)
+                .expect("test directory page encodes");
+            // A permission the broker does not know: the gate is unreadable.
+            out.get_rows()
+                .unwrap()
+                .get(1)
+                .set_visibility_contract_json(r#"{"permission":"everyone"}"#);
+            Promise::ok(())
+        }
+    }
+
+    /// The visibility contract is the permission that discloses a container
+    /// row. One the broker cannot decode refuses the page: the row is never
+    /// listed without its gate, and nothing on that page is listed past it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
+        use tilo_actions::remote::{Caller, CatalogueQuery, PendingPoll};
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let query = CatalogueQuery {
+                    provider: Some(fixture.peer_id.to_string()),
+                    max_results: 8,
+                    ..CatalogueQuery::default()
+                };
+                let list = || async {
+                    let mut pending = fixture.state.action_query(&caller, &query);
+                    tokio::time::timeout(Duration::from_secs(2), async {
+                        loop {
+                            drain_directory_bridge(&fixture).await;
+                            if let PendingPoll::Ready(result) = pending.poll_ready() {
+                                break result;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .expect("bounded directory query")
+                };
+                let listed = list().await.expect("a well-formed directory lists");
+                assert_eq!(
+                    listed.rows.len(),
+                    1,
+                    "the fixture row is visible to its owner"
+                );
+
+                let row = fixture.directory_state.borrow().row();
+                fixture
+                    .directories
+                    .directories
+                    .borrow_mut()
+                    .get_mut(&fixture.peer_id)
+                    .expect("fixture directory")
+                    .directory = capnp_rpc::new_client(UndecodableVisibilityDirectory { row });
+                let refused = list().await;
+                assert!(refused.is_err(), "{refused:?}");
+            })
+            .await;
     }
 
     #[test]
@@ -13725,10 +13982,10 @@ pub mod tests {
             .try_recv()
             .expect("actual app invocation stream");
         assert_eq!(delivered.id, job.id);
-        let bytes = std::fs::read(root.path().join("state.json.invocations/records.json")).expect(
-            "the real broker must persist admission before delivering an application effect",
-        );
-        let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // What a restart would replay: the real broker must persist admission
+        // before delivering an application effect.
+        let snapshot =
+            invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
         assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["records"][0]["wire_id"], job.id);
     }
@@ -13774,15 +14031,15 @@ pub mod tests {
             assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
             assert!(matches!(fixture.state.invocation_status(job),
                 Some(tilo_actions::InvocationUpdate::Accepted { invocation }) if invocation == request.invocation));
-            let path = root.path().join("state.json.invocations/records.json");
-            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let path = root.path().join("state.json.invocations");
+            let snapshot = invocation_journal::durable_snapshot(&path);
             assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
             fixture.complete_invocation(job, &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: delivered, output: tilo_actions::ActionOutput::default(),
             }).await.unwrap();
             assert!(matches!(fixture.state.invocation_status(job),
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == request.invocation));
-            let snapshot: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let snapshot = invocation_journal::durable_snapshot(&path);
             assert_eq!(snapshot["records"][0]["key"]["invocation"], request.invocation.0.to_string());
             assert!(fixture.take_invocation_identity().is_none());
         }).await;
@@ -14205,6 +14462,7 @@ pub mod tests {
             state.authorize_invocation_permission(
                 &room,
                 "so.tilo.settings",
+                "settings.workspace",
                 "workspace.rename",
                 permission,
                 &admitted.broker_actor(),
@@ -14278,6 +14536,7 @@ pub mod tests {
             let admin = state.authorize_invocation_permission(
                 &room,
                 "so.tilo.settings",
+                "settings.workspace",
                 "workspace.rename",
                 tilo_actions::PermissionRequirement::Admin,
                 &actor,
@@ -14376,6 +14635,17 @@ pub mod tests {
         impl crate::services::WorkspaceMemberships for NativeRoom {
             fn requires_room(&self, room: &str) -> bool {
                 room == self.0
+            }
+
+            fn task_snapshot(
+                &self,
+                _: &str,
+            ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String>
+            {
+                Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
+                    tasks: Vec::new(),
+                    controls: std::collections::BTreeMap::default(),
+                })
             }
 
             fn execute(
@@ -17429,7 +17699,7 @@ impl CapnpBrokerState {
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
         state.publish_pending_activity(pending, &update);
-        state.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        state.invocation_changed();
         if update.is_terminal() {
             let completion = match &update {
                 tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
@@ -17453,8 +17723,10 @@ impl CapnpBrokerState {
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            drop(registry);
+            // Retire it before releasing the registry: a waiter woken by the
+            // change above must find it pending or completed, never neither.
             state.record_completion(id, pending.completion_owner(), update.clone());
+            drop(registry);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }

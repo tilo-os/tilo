@@ -46,7 +46,7 @@
 
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use web_time::{Instant, SystemTime};
+use web_time::Instant;
 
 /// One launch's process/surface timing. Placement remains the compositor's
 /// responsibility; this small crate owns only FIFO timing correlation so
@@ -221,10 +221,7 @@ pub fn init() {
     METRICS.get_or_init(|| {
         let path = std::env::var_os("TILO_STARTUP_METRICS_PATH")?;
         let origin = Instant::now();
-        let origin_epoch_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
+        let origin_epoch_ms = u128::from(tilo_clock::unix_now_ms());
         Some(Metrics {
             origin,
             origin_epoch_ms,

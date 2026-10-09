@@ -173,9 +173,6 @@ enum Cmd {
         /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
-        /// Turn off the Landlock enforcement. Debug only.
-        #[arg(long, hide = true)]
-        no_landlock: bool,
         #[command(flatten)]
         trust: TrustFlags,
     },
@@ -455,8 +452,8 @@ fn store() -> Result<PackageStore, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    xdg_paths::env_dir("XDG_DATA_HOME")
-        .or_else(xdg_paths::data_dir)
+    tilo_paths::env_dir("XDG_DATA_HOME")
+        .or_else(tilo_paths::data_dir)
         .ok_or(Error::NoDataDir)
 }
 
@@ -1150,7 +1147,14 @@ fn stage_runtime_bundle(
     let mut sink = BlobDir(blobs);
     let tapp = tilo_app_package::tapp::read(candidate.reader()?, &mut sink)
         .map_err(|error| Error::Parse(error.to_string()))?;
-    let missing = tapp.missing();
+    // Most of a runtime build's files are in the runtime already installed:
+    // copy those, each verified against the hash the signed package names,
+    // and fetch only the rest.
+    let (missing, reused) = install::runtime_blobs::LocalRuntimeBlobs::installed()
+        .copy_into(&tapp.missing(), &sink.0)?;
+    if reused > 0 {
+        println!("  reused   : {reused} bytes already on this device");
+    }
     if !missing.is_empty() {
         let fetcher = payload.ok_or_else(|| {
             Error::Policy(format!(
@@ -1215,7 +1219,7 @@ fn register_search_providers() {
     let written = data_home_root()
         .map_err(|error| error.to_string())
         .and_then(|data| {
-            let config = xdg_paths::config_dir().ok_or("no configuration directory")?;
+            let config = tilo_paths::config_dir().ok_or("no configuration directory")?;
             tilo_os_search::linux_files::write(&data, &config, &runtime)
                 .map_err(|error| error.to_string())
         });
@@ -1732,19 +1736,11 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     Ok(())
 }
 
-// One CLI flag per bool, mirroring `Cmd::Run`'s own fields one-for-one;
-// grouping them into a struct would only move the list, not shorten it.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "each bool is an independent `tilo-install run` flag forwarded to the launcher; \
-              see the comment above"
-)]
 fn run(
     pkg_id: &str,
     no_services: bool,
     minimal_libs: bool,
     allow_missing_runtime: bool,
-    no_landlock: bool,
     trust: &TrustFlags,
 ) -> Result<(), Error> {
     let entry = find_installed(pkg_id)?;
@@ -1825,12 +1821,6 @@ fn run(
     if allow_missing_runtime {
         cmd.arg("--allow-missing-runtime");
     }
-    if no_landlock {
-        eprintln!(
-            "tilo-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
-        );
-        // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
-    }
     // exec()-replace so this process's exit code IS the launcher's.
     let err = cmd.exec();
     Err(Error::Io(err))
@@ -1855,7 +1845,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     );
     println!(
         "installed     : {} seconds ago",
-        now().saturating_sub(entry.installed_at)
+        tilo_clock::unix_now().saturating_sub(entry.installed_at)
     );
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
@@ -2155,7 +2145,7 @@ fn runtime_install(
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = xdg_paths::data_dir()
+    let base = tilo_paths::data_dir()
         .ok_or(Error::NoDataDir)?
         .join("tilo-runtime");
     if !base.exists() {
@@ -2310,14 +2300,12 @@ fn main() {
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             trust,
         } => run(
             &pkg_id,
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             &trust,
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
@@ -2459,12 +2447,8 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn now() -> u64 {
-    tilo_clock::unix_now()
-}
-
 fn age(installed_at: u64) -> String {
-    let n = now();
+    let n = tilo_clock::unix_now();
     let elapsed = n.saturating_sub(installed_at);
     match elapsed {
         0..=59 => format!("{elapsed}s ago"),

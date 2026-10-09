@@ -560,9 +560,9 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 resource_label: "Plan".into(),
                                 action_label: "Save".into(),
                                 description: None,
-                                operation_kind: "effect".into(),
-                                params_json: "[]".into(),
-                                contract_json: r#"{"permission":"write"}"#.into(),
+                                operation_kind: tilo_actions::OperationKind::Effect,
+                                params: Vec::new(),
+                                contract: tilo_actions::ActionContract::default(),
                                 input: ExportedInput::None,
                                 view: None,
                             },
@@ -574,9 +574,9 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                                 resource_label: "Plan".into(),
                                 action_label: "Insert image".into(),
                                 description: Some("Place an image at the caret".into()),
-                                operation_kind: "document".into(),
-                                params_json: "[]".into(),
-                                contract_json: r#"{"permission":"write"}"#.into(),
+                                operation_kind: tilo_actions::OperationKind::Document,
+                                params: Vec::new(),
+                                contract: tilo_actions::ActionContract::default(),
                                 input: ExportedInput::Text {
                                     prompt: "Which image?".into(),
                                     placeholder: "content hash".into(),
@@ -607,7 +607,11 @@ async fn actions_and_remarks_carry_type_attribution_and_opaque_payloads() {
                 assert_eq!(rows[0].description, "");
                 assert_eq!(rows[0].operation_kind, "effect");
                 assert_eq!(rows[0].params_json, "[]");
-                assert_eq!(rows[0].contract_json, r#"{"permission":"write"}"#);
+                assert_eq!(
+                    serde_json::from_str::<tilo_actions::ActionContract>(&rows[0].contract_json)
+                        .unwrap(),
+                    tilo_actions::ActionContract::default()
+                );
                 assert_eq!(rows[0].input, PublishedInput::None);
 
                 assert_eq!(rows[1].action, "insert-image");

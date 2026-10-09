@@ -324,6 +324,7 @@ const PERMISSIONS_KEYWORDS: &[&str] = &[
     "security",
     "privacy",
     "encryption",
+    "disk unlock",
     "secure boot",
     "firewall",
     "camera",

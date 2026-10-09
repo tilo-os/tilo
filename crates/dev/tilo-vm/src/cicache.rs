@@ -37,7 +37,7 @@ impl CiCache {
     /// `<cache>/tilo-vm/ci-layers`, keeping [`KEEP`] layers.
     pub fn at_home() -> Self {
         Self::new(
-            xdg_paths::cache_dir()
+            tilo_paths::cache_dir()
                 .unwrap_or_else(std::env::temp_dir)
                 .join("tilo-vm")
                 .join("ci-layers"),

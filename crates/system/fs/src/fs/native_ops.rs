@@ -696,11 +696,17 @@ impl QuickFS {
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
-        let (attr, hash) = self.ns().attr_and_hash(ino).ok_or(ENOENT)?;
-        if attr.kind == FileType::Directory {
+        // One namespace lock for the inode's kind, content and document-ness.
+        let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
-        if self.is_document(ino) || self.buffers().contains_key(&ino) {
+        if let Some(stage) = self.stage(ino) {
+            return self
+                .read_stage_blocking(&stage, offset, len)
+                .map_err(|e| to_errno(&e));
+        }
+        if view.document {
             let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
@@ -710,7 +716,7 @@ impl QuickFS {
                 .min(whole.len());
             return Ok(whole.get(start..end).unwrap_or_default().to_vec());
         }
-        let Some(hash) = hash else {
+        let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
         let hydrator = self.hydrator.clone();
@@ -770,7 +776,7 @@ impl QuickFS {
         let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
         match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
-                self.commit_buffer(ino, &read()?)
+                self.commit_bytes(ino, &read()?)
             }
             None => {
                 if let Some(codec) = self.new_document_codec(name) {
@@ -833,7 +839,7 @@ impl QuickFS {
         if data.is_empty() {
             return Ok(());
         }
-        let committed = self.commit_buffer(ino, data);
+        let committed = self.commit_bytes(ino, data);
         if committed.is_err() {
             // A document its codec refuses must not stay behind empty.
             let _ = self.delete_named(parent, name.as_bytes(), false);
@@ -912,12 +918,7 @@ impl QuickFS {
                 .take_lease(record, me, ttl, granted)
                 .map(|l| (l, LeaseSource::Local));
         };
-        let nonce = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-        )
-        .unwrap_or(u64::MAX);
+        let nonce = tilo_clock::unix_now_ns();
         let delta = {
             let mut ns = self.ns();
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {

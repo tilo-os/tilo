@@ -123,18 +123,45 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Returns an error when the shared settings store cannot persist the imported
 /// values. Missing schemas or unreadable host values are ignored individually.
 pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
-    let existing = settings_store::load_section("input");
-    let updates = host_input_migration_updates(&existing, gsettings_get);
-    if updates.is_empty() {
+    use settings_store::hardware::INPUT_SECTION;
+    // Ask the host outside the settings lock: every read starts a process.
+    // The import is then decided again under the lock against the section as
+    // it stands, so a choice saved in the meantime still wins.
+    let mut host = std::collections::HashMap::new();
+    let mut ask_host = |schema: &str, key: &str| {
+        let value = gsettings_get(schema, key);
+        host.insert((schema.to_string(), key.to_string()), value.clone());
+        value
+    };
+    let existing = settings_store::load_section(INPUT_SECTION);
+    if host_input_migration_updates(&existing, &mut ask_host).is_empty() {
         return Ok(());
     }
-    settings_store::update_section("input", updates)?;
-    tracing::info!(
-        version = HOST_INPUT_MIGRATION_VERSION,
-        "firstboot: migrated host input settings"
-    );
+    let mut imported = false;
+    settings_store::update_section_with(
+        INPUT_SECTION,
+        &settings_store::ChangeOrigin::action(HOST_INPUT_IMPORT_ORIGIN),
+        &mut |existing| {
+            let updates = host_input_migration_updates(existing, |schema, key| {
+                host.get(&(schema.to_string(), key.to_string()))
+                    .cloned()
+                    .flatten()
+            });
+            imported = !updates.is_empty();
+            updates
+        },
+    )?;
+    if imported {
+        tracing::info!(
+            version = HOST_INPUT_MIGRATION_VERSION,
+            "firstboot: migrated host input settings"
+        );
+    }
     Ok(())
 }
+
+/// The change origin the host input import records.
+const HOST_INPUT_IMPORT_ORIGIN: &str = "firstboot.import-host-input";
 
 fn host_input_migration_updates(
     existing: &serde_json::Map<String, serde_json::Value>,
@@ -424,7 +451,7 @@ pub fn run_with_env(
 /// Compute the tilo-desktop config dir (`<config-base>/tilo-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo-desktop"),
     )

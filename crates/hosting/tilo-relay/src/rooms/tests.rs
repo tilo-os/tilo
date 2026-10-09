@@ -145,7 +145,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     let mut revoked = tilo_user_identity::RevocationEntry {
         user_public_key: cert.user_public_key,
         revoked_device_public_key: member.device_public_key,
-        revoked_at_ns: now_ns(),
+        revoked_at_ns: tilo_clock::unix_now_ns(),
         reason: tilo_user_identity::RevocationReason::Compromised,
         signature: [0; 64],
     };
@@ -357,14 +357,8 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
         Verb::Read,
     );
     restriction.id = "legacy-window-read-only-owner".into();
-    restriction = restriction.with_expiry(
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .checked_add(5)
-            .unwrap(),
-    );
+    restriction =
+        restriction.with_expiry(tilo_clock::try_unix_now().unwrap().checked_add(5).unwrap());
     let state = rooms.room(&created.room).await.unwrap();
     {
         let mut room = state.lock().await;

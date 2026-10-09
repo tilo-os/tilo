@@ -188,6 +188,44 @@ pub fn speaker_command(
         .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
+static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
+
+/// Ask the native host to inspect or change its display transaction. Call off
+/// the frame thread; the existing bridge and response wait remain bounded.
+///
+/// # Errors
+/// Reports disconnected authority, refused requests and timed out replies.
+pub fn display_control(
+    command: Vec<u8>,
+    origin: runtime_collab::settings::DisplayOrigin,
+) -> Result<Vec<u8>, String> {
+    if command.len() > 64 * 1024 {
+        return Err("The display request exceeds its wire bound.".into());
+    }
+    let sender = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "The display service is unavailable.")?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or("Displays need the certified collaboration service.")?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::DisplayControl {
+            origin,
+            command,
+            reply: reply_tx,
+        },
+        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
+    ) {
+        return Err("The display request queue is unavailable.".into());
+    }
+    reply_rx
+        .recv_timeout(Duration::from_secs(4))
+        .map_err(|_| "The display service did not respond.".to_string())?
+}
+
 /// Have the connected transport's worker send the app's unsent settings
 /// writes ([`super::channel_settings`]). Without a connected transport they
 /// wait for the primary route, whose join sends them.
@@ -232,6 +270,8 @@ pub(super) struct BrokerTransport {
     /// never delay a stop obligation.
     media: Option<native_media::Sender>,
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
+    // Native read turns remain held through the owner's event batch.
+    document_turns: Vec<tokio::sync::OwnedSemaphorePermit>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
     /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
@@ -250,6 +290,18 @@ pub(super) struct BrokerTransport {
     /// transport; done once it has connected.
     wifi_bridge_registered: bool,
     _thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct NativeHistoryInvocationFixture {
+    pub manager: CollaborationManager,
+    pub refresh: Box<dyn Fn(Vec<u8>, tokio::sync::oneshot::Receiver<()>)>,
+    pub invoke: Box<dyn Fn(u64, Uuid)>,
+    pub received: Box<dyn Fn() -> usize>,
+    pub execution: Box<dyn Fn(Result<bool, String>)>,
+    pub terminals: Box<dyn Fn() -> usize>,
+    pub updates: Box<dyn Fn() -> Vec<(u64, tilo_actions::InvocationUpdate)>>,
+    pub thread: thread::JoinHandle<()>,
 }
 
 impl BrokerTransport {
@@ -336,15 +388,31 @@ impl CollabTransport for BrokerTransport {
     }
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
+        self.document_turns.clear();
         self.state.begin_poll();
         if !self.wifi_bridge_registered
             && matches!(self.state.connect_phase(), ConnectPhase::Connected)
         {
             self.register_wifi_bridge();
         }
-        while let Ok(evt) = self.inbound_rx.try_recv() {
+        while let Ok(mut evt) = self.inbound_rx.try_recv() {
+            match evt._turn.take() {
+                Some(EventTurn::Document(turns)) => self.document_turns.extend(turns),
+                Some(EventTurn::Snapshot(turn)) => drop(turn),
+                None => {}
+            }
             out.push(evt.event);
         }
+    }
+
+    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        self.state
+            .document_reads
+            .set_document_owner_routes(routes.iter().map(RouteSpec::channel_id).collect());
+    }
+
+    fn finish_event_batch(&mut self) {
+        self.document_turns.clear();
     }
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
@@ -429,6 +497,17 @@ impl CollabTransport for BrokerTransport {
 
     fn document_publishable(&self, channel: Option<&str>) -> bool {
         channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
+        let phase = self.state.document_reads.readiness_diagnostic(channel)?;
+        Some(serde_json::json!({
+            "required": phase.required,
+            "staged": phase.staged,
+            "applied": phase.applied,
+            "refresh_requested": phase.refresh_requested,
+        }))
     }
 
     fn take_action_surface_failed(&mut self) -> bool {
@@ -524,6 +603,11 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
+    },
+    DisplayControl {
+        origin: runtime_collab::settings::DisplayOrigin,
+        command: Vec<u8>,
+        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
@@ -705,9 +789,8 @@ fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     if let Some(description) = &action.description {
         meter.string_capacity(description);
     }
-    meter.string_capacity(&action.operation_kind);
-    meter.string_capacity(&action.params_json);
-    meter.string_capacity(&action.contract_json);
+    serialized_bytes(&action.params, meter);
+    serialized_bytes(&action.contract, meter);
     if let ExportedInput::Text {
         prompt,
         placeholder,
@@ -997,6 +1080,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             serialized_bytes(command, &mut meter);
             meter.finish()
         }
+        SdkCommand::DisplayControl { command, .. } => {
+            std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
+        }
         SdkCommand::Speakers {
             app_id, command, ..
         } => {
@@ -1168,30 +1254,35 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
     clippy::too_many_lines,
     reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
 )]
-fn event_bytes(event: &CollabEvent) -> Option<usize> {
+fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
-    match event {
+    let kind = match event {
         CollabEvent::CommittedDocument { route, .. } => {
             // Capture bytes retain their own process-wide preallocation permit.
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "CommittedDocument"
         }
         CollabEvent::Context {
             collaborators,
             permissions,
-        } => context_event_bytes(
-            collaborators,
-            collaborators.capacity(),
-            permissions,
-            permissions.capacity(),
-            &mut meter,
-        ),
+        } => {
+            context_event_bytes(
+                collaborators,
+                collaborators.capacity(),
+                permissions,
+                permissions.capacity(),
+                &mut meter,
+            );
+            "Context"
+        }
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
             }
+            "FollowChanged"
         }
         CollabEvent::Handoff { request } => {
             meter.add_product(1, std::mem::size_of_val(request));
@@ -1208,15 +1299,26 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
                 meter.string_capacity(&successor.record);
                 meter.string_capacity(&successor.by);
             }
+            "Handoff"
         }
-        CollabEvent::DocumentSnapshotRequested { route }
-        | CollabEvent::ChannelAccess { route, .. } => {
+        CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
                 meter.string_capacity(record);
             }
+            "DocumentSnapshotRequested"
         }
-        CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
+        CollabEvent::ChannelAccess { route, .. } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            "ChannelAccess"
+        }
+        CollabEvent::RemoteCursorMoved { user_id, .. } => {
+            meter.string_capacity(user_id);
+            "RemoteCursorMoved"
+        }
         CollabEvent::RemotePresenceUpdate {
             user_id,
             key,
@@ -1225,6 +1327,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(user_id);
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
+            "RemotePresenceUpdate"
         }
         CollabEvent::ActionArrived {
             type_id,
@@ -1234,6 +1337,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             meter.string_capacity(type_id);
             meter.bytes(payload);
             meter.string_capacity(from_user_id);
+            "ActionArrived"
         }
         CollabEvent::Document {
             envelope,
@@ -1245,18 +1349,22 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(payload) = decrypted_payload {
                 meter.bytes(payload);
             }
+            "Document"
         }
         CollabEvent::ScrollbackBatch {
             ops,
             decrypted_payloads,
             ..
-        } => scrollback_batch_bytes(
-            ops,
-            ops.capacity(),
-            decrypted_payloads,
-            decrypted_payloads.capacity(),
-            &mut meter,
-        ),
+        } => {
+            scrollback_batch_bytes(
+                ops,
+                ops.capacity(),
+                decrypted_payloads,
+                decrypted_payloads.capacity(),
+                &mut meter,
+            );
+            "ScrollbackBatch"
+        }
         CollabEvent::Invocation {
             resource,
             action,
@@ -1274,27 +1382,50 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(context) = context {
                 serialized_bytes(context.as_ref(), &mut meter);
             }
+            "Invocation"
         }
-        CollabEvent::InvocationCancellation { .. } => {}
-        CollabEvent::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabEvent::InvocationCancellation { .. } => "InvocationCancellation",
+        CollabEvent::RemoteAction { message } => {
+            serialized_bytes(message, &mut meter);
+            "RemoteAction"
+        }
         CollabEvent::ActionCatalogue { surfaces } => {
             action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+            "ActionCatalogue"
         }
-        CollabEvent::ActionDirectoryPage { result, .. } => match result {
-            Ok(page) => directory_client::page_bytes(page, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::PublishedActionResolution { result, .. } => match result {
-            Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ActionDirectoryPage { result, .. } => {
+            match result {
+                Ok(page) => directory_client::page_bytes(page, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "ActionDirectoryPage"
+        }
+        CollabEvent::PublishedActionResolution { result, .. } => {
+            match result {
+                Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedActionResolution"
+        }
         #[cfg(unix)]
-        CollabEvent::ManagedInvocationObservation { result } => meter.add(result.meter_bytes()),
-        CollabEvent::PublishedInvocationResult { result, .. }
-        | CollabEvent::InstalledApplicationLaunchResult { result, .. } => match result {
-            Ok((_, update)) => serialized_bytes(update, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::ManagedInvocationObservation { result } => {
+            meter.add(result.meter_bytes());
+            "ManagedInvocationObservation"
+        }
+        CollabEvent::PublishedInvocationResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "PublishedInvocationResult"
+        }
+        CollabEvent::InstalledApplicationLaunchResult { result, .. } => {
+            match result {
+                Ok((_, update)) => serialized_bytes(update, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "InstalledApplicationLaunchResult"
+        }
         CollabEvent::TaskActionInvocationResult {
             result,
             continuation,
@@ -1307,27 +1438,43 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             if let Some(continuation) = continuation {
                 meter.add(continuation.capacity());
             }
+            "TaskActionInvocationResult"
         }
-        CollabEvent::EnrolledTask(run) => serialized_bytes(run, &mut meter),
+        CollabEvent::EnrolledTask(run) => {
+            serialized_bytes(run, &mut meter);
+            "EnrolledTask"
+        }
         CollabEvent::EnrolledTaskReply { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "EnrolledTaskReply"
         }
-        CollabEvent::EnrolledTaskDisconnected { detail } => meter.string_capacity(detail),
-        CollabEvent::TaskRun(run) => task_run_bytes(run, &mut meter),
+        CollabEvent::EnrolledTaskDisconnected { detail } => {
+            meter.string_capacity(detail);
+            "EnrolledTaskDisconnected"
+        }
+        CollabEvent::TaskRun(run) => {
+            task_run_bytes(run, &mut meter);
+            "TaskRun"
+        }
         CollabEvent::TaskRunCancellation { result, .. } => {
             if let Err(error) = result {
                 meter.string_capacity(error);
             }
+            "TaskRunCancellation"
         }
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
+            "WorkspaceControl"
         }
-        CollabEvent::NativeMediaCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
+        CollabEvent::NativeMediaCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NativeMediaCommandResult"
+        }
         CollabEvent::RecordContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
@@ -1335,22 +1482,44 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
             meter.string_capacity(hash);
             meter.bytes(bytes);
+            "RecordContent"
         }
-        CollabEvent::RealtimeCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::LocalFileClipboardResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::NearbyTransferCommandResult { result, .. } => match result {
-            Ok(reply) => serialized_bytes(reply, &mut meter),
-            Err(error) => meter.string_capacity(error),
-        },
-        CollabEvent::Realtime(event) => serialized_bytes(event, &mut meter),
-    }
-    meter.finish()
+        CollabEvent::RealtimeCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "RealtimeCommandResult"
+        }
+        CollabEvent::LocalFileClipboardResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "LocalFileClipboardResult"
+        }
+        CollabEvent::NearbyTransferCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "NearbyTransferCommandResult"
+        }
+        CollabEvent::Realtime(event) => {
+            serialized_bytes(event, &mut meter);
+            "Realtime"
+        }
+    };
+    (kind, meter.finish())
+}
+
+/// Content-free names share the meter's exhaustive, platform-aware match.
+fn event_kind(event: &CollabEvent) -> &'static str {
+    event_diagnostics(event).0
+}
+
+fn event_bytes(event: &CollabEvent) -> Option<usize> {
+    event_diagnostics(event).1
 }
 
 /// Shared failure latch. The UI reads it through `is_connected()` even when
@@ -1483,12 +1652,17 @@ struct QueuedSdkCommand {
     _reservation: ByteReservation,
 }
 
+enum EventTurn {
+    Snapshot(tokio::sync::OwnedSemaphorePermit),
+    Document(Vec<tokio::sync::OwnedSemaphorePermit>),
+}
+
 struct QueuedCollabEvent {
     event: CollabEvent,
     _reservation: ByteReservation,
-    /// Held while a superseding snapshot (the action catalogue) is queued;
-    /// released when the owner dequeues it, letting its reader pull the next.
-    _turn: Option<tokio::sync::OwnedSemaphorePermit>,
+    /// Snapshot turns release on dequeue. Native document turns transfer to
+    /// the owner until its dispatch batch ends.
+    _turn: Option<EventTurn>,
 }
 
 impl BridgeState {
@@ -1871,14 +2045,15 @@ impl InboundBridge {
     }
 
     fn send_durable(&self, event: CollabEvent) -> bool {
-        self.send_durable_turn(event, None)
+        self.send_durable_turn(event, None, None)
     }
 
-    /// `send_durable` holding `turn` until the owner dequeues the event.
+    /// Retain the producer turn through its existing owner acknowledgement.
     fn send_durable_turn(
         &self,
         event: CollabEvent,
-        turn: Option<tokio::sync::OwnedSemaphorePermit>,
+        turn: Option<EventTurn>,
+        serialized_bytes: Option<usize>,
     ) -> bool {
         let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
         let Some(reservation) = self
@@ -1886,7 +2061,7 @@ impl InboundBridge {
             .event_bytes
             .reserve(required_bytes, SDK_EVENT_QUEUE_BYTES)
         else {
-            let (event_kind, surface_count, action_count) = match &event {
+            let (_catalogue_kind, surface_count, action_count) = match &event {
                 CollabEvent::ActionCatalogue { surfaces } => (
                     "action_catalogue",
                     surfaces.len(),
@@ -1898,7 +2073,10 @@ impl InboundBridge {
                 _ => ("control", 0, 0),
             };
             tracing::error!(
-                event_kind,
+                event_kind = event_kind(&event),
+                ?serialized_bytes,
+                remaining_bytes = SDK_EVENT_QUEUE_BYTES
+                    .saturating_sub(self.state.event_bytes.0.load(Ordering::Acquire)),
                 required_bytes,
                 reserved_bytes = self.state.event_bytes.0.load(Ordering::Acquire),
                 limit_bytes = SDK_EVENT_QUEUE_BYTES,
@@ -2421,6 +2599,21 @@ struct ConnectedBroker {
     primary_route: PrimaryRouteState,
 }
 
+#[cfg(all(test, unix))]
+pub(crate) struct NativeRefreshProbe {
+    replace_history: Box<dyn Fn(Vec<u8>)>,
+    committed_read_count: Box<dyn Fn() -> usize>,
+}
+#[cfg(all(test, unix))]
+impl NativeRefreshProbe {
+    pub(crate) fn committed_read_count(&self) -> usize {
+        (self.committed_read_count)()
+    }
+    pub(crate) fn replace_history(&self, history: Vec<u8>) {
+        (self.replace_history)(history);
+    }
+}
+
 impl CollaborationManager {
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
@@ -2647,6 +2840,13 @@ impl CollaborationManager {
         .map_err(|error| error.to_string())
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_history_invocation_fixture_for_test(
+        history: Vec<u8>,
+    ) -> NativeHistoryInvocationFixture {
+        tests::native_history_invocation_fixture(history)
+    }
+
     /// Wire/SDK ordering fixture only; not a native authority proof.
     #[cfg(all(test, unix))]
     pub(crate) fn native_initial_fixture_for_test(
@@ -2705,6 +2905,15 @@ impl CollaborationManager {
         gate: tokio::sync::oneshot::Receiver<()>,
     ) -> (Self, Box<dyn Fn() -> usize>) {
         tests::native_initial_parked_fixture(app, room, history, gate)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn native_refresh_fixture_for_test(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (Self, NativeRefreshProbe) {
+        tests::native_refresh_fixture(app, room, history)
     }
 
     fn for_route_from(
@@ -3125,6 +3334,7 @@ impl CollaborationManager {
             outbound_tx,
             media: Some(media_tx),
             inbound_rx,
+            document_turns: Vec::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -3647,6 +3857,24 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+            SdkCommand::DisplayControl {
+                command,
+                origin,
+                reply,
+            } => {
+                let result = if let Some(link) = settings_link.as_ref() {
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        link.handle.display_control(&command, origin),
+                    )
+                    .await
+                    .map_err(|_| "The display service timed out.".to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                } else {
+                    Err("The admitted settings channel is unavailable.".into())
+                };
+                let _ = reply.send(result);
+            }
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
                     link.flush(&inbound_tx).await;
@@ -3776,7 +4004,19 @@ async fn ensure_sdk_route(
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     }
-    let committed = committed_document::install(&channel, spec, inbound_tx).await?;
+    let committed = committed_document::install(
+        &channel,
+        spec,
+        inbound_tx,
+        committed_document::NativeReadJoin {
+            client: client.clone(),
+            presentation: identity_bytes.to_vec(),
+            participant_handle: participant_handle.unwrap_or("").into(),
+            participant_kind: participant_kind.into(),
+            record_kind: record_kind.into(),
+        },
+    )
+    .await?;
     if committed {
         // This reply contains only the original host-retained launch instance;
         // a record label or app environment never becomes private authority.
@@ -3815,7 +4055,7 @@ async fn ensure_sdk_route(
         },
         spawn_context_stream(&channel, spec.clone(), inbound_tx),
         spawn_action_stream(&channel, inbound_tx),
-        spawn_invocation_stream(&channel, inbound_tx),
+        spawn_invocation_stream(&channel, spec, inbound_tx),
         spawn_realtime_stream(&channel, inbound_tx),
         async {
             // This intentionally fails quietly for person sessions. An
@@ -4009,6 +4249,93 @@ async fn spawn_context_stream(
     }
 }
 
+#[derive(Debug)]
+struct NativeInvocationTurn {
+    permits: Vec<tokio::sync::OwnedSemaphorePermit>,
+    deadline: Instant,
+}
+
+// Use the existing three-second native publication hydration bound. The
+// accepted invocation stays on its original stream task, without another queue.
+async fn native_invocation_delivery_turn(
+    key: &str,
+    state: &BridgeState,
+) -> Result<Option<NativeInvocationTurn>, String> {
+    let Some(generation) = state.document_reads.delivery_generation(key) else {
+        return Ok(None);
+    };
+    let deadline = crate::time::now() + Duration::from_secs(3);
+    loop {
+        if !state.is_healthy() || !state.document_reads.current(key, &generation) {
+            return Err("original invocation document custody was retired".into());
+        }
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        let mut turns = Vec::new();
+        let owners = state.document_reads.document_owner_routes(key)?;
+        for owner in &owners {
+            let semaphore = state.document_reads.delivery_turn(owner)?;
+            let remaining = deadline.saturating_duration_since(crate::time::now());
+            let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
+                .await
+                .map_err(|_| "original invocation capture did not become current")?
+                .map_err(|_| "original invocation delivery turn closed")?;
+            turns.push(turn);
+        }
+        if !state.is_healthy() || !state.document_reads.current(key, &generation) {
+            return Err("original invocation document custody was retired".into());
+        }
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        if state.document_reads.document_owner_routes(key)? == owners
+            && owners
+                .iter()
+                .all(|owner| state.document_reads.publishable(owner))
+        {
+            return Ok(Some(NativeInvocationTurn {
+                permits: turns,
+                deadline,
+            }));
+        }
+        drop(turns);
+        if crate::time::now() >= deadline {
+            return Err("original invocation capture did not become current".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+// This existing host verb rechecks the original channel's current read
+// custody and exact pending job. A waited delivery cannot reuse stale authority.
+#[allow(
+    clippy::future_not_send,
+    reason = "the original Rc-backed Cap'n Proto channel is driven only on the shovel LocalSet"
+)]
+async fn recheck_native_invocation(
+    channel: &runtime_collab::ChannelHandle,
+    invocation: &runtime_collab::Invocation,
+) -> Result<bool, String> {
+    if !channel
+        .invocation_cancellation(invocation.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(true);
+    }
+    let update = tilo_actions::InvocationUpdate::Cancelled {
+        invocation: tilo_actions::InvocationId(Uuid::from_bytes(invocation.invocation_uuid)),
+        message: None,
+    };
+    let wire = serde_json::to_string(&update).map_err(|error| error.to_string())?;
+    channel
+        .update_invocation(invocation.id, &wire)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(false)
+}
+
 /// Bridge `channel`'s action stream into [`CollabEvent::ActionArrived`] on
 /// `inbound_tx`.
 #[allow(
@@ -4038,26 +4365,58 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
+    spec: &RouteSpec,
     inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
+        let key = spec.channel_id();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
+                let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
+                    Ok(turn) => turn,
+                    Err(error) => {
+                        tx.state
+                            .fail_closed("native invocation capture; outcome unknown");
+                        tracing::warn!(%error, "accepted invocation retains unknown outcome");
+                        break;
+                    }
+                };
+                if let Some(turn) = &turn {
+                    match tokio::time::timeout_at(
+                        tokio::time::Instant::from_std(turn.deadline),
+                        recheck_native_invocation(&cancellation_channel, &invocation),
+                    )
+                    .await
+                    {
+                        Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
+                        Ok(Ok(false)) => continue,
+                        result => {
+                            tx.state
+                                .fail_closed("native invocation authority; outcome unknown");
+                            tracing::warn!(?result, "accepted invocation authority unavailable");
+                            break;
+                        }
+                    }
+                }
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
-                if !tx.send_durable(CollabEvent::Invocation {
-                    id,
-                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
-                        invocation.invocation_uuid,
-                    )),
-                    resource: invocation.resource,
-                    action: invocation.action,
-                    argument: invocation.argument,
-                    actor: invocation.actor,
-                    context: context.map(Box::new),
-                }) {
+                if !tx.send_durable_turn(
+                    CollabEvent::Invocation {
+                        id,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
+                            invocation.invocation_uuid,
+                        )),
+                        resource: invocation.resource,
+                        action: invocation.action,
+                        argument: invocation.argument,
+                        actor: invocation.actor,
+                        context: context.map(Box::new),
+                    },
+                    turn.map(|turn| EventTurn::Document(turn.permits)),
+                    None,
+                ) {
                     break;
                 }
                 let cancellation_tx = tx.clone();
@@ -4311,8 +4670,6 @@ async fn spawn_action_catalogue_stream(
         .read()
         .await
         .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
-    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
-        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
     // The initial baseline occupies the same turn as subsequent watched
     // snapshots. Otherwise a busy constructor retains both before its first
     // owner poll, which can exhaust the bridge despite each baseline fitting.
@@ -4322,19 +4679,32 @@ async fn spawn_action_catalogue_stream(
         .acquire_owned()
         .await
         .map_err(|error| error.to_string())?;
-    if !inbound_tx.send_durable_turn(
-        CollabEvent::ActionCatalogue {
-            surfaces: catalogue.surfaces,
-        },
-        Some(turn),
-    ) {
-        return Err("delivering initial action catalogue failed".to_string());
-    }
+    admit_initial_action_catalogue(&initial, inbound_tx, Some(turn))?;
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
     });
+    Ok(())
+}
+
+/// Decode and admit the initial snapshot through the same bounded owner queue.
+fn admit_initial_action_catalogue(
+    initial: &str,
+    tx: &InboundBridge,
+    turn: Option<tokio::sync::OwnedSemaphorePermit>,
+) -> Result<(), String> {
+    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(initial)
+        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+    if !tx.send_durable_turn(
+        CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        },
+        turn.map(EventTurn::Snapshot),
+        Some(initial.len()),
+    ) {
+        return Err("delivering initial action catalogue failed".to_string());
+    }
     Ok(())
 }
 
@@ -4363,7 +4733,8 @@ async fn forward_action_catalogues(
                     CollabEvent::ActionCatalogue {
                         surfaces: catalogue.surfaces,
                     },
-                    Some(turn),
+                    Some(EventTurn::Snapshot(turn)),
+                    Some(snapshot.len()),
                 ) {
                     break;
                 }
@@ -5146,58 +5517,6 @@ fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
     runtime_collab::ActionDirectoryResolution::Unavailable
 }
 
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    if let Some(identity) = &descriptor.semantic_identity {
-        let mut out = out.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_resource_presentation_json(&row.resource_presentation_json);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
 #[allow(
     refining_impl_trait,
     reason = "capnp generated server traits accept the concrete Promise type used by every existing RPC endpoint"
@@ -5271,23 +5590,7 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             let page = response.await.map_err(|_| {
                 capnp::Error::failed("application action directory is unavailable".into())
             })?;
-            let mut out = results.get().init_page();
-            out.set_revision(&page.revision);
-            out.set_next_cursor(&page.next_cursor);
-            out.set_exhausted(page.exhausted);
-            out.set_stale_cursor(page.stale_cursor);
-            out.set_budget_exhausted(page.budget_exhausted);
-            let len = u32::try_from(page.rows.len())
-                .map_err(|_| capnp::Error::failed("too many directory rows".into()))?;
-            let mut rows = out.reborrow().init_rows(len);
-            for (index, row) in page.rows.iter().enumerate() {
-                write_directory_row(
-                    rows.reborrow()
-                        .get(u32::try_from(index).unwrap_or(u32::MAX)),
-                    row,
-                );
-            }
-            Ok(())
+            runtime_collab::write_action_directory_page(results.get().init_page(), &page)
         })
     }
 
@@ -5337,18 +5640,10 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 // As for a query: the asker's deadline, not one of ours.
                 response.await.unwrap_or_else(|_| directory_unavailable())
             };
-            let mut out = results.get().init_resolution();
-            match reply_value {
-                runtime_collab::ActionDirectoryResolution::Found(row) => {
-                    write_directory_row(out.reborrow().init_found(), &row);
-                }
-                runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    out.set_stale_revision(());
-                }
-                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
-            }
-            Ok(())
+            runtime_collab::write_action_directory_resolution(
+                results.get().init_resolution(),
+                &reply_value,
+            )
         })
     }
 }
@@ -5556,59 +5851,6 @@ async fn dispatch_sdk_request(
                 .await;
         }
         CollabRequest::PublishActions { app_id, actions } => {
-            let actions = actions
-                .into_iter()
-                .map(|action| runtime_collab::ExportedAction {
-                    resource: action.resource,
-                    semantic_identity: action.semantic_identity.map(|identity| {
-                        runtime_collab::ExportedResourceSemanticIdentity {
-                            kind: identity.kind,
-                            key: identity.key,
-                        }
-                    }),
-                    action: action.action,
-                    resource_kind: action.resource_kind,
-                    resource_label: action.resource_label,
-                    action_label: action.action_label,
-                    description: action.description,
-                    operation_kind: action.operation_kind,
-                    params_json: action.params_json,
-                    contract_json: action.contract_json,
-                    view: action.view.map(|view| runtime_collab::ExportedView {
-                        id: view.id,
-                        label: view.label,
-                        description: view.description,
-                        open_action: view.open_action,
-                        primary: view.primary,
-                        range: view
-                            .range
-                            .as_ref()
-                            .map(|range| runtime_collab::ExportedViewRange {
-                                action: range.action.clone(),
-                                start_param: range.start_param.clone(),
-                                end_param: range.end_param.clone(),
-                                unit_param: range.unit_param.clone(),
-                            }),
-                        mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action,
-                            capability_param: mount.capability_param,
-                            view_param: mount.view_param,
-                        }),
-                    }),
-                    input: match action.input {
-                        ExportedInput::None => runtime_collab::ExportedInput::None,
-                        ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        } => runtime_collab::ExportedInput::Text {
-                            prompt,
-                            placeholder,
-                            wants_content,
-                        },
-                    },
-                })
-                .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
@@ -6325,69 +6567,6 @@ mod tests {
 
     use super::*;
 
-    /// The byte budget an app pages its directory by is checked against the
-    /// encoded page, so the per-row estimate must never fall below a row's
-    /// Cap'n Proto size, however its fields are sized.
-    #[test]
-    fn directory_row_estimates_bound_their_encoded_size() {
-        let text = |length: usize| "x".repeat(length);
-        for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
-            let row = runtime_collab::ActionDirectoryRow {
-                parent_resource: text(length),
-                resource: text(length),
-                resource_kind: text(length),
-                resource_label: text(length),
-                resource_presentation_json: text(length),
-                action: Some(text(length)),
-                descriptor: Some(runtime_collab::ExportedAction {
-                    semantic_identity: None,
-                    resource: text(length),
-                    action: text(length),
-                    resource_kind: text(length),
-                    resource_label: text(length),
-                    action_label: text(length),
-                    description: Some(text(length)),
-                    operation_kind: text(length),
-                    params_json: text(length),
-                    contract_json: text(length),
-                    view: None,
-                    input: runtime_collab::ExportedInput::Text {
-                        prompt: text(length),
-                        placeholder: text(length),
-                        wants_content: false,
-                    },
-                }),
-                has_children: false,
-                visibility_action: Some(text(length)),
-                visibility_contract_json: text(length),
-            };
-            let rows = 40u32;
-            let mut message = capnp::message::Builder::new_default();
-            {
-                let mut page = message
-                    .init_root::<runtime_collab::collab_capnp::action_directory_page::Builder<'_>>(
-                    );
-                page.set_revision("v5:00000000-0000-0000-0000-000000000000");
-                let mut list = page.reborrow().init_rows(rows);
-                for index in 0..rows {
-                    write_directory_row(list.reborrow().get(index), &row);
-                }
-            }
-            let encoded = message
-                .get_root_as_reader::<runtime_collab::collab_capnp::action_directory_page::Reader<'_>>()
-                .unwrap()
-                .total_size()
-                .unwrap()
-                .word_count
-                * 8;
-            let estimated = crate::app::directory_row_wire_bytes(&row) * rows as usize;
-            assert!(
-                u64::try_from(estimated).unwrap() >= encoded,
-                "field length {length}: estimated {estimated} < encoded {encoded}"
-            );
-        }
-    }
-
     /// The concrete broker transport's bridge state behind a test manager.
     fn broker_state(manager: &CollaborationManager) -> BridgeState {
         match &manager.backend {
@@ -6439,8 +6618,8 @@ mod tests {
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
         action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
-        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
-        stream,
+        invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
+        scrollback_batch, stream,
     };
 
     #[derive(Default)]
@@ -6454,6 +6633,11 @@ mod tests {
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
+        committed_revision: Option<[u8; 32]>,
+        invocation_fixture_enabled: bool,
+        invocations: std::collections::VecDeque<runtime_collab::Invocation>,
+        received_invocations: usize,
+        invocation_execution: Option<Result<bool, String>>,
         committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
         committed_reads: Vec<runtime_collab::committed_document::Request>,
         media_commands: Vec<runtime_collab::native_media::Request>,
@@ -6467,6 +6651,7 @@ mod tests {
         document_gates: std::collections::VecDeque<DocumentSendGate>,
         fail_terminal: bool,
         terminal_updates: usize,
+        invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
         joined: Vec<(String, Vec<u8>)>,
         joined_record_kinds: Vec<String>,
         signed_ops: Vec<Vec<u8>>,
@@ -6530,6 +6715,41 @@ mod tests {
         earliest_seq: u64,
         latest_seq: u64,
         done: bool,
+    }
+
+    struct FakeInvocationStream(SharedCaptures);
+    impl invocation_stream::Server for FakeInvocationStream {
+        fn read(
+            self: Rc<Self>,
+            _: invocation_stream::ReadParams,
+            mut results: invocation_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            Promise::from_future(async move {
+                loop {
+                    let invocation = {
+                        let mut captures = self.0.lock().unwrap();
+                        let invocation = captures.invocations.pop_front();
+                        if invocation.is_some() {
+                            captures.received_invocations += 1;
+                        }
+                        invocation
+                    };
+                    if let Some(invocation) = invocation {
+                        let mut wire = results.get();
+                        wire.set_id(invocation.id);
+                        wire.set_invocation_uuid(&invocation.invocation_uuid);
+                        wire.set_resource(&invocation.resource);
+                        wire.set_action(&invocation.action);
+                        wire.set_argument(invocation.argument.as_deref().unwrap_or(""));
+                        wire.set_has_argument(invocation.argument.is_some());
+                        wire.set_actor(&invocation.actor);
+                        wire.set_context_json(&invocation.context_json);
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+        }
     }
 
     struct FakePresenceStream {
@@ -6824,6 +7044,40 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn invocation_cancellation(
+            self: Rc<Self>,
+            _: channel_handle::InvocationCancellationParams,
+            mut results: channel_handle::InvocationCancellationResults,
+        ) -> Promise<(), capnp::Error> {
+            match self.captures.lock().unwrap().invocation_execution.as_ref() {
+                Some(Ok(cancelled)) => {
+                    results.get().set_cancelled(*cancelled);
+                    Promise::ok(())
+                }
+                Some(Err(error)) => Promise::err(capnp::Error::failed(error.clone())),
+                None => Promise::err(capnp::Error::unimplemented(
+                    "fixture has no invocation".into(),
+                )),
+            }
+        }
+
+        fn subscribe_invocations(
+            self: Rc<Self>,
+            params: channel_handle::SubscribeInvocationsParams,
+            mut results: channel_handle::SubscribeInvocationsResults,
+        ) -> Promise<(), capnp::Error> {
+            if !self.captures.lock().unwrap().invocation_fixture_enabled {
+                return Promise::err(capnp::Error::unimplemented(
+                    "fixture has no invocation stream".into(),
+                ));
+            }
+            assert!(params.get().unwrap().get_stable_invocation_ids());
+            let stream: invocation_stream::Client =
+                capnp_rpc::new_client(FakeInvocationStream(self.captures.clone()));
+            results.get().set_stream(stream);
+            Promise::ok(())
+        }
+
         fn settings(
             self: Rc<Self>,
             _params: channel_handle::SettingsParams,
@@ -6923,15 +7177,16 @@ mod tests {
                     .map_err(|error| capnp::Error::failed(error.into()))?;
                 let mut captures = self.captures.lock().unwrap();
                 captures.committed_reads.push(request.clone());
+                let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
                     Some(bytes) => match request {
                         Request::Open {
                             known_revision: Some(revision),
-                        } if revision == [7; 32] => Reply::Unchanged { revision },
+                        } if revision == current_revision => Reply::Unchanged { revision },
                         Request::Open { .. } => Reply::Chunk {
                             capture: 1,
-                            revision: [7; 32],
+                            revision: current_revision,
                             total: bytes.len() as u32,
                             offset: 0,
                             bytes: bytes.clone(),
@@ -7024,10 +7279,17 @@ mod tests {
 
         fn update_invocation(
             self: Rc<Self>,
-            _params: channel_handle::UpdateInvocationParams,
+            params: channel_handle::UpdateInvocationParams,
             _results: channel_handle::UpdateInvocationResults,
         ) -> Promise<(), capnp::Error> {
             let mut captures = self.captures.lock().unwrap();
+            if captures.invocation_fixture_enabled {
+                let request = params.get().unwrap();
+                let update =
+                    serde_json::from_str(request.get_update_json().unwrap().to_str().unwrap())
+                        .unwrap();
+                captures.invocation_updates.push((request.get_id(), update));
+            }
             captures.terminal_updates += 1;
             if captures.fail_terminal {
                 return Promise::err(capnp::Error::failed(
@@ -8595,6 +8857,7 @@ mod tests {
             outbound_tx,
             media: None,
             inbound_rx,
+            document_turns: Vec::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -9115,6 +9378,166 @@ mod tests {
                 }
             })
             .await;
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_waits_for_every_live_owner() {
+        let state = BridgeState::new();
+        let primary = state.document_reads.close_for_test("original-route");
+        let owner = state.document_reads.close_for_test("live-owner");
+        state.document_reads.close_for_test("unowned-retained");
+        primary.store(true, Ordering::Release);
+        state
+            .document_reads
+            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()]);
+        let held = state
+            .document_reads
+            .delivery_turn("live-owner")
+            .unwrap()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let wait = native_invocation_delivery_turn("original-route", &state);
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        owner.store(true, Ordering::Release);
+        drop(held);
+        let turn = wait.await.unwrap().unwrap();
+        assert_eq!(turn.permits.len(), 2);
+        assert!(!state.document_reads.publishable("unowned-retained"));
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_rejects_original_generation_retirement() {
+        let state = BridgeState::new();
+        let original = state.document_reads.close_for_test("original-route");
+        let held = state
+            .document_reads
+            .delivery_turn("original-route")
+            .unwrap()
+            .acquire_owned()
+            .await
+            .unwrap();
+        let (result, ()) = tokio::join!(
+            native_invocation_delivery_turn("original-route", &state),
+            async {
+                tokio::task::yield_now().await;
+                state.document_reads.close_for_test("original-route");
+                drop(held);
+            }
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "original invocation document custody was retired"
+        );
+        assert!(!original.load(Ordering::Acquire));
+        assert!(!state.document_reads.publishable("original-route"));
+    }
+
+    #[tokio::test]
+    async fn native_invocation_delivery_turn_timeout_preserves_unapplied_original_custody() {
+        let state = BridgeState::new();
+        let original = state.document_reads.close_for_test("original-route");
+        let result = native_invocation_delivery_turn("original-route", &state).await;
+        assert_eq!(
+            result.unwrap_err(),
+            "original invocation capture did not become current"
+        );
+        assert!(state.document_reads.current("original-route", &original));
+        assert!(!original.load(Ordering::Acquire));
+        assert!(!state.document_reads.publishable("original-route"));
+    }
+
+    pub(super) fn native_history_invocation_fixture(
+        history: Vec<u8>,
+    ) -> NativeHistoryInvocationFixture {
+        let captures = Arc::new(std::sync::Mutex::new(Captures {
+            committed_history_fixture: Some(history),
+            invocation_fixture_enabled: true,
+            invocation_execution: Some(Ok(false)),
+            ..Captures::default()
+        }));
+        let broker = FakeBroker {
+            captures,
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let refresh_captures = captures.clone();
+        let invocation_captures = captures.clone();
+        let execution_captures = captures.clone();
+        let terminal_captures = captures.clone();
+        let update_captures = captures.clone();
+        NativeHistoryInvocationFixture {
+            manager: CollaborationManager::from_sdk_fd_for_test(
+                fd,
+                "so.tilo.initial-history-probe",
+                Uuid::new_v4(),
+            ),
+            refresh: Box::new(move |history, gate| {
+                let mut captures = refresh_captures.lock().unwrap();
+                captures.committed_history_fixture = Some(history);
+                captures.committed_revision = Some([8; 32]);
+                captures.committed_recheck_gate = Some(gate);
+            }),
+            invoke: Box::new(move |id, uuid| {
+                invocation_captures.lock().unwrap().invocations.push_back(
+                    runtime_collab::Invocation {
+                        id,
+                        invocation_uuid: *uuid.as_bytes(),
+                        resource: "initial-probe".into(),
+                        action: "inspect".into(),
+                        argument: None,
+                        actor: "fixture-user".into(),
+                        context_json: String::new(),
+                    },
+                )
+            }),
+            received: Box::new(move || captures.lock().unwrap().received_invocations),
+            execution: Box::new(move |state| {
+                execution_captures.lock().unwrap().invocation_execution = Some(state)
+            }),
+            terminals: Box::new(move || terminal_captures.lock().unwrap().terminal_updates),
+            updates: Box::new(move || update_captures.lock().unwrap().invocation_updates.clone()),
+            thread,
+        }
+    }
+
+    pub(super) fn native_refresh_fixture(
+        app: &str,
+        room: Uuid,
+        history: Vec<u8>,
+    ) -> (CollaborationManager, NativeRefreshProbe) {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let replace = captures.clone();
+        let probe = NativeRefreshProbe {
+            committed_read_count: Box::new(move || captures.lock().unwrap().committed_reads.len()),
+            replace_history: Box::new(move |history| {
+                let mut captures = replace.lock().unwrap();
+                captures.committed_history_fixture = Some(history);
+                captures.committed_revision = Some([8; 32]);
+            }),
+        };
+        (
+            CollaborationManager::from_sdk_fd_for_test(fd, app, room),
+            probe,
+        )
     }
 
     pub(super) fn native_initial_fixture(
@@ -11026,6 +11449,38 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
     }
+    #[test]
+    fn initial_action_catalogue_admission_accounts_for_retained_payload() {
+        let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge::new(tx, state.clone());
+        let snapshot = |bytes: usize| {
+            format!(
+                r#"{{"surfaces":[{{"peer_id":1,"app_id":"so.tilo.notes","cluster_id":"c","record_id":"{}","live":true,"actions":[]}}]}}"#,
+                "r".repeat(bytes)
+            )
+        };
+        let initial = snapshot(700 * 1024);
+        admit_initial_action_catalogue(&initial, &inbound, None).unwrap();
+        let queued = rx.try_recv().expect("initial catalogue reaches the owner");
+        assert_eq!(event_kind(&queued.event), "ActionCatalogue");
+        let retained = event_bytes(&queued.event).unwrap();
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), retained);
+        assert!(retained >= 700 * 1024);
+        drop(queued);
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+        assert!(state.is_healthy());
+
+        let oversized = snapshot(SDK_EVENT_QUEUE_BYTES);
+        assert!(admit_initial_action_catalogue(&oversized, &inbound, None).is_err());
+        assert!(
+            !state.is_healthy(),
+            "oversized initial snapshots fail closed"
+        );
+        assert!(rx.try_recv().is_err(), "rejected payload is never retained");
+        assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);
+    }
+
     /// A headless worker is drained only between pumps. Large catalogue
     /// snapshots (one per host publication) must not pile up in its bounded
     /// bridge: one stays queued, the rest coalesce to the latest.

@@ -1,42 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// The image's `desktop.toml`, below the person's own.
+const SYSTEM_CONFIG: &str = "/etc/tilo/desktop.toml";
+
+/// The compositor's `desktop.toml`. Every table is optional; tables it does
+/// not know are ignored.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct DesktopConfig {
-    pub shell: ShellConfig,
-    pub collaboration: CollaborationConfig,
-    #[serde(default)]
     pub flatpak_share: FlatpakShareConfig,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ShellConfig {
-    pub top_bar_color: String,
-    pub dock_opacity: f32,
-    pub corner_radius: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CollaborationConfig {
-    pub enabled: bool,
-    pub auto_share_new_windows: bool,
-}
-
-impl Default for DesktopConfig {
-    fn default() -> Self {
-        Self {
-            shell: ShellConfig {
-                top_bar_color: String::from("#1e1e1e"),
-                dock_opacity: 0.8,
-                corner_radius: 12.0,
-            },
-            collaboration: CollaborationConfig {
-                enabled: true,
-                auto_share_new_windows: false,
-            },
-            flatpak_share: FlatpakShareConfig::default(),
-        }
-    }
 }
 
 /// Video settings for shared application windows.
@@ -68,8 +42,8 @@ impl Default for FlatpakShareConfig {
 /// Preferred video encoder, as a preference for the media stack's element
 /// selection (see `collab::encoder::EncoderChoice::policy`).
 ///
-/// `"vaapi"` / `"nvenc"` prefer that hardware family, falling back to
-/// software.
+/// `"vaapi"` / `"nvenc"` / `"v4l2"` prefer that hardware family, falling back
+/// to software.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
@@ -81,24 +55,67 @@ pub enum EncoderChoice {
     Vaapi,
     /// Prefer NVENC; other hardware only after software.
     Nvenc,
+    /// Prefer the kernel's V4L2 codec blocks (ARM boards); other hardware only
+    /// after software.
+    V4l2,
 }
 
+/// Read `$XDG_CONFIG_HOME/tilo-desktop/desktop.toml`, else the image's
+/// [`SYSTEM_CONFIG`], else the defaults. A file that does not parse is
+/// reported and skipped rather than quietly read as the defaults.
 pub fn load_config() -> DesktopConfig {
-    let paths = [
-        xdg_paths::config_dir()
-            .map(|d| d.join("tilo-desktop").join("desktop.toml"))
-            .unwrap_or_default(),
-        std::path::PathBuf::from("/etc/tilo-desktop/desktop.toml"),
-        std::path::PathBuf::from("desktop.toml"),
-    ];
+    let user = tilo_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));
+    load_first(
+        user.iter()
+            .map(PathBuf::as_path)
+            .chain([Path::new(SYSTEM_CONFIG)]),
+    )
+}
 
-    for path in &paths {
-        if let Ok(content) = fs::read_to_string(path) {
-            tracing::info!("Loaded config from {}", path.display());
-            return toml::from_str(&content).unwrap_or_default();
+fn load_first<'a>(paths: impl IntoIterator<Item = &'a Path>) -> DesktopConfig {
+    for path in paths {
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        match toml::from_str(&content) {
+            Ok(config) => {
+                tracing::info!(path = %path.display(), "loaded desktop config");
+                return config;
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "desktop config does not parse; skipping it");
+            }
         }
     }
-
-    tracing::info!("No config found, using defaults");
+    tracing::info!("no desktop config, using defaults");
     DesktopConfig::default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_parsing_config_wins_and_a_broken_one_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("broken.toml");
+        let system = dir.path().join("system.toml");
+        std::fs::write(&broken, "[flatpak_share\n").unwrap();
+        std::fs::write(
+            &system,
+            "[shell]\ncorner_radius = 12.0\n\n[flatpak_share]\ntarget_fps = 30\n",
+        )
+        .unwrap();
+        let missing = dir.path().join("missing.toml");
+        let config = load_first([missing.as_path(), broken.as_path(), system.as_path()]);
+        assert_eq!(config.flatpak_share.target_fps, 30);
+        assert_eq!(
+            config.flatpak_share.max_bitrate_kbps,
+            FlatpakShareConfig::default().max_bitrate_kbps
+        );
+        assert_eq!(
+            load_first([missing.as_path()]).flatpak_share,
+            FlatpakShareConfig::default()
+        );
+    }
 }

@@ -452,7 +452,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    ui::clock::Duration::ZERO
+                    ui::time::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },
@@ -3371,12 +3371,7 @@ impl Widget for ChatApp {
             self.presented = true;
             self.read_on_present = true;
         }
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         if !self.call.expanded {
             self.call
                 .placement

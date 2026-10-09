@@ -1632,12 +1632,7 @@ impl Widget for ContainersApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let children = taffy.children(node).unwrap_or_default();
         let at = Point::new(self.rect.x0, self.rect.y0);
         let mut nodes = children.iter();

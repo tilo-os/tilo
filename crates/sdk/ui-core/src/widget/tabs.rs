@@ -174,6 +174,8 @@ struct RevealAnim {
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
+    index: usize,
+    was_active: bool,
     /// Rect at close-start; the fade animates in place, not tracking the layout
     /// spring.
     pill_rect: Rect,
@@ -1728,6 +1730,7 @@ impl TabBar {
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
         self.snapshot_layout_for_spring();
+        let was_active = self.active_id == id;
         self.tabs.remove(idx);
         if self.active_id == id {
             // Prefer the tab that slid into this index; fall back to the
@@ -1740,10 +1743,31 @@ impl TabBar {
         }
         self.closing_tabs.push(ClosingTab {
             desc,
+            index: idx,
+            was_active,
             pill_rect,
             close_rect,
             started_at: crate::time::now(),
         });
+        true
+    }
+
+    /// Restore a requested close whose host still owns the live tab. No
+    /// metadata or focus is lost while the client asks for a save decision.
+    pub fn cancel_close(&mut self, id: u64) -> bool {
+        let Some(index) = self.closing_tabs.iter().position(|tab| tab.desc.id == id) else {
+            return false;
+        };
+        let tab = self.closing_tabs.remove(index);
+        if !self.tabs.iter().any(|live| live.id == id) {
+            self.tabs.insert(tab.index.min(self.tabs.len()), tab.desc);
+        }
+        if tab.was_active {
+            self.active_id = id;
+        }
+        if self.pending_close == Some(id) {
+            self.pending_close = None;
+        }
         true
     }
 
@@ -2510,26 +2534,19 @@ impl Widget for TabBar {
             reason = "TAB_BAR_HEIGHT is a small fixed layout constant"
         )]
         let bar_height = TAB_BAR_HEIGHT as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::length(bar_height),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();

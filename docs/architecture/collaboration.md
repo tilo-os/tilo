@@ -126,12 +126,116 @@ scrollback messages are bound to the authenticated transport endpoint before
 dispatch. A member therefore cannot impersonate another member merely by
 copying that member's numeric session handle.
 
+## Room admission
+
+A room document — owner, capabilities, governed identities, media policy,
+checkpoint coverage, durable receipts, effect receipts and window contents —
+arrives as a `SyncResp`. Every receiver admits it through one function,
+`tilo_peer_state::room::admit_room_changes`: the native room peer
+(`StatePeer`) and the shell's workspace tree (`WorkspaceTree::apply_room_changes`)
+call the same code and differ only in the data they pass it. A batch is
+refused whole, or its whole candidate is returned; a refused batch changes
+nothing, the room's authority included. The checks, in order:
+
+1. **The sender holds `Write` on the room** under the capabilities already
+   held, unless it is the pinned governance writer, which may grant itself
+   anything. The native peer resolves the sender from its certified roster;
+   the shell from the person its network layer authenticated, and a sender
+   with no authenticated person reached the tree only through the network
+   gate that already required `Write`.
+2. The batch decodes under the shared incoming limits.
+3. The document names the room it answers.
+4. **Governance changes come only from the pinned writer.** Compared by
+   value, so an echo of held governance under another actor is not a
+   change. Governance includes durable receipts and import proposals.
+5. **Window contents change only by their owner.** A native room's
+   `contents_owners_v1` registry names each namespace's owner (a room
+   without one belongs to the pinned authority device). A shell room has no
+   registry: each machine owns the entries minted under its id salt, and the
+   receiver refuses a batch that rewrites one of its own.
+6. Effect receipts are immutable.
+7. Checkpoint coverage and durable receipts never rewind — even from the
+   governor.
+8. The media policy is well formed and its transition permitted. The
+   receiver then binds a policy to its own authority record before
+   installing the candidate.
+
+### Write authority on a room's governance
+
+The governance writer is pinned from local, authenticated knowledge, never
+from the batch being admitted:
+
+- **An invite** names the authority endpoint inside its signature, so the
+  receiver can check it (`pin_room_authority`). A native room pins the
+  invite's authority device certificate.
+- **The room was minted here** (`Local`): no remote sender writes its
+  governance, except another device of the person who owns it.
+- **The room is a person's** (`Person`): any authenticated, unrevoked
+  device of that person. The person's signed workspace directory pins it
+  for rooms they own and names the governor of rooms someone else owns; a
+  continuation offer, which only the person's own devices send, pins the
+  person provisionally until that directory names the real governor.
+- **Nothing names a governor** (`Unpinned`, a room joined without an invite
+  naming its administrator, or enrolled before the directory arrives): every
+  governance change is refused, the first snapshot included. The first peer
+  to answer does not become the governor. A state file written while a room
+  still waited for that first answer loads as the same read-only
+  `Unpinned`; it is upgraded only by an invite, the person's directory or a
+  continuation offer from the person's own device. A pin an older build
+  took from a first answer is a recorded `Peer` or `Person` like any other
+  and is kept: a state file does not say how a pin was taken.
+
+This covers a governance change on the hop that authenticated it. A relayed
+or delegated governance change — one a member forwards on the governor's
+behalf — needs the operation signed rather than the hop authenticated.
+
+### Reading governance
+
+`tilo_peer_state::room::governance_of` returns a named `RoomGovernance`:
+every governed value exactly as stored, capability and identity rows as
+their raw JSON blobs. Admission compares it byte for byte, so a changed but
+undecodable row is still a change. Decoded views of the same document state
+are cached on the native peer's `CachedDocument`: `policy()` (owner and
+decoded capabilities) and `identities()` (each identity row decoded). A
+document message is authorized from those caches, so it pays no JSON decode
+while the room's governance is unchanged.
+
+Effect receipts are compared by their stored bytes; a receipt is decoded
+only when its bytes differ from what is held. The native peer's receipt
+ledger keeps each receipt as received, never re-encoded.
+
+### Retention
+
+- **Identity admissions.** A governed identity row keeps its first
+  redemption receipt (`admission`) for good, since that is its admission
+  evidence. Of the later receipts (`admissions`) it keeps only the latest
+  `tilo_peer_state::governance::MAX_RETAINED_IDENTITY_ADMISSIONS` (8). No
+  replay protection is lost: every redemption also writes each receipt it
+  has seen into the per-invite `invitation_receipts_v1` ledger, in the same
+  transaction that drops one from the row. That ledger refuses a second
+  redemption of a spent invitation, from any device, and is never pruned.
+- **Effect receipts** are not pruned. They are immutable evidence ("omission
+  cannot erase old evidence"), and dropping one is safe only behind a
+  compaction checkpoint every peer agrees on, which does not exist yet.
+  Admission keeps their per-message cost flat instead: an unchanged receipt
+  is never decoded.
+
 ## Workspace hosts
 
 `crates/hosting/tilo-relay` is the persistent server tier. Despite the retained
 binary name, it is an authenticated Iroh workspace host, not a transport
 relay. Peers prove possession of certified device keys on the `tilo-relay/1`
 ALPN before subscribing.
+
+Devices talk to a host through `crates/hosting/tilo-relay-session`: the
+session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
+anti-entropy, room administration (`RoomAdminClient`) and the workspace join
+client (`WorkspaceJoinClient`). The shell, the action broker, joined rooms and
+the runtime depend on that crate alone; `tilo-relay` is the daemon, depends on
+the session crate and re-exports it under its historic paths, and appears in
+client crates only as a dev-dependency for tests that start a real host. The
+wire messages stay in `tilo-relay-protocol` and the frame codec in
+`tilo-relay-client`.
 
 The shell can attach a host with `ShellNetwork::connect_host`. For unattended
 configuration, `TILO_COLLAB_HOST` accepts an Iroh endpoint id or the JSON

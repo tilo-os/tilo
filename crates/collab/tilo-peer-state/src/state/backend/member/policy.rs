@@ -65,8 +65,18 @@ impl Output {
             Scope::FsPath(s) => Scope::FsPath(self.text(s)?),
             Scope::Device(s) => Scope::Device(self.text(s)?),
             Scope::NetHost(s) => Scope::NetHost(self.text(s)?),
-            Scope::Action { app, action } => Scope::Action {
+            Scope::Action {
+                app,
+                resource,
+                action,
+            } => Scope::Action {
                 app: self.text(app)?,
+                resource: self.text(resource)?,
+                action: self.text(action)?,
+            },
+            Scope::ActionOnKind { app, kind, action } => Scope::ActionOnKind {
+                app: self.text(app)?,
+                kind: self.text(kind)?,
                 action: self.text(action)?,
             },
             Scope::Room(s) => Scope::Room(self.text(s)?),

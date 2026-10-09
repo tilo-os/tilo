@@ -952,7 +952,7 @@ impl Widget for RichTextLine {
     ) -> NodeId {
         self.prepare_layout(&Arc::new(theme.clone()));
         let height = self.row_height(theme.text_scale);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: if self.measures_height() {
@@ -966,19 +966,12 @@ impl Widget for RichTextLine {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         self.inner.apply_layout_external(rect);
     }
 

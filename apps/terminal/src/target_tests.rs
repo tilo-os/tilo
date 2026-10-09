@@ -976,3 +976,54 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
             .map_err(|error| OpenError::Failed(error.to_string()))
     })
 }
+
+#[test]
+fn published_run_and_read_follow_actual_pty_output_into_the_shared_session() {
+    use crate::resource::TerminalEffect;
+    let sessions = Sessions::scripted(RecentTarget::none(), |target, _, _| {
+        assert_eq!(target, &SessionTarget::default_environment());
+        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
+        command.args(["--noprofile", "--norc", "-i"]);
+        command.env("PS1", "[Default fixture]$ ");
+        crate::inner::TerminalBackend::with_command(command)
+            .map_err(|error| OpenError::Failed(error.to_string()))
+    });
+    let mut app = App::new().unwrap();
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .unwrap();
+    app.settle();
+    let inspected = app.effect(&TerminalEffect::InspectSession).unwrap();
+    let session = inspected.value.unwrap()["session"].clone();
+    app.effect_confirmed(&TerminalEffect::Run {
+        command: "printf 'TILO_%s\\n' OWNED_PTY_OUTPUT".into(),
+    })
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        app.settle();
+        let read = app.call("read", serde_json::json!({})).unwrap().unwrap();
+        let output = read["output"].as_str().unwrap();
+        assert_eq!(read["session"], session);
+        let lines: Vec<_> = output.lines().collect();
+        if let Some(index) = lines
+            .iter()
+            .position(|line| *line == "TILO_OWNED_PTY_OUTPUT")
+            && lines[index + 1..].contains(&"[Default fixture]$")
+        {
+            let local = app
+                .with_surface(|terminal: &mut TerminalWidget| terminal.grid_text())
+                .unwrap();
+            assert!(local.lines().any(|line| line == "TILO_OWNED_PTY_OUTPUT"));
+            observed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    app.effect_confirmed(&TerminalEffect::Run {
+        command: "exit".into(),
+    })
+    .unwrap();
+    wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
+    assert!(observed, "canonical retained PTY output/prompt absent");
+}

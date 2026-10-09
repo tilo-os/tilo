@@ -342,17 +342,42 @@ impl AudioOutputService {
         Ok(snapshot)
     }
 
-    fn control(&self, caller: Caller, command: Command) -> Result<Snapshot, String> {
-        if let Err(error) = (caller.current)() {
-            self.0.stop(Some(caller.key.peer));
-            return Err(error);
+    fn revalidate_command(caller: &Caller, stage: &str) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let result = (caller.current)();
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(50) {
+            tracing::warn!(
+                target: "tilo::audio_output",
+                stage,
+                elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                refused = result.is_err(),
+                "governed audio admission check stalled"
+            );
         }
-        let key = caller.key;
-        let mut outputs = self
+        result
+    }
+
+    fn entry_caller(&self, key: &Key, generation: u64) -> Result<Caller, String> {
+        let outputs = self
             .0
             .outputs
             .lock()
             .map_err(|_| "Audio output state unavailable")?;
+        outputs
+            .entries
+            .get(key)
+            .filter(|entry| entry.generation == generation)
+            .map(|entry| entry.caller.clone())
+            .ok_or_else(|| "Stale audio output generation".into())
+    }
+
+    fn control(&self, caller: Caller, command: Command) -> Result<Snapshot, String> {
+        if let Err(error) = Self::revalidate_command(&caller, "command") {
+            self.0.stop(Some(caller.key.peer));
+            return Err(error);
+        }
+        let key = caller.key;
         let generation = match &command {
             Command::Open {} => return Err("Audio output must be opened asynchronously".into()),
             Command::Write { generation, .. }
@@ -362,6 +387,16 @@ impl AudioOutputService {
             | Command::Status { generation }
             | Command::Close { generation } => *generation,
         };
+        // Admission can wait on membership, identity or process custody.
+        // Never carry the output registry lock into that external callback:
+        // session locking must still fence the stream while it is waiting.
+        let retained_caller = self.entry_caller(&key, generation)?;
+        let admission = Self::revalidate_command(&retained_caller, "retained-output");
+        let mut outputs = self
+            .0
+            .outputs
+            .lock()
+            .map_err(|_| "Audio output state unavailable")?;
         let entry = outputs
             .entries
             .get_mut(&key)
@@ -371,7 +406,7 @@ impl AudioOutputService {
             entry.fence();
             return Err("Local audio output permission ended".into());
         }
-        if let Err(error) = (entry.caller.current)() {
+        if let Err(error) = admission {
             entry.fence();
             return Err(error);
         }
@@ -531,6 +566,155 @@ mod tests {
         let mut out = vec![0.0; samples];
         sources.lock().unwrap()[index].render(0, &mut out);
         out
+    }
+
+    #[test]
+    fn governed_output_slow_admission_does_not_hold_the_revocation_lock() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (owner, service, sources) = fixture();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let release = Mutex::new(release_rx);
+        let calls = AtomicUsize::new(0);
+        let mut music = caller(1, "so.tilo.music");
+        music.current = Arc::new(move || {
+            // Delay the retained entry's admission check, after the command's
+            // own initial check. Other callers and the watchdog remain live.
+            if std::thread::current().name() == Some("audio-slow-admission")
+                && calls.fetch_add(1, Ordering::AcqRel) == 1
+            {
+                entered_tx.send(()).unwrap();
+                release.lock().unwrap().recv().unwrap();
+            }
+            Ok(())
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let generation = runtime
+            .block_on(service.open(music.clone()))
+            .unwrap()
+            .generation;
+        let command_service = service.clone();
+        let command = std::thread::Builder::new()
+            .name("audio-slow-admission".into())
+            .spawn(move || {
+                command_service.control(
+                    music,
+                    Command::Write {
+                        generation,
+                        sequence: 1,
+                        samples: vec![16384; 1920],
+                    },
+                )
+            })
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let lifecycle = owner.lifecycle();
+        let (locked_tx, locked_rx) = mpsc::sync_channel(1);
+        let locking = std::thread::spawn(move || {
+            lifecycle.set_locked(true);
+            locked_tx.send(()).unwrap();
+        });
+        let revoked_without_waiting = locked_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        // Always release and join before asserting, including on the red path.
+        release_tx.send(()).unwrap();
+        let result = command.join().unwrap();
+        locking.join().unwrap();
+        assert!(
+            revoked_without_waiting,
+            "a blocked admission check delayed the production lock-screen fence"
+        );
+        assert!(
+            result.is_err(),
+            "PCM was accepted after the session locked during revalidation"
+        );
+        assert!(service.0.outputs.lock().unwrap().entries.is_empty());
+        assert_eq!(render(&sources, 0, 1920), vec![0.0; 1920]);
+    }
+
+    #[test]
+    fn governed_output_replacement_survives_an_old_slow_admission_check() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_owner, service, sources) = fixture();
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let release = Mutex::new(release_rx);
+        let calls = AtomicUsize::new(0);
+        let mut music = caller(1, "so.tilo.music");
+        music.current = Arc::new(move || {
+            if std::thread::current().name() == Some("audio-slow-admission")
+                && calls.fetch_add(1, Ordering::AcqRel) == 1
+            {
+                entered_tx.send(()).unwrap();
+                release.lock().unwrap().recv().unwrap();
+                return Err("old admission retired".into());
+            }
+            Ok(())
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let generation = runtime
+            .block_on(service.open(music.clone()))
+            .unwrap()
+            .generation;
+        let command_service = service.clone();
+        let command = std::thread::Builder::new()
+            .name("audio-slow-admission".into())
+            .spawn(move || {
+                command_service.control(
+                    music,
+                    Command::Write {
+                        generation,
+                        sequence: 1,
+                        samples: vec![16384; 1920],
+                    },
+                )
+            })
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let replacing_service = service.clone();
+        let (replaced_tx, replaced_rx) = mpsc::sync_channel(1);
+        let replacing = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = runtime.block_on(replacing_service.open(caller(1, "so.tilo.music")));
+            replaced_tx.send(()).unwrap();
+            result
+        });
+        let replaced_without_waiting = replaced_rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        release_tx.send(()).unwrap();
+        let old_result = command.join().unwrap();
+        let replacement = replacing.join().unwrap().unwrap();
+        assert!(
+            replaced_without_waiting,
+            "a stalled old admission check blocked its replacement"
+        );
+        assert!(old_result.is_err());
+        assert_ne!(replacement.generation, generation);
+        assert_eq!(render(&sources, 0, 1920), vec![0.0; 1920]);
+        service
+            .control(
+                caller(1, "so.tilo.music"),
+                Command::Write {
+                    generation: replacement.generation,
+                    sequence: 1,
+                    samples: vec![16384; 1920],
+                },
+            )
+            .unwrap();
+        assert_eq!(render(&sources, 1, 1920), vec![0.5; 1920]);
     }
 
     #[tokio::test]
