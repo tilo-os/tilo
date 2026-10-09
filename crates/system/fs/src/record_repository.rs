@@ -111,6 +111,10 @@ struct StoredRecord {
     positions: Vec<u64>,
     /// Envelopes not yet in the log.
     pending: usize,
+    /// The repository's [`RepositoryState::write_generation`] when this
+    /// record last had envelopes made durable; 0 for records replayed from
+    /// the log at open.
+    written: u64,
 }
 
 impl StoredRecord {
@@ -121,6 +125,7 @@ impl StoredRecord {
             envelopes: Vec::new(),
             positions: Vec::new(),
             pending: 0,
+            written: 0,
         }
     }
 
@@ -294,6 +299,15 @@ pub struct RepositoryState {
     /// Versions one record may hold: [`MAX_RECORD_VERSIONS`], lowered only
     /// by tests so they can cross the bound cheaply.
     max_versions: std::sync::atomic::AtomicUsize,
+    /// Moves on with every durable write, while the records lock is held;
+    /// each written record keeps the value in `StoredRecord::written`, so
+    /// [`RecordRepository::written_since`] finds what changed since a
+    /// reader last looked without snapshotting every record.
+    write_generation: std::sync::atomic::AtomicU64,
+    /// Concurrent-head checks made by
+    /// [`crate::record_publisher::RecordPublisher::publish_concurrent_head_conflict`].
+    #[cfg(test)]
+    concurrent_head_checks: std::sync::atomic::AtomicU64,
 }
 
 type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
@@ -590,6 +604,7 @@ impl RecordRepository {
         let count = ops.len();
         let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
         drop(ops);
+        let generation = self.next_write_generation();
         let mut next = first;
         let mut written = Vec::with_capacity(candidates.len());
         for (key, mut record) in candidates {
@@ -598,6 +613,7 @@ impl RecordRepository {
                 next = next.saturating_add(1);
             }
             record.pending = 0;
+            record.written = generation;
             records.insert(key, record);
             written.push(key);
         }
@@ -638,6 +654,7 @@ impl RecordRepository {
             }
             self.log.append(&ops, changeset.map(AsRef::as_ref))?
         };
+        let generation = self.next_write_generation();
         let mut next = first;
         for key in keys {
             if let Some(record) = records.get_mut(key) {
@@ -646,6 +663,7 @@ impl RecordRepository {
                     next = next.saturating_add(1);
                 }
                 record.pending = 0;
+                record.written = generation;
             }
         }
         if let Some(changeset) = changeset {
@@ -655,6 +673,14 @@ impl RecordRepository {
                 .insert(Arc::clone(changeset), first);
         }
         Ok(())
+    }
+
+    /// The generation a durable write about to publish its records takes.
+    /// Called with the records lock held.
+    fn next_write_generation(&self) -> u64 {
+        self.write_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_add(1)
     }
 
     /// Records a write outside the scope made durable are no longer the
@@ -1033,6 +1059,9 @@ impl RecordRepository {
             changesets: Mutex::new(index),
             gate: tokio::sync::RwLock::new(()),
             max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
+            write_generation: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            concurrent_head_checks: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -1863,6 +1892,55 @@ impl RecordRepository {
                 == Some(envelope);
         drop(records);
         is_latest
+    }
+
+    /// The records of one workspace written durably since `since`, a
+    /// generation this returned before (`None` for every record), and the
+    /// generation they are current to. With nothing written since, it
+    /// neither takes the records lock nor visits a record.
+    pub(crate) fn written_since(
+        &self,
+        workspace_id: Uuid,
+        since: Option<u64>,
+    ) -> (u64, Vec<FileRecordId>) {
+        let current = self
+            .write_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if since == Some(current) {
+            return (current, Vec::new());
+        }
+        let records = self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Writers move the generation under this lock: read again, so
+        // every record written up to it is in the answer.
+        let current = self
+            .write_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        let written = records
+            .iter()
+            .filter(|(key, record)| {
+                key.workspace_id == workspace_id && since.is_none_or(|since| record.written > since)
+            })
+            .map(|(key, _)| key.record_id)
+            .collect();
+        drop(records);
+        (current, written)
+    }
+
+    /// Counts a concurrent-head check of one record.
+    #[cfg(test)]
+    pub(crate) fn note_concurrent_head_check(&self) {
+        self.concurrent_head_checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Concurrent-head checks made against this repository.
+    #[cfg(test)]
+    pub(crate) fn concurrent_head_checks(&self) -> u64 {
+        self.concurrent_head_checks
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Stable keys for one workspace's records.
