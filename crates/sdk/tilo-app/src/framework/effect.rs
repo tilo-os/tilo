@@ -1543,11 +1543,6 @@ struct Settlement<R: Resource> {
 
 type Settling<R> = Rc<RefCell<Vec<Settlement<R>>>>;
 
-/// An outbox drain, shared by the drains that run what is pending and, for
-/// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited), by those that
-/// run what an invocation queued.
-struct SharedOutbox<R: Resource, T, O>(Rc<RefCell<OutboxDrain<R, T, O>>>);
-
 /// How a handler's answer settles its entry: a [`Settled`] it answered
 /// ([`Effected::settled`]), the result `O` it answered, or nothing to report
 /// (`O`'s default).
@@ -1704,22 +1699,20 @@ where
     }
 }
 
-impl<R, T, O> Drainer<R> for SharedOutbox<R, T, O>
-where
-    R: Resource<State = R> + tilo_resource::Model + 'static,
-    T: tilo_resource::Model + Clone + 'static,
-    O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
-{
+/// A drain shared by the drains that run what is pending and, for
+/// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited), by those that
+/// run what an invocation queued.
+impl<R: Resource, D: Drainer<R>> Drainer<R> for Rc<RefCell<D>> {
     fn run(&mut self, state: &R::State, revision: u64) {
-        self.0.borrow_mut().run(state, revision);
+        self.borrow_mut().run(state, revision);
     }
 
     fn poll(&mut self, revision: u64) -> bool {
-        self.0.borrow_mut().poll(revision)
+        self.borrow_mut().poll(revision)
     }
 
     fn forget_settled(&mut self) {
-        self.0.borrow_mut().forget_settled();
+        self.borrow_mut().forget_settled();
     }
 }
 
@@ -1890,11 +1883,11 @@ impl<R: Resource> Effects<R> {
         if awaited {
             inner
                 .causal
-                .register_drainer(alive.clone(), Box::new(SharedOutbox(Rc::clone(&drain))));
+                .register_drainer(alive.clone(), Box::new(Rc::clone(&drain)));
         }
         inner.drains.push(Drains {
             alive,
-            drain: Box::new(SharedOutbox(drain)),
+            drain: Box::new(drain),
         });
         inner.drained = None;
         Projection {

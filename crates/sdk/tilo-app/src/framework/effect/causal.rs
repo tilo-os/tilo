@@ -188,7 +188,7 @@ impl<R: Resource> CausalEffects<R> {
 
 /// An outbox whose entries an admitted local invocation queues run at once
 /// under that invocation, which completes once they settled.
-impl<R, T, O> CausalDrainer<R> for super::SharedOutbox<R, T, O>
+impl<R, T, O> CausalDrainer<R> for Rc<RefCell<super::OutboxDrain<R, T, O>>>
 where
     R: Resource<State = R> + tilo_resource::Model + 'static,
     T: tilo_resource::Model + Clone + 'static,
@@ -201,7 +201,7 @@ where
         operation: &ResourceOperation<'_>,
         group: &Group,
     ) -> Result<(), String> {
-        let mut drain = self.0.borrow_mut();
+        let mut drain = self.borrow_mut();
         let previous: HashSet<tilo_resource::Id> =
             drain.owned(before).into_iter().map(|(id, _)| id).collect();
         let causes: Vec<_> = drain
@@ -236,12 +236,12 @@ where
     }
 
     fn poll(&mut self) {
-        let revision = self.0.borrow().revision;
-        super::Drainer::poll(&mut *self.0.borrow_mut(), revision);
+        let revision = self.borrow().revision;
+        super::Drainer::poll(&mut *self.borrow_mut(), revision);
     }
 
     fn cancel(&mut self, invocation: InvocationId) {
-        let mut drain = self.0.borrow_mut();
+        let mut drain = self.borrow_mut();
         let ids: Vec<tilo_resource::Id> = drain
             .caused
             .iter()
@@ -270,7 +270,6 @@ where
 
     fn retire(&mut self) {
         let invocations: HashSet<InvocationId> = self
-            .0
             .borrow()
             .caused
             .values()
