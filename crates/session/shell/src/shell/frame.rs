@@ -237,6 +237,54 @@ struct StripPlan {
 }
 
 impl FramePaint {
+    /// Every client frame any scene of this frame draws, pinned until the
+    /// frame was presented (see [`crate::shell::gpu_frames::FramePins`]).
+    ///
+    /// Destructured without `..`: a scene added to `FramePaint` must be
+    /// pinned here too, or a presenter could draw a client buffer after it
+    /// went back to its client.
+    pub fn client_frame_pins(&self) -> crate::shell::gpu_frames::FramePins {
+        let Self {
+            scene,
+            revision: _,
+            previous_revision: _,
+            damage_regions: _,
+            overview_patch,
+            workspace_id: _,
+            workspace_hold: _,
+            workspace_clip: _,
+            hdr_layers: _,
+            backdrop,
+            cache,
+        } = self;
+        let mut pins = crate::shell::gpu_frames::FramePins::default();
+        pins.add_scene(scene);
+        if let Some(patch) = overview_patch {
+            pins.add_scene(&patch.panel_scene);
+        }
+        if let Some(backdrop) = backdrop {
+            for region in &backdrop.regions {
+                pins.add_scene(&region.below);
+            }
+        }
+        if let Some(FrameCache {
+            width: _,
+            strips: _,
+            layers:
+                FrameLayers {
+                    backdrop,
+                    workspace,
+                    chrome,
+                },
+        }) = cache
+        {
+            pins.add_scene(backdrop);
+            pins.add_scene(workspace);
+            pins.add_scene(chrome);
+        }
+        pins
+    }
+
     /// Wrap a scene from a producer without retained-damage authority.
     pub fn full(scene: Scene) -> Self {
         Self {
