@@ -134,6 +134,7 @@ pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
 pub mod service_members;

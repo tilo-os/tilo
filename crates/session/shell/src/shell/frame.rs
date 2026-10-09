@@ -156,6 +156,12 @@ pub struct FramePaint {
     pub backdrop: Option<Arc<BackdropFrame>>,
     /// Optional separable canvases; the screen-space scene remains authoritative.
     pub cache: Option<FrameCache>,
+    /// The client image drawn on top of everything on its output, pixel for
+    /// pixel, which a display covering exactly that image may scan out
+    /// instead of rendering `scene`. Read it through
+    /// [`FramePaint::scanout_candidate`]: anything drawn into `scene` after
+    /// the frame builder found it voids it.
+    pub scanout: Option<crate::shell::scanout_candidate::ScanoutCandidate>,
 }
 
 /// A strip drawn in canvas coordinates. The presenter shows the workspace
@@ -241,6 +247,10 @@ impl FramePaint {
             hdr_layers: _,
             backdrop,
             cache,
+            // Its image is drawn by `scene`, pinned above. A presenter that
+            // scans it out holds the client frame itself, until the flip
+            // that replaces it retires.
+            scanout: _,
         } = self;
         let mut pins = crate::shell::gpu_frames::FramePins::default();
         pins.add_scene(scene);
@@ -277,7 +287,16 @@ impl FramePaint {
             hdr_layers: Vec::new(),
             backdrop: None,
             cache: None,
+            scanout: None,
         }
+    }
+
+    /// [`Self::scanout`], while `scene` is still the scene it was found on
+    /// top of.
+    pub fn scanout_candidate(&self) -> Option<&crate::shell::scanout_candidate::ScanoutCandidate> {
+        self.scanout
+            .as_ref()
+            .filter(|candidate| candidate.still_on_top_of(&self.scene))
     }
 
     /// The same frame, with its floating surfaces drawn over `backdrop`.
@@ -1980,15 +1999,21 @@ impl FrameBuilder {
                 );
             }
         }
+        let mut fullscreen_on_top = None;
         if let Some((_, surface)) = &mut self.fullscreen_overlay
             && surface.is_mapped()
         {
+            let draws_before = sections.above_quick_settings.encoding().draw_tags.len();
             surface.draw(
                 &mut sections.above_quick_settings,
                 Affine::IDENTITY,
                 &mut self.text_renderer,
                 &self.theme,
                 &self.presence,
+            );
+            fullscreen_on_top = crate::shell::scanout_candidate::DrawnOnTop::last_in(
+                &sections.above_quick_settings,
+                draws_before,
             );
         }
         for (_, surface) in &mut self.transient_overlays {
@@ -2107,6 +2132,11 @@ impl FrameBuilder {
         scene.append(&sections.topbar, None);
         scene.append(&sections.quick_settings, None);
         scene.append(&sections.above_quick_settings, None);
+        // A popup, the on-screen keyboard or anything else drawn above the
+        // fullscreen client in its section leaves it not on top.
+        let fullscreen_on_top =
+            fullscreen_on_top.filter(|drawn| drawn.still_last_in(&sections.above_quick_settings));
+        let draws_below_filters = scene.encoding().draw_tags.len();
         if self.watch_configured_theme && self.night_light {
             let (w, h) = self.viewport;
             let bounds = Rect::new(0.0, 0.0, w, h);
@@ -2129,7 +2159,12 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
+        // Night light, a colour filter and the magnifier change every pixel
+        // of the output; the magnifier does it without drawing anything more.
+        let fullscreen_on_top = fullscreen_on_top
+            .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
+        let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
 
         self.last_produced_sections = Some(ProducedSections {
             foreign_images,
@@ -2155,7 +2190,35 @@ impl FrameBuilder {
             hdr_layers,
             backdrop,
             cache,
+            scanout,
         }
+    }
+
+    /// The candidate for direct scanout when `drawn`, the fullscreen client
+    /// on top of the logical desktop, keeps one buffer pixel per pixel once
+    /// `scene` magnifies the desktop for its displays. Each display draws its
+    /// own copy inside a clip of its scene rectangle; those rectangles must
+    /// not overlap, or another display's copy could be drawn over it.
+    fn scanout_candidate(
+        &self,
+        drawn: crate::shell::scanout_candidate::DrawnOnTop,
+        scene: &Scene,
+    ) -> Option<crate::shell::scanout_candidate::ScanoutCandidate> {
+        let placed = match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let centre = drawn.bounds().center();
+                let output = outputs.iter().find(|output| output.contains(centre))?;
+                let overlapped = outputs.iter().any(|other| {
+                    other.id != output.id && other.scene.intersect(output.scene).area() > 0.0
+                });
+                if overlapped {
+                    return None;
+                }
+                drawn.placed(output.to_scene())
+            }
+            _ => drawn,
+        };
+        crate::shell::scanout_candidate::ScanoutCandidate::new(placed, scene)
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -5468,6 +5531,82 @@ mod tests {
             "an SDR frame has none"
         );
         crate::shell::foreign::store().forget(SURFACE);
+    }
+
+    #[test]
+    fn a_fullscreen_client_alone_on_top_is_a_scanout_candidate_until_anything_covers_it() {
+        const FULLSCREEN: u64 = 9_900_705;
+        const POPUP: u64 = 9_900_706;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(FULLSCREEN, &pixels, SIZE.0, SIZE.1);
+        store.publish_rgba(POPUP, &[0, 0, 0, 255], 1, 1);
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+        assert!(
+            fb.paint_with_damage().scanout.is_none(),
+            "a desktop without a fullscreen client has none"
+        );
+        fb.set_fullscreen_surface(Some((FULLSCREEN, "Fullscreen".to_owned(), output)));
+
+        // Phase `alone_on_top`.
+        let mut frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("the fullscreen client alone on top is a candidate");
+        assert_eq!(candidate.origin, (0, 0));
+        assert_eq!(candidate.size, SIZE);
+        assert!(candidate.covers((0, 0), SIZE));
+
+        // Phase `drawn_over_after_the_frame_builder`: a drag or a presentation
+        // surface appended to the finished scene voids it on that frame.
+        frame.scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(255, 0, 0),
+            None,
+            &Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
+        assert!(frame.scanout_candidate().is_none());
+
+        // Phase `a_popup_over_it`.
+        fb.set_transient_surfaces(&[(POPUP, Rect::new(10.0, 10.0, 40.0, 40.0))]);
+        assert!(fb.paint_with_damage().scanout.is_none(), "a popup above");
+        fb.set_transient_surfaces(&[]);
+        assert!(fb.paint_with_damage().scanout.is_some(), "the popup closed");
+
+        // Phase `the_keyboard_over_it`.
+        fb.set_osk_surface(Some(POPUP), None, None, true);
+        assert!(fb.paint_with_damage().scanout.is_none(), "the keyboard up");
+        fb.set_osk_surface(Some(POPUP), None, None, false);
+        assert!(
+            fb.paint_with_damage().scanout.is_some(),
+            "the keyboard down"
+        );
+
+        // Phase `night_light`: a tint over every pixel of the output.
+        fb.shots_theme_pinned = true;
+        fb.watch_configured_theme = true;
+        fb.night_light = true;
+        fb.night_light_temperature = 3_000;
+        assert!(fb.paint_with_damage().scanout.is_none(), "night light on");
+        fb.night_light = false;
+        fb.watch_configured_theme = false;
+        assert!(fb.paint_with_damage().scanout.is_some(), "night light off");
+
+        // Phase `a_buffer_that_does_not_fill_the_output`: letterboxed, it
+        // is pixel exact but covers only part of the display.
+        store.publish_rgba(FULLSCREEN, &pixels[..pixels.len() / 2], SIZE.0, SIZE.1 / 2);
+        let frame = fb.paint_with_damage();
+        let candidate = frame.scanout_candidate().expect("still pixel exact");
+        assert!(!candidate.covers((0, 0), SIZE));
+
+        fb.set_fullscreen_surface(None);
+        assert!(fb.paint_with_damage().scanout.is_none(), "fullscreen left");
+        store.forget(FULLSCREEN);
+        store.forget(POPUP);
     }
 
     fn key_press(key: Key) -> WindowEvent {
