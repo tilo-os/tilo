@@ -574,7 +574,10 @@ mod tests {
         fn query(&self, _: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             Vec::new()
         }
-        fn query_incomplete_reason(&self) -> Option<super::super::QueryIncompleteReason> {
+        fn query_incomplete_reason(
+            &self,
+            _ctx: &super::super::SearchContext<'_>,
+        ) -> Option<super::super::QueryIncompleteReason> {
             (!self.0.get()).then_some(super::super::QueryIncompleteReason::Pending)
         }
         fn query_page(

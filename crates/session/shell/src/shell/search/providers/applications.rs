@@ -1156,7 +1156,10 @@ impl SearchProvider for ApplicationsProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
-    fn query_incomplete_reason(&self) -> Option<crate::shell::search::QueryIncompleteReason> {
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
         if self.build.borrow().is_some() {
             Some(crate::shell::search::QueryIncompleteReason::Pending)
         } else if self.snapshot().is_none() {

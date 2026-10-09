@@ -477,7 +477,7 @@ pub trait SearchProvider {
 
     /// Existing outstanding work or a failed reply, when the provider owns it.
     /// Page exhaustion remains required even when this returns `None`.
-    fn query_incomplete_reason(&self) -> Option<QueryIncompleteReason> {
+    fn query_incomplete_reason(&self, _ctx: &SearchContext<'_>) -> Option<QueryIncompleteReason> {
         None
     }
 
@@ -754,8 +754,26 @@ impl ProviderQuery<'_> {
         };
     }
 
-    fn report_incomplete(&self, target: &mut Vec<ProviderIncomplete>) {
-        if let Some(reason) = self.provider.query_incomplete_reason().or(self.incomplete) {
+    fn report_incomplete(
+        &self,
+        args: &QueryArgs<'_>,
+        include_programmatic: bool,
+        target: &mut Vec<ProviderIncomplete>,
+    ) {
+        let ctx = SearchContext {
+            query_scope: Some(args.scope),
+            include_programmatic,
+            needle: args.needle,
+            wanted: &self.wanted,
+            chrome: args.chrome,
+            doc: args.doc,
+            doc_root: args.doc_root,
+        };
+        if let Some(reason) = self
+            .provider
+            .query_incomplete_reason(&ctx)
+            .or(self.incomplete)
+        {
             target.push(ProviderIncomplete {
                 provider: self.provider.id().into(),
                 reason,
@@ -1276,7 +1294,7 @@ impl SearchRegistry {
         let mut incomplete = Vec::new();
         for source in self.query_rounds(args, exhaustive, include_programmatic) {
             let provider = source.provider;
-            source.report_incomplete(&mut incomplete);
+            source.report_incomplete(args, include_programmatic, &mut incomplete);
             let top = provider.max_score().max(1);
             for r in source.results {
                 // A score above `top` exceeds strength 1.0 and silently

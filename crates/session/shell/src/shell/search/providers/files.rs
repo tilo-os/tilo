@@ -424,7 +424,10 @@ impl SearchProvider for FilesProvider {
         .results
     }
 
-    fn query_incomplete_reason(&self) -> Option<crate::shell::search::QueryIncompleteReason> {
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
         // Generation zero is the placeholder before the first walk publishes.
         // It establishes neither an empty home nor a finished query source.
         self.published()

@@ -2717,7 +2717,10 @@ impl SearchProvider for LiveAppActionsProvider {
         self.directory_source_unavailable.set(false);
     }
 
-    fn query_incomplete_reason(&self) -> Option<crate::shell::search::QueryIncompleteReason> {
+    fn query_incomplete_reason(
+        &self,
+        ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
         if let Some(reason) = self.directory_failures.borrow().values().copied().next() {
             Some(reason)
         } else if self.directory_source_unavailable.get() {
@@ -2726,6 +2729,16 @@ impl SearchProvider for LiveAppActionsProvider {
             || self.surface_build.borrow().is_some()
         {
             Some(crate::shell::search::QueryIncompleteReason::Pending)
+        } else if self
+            .surface_snapshot
+            .borrow()
+            .as_ref()
+            .is_none_or(|snapshot| {
+                snapshot.source_generation != self.broker.surfaces_generation()
+                    || snapshot.scope != Self::surface_scope(ctx)
+            })
+        {
+            Some(crate::shell::search::QueryIncompleteReason::Unavailable)
         } else {
             None
         }
@@ -3284,6 +3297,61 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_completion_requires_current_local_snapshot() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let chrome = chrome();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker.clone(),
+        ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let (_, unavailable) = registry.query_catalogue(&args, true);
+        assert!(
+            !unavailable.complete,
+            "missing local snapshot cannot prove exhaustion"
+        );
+        assert_eq!(
+            unavailable.incomplete.first().unwrap().reason,
+            QueryIncompleteReason::Unavailable
+        );
+        let ctx = SearchContext {
+            query_scope: Some(SearchScope::All),
+            ..context("", &state, &doc)
+        };
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let (_, ready) = registry.query_catalogue(&args, true);
+        assert!(ready.complete);
+        broker.replace_published_surfaces_for_test(Vec::new());
+        let (_, outdated) = registry.query_catalogue(&args, true);
+        assert!(
+            !outdated.complete,
+            "generation drift requires a current index"
+        );
+        assert_eq!(
+            outdated.incomplete.first().unwrap().reason,
+            QueryIncompleteReason::Unavailable
+        );
+    }
+
+    #[test]
     fn catalogue_failed_directory_retries_without_false_exhaustion() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible};
@@ -3383,6 +3451,10 @@ mod tests {
     fn directory_completion_retains_actual_pending_and_refused_reply() {
         use crate::shell::search::QueryIncompleteReason;
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let chrome = chrome();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = context("", &state, &doc);
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         let (sender, receiver) = pending();
         provider.directory_pending.borrow_mut().insert(
@@ -3394,13 +3466,13 @@ mod tests {
             },
         );
         assert_eq!(
-            provider.query_incomplete_reason(),
+            provider.query_incomplete_reason(&ctx),
             Some(QueryIncompleteReason::Pending)
         );
         sender.complete(Err(ActionHostError::NotPermitted));
         provider.poll_directory_pages();
         assert_eq!(
-            provider.query_incomplete_reason(),
+            provider.query_incomplete_reason(&ctx),
             Some(QueryIncompleteReason::Refused)
         );
         assert!(provider.directory_pending.borrow().is_empty());
