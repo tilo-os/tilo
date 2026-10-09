@@ -1,0 +1,193 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "hex-editor.document"
+label = "Hex document"
+version = 1
+
+[[resources.fields]]
+owner = "hex-editor"
+path = "name"
+readonly = true
+stored = "value"
+title = "File name"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "hex-editor"
+path = "opened"
+readonly = true
+stored = "value"
+title = "Loads"
+type = "u64"
+
+[[resources.fields]]
+owner = "hex-editor"
+path = "bytes"
+stored = "value"
+title = "Bytes"
+type = "ByteBuffer"
+
+[resources.fields.ops]
+description = "One primitive buffer mutation. Every byte edit reduces to an insert, delete, or overwrite at a concrete offset; cursor movement, selection, scroll, and mode/column/endian changes remain presentation. It is also the edit of the record's bytes at their path (`ByteBuffer`)."
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Splice `bytes` in *before* `offset`, growing the buffer."
+required = ["Insert"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Insert]
+additionalProperties = false
+required = [
+    "offset",
+    "bytes",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Insert.properties.bytes]
+description = "hexadecimal bytes, e.g. `de ad be ef`"
+type = "string"
+
+[resources.fields.ops.oneOf.properties.Insert.properties.offset]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Remove `len` bytes starting at `offset`."
+required = ["Delete"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Delete]
+additionalProperties = false
+required = [
+    "offset",
+    "len",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Delete.properties.len]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.Delete.properties.offset]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the bytes already at `offset..offset+bytes.len()` in place; the buffer never grows, so bytes past its end are dropped."
+required = ["Overwrite"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Overwrite]
+additionalProperties = false
+required = [
+    "offset",
+    "bytes",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.Overwrite.properties.bytes]
+description = "hexadecimal bytes, e.g. `de ad be ef`"
+type = "string"
+
+[resources.fields.ops.oneOf.properties.Overwrite.properties.offset]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Load a file's bytes.  The bytes come from outside: loading them syncs to everyone, but no undo takes them back. Unchanged bytes of the same file change nothing."
+id = "load"
+kind = "undoable"
+label = "Load a file's bytes"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "The file's name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "bytes"
+required = true
+
+[resources.verbs.params.schema]
+description = "The file's bytes"
+type = "string"
+
+[[resources.verbs]]
+description = "Insert bytes before an offset, growing the buffer."
+id = "insert-bytes"
+kind = "undoable"
+label = "Insert bytes before an offset, growing the buffer"
+
+[[resources.verbs.params]]
+name = "offset"
+required = true
+
+[resources.verbs.params.schema]
+description = "Byte offset, from 0"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "bytes"
+required = true
+
+[resources.verbs.params.schema]
+description = "Hexadecimal bytes, e.g. `de ad be ef`"
+type = "string"
+
+[[resources.verbs]]
+description = "Replace the bytes at an offset in place."
+id = "overwrite-bytes"
+kind = "undoable"
+label = "Replace the bytes at an offset in place"
+
+[[resources.verbs.params]]
+name = "offset"
+required = true
+
+[resources.verbs.params.schema]
+description = "Byte offset, from 0"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "bytes"
+required = true
+
+[resources.verbs.params.schema]
+description = "Hexadecimal bytes, e.g. `de ad be ef`"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove bytes starting at an offset."
+destructive = true
+id = "delete-bytes"
+kind = "undoable"
+label = "Remove bytes starting at an offset"
+
+[[resources.verbs.params]]
+name = "offset"
+required = true
+
+[resources.verbs.params.schema]
+description = "Byte offset, from 0"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "len"
+required = true
+
+[resources.verbs.params.schema]
+description = "How many bytes"
+minimum = 0
+type = "integer"

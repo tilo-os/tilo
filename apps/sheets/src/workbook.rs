@@ -139,6 +139,8 @@ pub struct Chart {
     pub title: Atom,
     /// Chart type
     pub kind: ChartKind,
+    /// Range
+    ///
     /// The cells it charts. Changed by its verb, which checks the range.
     #[model(readonly)]
     pub area: Area,
@@ -147,6 +149,8 @@ pub struct Chart {
 /// A reply to a comment thread.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct Reply {
+    /// Author
+    ///
     /// Who wrote it.
     #[model(readonly)]
     pub author: Atom,
@@ -157,9 +161,13 @@ pub struct Reply {
 /// A comment thread anchored at a range of cells.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct Comment {
+    /// Range
+    ///
     /// The cells it is about.
     #[model(readonly)]
     pub area: Area,
+    /// Author
+    ///
     /// Who started it.
     #[model(readonly)]
     pub author: Atom,
@@ -178,10 +186,14 @@ pub struct Sheet {
     /// Name
     #[model(label)]
     pub name: Atom,
+    /// Source file
+    ///
     /// The file the sheet was imported from, which opening again reveals.
     #[model(readonly)]
     pub source: Option<Atom>,
-    /// Tab colour: an index into the palette, none for the plain tab.
+    /// Tab colour
+    ///
+    /// An index into the palette, none for the plain tab.
     pub color: Option<u32>,
     /// Cells
     pub cells: Grid<Cell>,
