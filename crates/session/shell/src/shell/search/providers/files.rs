@@ -1817,7 +1817,7 @@ mod tests {
     fn empty_chrome() -> crate::shell::chrome_state::Chrome {
         use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
         let handle: WorkspaceTreeHandle =
-            std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()));
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
