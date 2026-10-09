@@ -93,7 +93,8 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
         assert!(content.contains("tilo-app add capability network.http"));
         assert!(content.contains("error_for_status"));
         assert!(content.contains("permission grant"));
-        assert!(content.contains("richer host-owned state"));
+        assert!(content.contains("lossless hints"));
+        assert!(content.contains("false answer stays unknown"));
     }
     assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     let invalid = run(&["guide", "unknown", "--json"]);
