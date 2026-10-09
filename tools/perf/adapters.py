@@ -11,7 +11,9 @@ Each adapter reads what a benchmark already prints and emits records through
 - `tapp-sizes ENTRIES_JSON`: the public app registry's signed `entries`
   index (`https://apps.tilo.so/entries`). The newest version of every app per
   architecture is one sample of `footprint.tapp.bytes.<arch>`: the bytes a
-  user downloads.
+  user downloads. The apps are those with a budget in
+  `tools/perf/tapp-size-budget/` (the default collection); runtime and
+  provider stubs and withdrawn packages are left out and named in `meta`.
 - `workspace-switch LOG...`: the compositor's `WORKSPACE-SWITCH` session-log
   lines (`crates/session/shell/src/compositor/switch_latency.rs`), one per
   switch, become `latency.workspace_switch.first_frame` (chord to the first
@@ -49,6 +51,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import record  # noqa: E402
+import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
@@ -80,26 +83,25 @@ def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
             for name, values in sorted(samples.items())]
 
 
-def tapp_sizes(entries: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
-    """Records for the newest published tapp of every app, per architecture."""
-    newest: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in entries.get("entries", []):
-        for version in entry.get("versions", []):
-            target = version.get("target", {})
-            if target.get("platform") != "tilo-os":
-                continue
-            key = (entry["package_id"], target["architecture"])
-            if key not in newest or version["released_at_unix"] > newest[key]["released_at_unix"]:
-                newest[key] = version
+def tapp_sizes(entries: dict[str, Any], env: dict[str, Any],
+               population: set[str] | None = None) -> list[record.Record]:
+    """Records for the newest published tapp of every app, per architecture.
+
+    `population` is the package ids that count as apps; every other package is
+    left out and named in the record's meta. None counts every package.
+    """
     by_arch: dict[str, list[float]] = {}
-    for (_, arch), version in newest.items():
-        size = version["tapp_size_bytes"]
-        if not isinstance(size, int) or size <= 0:
-            raise ValueError(f"invalid tapp_size_bytes {size!r}")
+    outside = set()
+    for (package, arch), size in tapp_size_ratchet.newest_tapps(entries).items():
+        if population is not None and package not in population:
+            outside.add(package)
+            continue
         by_arch.setdefault(arch, []).append(float(size))
     if not by_arch:
-        raise ValueError("the registry index lists no tilo-os tapp")
+        raise ValueError("the registry index lists no tapp of a budgeted app")
     meta = {**env.get("meta", {}), "registry_sequence": str(entries.get("sequence", ""))}
+    if population is not None:
+        meta.update(population=tapp_size_ratchet.DIRECTORY, not_counted=",".join(sorted(outside)))
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(f"footprint.tapp.bytes.{arch}", "bytes", sizes, meta=meta, **base)
             for arch, sizes in sorted(by_arch.items())]
@@ -200,7 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:
-            records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env)
+            records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env,
+                                 tapp_size_ratchet.load().apps())
     except (ValueError, KeyError) as error:
         print(f"adapters.py: {error}", file=sys.stderr)
         return 1

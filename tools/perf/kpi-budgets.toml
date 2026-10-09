@@ -105,9 +105,13 @@ min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
 # App package size: bytes of the newest signed tapp per app in the public
-# registry index. Targets from the KPI document (median <= 2 MB, max <= 6 MB,
-# decimal megabytes); reported, not enforced, until TIL-590's per-app ratchet
-# owns the gate. The default relative rule already fails sustained growth.
+# registry index, over the apps of tools/perf/tapp-size-budget/ (the default
+# collection; runtime and provider stubs and withdrawn packages are not apps).
+# Targets from the KPI document (median <= 2 MB, max <= 6 MB, decimal
+# megabytes) are reported here. The enforced gate is the same job's
+# tools/perf/tapp_size_ratchet.py fleet: each app within its budget, and the
+# median, p90 and max within the fleet ceilings beside those budgets
+# (TIL-590). The default relative rule also fails sustained growth.
 
 [kpi."footprint.tapp.bytes.x86_64"]
 unit = "bytes"
