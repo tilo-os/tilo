@@ -21,6 +21,8 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "os/scripts/bake-runtime-bundle.sh"
+      - "os/scripts/collect-runtime-dependencies.py"
+      - "os/scripts/verify-runtime-bundle-closure.sh"
       - "os/scripts/stamp-runtime.sh"
       - "os/scripts/verify-elf-hardening.sh"
       - "os/Containerfile.builder"

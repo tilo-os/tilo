@@ -98,11 +98,25 @@ msg "baking runtime $RUNTIME_RELEASE under $OUT_DIR/tilo-runtime (arch=$ARCH, fr
 # Shared objects to fold in beside the loader/libc set. Checked before the
 # bake so a missing toolkit is reported here rather than at an app's exec.
 INCLUDE_ARGS=()
+dependency_objects=()
+dependency_dirs=()
 for lib in $EXTRA_LIBS; do
     [ -f "$lib" ] || die "EXTRA_LIBS entry does not exist: $lib"
     INCLUDE_ARGS+=(--include "$lib")
+    dependency_objects+=("$lib")
+    dependency_dirs+=(--library-dir "$(dirname "$lib")")
     msg "including shared object: $lib"
 done
+if [ "${#dependency_objects[@]}" -gt 0 ]; then
+    # Capture the exit status before consuming output: process substitution
+    # would hide an ldd failure and let an incomplete runtime be signed.
+    dependencies=$(python3 "$SCRIPT_DIR/collect-runtime-dependencies.py" \
+        "${dependency_dirs[@]}" "${dependency_objects[@]}") \
+        || die "cannot sign an incomplete native dependency closure"
+    while IFS= read -r dependency; do
+        INCLUDE_ARGS+=(--include "$dependency")
+    done <<< "$dependencies"
+fi
 
 rm -rf "$OUT_DIR/tilo-runtime"
 "$BUNDLE_BIN" build \
