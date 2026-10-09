@@ -61,9 +61,8 @@ pub(crate) fn restore(
         return Err("native persisted descriptor acknowledgement is incomplete".into());
     }
     if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata =
-            tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(hint, host)
-                .map_err(|e| e.to_string())?;
+        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
+            .map_err(|e| e.to_string())?;
         if record.floor.as_ref().is_some_and(|floor| {
             floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
         }) {

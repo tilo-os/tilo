@@ -243,21 +243,22 @@ host) and the carrier.
   barrier runs before the change counts as delivered.
 - **Durable plane: signed Automerge changes over an HTTPS delivery
   carrier.** The browser uploads its own signed changes from a durable
-  outbox (`POST /peer/v3/state`). It reads the host-ordered replay through
-  held long-poll chains (`/peer/v3/events`) starting at a host-signed opaque
-  cursor, and acknowledges consumption (`/peer/v3/acks`). A reconnecting
-  browser resumes from its cursor and re-uploads anything unacknowledged.
-  The host de-duplicates by digest/operation id. When history is gone it
-  answers with a reset to a snapshot (`/peer/v3/snapshots`). Every request
-  carries a device-signed HTTP proof.
+  outbox. It reads the host-ordered replay through held long polls starting
+  at a host-signed opaque cursor, and acknowledges consumption. A
+  reconnecting browser resumes from its cursor and re-uploads anything
+  unacknowledged. The host de-duplicates by digest/operation id. When
+  history is gone it answers with a reset to a snapshot. `main` does not
+  serve 541's routes or its HTTP request proofs: its routes are the
+  `/peer/v1` carrier below (`tilo_relay_protocol::web`).
 - **Conflicts** are CRDT merges (Automerge: deterministic per-property
   last-writer-wins, the same outcome on every replica). The host decides
   *admission*, not merge results.
-- **Live plane (`LIVE_V1`).** Ephemeral and never authority
-  (`tilo-delivery-protocol::delivery_v3::live_wire`):
+- **Live plane (`LIVE_V1`).** Ephemeral and never authority. The frames
+  are `tilo-relay-protocol::live`, the one copy the relay and the browser
+  speak:
   - A latest-value `presence` track (datagrams): `PresenceFrame {seq,
-    sent_at_ms, focus, pointer, selection anchors, drag}`. Receivers drop
-    older sequence numbers.
+    sent_at_ms, focus, pointer, selection anchors, drag, participant}`.
+    Receivers drop older sequence numbers.
   - One ordered `ops/<record>` track per record: `OpsFrame::Preview` (text
     preview ops against CRDT anchors) and `OpsFrame::SignedChange`, an
     early forward of a durable change.
@@ -269,7 +270,8 @@ host) and the carrier.
     permission from one shared owner turn whenever an authority change is
     announced, so revocation cuts live sessions within about 100 ms.
   - The carrier is moq-lite over WebTransport (`/moq/live`), with an HTTPS
-    streaming fallback (`/peer/v3/live/fallback/*`). There are no WebSockets.
+    streaming fallback (`/peer/v3/live/fallback/*`, the paths `main` still
+    serves). There are no WebSockets.
 - **Browser speculation.** `peer_live/speculation.rs` keeps a *durable
   basis* plus an in-memory *view*: basis + early-forwarded changes. The
   view is what renders. A durable cut settles each outstanding change:
@@ -363,7 +365,8 @@ rather than a second host:
     (`tilo-relay/src/authority_epoch.rs`), a session ending or running out, a
     grant issued — and on the 5 s session sweep as a backstop.
   - Browsers without WebTransport use 541's HTTPS stream fallback
-    (`/peer/v1/live/fallback/{open,send,resume}`) with the same frames.
+    (`/peer/v3/live/fallback/{open,send,resume}`, outside `API_PREFIX`;
+    `tilo-moq` `live/fallback.rs`) with the same frames.
   - Live frames from iroh peers are bridged into the relay, so native and
     browser members share one live room.
 - **Early forwarding is dropped.** In 541 it hid long-poll latency. Here a

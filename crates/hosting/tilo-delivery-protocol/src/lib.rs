@@ -1,10 +1,11 @@
 //! Wire contract of Tilo's browser-facing delivery.
 //!
-//! Every type here is an inert, validated record: delivery v3 commits, cursors,
-//! descriptors, authentication and HTTP proofs, the `LIVE_V1`, media, onboarding and
-//! private wires; the private action and agent-read vocabularies; the v2 live
-//! envelope; and the workspace join contract. Browsers, the action broker and
-//! both hosts link this crate without linking the relay daemon.
+//! Every type here is an inert, validated record: the signed workspace-host
+//! transport descriptor and the session authentication it binds, the data
+//! capability bits, the first-contact bootstrap exchange; the private action and
+//! agent-read vocabularies; the v2 live envelope; and the workspace join contract.
+//! Browsers, the action broker and both hosts link this crate without linking the
+//! relay daemon. The live presence and ops frames are `tilo_relay_protocol::live`.
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 #![cfg_attr(
@@ -20,7 +21,10 @@
     )
 )]
 
-pub mod delivery_v3;
+pub mod auth;
+pub mod bootstrap;
+pub mod capabilities;
+pub mod descriptor;
 pub mod peer_actions;
 pub mod transport_v2;
 pub mod workspace_join;

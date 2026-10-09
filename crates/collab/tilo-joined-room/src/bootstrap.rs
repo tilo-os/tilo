@@ -4,10 +4,10 @@ use std::{
     sync::{Arc, Weak},
     time::SystemTime,
 };
-use tilo_delivery_protocol::delivery_v3::{
+use tilo_delivery_protocol::{
     auth::Carrier,
+    bootstrap,
     descriptor::{self, DescriptorAuthority, VerifiedDescriptor},
-    media_wire,
 };
 use tilo_peer_state::join::TransportHint;
 
@@ -16,14 +16,14 @@ pub struct NativeBootstrap {
     owner: Weak<SharedOwner>,
     room: RoomId,
     continuity: u64,
-    request: media_wire::BootstrapRequest,
+    request: bootstrap::BootstrapRequest,
     descriptor: VerifiedDescriptor,
     hint: TransportHint,
     hint_bytes: Vec<u8>,
 }
 impl NativeBootstrap {
     #[must_use]
-    pub fn request(&self) -> &media_wire::BootstrapRequest {
+    pub fn request(&self) -> &bootstrap::BootstrapRequest {
         &self.request
     }
     #[must_use]
@@ -41,8 +41,7 @@ impl NativeCommittedView {
                 .ok_or("no independently pinned native delivery host")?,
             workspace: self.workspace(),
             generation: self.descriptor_expectation()?,
-            allowed_delivery_capabilities:
-                tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1,
+            allowed_delivery_capabilities: tilo_delivery_protocol::capabilities::PRODUCT_DATA_V1,
             now,
         })
     }
@@ -81,17 +80,17 @@ impl NativeWorkspaceOwner {
             descriptor
                 .client_scope(&authority, view.device(), Carrier::Https, 0, 0)
                 .map_err(|e| e.to_string())?;
-            let mut request = media_wire::BootstrapRequest {
+            let mut request = bootstrap::BootstrapRequest {
                 version: 1,
                 device: view.device().device_public_key,
-                nonce: media_wire::fresh_nonce().map_err(|e| e.to_string())?,
+                nonce: bootstrap::fresh_nonce().map_err(|e| e.to_string())?,
                 workspace: view.workspace(),
                 root: view.governor().user_public_key,
                 room: room.to_string(),
                 candidate_digest: descriptor.descriptor_digest(),
                 signature: [[0; 32]; 2],
             };
-            request.signature = media_wire::split_signature(
+            request.signature = bootstrap::split_signature(
                 key.sign(&request.signing_digest().map_err(|e| e.to_string())?)
                     .to_bytes(),
             );
@@ -118,7 +117,7 @@ impl NativeWorkspaceOwner {
     pub fn finish_bootstrap(
         &self,
         pending: NativeBootstrap,
-        response: &media_wire::BootstrapResponse,
+        response: &bootstrap::BootstrapResponse,
         now: SystemTime,
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
@@ -157,7 +156,7 @@ impl NativeWorkspaceOwner {
                 .map_err(|e| e.to_string())?
                 .verify_strict(
                     &response.signing_digest().map_err(|e| e.to_string())?,
-                    &Signature::from_bytes(&media_wire::join_signature(response.signature)),
+                    &Signature::from_bytes(&bootstrap::join_signature(response.signature)),
                 )
                 .map_err(|e| e.to_string())?;
             Ok(view.clone())
