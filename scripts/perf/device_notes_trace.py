@@ -7,6 +7,123 @@ READ_TRACE_SCRIPT = r"""
 import json
 import sys
 from pathlib import Path
+import math
+import re
+import uuid
+palette_mode = len(sys.argv) > 6 and sys.argv[4] == "palette"
+palette_rows = []
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise SystemExit("Duplicate palette trace field")
+        result[key] = value
+    return result
+
+def bounded(value):
+    return type(value) is int and 0 <= value < 2**64
+
+def random_identity(value):
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        raise SystemExit("Invalid palette worker identity") from None
+    if str(parsed) != value or parsed.version != 4:
+        raise SystemExit("Invalid palette worker identity")
+    return value
+
+def public_id(value):
+    if not isinstance(value, str) or len(value) > 4096:
+        raise SystemExit("Invalid public action identity")
+    if re.fullmatch(r"[A-Za-z0-9_.:@/+-]{1,512}", value):
+        return value
+    parts = value.split("\x1f")
+    semantic = ((len(parts) == 5 and parts[0] == "directory")
+                or (len(parts) == 3 and parts[0] == "directory-resource")
+                or (len(parts) == 2 and parts[0] in ("job", "job-cancel"))
+                or (len(parts) == 6 and re.fullmatch(r"so\.tilo\.[a-z0-9_.-]+", parts[0])
+                    and parts[1] in ("none", "read", "comment", "write", "invite", "admin")))
+    # These are minted resource/action addresses, not query-bearing live:* ids.
+    if not semantic or any(not part or len(part) > 512
+                           or any(not 32 <= ord(char) < 127 for char in part) for part in parts):
+        raise SystemExit("Invalid public action identity")
+    return value
+
+def scrub(value, fields):
+    if not isinstance(value, dict):
+        raise SystemExit("Invalid palette trace object")
+    result = {}
+    for key, item in value.items():
+        if key not in fields:
+            continue
+        if item is not None and not (type(item) is bool or bounded(item)
+            or (type(item) is float and math.isfinite(item))):
+            if not isinstance(item, str) or len(item) > 4096:
+                raise SystemExit("Invalid palette scalar")
+            if key in ("query_hash", "published_revision_hash"):
+                if not re.fullmatch(r"[0-9a-f]{64}", item):
+                    raise SystemExit("Invalid content-free digest")
+            elif key in ("observer_session", "palette_observer_session", "invocation"):
+                random_identity(item)
+            elif key == "kind":
+                if item not in ("physical_key", "physical_pointer_motion", "physical_pointer_button"):
+                    raise SystemExit("Invalid palette input kind")
+            elif key == "source":
+                if item not in ("semantic", "native_unstamped", "controlled_input", "physical_key", "physical_pointer_motion", "physical_pointer_button"):
+                    raise SystemExit("Invalid action source")
+            elif key in ("app", "application"):
+                if item != "so.tilo.settings":
+                    raise SystemExit("Invalid Settings application")
+            elif key == "clock":
+                if item != "clock_monotonic_seconds":
+                    raise SystemExit("Invalid broker clock")
+            elif key == "backend":
+                if item != "wayland":
+                    raise SystemExit("Invalid presentation backend")
+            else:
+                public_id(item)
+        result[key] = item
+    return result
+
+def palette_snapshot(value):
+    fields = "visible mounted query_hash query_bytes results_generation published_revision_hash query_current selected_entry_id hovered_entry_id".split()
+    result = scrub(value, fields)
+    for key in ("bounds", "query_bounds"):
+        item = value.get(key)
+        if item is not None and (not isinstance(item, list) or len(item) != 4
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in item)):
+            raise SystemExit("Invalid palette geometry")
+        if key in value:
+            result[key] = item
+    rows = value.get("rows")
+    if not isinstance(rows, list) or len(rows) > 256:
+        raise SystemExit("Invalid bounded palette rows")
+    result["rows"] = []
+    for row in rows:
+        clean = scrub(row, "entry_id result_index visible_index provider_id action_id selected hovered".split())
+        bounds = row.get("bounds")
+        if not isinstance(bounds, list) or len(bounds) != 4 or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds):
+            raise SystemExit("Invalid palette row geometry")
+        clean["bounds"] = bounds
+        result["rows"].append(clean)
+    return result
+
+def settings_snapshot(value):
+    result = scrub(value, ("app",))
+    for key in ("navigation", "rendered_navigation"):
+        if key in value:
+            result[key] = (None if value[key] is None else scrub(value[key],
+                "selected_pane requested_pane path ready pending content_visible".split()))
+    return result
+
+palette_fields = {
+ "tilo-palette-input ": "schema clock_id process_id observer_session id kind input_time_ns dispatch_start_ns dispatch_end_ns",
+ "tilo-palette-frame ": "schema clock_id process_id observer_session pipe_serial scene_revision draw_time_ns submit_time_ns",
+ "tilo-action-submission ": "invocation application source clock_id activation_dispatch_ns input_time_ns submission_time_ns process_id palette_input_id palette_observer_session palette_target_provider palette_target_action",
+ "tilo-broker-input ": "process_id observer_session invocation clock handler_returned_ok handler_dispatch_lo_s handler_dispatch_hi_s handler_return_lo_s handler_return_hi_s",
+ "tilo-broker-frame ": "process_id observer_session cpu_frame_id",
+}
 markers = ("tilo-physical-input ", "tilo-physical-frame ",
            "tilo-physical-delivery ", "tilo-display-frame ",
            "tilo-native-send ", "tilo-native-main-stages ",
@@ -33,7 +150,54 @@ diagnostic_fields = {
  "tilo-present-pipe ": set("event clock_id pipe_serial enqueue_ns render_start_ns render_end_ns".split()),
 }
 diagnostic_events = ({"imported", "activated", "budget-exhausted"}, {"submitted", "completed"}, {"retired"})
-for line in Path(sys.argv[1]).read_text().splitlines():
+if palette_mode:
+    if not sys.argv[6].isascii() or not sys.argv[6].isdecimal() or int(sys.argv[6]) == 0:
+        raise SystemExit("Explicit palette process identity required")
+    palette_owner = int(sys.argv[6]), random_identity(sys.argv[3])
+    settings_owner = int(sys.argv[7]), random_identity(sys.argv[8])
+    if not bounded(settings_owner[0]) or settings_owner[0] == 0 or not bounded(int(sys.argv[5])):
+        raise SystemExit("Explicit Settings worker and palette boundary required")
+if palette_mode:
+    with Path(sys.argv[1]).open("rb") as source:
+        payload = source.read(32 * 1024 * 1024 + 1)
+    if len(payload) > 32 * 1024 * 1024:
+        raise SystemExit("Palette source exceeds its byte bound")
+    text = payload.decode("utf-8")
+else:
+    text = Path(sys.argv[1]).read_text()
+for line in text.splitlines():
+    if palette_mode:
+        found = False
+        for tag, fields in palette_fields.items():
+            if tag not in line:
+                continue
+            found = True
+            payload = line.partition(tag)[2]
+            if len(payload.encode()) > 65536 or len(palette_rows) >= 10000:
+                raise SystemExit("Palette capture exceeds its bound")
+            try:
+                original = json.loads(payload, object_pairs_hook=pairs)
+            except json.JSONDecodeError:
+                raise SystemExit("Invalid palette capture JSON") from None
+            row = scrub(original, fields.split())
+            for key in ("before", "after", "state"):
+                if key in original:
+                    row[key] = (palette_snapshot(original[key]) if tag.startswith("tilo-palette-")
+                                else settings_snapshot(original[key]))
+            for key in ("input_ids", "invocations"):
+                if key in original:
+                    items = original[key]
+                    if not isinstance(items, list) or len(items) > 32:
+                        raise SystemExit("Invalid palette cause list")
+                    if key == "input_ids" and any(not bounded(item) for item in items):
+                        raise SystemExit("Invalid palette input identity")
+                    if key == "invocations":
+                        for item in items: random_identity(item)
+                    row[key] = items
+            palette_rows.append((tag, row, tag + json.dumps(row, sort_keys=True)))
+            break
+        if found:
+            continue
     if "FRAME-GPU-SUBMISSION " in line:
         suffix = line.partition("FRAME-GPU-SUBMISSION ")[2]
         if len(suffix) > 4096 or len(gpu_submissions) >= 10000:
@@ -76,6 +240,8 @@ for line in Path(sys.argv[1]).read_text().splitlines():
         continue
     if "FRAME-LIFECYCLE serial=" in line:
         suffix = line.partition("FRAME-LIFECYCLE ")[2]
+        if palette_mode and (len(suffix) > 4096 or len(lifecycle) >= 10000):
+            raise SystemExit("Palette lifecycle capture exceeds its bound")
         fields = {}
         for token in suffix.split():
             key, separator, value = token.partition("=")
@@ -126,6 +292,11 @@ for line in Path(sys.argv[1]).read_text().splitlines():
                 # A bounded flight log may begin in the middle of a record.
                 continue
             if isinstance(row, dict):
+                if palette_mode:
+                    if marker != "tilo-display-frame ":
+                        break
+                    row = scrub(row, "process_id observer_session backend cpu_frame_id clock_id flags discarded presented_time_ns sequence worker_id worker_frame_ix".split())
+                    value = json.dumps(row, sort_keys=True)
                 if marker == pointer_marker:
                     allowed = {"pointer_id", "enter_serial", "motion_ordinal", "time_ms",
                                "surface_id", "clock_id", "delivery_time_ns", "input_time_ns"}
@@ -157,6 +328,8 @@ if application == "so.tilo.settings":
 elif application == "so.tilo.notes":
     inputs = [row for tag, row, _ in records
               if tag == markers[0] and (row.get("before") or {}).get("selected_page") == sys.argv[2]][-32:]
+elif application == "palette" and palette_mode:
+    inputs = []
 else:
     raise SystemExit("Unsupported physical trace application")
 workers = {(row.get("process_id"), row.get("observer_session")) for row in inputs}
@@ -177,6 +350,33 @@ frames = [row for tag, row, _ in records if tag == markers[1]
                   for identity in row.get("input_ids", []))]
 frame_ids = {(row.get("process_id"), row.get("observer_session"), row.get("cpu_frame_id")) for row in frames}
 selected = []
+if palette_mode:
+    owner = lambda row: (row.get("process_id"), row.get("observer_session"))
+    palette_inputs = [row for tag, row, _ in palette_rows if tag == "tilo-palette-input "
+                      and owner(row) == palette_owner and type(row.get("id")) is int
+                      and row["id"] > minimum][-32:]
+    # Preserve this event before the next input; previous completed families
+    # already live in the controller's records. Avoid multiplying RPC output
+    # by 32 historical rendered snapshots while retaining current duplicates.
+    palette_ids = {row["id"] for row in palette_inputs[-1:]}
+    palette_frames = [row for tag, row, _ in palette_rows if tag == "tilo-palette-frame "
+                      and owner(row) == palette_owner and palette_ids.intersection(row.get("input_ids", []))]
+    palette_serials = {str(row.get("pipe_serial")) for row in palette_frames}
+    actions = [row for tag, row, _ in palette_rows if tag == "tilo-action-submission "
+               and row.get("process_id") == palette_owner[0]
+               and row.get("palette_observer_session") == palette_owner[1]
+               and row.get("palette_input_id") in palette_ids]
+    invocations = {row.get("invocation") for row in actions}
+    broker_frames = [row for tag, row, _ in palette_rows if tag == "tilo-broker-frame "
+                     and owner(row) == settings_owner and invocations.intersection(row.get("invocations", []))]
+    frame_ids.update(settings_owner + (row.get("cpu_frame_id"),) for row in broker_frames)
+    for tag, row, original in palette_rows:
+        if ((tag == "tilo-palette-input " and owner(row) == palette_owner and row.get("id") in palette_ids)
+            or (tag == "tilo-palette-frame " and row in palette_frames)
+            or (tag == "tilo-action-submission " and row in actions)
+            or (tag == "tilo-broker-input " and owner(row) == settings_owner and row.get("invocation") in invocations)
+            or (tag == "tilo-broker-frame " and row in broker_frames)):
+            selected.append(original)
 for tag, row, original in records:
     worker = (row.get("process_id"), row.get("observer_session"))
     if ((tag == markers[0] and worker in workers and row.get("id") in identities)
@@ -218,8 +418,10 @@ for tag, row, original in diagnostics:
         selected_diagnostics.add(identity)
         selected.append(original)
 # Preserve exact selected outcomes even outside the bounded background window.
-selected.extend(original for proof, original in lifecycle if proof in proofs)
-selected.extend(original for _, original in lifecycle[-128:])
+selected.extend(original for proof, original in lifecycle if proof in proofs
+                or (palette_mode and original.partition("serial=")[2].split()[0] in palette_serials))
+if not palette_mode:
+    selected.extend(original for _, original in lifecycle[-128:])
 selected_serials = {line.partition("serial=")[2].split()[0] for line in selected if line.startswith("FRAME-LIFECYCLE serial=")}
 selected.extend(original for serial, original in submissions if serial in selected_serials)
 selected_gpu = [(serial, original) for serial, original in gpu_submissions if serial in selected_serials]
@@ -252,6 +454,27 @@ def collect_settings_hover_trace(device, log_path, records, observer_session, af
         raise ValueError("An explicit Settings input boundary is required")
     raw = device.execute(["/usr/bin/python3", "-c", READ_TRACE_SCRIPT, log_path,
                           "settings.nav", observer_session, "so.tilo.settings", str(after_input_id)])
+    for line in raw.splitlines():
+        if line:
+            records.setdefault(line, None)
+    return list(records)
+
+
+def collect_palette_trace(device, log_path, records, process_id, observer_session,
+                          after_input_id, settings_process_id, settings_observer_session):
+    """Read content-free palette and exact Settings invocation/presenter witnesses.
+
+    The caller must pin and revalidate both authenticated producer lifetimes.
+    This collector does not launch, focus, inject input, or take screenshots.
+    """
+    for value in (process_id, settings_process_id):
+        if type(value) is not int or not 0 < value < 2**64:
+            raise ValueError("Explicit producer process identity required")
+    if type(after_input_id) is not int or not 0 <= after_input_id < 2**64:
+        raise ValueError("Explicit palette input boundary required")
+    raw = device.execute(["/usr/bin/python3", "-c", READ_TRACE_SCRIPT, log_path,
+                          "palette", observer_session, "palette", str(after_input_id),
+                          str(process_id), str(settings_process_id), settings_observer_session])
     for line in raw.splitlines():
         if line:
             records.setdefault(line, None)

@@ -236,5 +236,137 @@ class SettingsHoverCollection(unittest.TestCase):
                 collect_settings_hover_trace(slot,str(path),{},'unrelated',0)
 
 
+
+class PaletteCollection(unittest.TestCase):
+    session = "2bd78136-4c17-4853-9d7c-7442274a7059"
+    settings_session = "abcdef12-1234-4567-8234-123456789abc"
+    invocation = "12345678-1234-4567-8234-123456789abc"
+
+    def rows(self, click=False):
+        def state():
+            return dict(visible=True, mounted=True, query_hash="a" * 64, query_bytes=9,
+                results_generation=7, query_current=True, published_revision_hash="b" * 64,
+                selected_entry_id="result:1", hovered_entry_id=None, bounds=[0,0,200,200],
+                query_bounds=[0,0,200,30], query="private raw query", rendered={"private":"secret"},
+                rows=[dict(entry_id="result:1", provider_id="settings", action_id="open-bluetooth",
+                           bounds=[0,30,200,60], visible_index=0,result_index=1,
+                           selected=True,hovered=False,label="private row label")])
+        owner = dict(schema=1,clock_id=1,process_id=42,observer_session=self.session)
+        rows = [("tilo-palette-input ",dict(owner,id=1,kind="physical_key",input_time_ns=100,
+            dispatch_start_ns=200,dispatch_end_ns=300,before=state(),after=state()))]
+        if not click:
+            rows.append(("tilo-palette-frame ",dict(owner,pipe_serial=41,scene_revision=9,
+                input_ids=[1],draw_time_ns=400,submit_time_ns=500,state=state())))
+        else:
+            worker = dict(process_id=2,observer_session=self.settings_session)
+            nav = dict(selected_pane="bluetooth",requested_pane="bluetooth",path="settings://bluetooth",
+                ready=True,pending=False,content_visible=True,private="must stay local")
+            snapshot = dict(app="so.tilo.settings",navigation=nav,rendered_navigation=nav)
+            rows.extend([
+                ("tilo-action-submission ",dict(process_id=42,invocation=self.invocation,
+                    application="so.tilo.settings",source="physical_key",clock_id=1,input_time_ns=100,
+                    activation_dispatch_ns=200,submission_time_ns=250,palette_input_id=1,
+                    palette_observer_session=self.session,palette_target_provider="settings",
+                    palette_target_action="open-bluetooth",query="private raw query")),
+                ("tilo-broker-input ",dict(worker,invocation=self.invocation,
+                    clock="clock_monotonic_seconds",handler_returned_ok=True,
+                    handler_dispatch_lo_s=.001,handler_dispatch_hi_s=.002,
+                    handler_return_lo_s=.003,handler_return_hi_s=.004,before=snapshot,after=snapshot)),
+                ("tilo-broker-frame ",dict(worker,invocations=[self.invocation],cpu_frame_id=17,state=snapshot)),
+                ("tilo-display-frame ",dict(worker,backend="wayland",cpu_frame_id=17,
+                    clock_id=1,flags=7,discarded=False,presented_time_ns=600,sequence=5,private="secret")),
+            ])
+        return rows
+
+    def collect(self, rows, boundary=0):
+        from device_notes_trace import collect_palette_trace
+        from compositor_submission_test import gpu_record,record
+        from physical_notes_stages_test import CompositorPhaseJoin
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "latest.log"
+            text = "\n".join(tag+json.dumps(row) for tag,row in rows)
+            phase = CompositorPhaseJoin().line(revision=9,physical_presented_time_ns=600,physical_sequence=5)
+            log.write_text(text+"\n"+phase+"\n"+record()+"\n"+gpu_record()+
+                "\n"+CompositorPhaseJoin().line(serial=999,physical_sequence=999)+"\n"+gpu_record(serial=999,first_recording=99,last_recording=99))
+            return collect_palette_trace(LocalSlot(),str(log),{},42,self.session,boundary,2,self.settings_session)
+
+    def test_content_free_snapshot_and_exact_independent_presenter_records(self):
+        rows = self.rows()
+        foreign = [(tag,dict(row,process_id=999)) for tag,row in rows]
+        result = self.collect(rows+foreign)
+        joined = "\n".join(result)
+        for private in ("private raw query","private row label","secret","rendered", "serial=999"):
+            self.assertNotIn(private,joined)
+        for marker in ("tilo-palette-input ","tilo-palette-frame ","FRAME-LIFECYCLE ",
+                       "FRAME-SUBMISSION ","FRAME-GPU-SUBMISSION "):
+            self.assertEqual(sum(line.startswith(marker) for line in result),1)
+        self.assertEqual(self.collect(rows,boundary=1),[])
+
+    def test_exact_invocation_and_settings_worker_preserve_real_presentation(self):
+        rows=self.rows(True)
+        foreign=[(tag,dict(row,process_id=999)) for tag,row in rows if tag.startswith("tilo-broker") or tag=="tilo-display-frame "]
+        result=self.collect(rows+foreign)
+        for marker in ("tilo-action-submission ","tilo-broker-input ","tilo-broker-frame ","tilo-display-frame "):
+            self.assertEqual(sum(line.startswith(marker) for line in result),1)
+        self.assertNotIn("private", "\n".join(result))
+        self.assertTrue(any(line.startswith("FRAME-GPU-SUBMISSION serial=41 ") for line in result))
+        # Wrong actual worker cannot provide a frame or a presentation witness.
+        wrong=[(tag,dict(row,process_id=999)) if tag.startswith("tilo-broker") or tag=="tilo-display-frame " else (tag,row) for tag,row in rows]
+        captured=self.collect(wrong)
+        self.assertFalse(any(line.startswith(("tilo-broker-frame ","tilo-display-frame ","FRAME-LIFECYCLE ")) for line in captured))
+
+    def test_current_event_family_does_not_export_historical_or_nearby_frames(self):
+        import copy
+        rows = self.rows()
+        later = copy.deepcopy(rows)
+        later[0][1]["id"] = 2
+        later[1][1].update(input_ids=[2],pipe_serial=42)
+        captured = self.collect(rows + later)
+        events = [json.loads(line.split(" ",1)[1]) for line in captured
+                  if line.startswith("tilo-palette-input ")]
+        self.assertEqual([event["id"] for event in events],[2])
+        frames = [json.loads(line.split(" ",1)[1]) for line in captured
+                  if line.startswith("tilo-palette-frame ")]
+        self.assertEqual([frame["pipe_serial"] for frame in frames],[42])
+        # Serial 41 has a real retirement, but cannot substitute for serial 42.
+        self.assertFalse(any(line.startswith(("FRAME-LIFECYCLE ","FRAME-GPU-SUBMISSION "))
+                             for line in captured))
+
+    def test_actual_unit_separator_semantic_addresses_roundtrip_without_query_ids(self):
+        ids = ("directory\x1f42\x1f" + "a" * 64 + "\x1fsettings.pane.bluetooth\x1fopen",
+               "so.tilo.settings\x1fread\x1froom-1\x1frecord-1\x1fsettings.pane.bluetooth\x1fopen")
+        for address in ids:
+            with self.subTest(address=address):
+                rows = self.rows(True)
+                for tag,row in rows:
+                    for key in ("before","after","state"):
+                        for entry in row.get(key,{}).get("rows",[]):
+                            entry["action_id"] = address
+                    if tag == "tilo-action-submission ":
+                        row["palette_target_action"] = address
+                result = self.collect(rows)
+                action = next(json.loads(line.split(" ",1)[1]) for line in result
+                              if line.startswith("tilo-action-submission "))
+                self.assertEqual(action["palette_target_action"], address)
+                event = next(json.loads(line.split(" ",1)[1]) for line in result
+                             if line.startswith("tilo-palette-input "))
+                self.assertEqual(event["before"]["rows"][0]["action_id"], address)
+        rows = self.rows()
+        rows[0][1]["before"]["rows"][0]["action_id"] = "live:search\x1fprivate needle\x1frest"
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.collect(rows)
+
+    def test_invalid_digest_geometry_and_missing_explicit_scope_fail(self):
+        import copy
+        from device_notes_trace import collect_palette_trace
+        for mutate in (lambda state: state.update(query_hash="raw-query"),
+                       lambda state: state.update(rows="private"),
+                       lambda state: state.update(bounds=[0,float("nan"),2,3])):
+            rows=copy.deepcopy(self.rows());mutate(rows[0][1]["after"])
+            with self.assertRaises(subprocess.CalledProcessError):self.collect(rows)
+        for process,boundary in ((0,0),(True,0),(42,None),(42,-1)):
+            with self.assertRaises(ValueError):
+                collect_palette_trace(LocalSlot(),"unused",{},process,self.session,boundary,2,self.settings_session)
+
 if __name__ == "__main__":
     unittest.main()
