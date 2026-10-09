@@ -1184,6 +1184,55 @@ impl<T: Model> Model for Vec<T> {
     }
 }
 
+/// A fixed number of values, stored as a list.
+impl<T: Model, const N: usize> Settable for [T; N] {}
+impl<T: Model, const N: usize> Model for [T; N] {
+    const CHECKS: bool = T::CHECKS;
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.iter().map(Model::to_json).collect())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        let items = Vec::<T>::from_json(value)?;
+        let count = items.len();
+        items
+            .try_into()
+            .map_err(|_| ModelError::invalid(format!("expected {N} values, not {count}")))
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        let items = Vec::<T>::load(doc, value, id)?;
+        let count = items.len();
+        items
+            .try_into()
+            .map_err(|_| ModelError::invalid(format!("expected {N} values, not {count}")))
+    }
+    fn missing() -> Result<Self, ModelError> {
+        let items = (0..N)
+            .map(|_| T::missing())
+            .collect::<Result<Vec<_>, _>>()?;
+        items
+            .try_into()
+            .map_err(|_| ModelError::invalid("an empty array"))
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        let list = slot.object(doc, ObjType::List)?;
+        let existing = doc.length(&list);
+        for (index, item) in self.iter().enumerate() {
+            let slot = if index < existing {
+                Slot::Index(&list, index)
+            } else {
+                Slot::Insert(&list, index)
+            };
+            item.store(doc, slot)
+                .map_err(|error| error.at(&index.to_string()))?;
+        }
+        for index in (N..existing).rev() {
+            doc.delete(&list, index)?;
+        }
+        Ok(())
+    }
+}
+
 /// A map reconciled key by key.
 impl<T: Model> Settable for BTreeMap<String, T> {}
 impl<T: Model> Model for BTreeMap<String, T> {

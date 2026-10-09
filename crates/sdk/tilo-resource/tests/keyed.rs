@@ -4,7 +4,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    reason = "test assertions"
+    clippy::float_cmp,
+    reason = "test assertions over exact values written and read back"
 )]
 
 use serde::{Deserialize, Serialize};
@@ -44,10 +45,21 @@ pub struct Timeline {
     pub tags: Set<String>,
     pub plays: Counter,
     pub notes: Collection<String>,
+    pub colour: [f64; 4],
 }
 
 #[resource(kind = "test.timeline", label = "Timeline")]
 impl Timeline {
+    /// Add a clip with an id of its own.
+    #[action]
+    pub fn add_generated(&mut self, start: f64) {
+        self.clips.push(Clip {
+            id: tilo_resource::fresh_uuid().to_string(),
+            start,
+            ..Clip::default()
+        });
+    }
+
     /// Add a clip.
     #[action]
     pub fn add_clip(&mut self, id: String, name: String, start: f64) {
@@ -150,4 +162,63 @@ fn the_edits_between_two_values_turn_one_into_the_other() {
     assert_eq!(read, after);
     assert_eq!(read.clips[0].curve.points, [(0.0, 1.0)]);
     assert!(Timeline::paths().path().edits(&read, &after).is_empty());
+}
+
+#[test]
+fn ids_made_inside_a_verb_replay_identically_and_surfaces_bind_verbs() {
+    let mut origin = Replica::<Timeline>::new();
+    let mut peer = origin.fork();
+    origin.apply(Timeline::ADD_GENERATED.with(1.0)).unwrap();
+    origin.apply(Timeline::ADD_GENERATED.with(2.0)).unwrap();
+    for envelope in origin.log().to_vec() {
+        peer.replay(&envelope).unwrap();
+    }
+    assert_eq!(origin.state().unwrap(), peer.state().unwrap());
+    let ids: Vec<String> = origin
+        .state()
+        .unwrap()
+        .clips
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(tilo_resource::fresh_uuid(), tilo_resource::fresh_uuid());
+
+    let here = Timeline::ADD_CLIP
+        .bind(timeline::AddClip::paths().start, 7.5)
+        .declaration("add-clip-here", "Add a clip here")
+        .unwrap();
+    assert_eq!(
+        here.params
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect::<Vec<_>>(),
+        ["id", "name"]
+    );
+    let args = tilo_actions::ActionArgs::bind_json(
+        &here.params,
+        &serde_json::Map::from_iter([
+            ("id".to_owned(), serde_json::json!("z")),
+            ("name".to_owned(), serde_json::json!("Zed")),
+        ]),
+    )
+    .unwrap();
+    let action = (here.build)(&args, 0).unwrap();
+    origin.apply_action(&action).unwrap();
+    assert_eq!(
+        origin
+            .state()
+            .unwrap()
+            .clips
+            .find(&Id::from_raw("z"))
+            .unwrap()
+            .start,
+        7.5
+    );
+
+    submit(
+        &mut origin,
+        &[Timeline::paths().colour.set([1.0, 0.5, 0.0, 1.0])],
+    );
+    assert_eq!(origin.state().unwrap().colour, [1.0, 0.5, 0.0, 1.0]);
 }

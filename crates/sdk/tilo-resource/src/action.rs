@@ -98,6 +98,16 @@ impl ActionCx {
         id
     }
 
+    /// A fresh UUID, unique to this action and stable under replay.
+    pub fn uuid(&mut self) -> uuid::Uuid {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"uuid");
+        hasher.update(&self.seed);
+        hasher.update(&self.minted.to_le_bytes());
+        self.minted = self.minted.saturating_add(1);
+        uuid_from(hasher.finalize().as_bytes())
+    }
+
     /// When the action was authored, in milliseconds since the Unix epoch, as
     /// read once on the origin.
     pub fn now_ms(&self) -> i64 {
@@ -130,6 +140,54 @@ impl ActionCx {
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         crate::content::current()
     }
+}
+
+fn uuid_from(digest: &[u8; 32]) -> uuid::Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(digest.get(..16).unwrap_or(&[0; 16]));
+    uuid::Builder::from_random_bytes(bytes).into_uuid()
+}
+
+thread_local! {
+    /// The seed and count of the UUIDs [`fresh_uuid`] mints while a verb
+    /// performs on this thread.
+    static MINT: std::cell::Cell<Option<([u8; 32], u64)>> = const { std::cell::Cell::new(None) };
+}
+
+struct MintScope(Option<([u8; 32], u64)>);
+
+impl MintScope {
+    fn enter(cx: &ActionCx) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-resource/fresh-uuid/v1");
+        hasher.update(&cx.seed);
+        let seed = *hasher.finalize().as_bytes();
+        Self(MINT.with(|mint| mint.replace(Some((seed, 0)))))
+    }
+}
+
+impl Drop for MintScope {
+    fn drop(&mut self) {
+        MINT.with(|mint| mint.set(self.0));
+    }
+}
+
+/// A new UUID for domain code that makes things (a clip split in two, a
+/// marker): inside a verb it is minted from the action, so every replica
+/// makes the same one; anywhere else (a surface editing its local copy
+/// before it submits the edits) it is random.
+#[must_use]
+pub fn fresh_uuid() -> uuid::Uuid {
+    MINT.with(|mint| match mint.get() {
+        Some((seed, counter)) => {
+            mint.set(Some((seed, counter.saturating_add(1))));
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&seed);
+            hasher.update(&counter.to_le_bytes());
+            uuid_from(hasher.finalize().as_bytes())
+        }
+        None => uuid::Uuid::new_v4(),
+    })
 }
 
 fn minted(seed: &[u8; 32], counter: u64) -> Id {
@@ -305,9 +363,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         }
         let mut record = O::Record::read_fields(doc, &ROOT)
             .map_err(|error| ActionError::Refused(error.to_string()))?;
-        self.operation
-            .perform(&mut record, &mut cx)
-            .map_err(|refusal| ActionError::Refused(refusal.0))?;
+        let minting = MintScope::enter(&cx);
+        let performed = self.operation.perform(&mut record, &mut cx);
+        drop(minting);
+        performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
         crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
         record
             .write_fields(doc, &ROOT)

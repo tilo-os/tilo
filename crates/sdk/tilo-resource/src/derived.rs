@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::action::ActionRef;
 use crate::path::{Path, Segment};
-use crate::resource::Resource;
+use crate::resource::{ActionDecl, Resource};
 
 /// A verb with some of its parameters bound: what a derived resource offers.
 pub struct Bound<R> {
@@ -67,6 +67,48 @@ impl<R> Bound<R> {
 
     pub fn values(&self) -> &[(String, serde_json::Value)] {
         &self.values
+    }
+}
+
+impl<R: Resource> Bound<R> {
+    /// This verb, its bound arguments filled, as a declaration of its own
+    /// under `id`: what a surface offers bound to its view state ("split the
+    /// clip at the playhead"), built and checked as the verb is.
+    #[must_use]
+    pub fn declaration(&self, id: &'static str, label: impl Into<String>) -> Option<ActionDecl<R>> {
+        let verb = R::declarations()
+            .into_iter()
+            .find(|decl| decl.id == self.action)?;
+        let all = verb.params.clone();
+        let build = std::sync::Arc::clone(&verb.build);
+        let values = self.values.clone();
+        let mut decl = ActionDecl::new(
+            id,
+            label,
+            verb.params
+                .iter()
+                .filter(|param| !values.iter().any(|(name, _)| param.name == name.as_str()))
+                .cloned()
+                .collect(),
+            move |args, now_ms| {
+                let mut arguments = args.to_json();
+                for (name, value) in &values {
+                    arguments.insert(name.clone(), value.clone());
+                }
+                let args = tilo_actions::ActionArgs::bind_json(&all, &arguments)
+                    .map_err(|error| error.to_string())?;
+                build(&args, now_ms)
+            },
+        )
+        .requiring(verb.permission)
+        .of_kind(verb.kind);
+        if let Some(description) = verb.description {
+            decl = decl.describe(description);
+        }
+        if verb.destructive {
+            decl = decl.destructive();
+        }
+        Some(decl)
     }
 }
 
