@@ -1165,6 +1165,23 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
             || serde_json::json!({"type": "object"}),
             |schema| undescribed(&schema),
         );
+        if R::EDITS {
+            members.push(describe(
+                object(vec![
+                    ("action", constant(FIELD_EDIT), true),
+                    (
+                        "args",
+                        object(vec![(
+                            EDIT_PARAM,
+                            undescribed(&<Edit<R> as crate::JsonSchema>::json_schema()),
+                            true,
+                        )]),
+                        true,
+                    ),
+                ]),
+                "A field edit",
+            ));
+        }
         members.push(object(vec![
             (
                 "action",

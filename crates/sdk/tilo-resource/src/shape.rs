@@ -22,6 +22,9 @@ pub enum Shape {
     /// shape. Each item is stored under its id as an entry map holding its
     /// order key ([`ENTRY_ORDER_KEY`]) and its value ([`ENTRY_VALUE_KEY`]).
     Collection(&'static Shape),
+    /// Items of one shape stored under the ids they carry
+    /// ([`Keyed`](crate::Keyed)): each item's value directly under its id.
+    Keyed(&'static Shape),
 }
 
 /// One named field of a [`Shape::Record`].
@@ -57,7 +60,7 @@ impl Shape {
     pub const fn fields(&self) -> &'static [FieldShape] {
         match self {
             Self::Record(fields) => fields,
-            Self::Value | Self::Collection(_) => &[],
+            Self::Value | Self::Collection(_) | Self::Keyed(_) => &[],
         }
     }
 
@@ -79,12 +82,13 @@ impl Shape {
                         break;
                     };
                     shape = field.shape;
-                    items_are_units = field.unit && matches!(field.shape, Self::Collection(_));
+                    items_are_units =
+                        field.unit && matches!(field.shape, Self::Collection(_) | Self::Keyed(_));
                     if field.unit && !items_are_units {
                         unit.clone_from(&walked);
                     }
                 }
-                (Self::Collection(item), Segment::Item(_)) => {
+                (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => {
                     shape = *item;
                     if items_are_units {
                         unit.clone_from(&walked);
@@ -113,7 +117,7 @@ impl Shape {
                     }
                     shape = field.shape;
                 }
-                (Self::Collection(item), Segment::Item(_)) => shape = *item,
+                (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => shape = *item,
                 _ => return false,
             }
         }

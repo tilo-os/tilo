@@ -122,6 +122,7 @@ pub mod evolution;
 pub mod group;
 pub mod history;
 pub mod items;
+pub mod keyed;
 pub mod kind;
 mod low_mutation;
 pub mod model;
@@ -147,6 +148,7 @@ pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
+pub use keyed::{Identified, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{

@@ -102,13 +102,14 @@ fn stored(shape: Shape) -> &'static str {
         Shape::Value => "value",
         Shape::Record(_) => "record",
         Shape::Collection(_) => "collection",
+        Shape::Keyed(_) => "keyed",
     }
 }
 
 fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
     let (fields, item) = match shape {
         Shape::Record(fields) => (fields, false),
-        Shape::Collection(item) => {
+        Shape::Collection(item) | Shape::Keyed(item) => {
             fields_of(*item, &format!("{prefix}*."), out);
             return;
         }

@@ -431,7 +431,12 @@ fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
         declared
     );
     assert_eq!(
-        group["items"]["oneOf"][1]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
+        group["items"]["oneOf"][1]["properties"]["action"]["const"],
+        tilo_resource::FIELD_EDIT,
+        "a gesture's field edits are members too"
+    );
+    assert_eq!(
+        group["items"]["oneOf"][2]["properties"]["args"]["properties"][tilo_resource::APPLY_PARAM],
         tilo_resource::schema::undescribed(&apply)
     );
 
