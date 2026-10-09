@@ -5193,7 +5193,8 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        // Work done in a task is bounded by the task's grant set.
+        // Work done in a task — the one the call names, or the task its
+        // agent is running — is bounded by the task's grant set.
         let task = context
             .as_ref()
             .and_then(|context| context.group.as_ref())
@@ -5218,9 +5219,12 @@ impl CapnpBrokerState {
                     actor,
                     now,
                 )?;
-                if let Some(task) = &task {
+                {
                     let node = published_node(workspace, &offered.0.app_id, &offered.1);
-                    match workspace.task_answer_at(task, &node, need.kind, now) {
+                    let agent = actor
+                        .is_agent
+                        .then(|| actor.id.strip_prefix("agent:").unwrap_or(&actor.id));
+                    match workspace.task_bound_at(agent, task.as_deref(), &node, need.kind, now) {
                         Some(Answer::Deny) => {
                             return Err("the task's grants do not cover this action".to_owned());
                         }

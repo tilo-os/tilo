@@ -785,6 +785,34 @@ impl Workspace {
         )
     }
 
+    /// The answer the grant sets of the tasks an invocation works in give
+    /// for an action of `kind` at `node`: the task the invocation names, and
+    /// every task `agent` (an agent's id, without its `agent:` prefix) is
+    /// running here — so a run is held to its task whether or not its calls
+    /// say so. The least of them; `None` when none of those tasks carries a
+    /// grant set.
+    #[must_use]
+    pub fn task_bound_at(
+        &self,
+        agent: Option<&str>,
+        named: Option<&str>,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> Option<Answer> {
+        let running = self.tasks.iter().filter(|task| {
+            matches!(
+                task.status,
+                crate::WorkspaceTaskStatus::InProgress | crate::WorkspaceTaskStatus::Waiting
+            ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
+        });
+        named
+            .into_iter()
+            .chain(running.map(|task| task.id.as_str()))
+            .filter_map(|task| self.task_answer_at(task, node, kind, now))
+            .min()
+    }
+
     /// The role a person with `agent`'s reach in the room would hold: what
     /// its grants let it change — the room, only its comments, or nothing.
     /// `None` when no live grant admits it.
