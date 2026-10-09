@@ -267,7 +267,7 @@ mod tests {
             Some((7, false))
         );
         assert_eq!(changed_room(&path("7")), Some((7, true)));
-        assert_eq!(changed_room(&path("7/log.jsonl")), None);
+        assert_eq!(changed_room(&path("7/snapshot.automerge")), None);
         assert_eq!(changed_room(&path("7/pending/membership.json")), None);
         assert_eq!(changed_room(&path("notes/membership.json")), None);
         assert_eq!(changed_room(&VPath::root()), None);

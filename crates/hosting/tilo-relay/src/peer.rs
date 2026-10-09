@@ -279,7 +279,8 @@ struct SessionCtx<'a> {
     disconnect: &'a mpsc::Sender<()>,
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
-    v2: bool,
+    /// The state-lane framing the session's protocol fixed.
+    framing: tilo_delivery_protocol::transport_v2::StateFraming,
     /// The session negotiated `ALPN_SIGNED_ACTIONS_V1`: it may receive
     /// `CertifiedSignedDelivered`. Older sessions never see that variant.
     signed_actions: bool,
@@ -428,7 +429,40 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, false, false).await
+    run_peer_version(peer, connection, read, write, ctx, SessionProtocol::V1).await
+}
+
+/// What a session negotiated through its ALPN.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SessionProtocol {
+    /// How its state lane is framed.
+    pub(crate) framing: tilo_delivery_protocol::transport_v2::StateFraming,
+    /// It may send device-signed actions and receive them certified.
+    pub(crate) signed_actions: bool,
+}
+
+impl SessionProtocol {
+    /// `tilo-relay/1`.
+    pub(crate) const V1: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
+        signed_actions: false,
+    };
+    /// `ALPN_AGENT_READS_V1`.
+    pub(crate) const V2: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        signed_actions: false,
+    };
+    /// `ALPN_SIGNED_ACTIONS_V1`.
+    pub(crate) const SIGNED_ACTIONS: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        signed_actions: true,
+    };
+    /// `ALPN_COMPACT_STATE_V1`: signed actions, and zero-signature deltas
+    /// without their signature.
+    pub(crate) const COMPACT_STATE: Self = Self {
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::Compact,
+        signed_actions: true,
+    };
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -448,7 +482,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, false, false, closed).await
+    run_peer_stream(peer, read, write, ctx, SessionProtocol::V1, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -457,23 +491,13 @@ pub(crate) async fn run_peer_version<R, W>(
     read: R,
     write: W,
     ctx: PeerContext,
-    v2: bool,
-    signed_actions: bool,
+    protocol: SessionProtocol,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(
-        peer,
-        read,
-        write,
-        ctx,
-        v2,
-        signed_actions,
-        connection.closed(),
-    )
-    .await
+    run_peer_stream(peer, read, write, ctx, protocol, connection.closed()).await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -490,8 +514,7 @@ async fn run_peer_stream<R, W>(
     read: R,
     mut write: W,
     ctx: PeerContext,
-    v2: bool,
-    signed_actions: bool,
+    protocol: SessionProtocol,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -499,6 +522,11 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     tokio::pin!(closed);
+    let SessionProtocol {
+        framing,
+        signed_actions,
+    } = protocol;
+    let v2 = framing.is_v2();
     let PeerContext {
         workspaces,
         autobind,
@@ -522,7 +550,7 @@ where
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
-    let mut reader = SessionReader::new(read, v2);
+    let mut reader = SessionReader::framed(read, framing);
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
@@ -544,7 +572,7 @@ where
         disconnect: &disconnect_tx,
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
-        v2,
+        framing,
         signed_actions,
         private_tx: &private_tx,
         revocations: &revocations,
@@ -842,9 +870,7 @@ where
                 {
                     authorize_state_frame(&frame, &peer, &session).await?;
                     write
-                        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                            &frame, v2,
-                        )?)
+                        .write_all(&encode_for_session(&frame, &session)?)
                         .await?;
                     trace_native_publication("written", &frame, Some(&peer.device_public_key));
                     private_burst = 0;
@@ -1295,9 +1321,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         let source = StateSource::new(peer, session);
                         authorize_replay(&ws, &source, &ticket.authority).await?;
                         write
-                            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                                frame, session.v2,
-                            )?)
+                            .write_all(&encode_for_session(frame, session)?)
                             .await?;
                         trace_native_publication(
                             "replay_written",
@@ -1435,17 +1459,13 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             }
         }
         write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                &reply, session.v2,
-            )?)
+            .write_all(&encode_for_session(&reply, session)?)
             .await?;
         if let Envelope::Ready { workspace_id, .. } = &reply
             && let Some(position) = resume_record(session, *workspace_id, [])
         {
             write
-                .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                    &position, session.v2,
-                )?)
+                .write_all(&encode_for_session(&position, session)?)
                 .await?;
         }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
@@ -1646,7 +1666,7 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
 ) -> Result<T, PeerError> {
     tokio::pin!(operation);
-    let mut private_open = session.v2;
+    let mut private_open = session.framing.is_v2();
     loop {
         tokio::select! {
             biased;
@@ -2932,30 +2952,20 @@ fn union_sessions<'a>(prepared: impl IntoIterator<Item = &'a PreparedRecipients>
     (sessions, replay_targets)
 }
 
-fn commit_log_and_materialize(
+fn commit_and_materialize(
     state: &mut crate::persistence::State,
     input: &CheckpointBatchInput,
 ) -> Result<u64, crate::store::StoreError> {
-    let sequence = input
-        .sequence
-        .ok_or_else(|| crate::persistence::error("checkpoint sequence was not reserved"))?;
-    let Envelope::Delta {
-        author_device_public_key,
-        delta,
-        ..
-    } = &*input.envelope
-    else {
+    if input.sequence.is_none() {
+        return Err(crate::persistence::error(
+            "checkpoint sequence was not reserved",
+        ));
+    }
+    let Envelope::Delta { delta, .. } = &*input.envelope else {
         return Err(crate::persistence::error(
             "checkpoint input was not a delta",
         ));
     };
-    let _ = state.store.append_log(&crate::store::LogEntry {
-        workspace_id: state.store.workspace_id(),
-        received_at_ns: sequence,
-        author_device_hex: hex::encode(author_device_public_key),
-        authored_at_ns: sequence,
-        delta_len: delta.len() as u64,
-    });
     state.materialize(delta);
     Ok(input
         .stage
@@ -3277,7 +3287,7 @@ impl ProjectedCheckpointCommit {
             {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(()) => {
-                    commit_log_and_materialize(state, input)?;
+                    commit_and_materialize(state, input)?;
                     self.gc_index = self.gc_index.saturating_add(1);
                     return Ok(ProjectedCheckpointStep::More);
                 }
@@ -3693,7 +3703,7 @@ impl SerialCheckpointCommit {
             {
                 return Ok(Step::More);
             }
-            commit_log_and_materialize(state, input)?;
+            commit_and_materialize(state, input)?;
             let mut commit = state_commit_for(
                 input,
                 self.publication
@@ -4831,17 +4841,10 @@ async fn enqueue_state_inner(
                     return Ok(Step::More);
                 }
             }
-            let seq = sequence.invariant("sequence missing")?;
+            sequence.invariant("sequence missing")?;
             let Envelope::Delta { delta, .. } = &*current.envelope else {
                 return Err(crate::persistence::error("state commit envelope is not a delta"));
             };
-            let _ = state.store.append_log(&crate::store::LogEntry {
-                workspace_id: state.store.workspace_id(),
-                received_at_ns: seq,
-                author_device_hex: hex::encode(author),
-                authored_at_ns: seq,
-                delta_len: delta.len() as u64,
-            });
             state.materialize(delta);
             Ok(Step::Done(commit.take().invariant("commit missing")?))
         },
@@ -5076,6 +5079,15 @@ async fn enqueue_state_inner(
     })
 }
 
+/// `envelope` in the framing `session` negotiated: on the compact protocol a
+/// zero-signature delta goes without its signature.
+fn encode_for_session(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+) -> Result<Vec<u8>, postcard::Error> {
+    tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, session.framing)
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -5139,17 +5151,12 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
     write
-        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-            &delivery.envelope,
-            session.v2,
-        )?)
+        .write_all(&encode_for_session(&delivery.envelope, session)?)
         .await?;
     trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
         write
-            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
-                &position, session.v2,
-            )?)
+            .write_all(&encode_for_session(&position, session)?)
             .await?;
     }
     if let Some(path) = &delivery.cleanup {
@@ -7853,8 +7860,7 @@ mod private_transport_tests {
                 positions: None,
                 compactor: None,
             },
-            true,
-            false,
+            SessionProtocol::V2,
             std::future::pending::<()>(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
@@ -8760,8 +8766,7 @@ mod private_transport_tests {
             server_read,
             server_write,
             ctx,
-            true,
-            false,
+            SessionProtocol::V2,
             std::future::pending::<()>(),
         ));
         let mut reader = SessionReader::new(replies, true);
@@ -8896,8 +8901,7 @@ mod private_transport_tests {
                 read,
                 write,
                 ctx,
-                true,
-                false,
+                SessionProtocol::V2,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -9396,8 +9400,7 @@ mod private_transport_tests {
                     positions: None,
                     compactor: None,
                 },
-                true,
-                false,
+                SessionProtocol::V2,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -9811,7 +9814,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: false,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
             signed_actions: false,
             private_tx: &private,
             revocations: &revocations,
@@ -10032,7 +10035,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10158,7 +10161,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10309,7 +10312,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: false,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10438,7 +10441,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -10548,7 +10551,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &source_disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             signed_actions: false,
             private_tx: &source_private,
             revocations: &revocations,
@@ -10762,7 +10765,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
-            v2: true,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
             signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
@@ -11135,7 +11138,7 @@ mod private_transport_tests {
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &bdis,
-            v2: false,
+            framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
             signed_actions: false,
             private_tx: &ptx,
             revocations: &revocations,
