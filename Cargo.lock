@@ -11164,6 +11164,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-files",
+ "tilo-history",
  "tilo-ocr",
  "tilo-paths",
  "tilo-reference",

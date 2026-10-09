@@ -122,10 +122,15 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
 
 /// How far the library's one photograph is turned.
 fn photo_rotation(doc: &AutoCommit) -> u8 {
-    photos::doc::PhotosDoc::library(doc)
-        .photos
-        .first()
+    library(doc)
+        .all_photos()
+        .next()
         .map_or(0, |photo| photo.edits.rotate_quarters)
+}
+
+/// The photo library `doc` holds.
+fn library(doc: &AutoCommit) -> photos::PhotoLibrary {
+    <photos::PhotoLibrary as ui::tilo_resource::Resource>::read(doc).expect("the library reads")
 }
 
 /// The photograph as Photos publishes it in its library's tree: the
@@ -712,11 +717,10 @@ fn connect_photo_editor(
     let photo = photos::model::LibraryPhoto::from_image(
         photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original),
     );
-    tilo_actions::Action::apply(
-        &photos::actions::PhotosAction::ImportPhoto { photo },
-        &mut photo_replica,
-    )
-    .expect("the photograph is imported");
+    let import = photos::resource::import(&photo)
+        .build(0)
+        .expect("the import builds");
+    tilo_actions::Action::apply(&import, &mut photo_replica).expect("the photograph is imported");
     photo_replica.commit();
     (photo_peer, photo_replica)
 }
@@ -808,7 +812,7 @@ fn drive_photo_peer(
                 ..
             } => {
                 let resources = photos_resources(&photo_replica);
-                let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
+                let update = if action == "export-edited-content" {
                     let encoded = tilo_actions::door::resolve(
                         &resources,
                         &ActionAddress::new(resource.clone(), action.clone()),
@@ -829,7 +833,7 @@ fn drive_photo_peer(
                                 &resource_id,
                                 &source_content,
                                 edits,
-                                &photos::doc::PhotosDoc::library(&photo_replica),
+                                &library(&photo_replica),
                                 content,
                             ),
                             _ => Err("the export descriptor did not encode an export".into()),
@@ -854,7 +858,7 @@ fn drive_photo_peer(
                         &mut photo_peer,
                         &mut photo_replica,
                         &resources,
-                        photos::actions::register,
+                        <photos::PhotoLibrary as ui::tilo_resource::Resource>::register,
                         typed_peer::DocumentInvocation {
                             invocation,
                             address: ActionAddress::new(resource, action),

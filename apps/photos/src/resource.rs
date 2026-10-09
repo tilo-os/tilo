@@ -1,6 +1,13 @@
-//! Photos as a [`tilo_resource::Resource`]: the shared library is the state,
-//! edits and membership are document actions, and the gallery widget is the
-//! surface. The framework host publishes through [`tilo_resource::publish`].
+//! The library's verbs, the places derived from it, and the app.
+//!
+//! Plain fields change through the built-in field edits every path offers
+//! (`PhotoLibrary::paths().photos.item(&id).favorite.set(true)`): starring,
+//! filing in a folder, people and tags, the capture time, a shared place,
+//! shared analysis, the crop and the turn, an album's name and photographs.
+//! The methods below are the operations that are more than setting a field.
+//! Albums are items of their own; folders, people, tags, places and the
+//! timeline are derived from the photographs and published as places that
+//! offer the views and verbs that act on them.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -10,70 +17,384 @@ use ui::framework::{
     EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::Effect as _;
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::effect::Answers;
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{self, Derived, Effect as _, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, PhotosEffect, register};
+use crate::actions::{PhotosEffect, TimelineAnchor};
 use crate::app::PhotosApp;
-use crate::doc::PhotosDoc;
-use crate::model::{LibraryPhoto, OpenImage, PhotoLibrary};
+use crate::model::{
+    ImageAnalysis, LibraryPhoto, MAX_LABELS, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
+};
 
-/// The shared photograph library: every photograph, how it is filed and
-/// the edits it is shown with.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PhotosState {
-    pub library: PhotoLibrary,
+/// Photos' Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "photos-timeline").with_system_locale();
+
+/// The most photographs one verb changes at once.
+pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
+
+#[resource(
+    kind = "photos.library",
+    label = "Photos",
+    children = PhotoLibrary::places,
+    search = crate::search::library_search_entries,
+    read_content = PhotoLibrary::content
+)]
+impl PhotoLibrary {
+    /// Import photograph.
+    ///
+    /// Adds a photograph already kept in the content store. A photograph the
+    /// library already has keeps what it was given.
+    #[action]
+    pub fn import_photo(
+        &mut self,
+        #[param("The photograph: its name, size in pixels and content hash")] image: OpenImage,
+        #[param("When it was taken, as its file says")] captured_at: Option<String>,
+        #[param("Where it was taken, as its file says")] location: Option<PhotoLocation>,
+    ) -> Result<(), Refusal> {
+        let mut photo = LibraryPhoto::from_image(image.portable());
+        photo.captured_at = captured_at
+            .map(|value| {
+                crate::model::canonical_capture_at_value(&value)
+                    .ok_or("the capture time is not valid EXIF or ISO 8601")
+            })
+            .transpose()?;
+        photo.location = location;
+        photo.importable()?;
+        self.add_photo(photo);
+        Ok(())
+    }
+
+    /// Read again from its file.
+    ///
+    /// Refreshes what can be re-read from the original without overwriting
+    /// deliberate organization. A capture time fills an empty one only; a
+    /// location read from the file replaces only another read from a file.
+    #[action(item = photos)]
+    pub fn refresh_imported_metadata(
+        &mut self,
+        photo: &Id,
+        #[param("When it was taken, as its file says")] captured_at: Option<String>,
+        #[param("Where it was taken, as its file says")] location: Option<PhotoLocation>,
+    ) -> Result<(), Refusal> {
+        let captured_at = captured_at
+            .map(|value| {
+                crate::model::canonical_capture_at_value(&value)
+                    .ok_or("the capture time is not valid EXIF or ISO 8601")
+            })
+            .transpose()?;
+        if location
+            .as_ref()
+            .is_some_and(|value| value.provenance.source != "exif")
+        {
+            return Err(Refusal::new("a refreshed location is read from the file"));
+        }
+        let photo = self.photos.get_mut(photo).ok_or(GONE)?;
+        if photo.captured_at.is_none() {
+            photo.captured_at = captured_at;
+        }
+        if photo
+            .location
+            .as_ref()
+            .is_none_or(|current| current.provenance.source == "exif")
+        {
+            photo.location = location;
+        }
+        Ok(())
+    }
+
+    /// Remove from library.
+    ///
+    /// Removes the photograph and every album's mention of it.
+    #[action(item = photos, destructive)]
+    pub fn remove_photo(&mut self, photo: &Id) -> Result<(), Refusal> {
+        self.photos.remove(photo).ok_or(GONE)?;
+        for (_, album) in self.albums.iter_mut() {
+            album.photo_ids.remove(&photo.as_str().to_owned());
+        }
+        Ok(())
+    }
+
+    /// Rotate right.
+    ///
+    /// Turns the photograph a quarter turn clockwise.
+    #[action(item = photos)]
+    pub fn rotate_right(&mut self, photo: &Id) -> Result<(), Refusal> {
+        let photo = self.photos.get_mut(photo).ok_or(GONE)?;
+        photo.edits = photo.edits.rotated_right();
+        Ok(())
+    }
+
+    /// Rotate left.
+    ///
+    /// Turns the photograph a quarter turn anticlockwise.
+    #[action(item = photos)]
+    pub fn rotate_left(&mut self, photo: &Id) -> Result<(), Refusal> {
+        let photo = self.photos.get_mut(photo).ok_or(GONE)?;
+        photo.edits = photo.edits.rotated_left();
+        Ok(())
+    }
+
+    /// Crop.
+    ///
+    /// Keeps a region of what is shown now, turned as it is.
+    #[action(item = photos)]
+    pub fn crop(
+        &mut self,
+        photo: &Id,
+        #[param("The region kept, in normalized coordinates (0 to 1) of the photograph as shown")]
+        region: Rect01,
+    ) -> Result<(), Refusal> {
+        if !region.is_valid_selection() {
+            return Err(Refusal::new(
+                "the region is x, y, w, h between 0 and 1, inside the photograph",
+            ));
+        }
+        let photo = self.photos.get_mut(photo).ok_or(GONE)?;
+        photo.edits = photo.edits.cropped_from_view(region);
+        Ok(())
+    }
+
+    /// Share analysis.
+    ///
+    /// Merges one analyzer's bounded result into what the photograph already
+    /// shares. Text recognition and image analysis are independent:
+    /// completing either keeps the other.
+    #[action(item = photos)]
+    pub fn merge_image_analysis(
+        &mut self,
+        photo: &Id,
+        #[param("What the analyzer found, with its provenance")] analysis: ImageAnalysis,
+    ) -> Result<(), Refusal> {
+        if !crate::model::valid_analysis(&analysis)
+            || !matches!(
+                analysis.provenance.source.as_str(),
+                "local-ocr" | "local-vision" | "local-description"
+            )
+        {
+            return Err(Refusal::new(
+                "image analysis is compact, explicitly shared, and carries analyzer provenance",
+            ));
+        }
+        let photo = self.photos.get_mut(photo).ok_or(GONE)?;
+        if !crate::model::analysis_names_exact_content(photo, &analysis) {
+            return Err(Refusal::new(
+                "analysis components do not name this photograph's content",
+            ));
+        }
+        let merged = crate::model::merge_image_analysis(
+            photo.analysis().as_ref(),
+            analysis,
+            photo.image.content.as_deref(),
+        );
+        photo.set_analysis(Some(merged));
+        Ok(())
+    }
+
+    /// Set person membership.
+    ///
+    /// The person is carried by exactly these photographs. An empty list
+    /// removes the person.
+    #[action]
+    pub fn set_person_membership(
+        &mut self,
+        #[param("The person's name")] person: String,
+        #[param("Every photograph showing them, by id")] photos: Vec<String>,
+    ) -> Result<(), Refusal> {
+        let person = person_label(&person)?;
+        if photos.len() > MAX_BATCH_PHOTOS || !crate::model::unique_strings(&photos) {
+            return Err(Refusal::new(
+                "a person's photographs are each named once, at most 256",
+            ));
+        }
+        if photos.iter().any(|id| self.photo(id).is_none()) {
+            return Err(Refusal::new("a photograph is no longer in the library"));
+        }
+        for (id, photo) in self.photos.iter_mut() {
+            if photos.iter().any(|chosen| chosen == id.as_str()) {
+                photo.people.insert(person.clone());
+            } else {
+                photo.people.remove(&person);
+            }
+        }
+        self.within_label_limits()
+    }
+
+    /// Rename person.
+    ///
+    /// Renames the person, or merges them into another person by that name.
+    #[action]
+    pub fn rename_person(
+        &mut self,
+        #[param("The person's name")] person: String,
+        #[param("Their new name")] to: String,
+    ) -> Result<(), Refusal> {
+        let (from, to) = (person_label(&person)?, person_label(&to)?);
+        let mut found = false;
+        for (_, photo) in self.photos.iter_mut() {
+            if photo.people.remove(&from) {
+                photo.people.insert(to.clone());
+                found = true;
+            }
+        }
+        if !found {
+            return Err(Refusal::new("that person is no longer in the library"));
+        }
+        self.within_label_limits()
+    }
+
+    /// Remove person.
+    ///
+    /// Their name comes off every photograph. No photograph is removed.
+    #[action(destructive)]
+    pub fn remove_person(
+        &mut self,
+        #[param("The person's name")] person: String,
+    ) -> Result<(), Refusal> {
+        let person = person_label(&person)?;
+        let mut found = false;
+        for (_, photo) in self.photos.iter_mut() {
+            found |= photo.people.remove(&person);
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(Refusal::new("that person is no longer in the library"))
+        }
+    }
+
+    /// Remove album.
+    ///
+    /// Its photographs stay in the library.
+    #[action(item = albums, destructive)]
+    pub fn remove_album(&mut self, album: &Id) -> Result<(), Refusal> {
+        self.albums
+            .remove(album)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("that album is no longer in the library"))
+    }
 }
 
-/// The photos library resource.
-pub struct Photos;
+/// Why a verb on a photograph is refused when it is gone.
+const GONE: &str = "that photograph is no longer in the library";
 
-impl Resource for Photos {
-    const KIND: &'static str = "photos.library";
-    const LABEL: &'static str = "Photos";
-    const ACTION_TYPE: &'static str = PHOTOS_ACTION_TYPE;
-
-    type State = PhotosState;
-    type Action = PhotosAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<PhotosState, ModelError> {
-        Ok(PhotosState {
-            library: PhotosDoc::library(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        crate::actions::library_declarations()
-    }
-
-    fn children(state: &PhotosState) -> Vec<tilo_actions::Resource> {
-        crate::actions::library_children(&state.library)
-    }
-
-    fn child(state: &PhotosState, id: &str) -> Option<tilo_actions::Resource> {
-        crate::actions::library_child(&state.library, id)
-    }
-
-    /// Every photograph by its name and everything shared about it — the
-    /// people, tags, folder, place, capture date and analysed text — and the
-    /// timeline, its months and days, places, albums, folders and labels by
-    /// theirs. Choosing a hit opens it.
-    fn search(state: &PhotosState) -> Vec<SearchEntry> {
-        crate::search::library_search_entries(&state.library)
+/// `name` as a person's label, trimmed; refused when it cannot be one.
+fn person_label(name: &str) -> Result<String, Refusal> {
+    if crate::model::valid_person_label(name) {
+        Ok(name.trim().to_owned())
+    } else {
+        Err(Refusal::new(
+            "a person's name is short, not blank, and has no control characters",
+        ))
     }
 }
 
-/// Framework app: the photos widget is the surface over [`Photos`].
+impl PhotoLibrary {
+    /// Refuse a change that left a photograph with more names than it may
+    /// carry, rather than dropping one.
+    fn within_label_limits(&self) -> Result<(), Refusal> {
+        if self
+            .all_photos()
+            .any(|photo| photo.people.len() > MAX_LABELS)
+        {
+            return Err(Refusal::new(
+                "a photograph carries at most 32 people; the change is refused",
+            ));
+        }
+        Ok(())
+    }
+
+    /// What the library reads as to a caller with no screen: how many
+    /// photographs and albums it holds, or one photograph or album whole —
+    /// its name, size and content address, its labels and its edits.
+    fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        use ui::tilo_resource::Model as _;
+        match item {
+            None => Ok(serde_json::json!({
+                "photos": self.photos.len(),
+                "albums": self.albums.len(),
+            })),
+            Some(id) => self
+                .photos
+                .get(id)
+                .map(LibraryPhoto::to_json)
+                .or_else(|| self.albums.get(id).map(crate::model::Album::to_json))
+                .ok_or_else(|| format!("there is no photograph or album {id}")),
+        }
+    }
+
+    /// The places derived from the library: favorites, albums, places,
+    /// people, the timeline, folders, tags, and what analysis found; and the
+    /// photo analysis this device runs.
+    fn places(&self) -> Vec<Derived<Self>> {
+        crate::derived::derived(self)
+    }
+}
+
+/// The edit that imports `photo` as an import reads it from a file.
+#[must_use]
+pub fn import(photo: &LibraryPhoto) -> Invoke<PhotoLibrary> {
+    PhotoLibrary::IMPORT_PHOTO.with((
+        photo.image.clone(),
+        photo.captured_at.clone(),
+        photo.location.clone(),
+    ))
+}
+
+/// The edit that puts `photo`, as it is, at the end of the library: a
+/// library written whole, such as a capture's.
+#[must_use]
+pub fn insert(photo: &LibraryPhoto) -> ui::tilo_resource::Edit<PhotoLibrary> {
+    PhotoLibrary::paths()
+        .photos
+        .insert_as(&photo.item(), usize::MAX, photo)
+}
+
+/// The derived place `id` names among `library`'s, as published.
+#[must_use]
+pub fn derived_resource_id(id: &str) -> String {
+    format!(
+        "{}/derived/{id}",
+        <PhotoLibrary as tilo_resource::Resource>::KIND
+    )
+}
+
+/// A photograph's item resource id.
+#[must_use]
+pub fn photo_resource_id(photo: &str) -> String {
+    tilo_resource::items::item_resource_id::<PhotoLibrary>("photos", &Id::from_raw(photo))
+}
+
+/// The photograph an item resource id names, if it names one.
+#[must_use]
+pub fn photo_of_resource(resource_id: &str) -> Option<String> {
+    match tilo_resource::items::item_of_resource::<PhotoLibrary>(resource_id)? {
+        ("photos", id) => Some(id.as_str().to_owned()),
+        _ => None,
+    }
+}
+
+/// An album's item resource id.
+#[must_use]
+pub fn album_resource_id(album: &str) -> String {
+    tilo_resource::items::item_resource_id::<PhotoLibrary>("albums", &Id::from_raw(album))
+}
+
+/// A view that opens the timeline at `anchor`.
+#[must_use]
+pub fn timeline_view(anchor: Option<TimelineAnchor>) -> PhotosEffect {
+    PhotosEffect::ViewTimeline { anchor }
+}
+
+/// Framework app: the photos widget is the surface over [`PhotoLibrary`].
 pub struct PhotosShell;
 
 impl ResourceApp for PhotosShell {
-    type Resource = Photos;
+    type Resource = PhotoLibrary;
     const ID: &'static str = "so.tilo.photos";
     const TITLE: &'static str = "Photos";
     const ICON: Option<&'static str> = Some("photos");
@@ -81,7 +402,7 @@ impl ResourceApp for PhotosShell {
     /// A photograph to open, or a folder of them to import, into the library.
     const ARGUMENTS: usize = 1;
 
-    fn view(cx: &mut ViewCx<Photos>) -> Element {
+    fn view(cx: &mut ViewCx<PhotoLibrary>) -> Element {
         let content = cx.content().unwrap_or_else(ContentStore::memory);
         let app = if cx.mode().is_live() {
             PhotosApp::new_persistent(content)
@@ -89,13 +410,20 @@ impl ResourceApp for PhotosShell {
         } else {
             PhotosApp::with_content(content)
         };
+        // A search hit, or an agent's `open`, shows the photograph or album
+        // it names.
+        cx.on_open_item(app.opener());
         cx.surface(app)
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     /// A photograph handed to the launch is kept in the content store and
     /// imported into the library; the window shows it, and imports a folder
     /// ([`PhotosApp::launched_on`]).
-    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Photos>> {
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<PhotoLibrary>> {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
@@ -116,11 +444,7 @@ impl ResourceApp for PhotosShell {
         let open = OpenImage::from_path(file.name(), image.w, image.h)
             .with_content(hash)
             .portable();
-        Invoke::apply(&PhotosAction::ImportPhoto {
-            photo: LibraryPhoto::from_image(open),
-        })
-        .into_iter()
-        .collect()
+        vec![import(&LibraryPhoto::from_image(open))]
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -133,24 +457,21 @@ impl ResourceApp for PhotosShell {
 
     /// The photographs a scenario shows live in the content store, not the
     /// document: their bytes are put there before the view is built.
-    fn fixture(fixture: &mut Fixture<Photos>) {
+    fn fixture(fixture: &mut Fixture<PhotoLibrary>) {
         crate::sample::put_content(fixture.content());
     }
 
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Photos>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
         crate::sample::scenario(name)
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
     }
 }
 
-impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
-    fn present(&mut self, state: &Rc<PhotosState>) {
+impl ResourceSurface<PhotoLibrary, PhotosEffect> for PhotosApp {
+    fn present(&mut self, state: &Rc<PhotoLibrary>) {
         self.adopt_resource_state(state);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Photos>) {
+    fn attach(&mut self, cx: SurfaceCx<PhotoLibrary>) {
         self.attach_framework(cx.dispatcher(), cx.actions());
     }
 
@@ -158,7 +479,11 @@ impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
         self.stage_scenario(scenario.unwrap_or("opened"));
     }
 
-    fn effect(&mut self, effect: PhotosEffect, cx: &mut EffectCx<Photos, Self>) -> EffectAnswer {
+    fn effect(
+        &mut self,
+        effect: PhotosEffect,
+        cx: &mut EffectCx<PhotoLibrary, Self>,
+    ) -> EffectAnswer {
         let job = PhotosEffect::declarations()
             .iter()
             .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
@@ -170,7 +495,7 @@ impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
             self.register_reply(invocation, reply);
         }
         let state = cx.live().get();
-        match self.answer_effect(effect, invocation, &state.library) {
+        match self.answer_effect(effect, invocation, &state) {
             Ok(Some(output)) if job => {
                 self.settle_now(invocation, Ok(output));
                 Ok(Effected::Pending)
@@ -195,185 +520,4 @@ impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use ui::framework::testing::TestApp;
-
-    use super::*;
-
-    fn surface<T>(app: &mut TestApp<PhotosShell>, read: impl FnOnce(&mut PhotosApp) -> T) -> T {
-        app.surface(read)
-            .expect("the window hosts the photos surface")
-    }
-
-    #[test]
-    fn every_scenario_stages_through_the_library_and_settles() {
-        for &name in crate::sample::SCENARIOS {
-            let mut app = TestApp::<PhotosShell>::capture(Some(name))
-                .unwrap_or_else(|error| panic!("{name} does not capture: {error}"));
-            let state = app.state();
-            let library = crate::sample::shows_library(name);
-            match name {
-                "empty" => assert!(state.library.photos.is_empty()),
-                "loading" | "error" | "opened" | "cropping" | "edited" => {
-                    assert_eq!(state.library.photos.len(), 1, "{name}");
-                }
-                _ => assert!(state.library.photos.len() > 1, "{name} shows a library"),
-            }
-            let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
-            assert_eq!(
-                opened,
-                crate::sample::opened(name),
-                "{name} opens its photograph"
-            );
-            let shown_edits = opened
-                .and_then(|id| state.library.photo(&id).map(|photo| photo.edits))
-                .unwrap_or_default();
-            assert_eq!(
-                !shown_edits.is_identity(),
-                matches!(name, "cropping" | "edited"),
-                "{name} shows an edit exactly when it stages one"
-            );
-            let (in_library, has_image) = surface(&mut app, |photos| {
-                (photos.shows_library(), photos.has_image())
-            });
-            assert_eq!(in_library, library, "{name} poses the library view");
-            assert_eq!(
-                has_image,
-                !matches!(name, "empty" | "loading" | "error"),
-                "{name} draws its photograph only when its bytes are an image here"
-            );
-        }
-    }
-
-    #[test]
-    fn a_launched_photograph_is_imported_into_the_library_and_opened() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("lake.png");
-        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
-        std::fs::write(&path, &png).unwrap();
-        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
-        app.harness().relayout();
-        let state = app.state();
-        assert_eq!(state.library.photos.len(), 1);
-        let hash = tilo_content::hash_bytes(&png);
-        assert_eq!(
-            state.library.photos[0].image.content.as_deref(),
-            Some(hash.as_str())
-        );
-        assert_eq!(state.library.photos[0].image.name, "lake.png");
-        let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
-        assert_eq!(opened.as_deref(), Some(state.library.photos[0].id.as_str()));
-        assert!(surface(&mut app, |photos| photos.has_image()));
-    }
-
-    #[test]
-    fn effects_reach_the_window_from_the_library_and_from_its_photographs() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("lake.png");
-        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
-        std::fs::write(&path, &png).unwrap();
-        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
-        app.harness().relayout();
-        let photo = app.state().library.photos[0].clone();
-
-        app.effect(&PhotosEffect::ViewLibrary)
-            .expect("the library opens");
-        assert!(surface(&mut app, |photos| photos.shows_library()));
-
-        // A photograph's own row opens it, as the palette or an agent does:
-        // the row offers the effect under the effect's own id.
-        app.effect_on(
-            &photo.id,
-            &PhotosEffect::View {
-                photo_id: photo.id.clone(),
-            },
-        )
-        .expect("the photograph opens from its row");
-        app.harness().relayout();
-        assert!(!surface(&mut app, |photos| photos.shows_library()));
-        assert_eq!(
-            surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned)).as_deref(),
-            Some(photo.id.as_str())
-        );
-
-        // The edited pixels come out as content of their own.
-        app.invoke(
-            Invoke::apply(&PhotosAction::set(
-                &photo.id,
-                &crate::model::Edits::default().rotated_right(),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        let edits = crate::model::Edits::default().rotated_right();
-        let output = app
-            .effect_on(
-                &photo.id,
-                &PhotosEffect::ExportEditedContent {
-                    resource_id: photo.id.clone(),
-                    source_content: photo.image.content.clone().unwrap(),
-                    edits,
-                },
-            )
-            .expect("the photograph exports its edits");
-        let produced = tilo_actions::content_hash(&output.resources[0]).expect("content");
-        assert_ne!(Some(produced), photo.image.content.as_deref());
-    }
-
-    #[test]
-    fn the_windows_controls_are_bound_to_its_effects() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("lake.png");
-        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
-        std::fs::write(&path, &png).unwrap();
-        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
-        app.harness().relayout();
-        let photo = app.state().library.photos[0].id.clone();
-
-        // A toolbar control reaches the window through its effect, as every
-        // other caller does.
-        app.effect(&PhotosEffect::RotateShownRight)
-            .expect("rotating the shown photograph is offered");
-        app.harness().relayout();
-        assert_eq!(
-            app.state()
-                .library
-                .photo(&photo)
-                .unwrap()
-                .edits
-                .rotate_quarters,
-            1
-        );
-
-        // Every retained control is bound to an effect the window offers.
-        let bindings = surface(&mut app, |photos| {
-            ui::widget::controls::ActionControls::control_action_bindings(photos)
-        });
-        assert!(!bindings.is_empty());
-        let offered: Vec<_> = PhotosEffect::specs()
-            .into_iter()
-            .map(|spec| spec.id)
-            .collect();
-        assert!(offered.iter().any(|id| id == "rotate-shown-right"));
-    }
-
-    /// The saved scenario `tilo-app test` drives runs against the framework
-    /// app: its targets name the window's controls as the live window does.
-    #[test]
-    fn the_saved_library_entry_scenario_drives_the_framework_window() {
-        let spec = ui::headless::parse_spec(&format!(
-            "{{\"actions\": {}}}",
-            include_str!("../tests/scenarios/library-entry.json")
-        ))
-        .expect("the scenario parses");
-        let mut app = TestApp::<PhotosShell>::new().unwrap();
-        app.harness().relayout();
-        for action in &spec.actions {
-            app.harness()
-                .perform(action)
-                .unwrap_or_else(|error| panic!("scenario step failed: {error}"));
-        }
-        app.harness().relayout();
-        assert!(surface(&mut app, |photos| photos.shows_library()));
-    }
-}
+mod tests;

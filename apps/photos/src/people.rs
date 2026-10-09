@@ -4,7 +4,8 @@
 //! geometry, crop pixels, and even the existence of an unconfirmed proposal
 //! are sensitive device-local state. The only bridge to collaboration is
 //! [`PeopleController::approve_membership`], which produces a compact,
-//! user-approved [`crate::actions::PhotosAction::SetPersonMembership`].
+//! user-approved person and photographs for
+//! [`PhotoLibrary::SET_PERSON_MEMBERSHIP`].
 //!
 //! A generic image-description model is not a face-recognition model. Until a
 //! signed local face-clustering capability is installed, this controller stays
@@ -13,7 +14,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::actions::PhotosAction;
 use crate::model::PhotoLibrary;
 
 /// One explicitly shared person as a presentation-ready collection. It is
@@ -38,8 +38,8 @@ impl SharedPerson {
 #[must_use]
 pub fn approved_people(library: &PhotoLibrary) -> Vec<SharedPerson> {
     let mut people = BTreeMap::<String, Vec<String>>::new();
-    for photo in &library.photos {
-        for label in &photo.people {
+    for photo in library.all_photos() {
+        for label in photo.people.iter() {
             people
                 .entry(label.clone())
                 .or_default()
@@ -184,7 +184,7 @@ pub enum PeopleChange {
 }
 
 /// Local People state. Its owner is the running app/local settings store; it
-/// must never be serialized by `PhotosDoc` or offered as a Resource.
+/// must never be written to the library or offered as a resource.
 #[derive(Clone, Debug, Default)]
 pub struct PeopleController {
     privacy: PeoplePrivacy,
@@ -615,15 +615,11 @@ impl PeopleController {
     /// refuses unnamed/rejected clusters and intentionally carries only photo
     /// ids and the chosen label — never the local clustering evidence.
     #[must_use]
-    pub fn approve_membership(&self, id: &str) -> Option<PhotosAction> {
+    pub fn approve_membership(&self, id: &str) -> Option<(String, Vec<String>)> {
         let cluster = self.clusters.get(id)?;
         let person = cluster.display_name.as_ref()?.trim();
-        (!cluster.rejected && valid_person_name(person)).then(|| {
-            PhotosAction::SetPersonMembership {
-                person: person.to_owned(),
-                photo_ids: cluster.visible_photo_ids(),
-            }
-        })
+        (!cluster.rejected && valid_person_name(person))
+            .then(|| (person.to_owned(), cluster.visible_photo_ids()))
     }
 
     /// Delete every device-local face cluster and capability identity. This
@@ -805,19 +801,18 @@ mod tests {
         );
         assert_eq!(
             people.approve_membership("manual"),
-            Some(PhotosAction::SetPersonMembership {
-                person: "Sam".to_owned(),
-                photo_ids: vec![A.to_owned(), B.to_owned()],
-            })
+            Some(("Sam".to_owned(), vec![A.to_owned(), B.to_owned()]))
         );
 
         let mut library = PhotoLibrary::default();
         let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::from_path(
             "one.png", 20, 10,
         ));
-        photo.people = vec!["Sam".to_owned(), "Élodie".to_owned()];
+        photo.people = ["Sam".to_owned(), "Élodie".to_owned()]
+            .into_iter()
+            .collect();
         let photo_id = photo.id.clone();
-        library.photos.push(photo);
+        library.add_photo(photo);
         assert_eq!(
             approved_people(&library),
             vec![

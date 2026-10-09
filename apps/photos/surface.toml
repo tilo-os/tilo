@@ -1,0 +1,672 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "photos.library"
+label = "Photos"
+version = 1
+
+[[resources.fields]]
+owner = "photo-library"
+path = "photos"
+stored = "collection"
+title = "Photos"
+type = "Collection<LibraryPhoto>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.id"
+readonly = true
+stored = "value"
+title = "The photograph's stable id, derived from its content"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "library-photo"
+path = "photos.*.name"
+readonly = true
+stored = "value"
+title = "Name: what the photograph is called, its file's name when it came"
+type = "String"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.image"
+readonly = true
+stored = "record"
+title = "The picture: its name, size and content address"
+type = "OpenImage"
+
+[[resources.fields]]
+owner = "open-image"
+path = "photos.*.image.name"
+stored = "value"
+title = "File name, as shown"
+type = "String"
+
+[[resources.fields]]
+owner = "open-image"
+path = "photos.*.image.path"
+stored = "value"
+title = "Where the picture was opened from, for a picture with no content"
+type = "String"
+
+[[resources.fields]]
+owner = "open-image"
+path = "photos.*.image.width"
+stored = "value"
+title = "Intrinsic pixel size of the *original*, before any edit"
+type = "u32"
+
+[[resources.fields]]
+owner = "open-image"
+path = "photos.*.image.height"
+stored = "value"
+title = "Height"
+type = "u32"
+
+[[resources.fields]]
+owner = "open-image"
+path = "photos.*.image.content"
+stored = "value"
+title = "blake3 of the picture's bytes — the one name for it that means the"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.favorite"
+stored = "value"
+title = "Favorite"
+type = "bool"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.folder"
+stored = "value"
+title = "Folder: a user-organized label. This is deliberately metadata rather"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.people"
+stored = "value"
+title = "People: named people visible in the photograph. Compact labels, not"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.tags"
+stored = "value"
+title = "Tags: freeform, durable search labels"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.captured_at"
+stored = "value"
+title = "Capture time, as authored: keeping the original string avoids"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.location"
+stored = "value"
+title = "Place: an explicit location. Absence means no location was shared;"
+type = "Option<PhotoLocation>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.ocr"
+stored = "value"
+title = "Recognized text: explicitly shared text recognition. Device-local"
+type = "Option<OcrComponent>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.vision"
+stored = "value"
+title = "What is in it: explicitly shared image analysis, its description,"
+type = "Option<VisionComponent>"
+
+[[resources.fields]]
+owner = "library-photo"
+path = "photos.*.edits"
+stored = "record"
+title = "Crop and turn: the photograph's own; editing one photograph never"
+type = "Edits"
+
+[[resources.fields]]
+owner = "edits"
+path = "photos.*.edits.crop"
+stored = "value"
+title = "Crop: the region of the *original* kept, normalized"
+type = "Rect01"
+
+[[resources.fields]]
+owner = "edits"
+path = "photos.*.edits.rotate_quarters"
+stored = "value"
+title = "Turn: clockwise quarter turns applied after the crop, `0..=3`"
+type = "u8"
+
+[[resources.fields]]
+owner = "photo-library"
+path = "albums"
+stored = "collection"
+title = "Albums"
+type = "Collection<Album>"
+
+[[resources.fields]]
+owner = "album"
+path = "albums.*.id"
+readonly = true
+stored = "value"
+title = "The album's stable id, `photos.album:…`"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "album"
+path = "albums.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "album"
+path = "albums.*.photo_ids"
+stored = "value"
+title = "Photographs"
+type = "Set<String>"
+
+[[resources.verbs]]
+description = "Import photograph.  Adds a photograph already kept in the content store. A photograph the library already has keeps what it was given."
+id = "import-photo"
+kind = "undoable"
+label = "Import photograph"
+
+[[resources.verbs.params]]
+name = "image"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The photograph: its name, size in pixels and content hash"
+required = [
+    "name",
+    "path",
+    "width",
+    "height",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.content]
+description = "blake3 of the picture's bytes — the one name for it that means the same thing in every session. `#[serde(default)]` so a document written before this field existed still parses; such a picture has only its path, which is why the resolution order keeps working from one."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.height]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.name]
+description = "File name, as shown."
+type = "string"
+
+[resources.verbs.params.schema.properties.path]
+description = "Where the picture was opened from, for a picture with no content address; a content-addressed picture keeps only its name here, never an absolute origin path: its bytes resolve by `Self::content` through the content store on every device."
+type = "string"
+
+[resources.verbs.params.schema.properties.width]
+description = "Intrinsic pixel size of the *original*, before any edit."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "captured_at"
+required = false
+
+[resources.verbs.params.schema]
+description = "When it was taken, as its file says"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "location"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where it was taken, as its file says"
+required = [
+    "latitude",
+    "longitude",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.label]
+description = 'Optional user-facing place name, e.g. "Golden Gate Park".'
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.latitude]
+description = "WGS-84 latitude in decimal degrees."
+type = "number"
+
+[resources.verbs.params.schema.properties.longitude]
+description = "WGS-84 longitude in decimal degrees."
+type = "number"
+
+[resources.verbs.params.schema.properties.provenance]
+additionalProperties = false
+description = "Why this location exists and whether it was deliberately shared."
+type = "object"
+
+[resources.verbs.params.schema.properties.provenance.properties.scope]
+description = "`shared` is required for durable locations. `local` is reserved for an app-private draft and must never be persisted in the CRDT."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.source]
+description = "`user`, `map`, `exif`, or `device`.  `map` records a deliberate placement on Photos' bundled offline reference map. No network-derived source is silently accepted: hosted geocoding would be a privacy boundary, not metadata."
+type = "string"
+
+[[resources.verbs]]
+description = "Read again from its file.  Refreshes what can be re-read from the original without overwriting deliberate organization. A capture time fills an empty one only; a location read from the file replaces only another read from a file."
+id = "refresh-imported-metadata"
+kind = "undoable"
+label = "Read again from its file"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs.params]]
+name = "captured_at"
+required = false
+
+[resources.verbs.params.schema]
+description = "When it was taken, as its file says"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "location"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where it was taken, as its file says"
+required = [
+    "latitude",
+    "longitude",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.label]
+description = 'Optional user-facing place name, e.g. "Golden Gate Park".'
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.latitude]
+description = "WGS-84 latitude in decimal degrees."
+type = "number"
+
+[resources.verbs.params.schema.properties.longitude]
+description = "WGS-84 longitude in decimal degrees."
+type = "number"
+
+[resources.verbs.params.schema.properties.provenance]
+additionalProperties = false
+description = "Why this location exists and whether it was deliberately shared."
+type = "object"
+
+[resources.verbs.params.schema.properties.provenance.properties.scope]
+description = "`shared` is required for durable locations. `local` is reserved for an app-private draft and must never be persisted in the CRDT."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.source]
+description = "`user`, `map`, `exif`, or `device`.  `map` records a deliberate placement on Photos' bundled offline reference map. No network-derived source is silently accepted: hosted geocoding would be a privacy boundary, not metadata."
+type = "string"
+
+[[resources.verbs]]
+description = "Remove from library.  Removes the photograph and every album's mention of it."
+destructive = true
+id = "remove-photo"
+kind = "undoable"
+label = "Remove from library"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs]]
+description = "Rotate right.  Turns the photograph a quarter turn clockwise."
+id = "rotate-right"
+kind = "undoable"
+label = "Rotate right"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs]]
+description = "Rotate left.  Turns the photograph a quarter turn anticlockwise."
+id = "rotate-left"
+kind = "undoable"
+label = "Rotate left"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs]]
+description = "Crop.  Keeps a region of what is shown now, turned as it is."
+id = "crop"
+kind = "undoable"
+label = "Crop"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs.params]]
+name = "region"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The region kept, in normalized coordinates (0 to 1) of the photograph as shown"
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.h]
+maximum = 1
+minimum = 0
+type = "number"
+
+[resources.verbs.params.schema.properties.w]
+maximum = 1
+minimum = 0
+type = "number"
+
+[resources.verbs.params.schema.properties.x]
+maximum = 1
+minimum = 0
+type = "number"
+
+[resources.verbs.params.schema.properties.y]
+maximum = 1
+minimum = 0
+type = "number"
+
+[[resources.verbs]]
+description = "Share analysis.  Merges one analyzer's bounded result into what the photograph already shares. Text recognition and image analysis are independent: completing either keeps the other."
+id = "merge-image-analysis"
+kind = "undoable"
+label = "Share analysis"
+
+[[resources.verbs.params]]
+name = "photo"
+required = true
+
+[resources.verbs.params.schema]
+description = "Photo"
+type = "string"
+
+[[resources.verbs.params]]
+name = "analysis"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "What the analyzer found, with its provenance"
+type = "object"
+
+[resources.verbs.params.schema.properties.description]
+description = "A concise, local description suitable for finding a photograph later."
+type = "string"
+
+[resources.verbs.params.schema.properties.objects]
+description = 'Recognized non-person subjects, for example "bicycle" or "beach".'
+type = "array"
+
+[resources.verbs.params.schema.properties.objects.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance]
+additionalProperties = false
+description = "Provenance for the text currently stored in `ocr_text`. Kept separate from visual analysis so a later OCR or vision job cannot erase the other component's audit trail."
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.content]
+description = "The content hash this result describes. Empty means a legacy/path-only image and makes the result deliberately refreshable, not transferable."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.engine]
+description = "Stable engine/model family identifier, never an error or command line."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.language]
+description = "OCR language when text recognition was used."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.model_id]
+description = "Signed local model identifier when a vision result was produced. Empty for OCR, user-authored, and older records."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.model_revision]
+description = "Immutable signed model revision when a vision result was produced. Empty preserves backwards compatibility with pre-provenance records."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.scope]
+description = "Explicit sharing semantics: `shared` records were accepted through the document action; `local` records must never be written to the CRDT."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_provenance.properties.source]
+description = "`local-ocr`, `local-vision`, `local-description` (legacy), or `user`."
+type = "string"
+
+[resources.verbs.params.schema.properties.ocr_text]
+description = "The text read from the pixels. Line layout is intentionally flattened: the shared search layer needs words, not page coordinates."
+type = "string"
+
+[resources.verbs.params.schema.properties.pets]
+description = "Pet labels are separate from generic objects because people browse their animals differently from everything else in a scene."
+type = "array"
+
+[resources.verbs.params.schema.properties.pets.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance]
+additionalProperties = false
+description = "How the result was made. It gives collaborators enough context to decide whether to trust or refresh it without leaking local paths."
+type = "object"
+
+[resources.verbs.params.schema.properties.provenance.properties.content]
+description = "The content hash this result describes. Empty means a legacy/path-only image and makes the result deliberately refreshable, not transferable."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.engine]
+description = "Stable engine/model family identifier, never an error or command line."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.language]
+description = "OCR language when text recognition was used."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.model_id]
+description = "Signed local model identifier when a vision result was produced. Empty for OCR, user-authored, and older records."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.model_revision]
+description = "Immutable signed model revision when a vision result was produced. Empty preserves backwards compatibility with pre-provenance records."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.scope]
+description = "Explicit sharing semantics: `shared` records were accepted through the document action; `local` records must never be written to the CRDT."
+type = "string"
+
+[resources.verbs.params.schema.properties.provenance.properties.source]
+description = "`local-ocr`, `local-vision`, `local-description` (legacy), or `user`."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance]
+additionalProperties = false
+description = "Provenance for `description`, `objects`, and `pets`. Older records use `provenance`; newly produced records populate this field explicitly."
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.content]
+description = "The content hash this result describes. Empty means a legacy/path-only image and makes the result deliberately refreshable, not transferable."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.engine]
+description = "Stable engine/model family identifier, never an error or command line."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.language]
+description = "OCR language when text recognition was used."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.model_id]
+description = "Signed local model identifier when a vision result was produced. Empty for OCR, user-authored, and older records."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.model_revision]
+description = "Immutable signed model revision when a vision result was produced. Empty preserves backwards compatibility with pre-provenance records."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.scope]
+description = "Explicit sharing semantics: `shared` records were accepted through the document action; `local` records must never be written to the CRDT."
+type = "string"
+
+[resources.verbs.params.schema.properties.vision_provenance.properties.source]
+description = "`local-ocr`, `local-vision`, `local-description` (legacy), or `user`."
+type = "string"
+
+[[resources.verbs]]
+description = "Set person membership.  The person is carried by exactly these photographs. An empty list removes the person."
+id = "set-person-membership"
+kind = "undoable"
+label = "Set person membership"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "The person's name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "photos"
+required = true
+
+[resources.verbs.params.schema]
+description = "Every photograph showing them, by id"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
+description = "Rename person.  Renames the person, or merges them into another person by that name."
+id = "rename-person"
+kind = "undoable"
+label = "Rename person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "The person's name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+description = "Their new name"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove person.  Their name comes off every photograph. No photograph is removed."
+destructive = true
+id = "remove-person"
+kind = "undoable"
+label = "Remove person"
+
+[[resources.verbs.params]]
+name = "person"
+required = true
+
+[resources.verbs.params.schema]
+description = "The person's name"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove album.  Its photographs stay in the library."
+destructive = true
+id = "remove-album"
+kind = "undoable"
+label = "Remove album"
+
+[[resources.verbs.params]]
+name = "album"
+required = true
+
+[resources.verbs.params.schema]
+description = "Album"
+type = "string"

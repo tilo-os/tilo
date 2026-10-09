@@ -62,7 +62,7 @@
 pub mod actions;
 pub mod analysis;
 pub mod app;
-pub mod doc;
+pub mod derived;
 mod files;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
@@ -134,18 +134,17 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<PhotosShell>()
 }
 
-pub use resource::{Photos, PhotosShell, PhotosState};
+pub use model::PhotoLibrary;
+pub use resource::PhotosShell;
 pub use sample::{shots_pattern, shots_pattern_variant};
 
 #[cfg(test)]
 mod camera_import_tests {
-    use automerge::AutoCommit;
-    use tilo_actions::Action as _;
     use tilo_content::ContentStore;
+    use ui::tilo_resource::Replica;
 
     use super::{camera_import_photo, pixels};
-    use crate::actions::PhotosAction;
-    use crate::doc::PhotosDoc;
+    use crate::model::PhotoLibrary;
 
     #[test]
     fn camera_import_verifies_real_content_before_naming_one_photograph() {
@@ -156,22 +155,28 @@ mod camera_import_tests {
             let store = ContentStore::memory();
             let hash = store.put(&bytes).expect("fixture content");
             let media_id = format!("media:blake3:{hash}");
-            let mut doc = AutoCommit::new();
+            let mut library = Replica::<PhotoLibrary>::new();
 
             let photo =
                 camera_import_photo(&media_id, "Camera photo.png", &store).expect("verified");
             let again = camera_import_photo(&media_id, "renamed.png", &store).expect("verified");
             assert_eq!(photo.id, again.id, "one photograph per content");
             for photo in [photo, again] {
-                PhotosAction::ImportPhoto { photo }
-                    .apply(&mut doc)
+                library
+                    .apply(crate::resource::import(&photo))
                     .expect("the import applies");
             }
 
-            let library = PhotosDoc::library(&doc);
+            let library = library.state().expect("the library reads");
             assert_eq!(library.photos.len(), 1);
             assert_eq!(
-                library.photos[0].image.content.as_deref(),
+                library
+                    .all_photos()
+                    .next()
+                    .unwrap()
+                    .image
+                    .content
+                    .as_deref(),
                 Some(hash.as_str())
             );
         }
@@ -182,6 +187,57 @@ mod camera_import_tests {
             assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
             let missing = format!("media:blake3:{}", "0".repeat(64));
             assert!(camera_import_photo(&missing, "x.png", &store).is_err());
+        }
+    }
+}
+
+/// The library a test's document holds, read and written whole, as the
+/// framework reads it and as a change writes it.
+#[cfg(test)]
+pub(crate) mod test_doc {
+    use automerge::{AutoCommit, ROOT};
+    use ui::tilo_resource::{Fields as _, Resource as _};
+
+    use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
+
+    /// The library `doc` holds.
+    pub(crate) fn library(doc: &AutoCommit) -> PhotoLibrary {
+        PhotoLibrary::read(doc).expect("the library reads")
+    }
+
+    /// Make `doc` hold `library`, writing what differs.
+    pub(crate) fn set_library(doc: &mut AutoCommit, library: &PhotoLibrary) {
+        library
+            .write_fields(doc, &ROOT)
+            .expect("the library writes");
+    }
+
+    /// Add the photograph `image` to `doc`'s library; its id.
+    pub(crate) fn put_image(doc: &mut AutoCommit, image: &OpenImage) -> String {
+        let photo = LibraryPhoto::from_image(image.clone());
+        let id = photo.id.clone();
+        let mut library = library(doc);
+        library.add_photo(photo);
+        set_library(doc, &library);
+        id
+    }
+
+    /// The photograph `photo` in `library`.
+    pub(crate) fn photo(doc: &AutoCommit, id: &str) -> Option<LibraryPhoto> {
+        library(doc).photo(id).cloned()
+    }
+
+    /// The edits of photograph `id`; untouched when it is not there.
+    pub(crate) fn photo_edits(doc: &AutoCommit, id: &str) -> Edits {
+        photo(doc, id).map(|photo| photo.edits).unwrap_or_default()
+    }
+
+    /// Give photograph `id` `edits`.
+    pub(crate) fn set_photo_edits(doc: &mut AutoCommit, id: &str, edits: Edits) {
+        let mut library = library(doc);
+        if let Some(photo) = library.photo_mut(id) {
+            photo.edits = edits;
+            set_library(doc, &library);
         }
     }
 }

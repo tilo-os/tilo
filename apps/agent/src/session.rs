@@ -4532,11 +4532,8 @@ mod tests {
                 photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash),
             );
             let image_id = held.id.clone();
-            tilo_actions::Action::apply(
-                &photos::actions::PhotosAction::ImportPhoto { photo: held },
-                &mut photo,
-            )
-            .unwrap();
+            let import = photos::resource::import(&held).build(0).unwrap();
+            tilo_actions::Action::apply(&import, &mut photo).unwrap();
             // Exactly the open photograph's production and view, and the
             // document's placement: grants name the resource they are on.
             let _broker = peer::spawn_with_agent_actions(
@@ -4809,10 +4806,17 @@ mod tests {
                         _ => None,
                     })
                     .collect(),
-                rotation: photos::doc::PhotosDoc::library(session.peers["photos"].doc())
-                    .photos
-                    .first()
-                    .map_or(0, |photo| photo.edits.rotate_quarters),
+                rotation: <photos::PhotoLibrary as ui::tilo_resource::Resource>::read(
+                    session.peers["photos"].doc(),
+                )
+                .ok()
+                .and_then(|library| {
+                    library
+                        .all_photos()
+                        .next()
+                        .map(|photo| photo.edits.rotate_quarters)
+                })
+                .unwrap_or(0),
             }
         }
 
