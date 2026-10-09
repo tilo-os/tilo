@@ -69,6 +69,7 @@ class RpmBuildGraphTest(unittest.TestCase):
             "imager",
             "fs",
             "tilo-relay-admin",
+            "tilo-enroll",
             "tilo-relay-environment",
             "tilo-relay-offers",
             "tilo-legacy",
