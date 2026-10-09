@@ -4,5 +4,6 @@
 //! existing `tilo_peer_state::protocol` callers.
 
 pub use neighbour_wire::{
-    MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, PeerId, PresenceKey, SurfaceId,
+    MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, PeerId, PresenceKey, PresenceSlot,
+    SurfaceId,
 };
