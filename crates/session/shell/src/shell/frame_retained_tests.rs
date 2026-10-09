@@ -1669,3 +1669,51 @@ fn night_light_keeps_a_peer_pointer_move_sparse_and_exact() {
         "a new night light temperature changes every pixel"
     );
 }
+
+#[test]
+fn hovering_a_tab_repaints_that_tab_not_the_output() {
+    let (mut frame, _clock) = settled_builder();
+    let pill = frame
+        .widget_registry()
+        .into_iter()
+        .find(|(name, _)| name.ends_with("tab:Files"))
+        .map(|(_, rect)| rect)
+        .expect("the Files tab is a named target");
+    let mut retained = bridge();
+    let mut dense = bridge();
+    let settled = frame.paint_with_damage();
+    paint_retained_and_compare(&mut retained, &mut dense, &settled, "before the hover");
+    let previous = frame.last_produced_sections.clone();
+    let mut document = automerge::AutoCommit::new();
+    let mut focus = None;
+    let _ = frame.dispatch_event(
+        &winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
+        },
+        &winit::event::Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        &mut focus,
+    );
+    let hovered = frame.paint_with_damage();
+    let details = sparse_refusal_details(previous.as_ref(), &frame);
+    let damage = hovered
+        .damage_regions
+        .as_deref()
+        .unwrap_or_else(|| panic!("hovering a tab must be sparse: {details}"));
+    let pixels = raster_pixels(damage);
+    eprintln!(
+        "TIL-579 raster pixels (tab hover): {pixels} of {OUTPUT_PIXELS} ({:.3}%); dense was {OUTPUT_PIXELS}",
+        pixels as f64 * 100.0 / OUTPUT_PIXELS as f64
+    );
+    assert!(
+        pixels > 0 && pixels * 100 < OUTPUT_PIXELS,
+        "hovering a tab must repaint under 1% of a 4K output, not {pixels} px: {damage:?}"
+    );
+    let pill = frame
+        .layout_rect_to_scene(pill)
+        .expect("the tab is on the output");
+    assert_damage_covers(pill, damage, "hovered tab");
+    paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
+}
