@@ -1,7 +1,8 @@
 //! Window-local selection through the same typed door as pointer and keyboard work.
 
-use super::{FileExplorerWidget, MAX_ANSWERED_ENTRIES, MAX_MOVE_ENTRIES};
+use super::{FileExplorerWidget, MAX_ANSWERED_ENTRIES};
 use crate::i18n::t;
+use crate::resource::MAX_MOVE_ENTRIES;
 use std::collections::HashMap;
 
 impl FileExplorerWidget {

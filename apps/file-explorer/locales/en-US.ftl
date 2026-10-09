@@ -618,8 +618,17 @@ files-invalid-destination-name = The destination must be one file name.
 
 files-native-restore-select-one = Select one home Trash entry to restore. Other items are unchanged.
 
-files-history-paste-files = Paste files
-files-history-restore-file = Restore file
+## History: what each change to Files did
+
+file-explorer-add-bookmark = Added { $place } to Favourites
+file-explorer-remove-bookmark = Removed { $place } from Favourites
+file-explorer-new-folder = Created the folder { $name }
+file-explorer-rename = Renamed { $entry } to { $name }
+file-explorer-trash = Moved files to Trash
+file-explorer-move = Moved files to { $to }
+file-explorer-copy = Copied files to { $to }
+file-explorer-revert = Took back a change to files
+file-explorer-record-recovered-undos = Recovered interrupted clipboard transfers
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.
 files-user-trash-unavailable = Your Trash isn’t available in this workspace.

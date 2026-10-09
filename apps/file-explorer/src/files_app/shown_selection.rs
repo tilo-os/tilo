@@ -1,6 +1,7 @@
 //! Retain what this window selected, rather than resolving its names at Copy.
 
-use super::{FileExplorerWidget, MAX_MOVE_ENTRIES};
+use super::FileExplorerWidget;
+use crate::resource::MAX_MOVE_ENTRIES;
 use host_fs::{ObservedObject, RetainedObject};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

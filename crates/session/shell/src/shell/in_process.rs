@@ -763,7 +763,7 @@ mod tests {
                 .unwrap();
             records
                 .with(&RecordId::room_default(), |doc| {
-                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks)
+                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks())
                 })
                 .expect("the room's record of places is open")
                 .unwrap()
@@ -776,7 +776,7 @@ mod tests {
                     instance_id: 51,
                     address: tilo_actions::ActionAddress::new("files.folder", "add-bookmark"),
                 },
-                serde_json::json!({ "path": place }).as_object().unwrap(),
+                serde_json::json!({ "place": place }).as_object().unwrap(),
             )
             .unwrap();
         harness.relayout();
