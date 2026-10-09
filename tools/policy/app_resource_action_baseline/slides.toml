@@ -1,20 +1,2 @@
-[ratchets.hand_resource_impl]
-"apps/slides/src/actions.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/slides/src/actions.rs" = 6
-"apps/slides/src/app.rs" = 2
-
 [ratchets.action_address_new]
-"apps/slides/src/actions.rs" = 6
 "apps/slides/src/app/tests_ops.rs" = 1
-"apps/slides/src/deck_operations_tests.rs" = 2
-
-[ratchets.untyped_action_args]
-"apps/slides/src/actions.rs" = 23
-
-[ratchets.action_spec]
-"apps/slides/src/actions.rs" = 2
-
-[ratchets.direct_automerge_write]
-"apps/slides/src/doc.rs" = 57
