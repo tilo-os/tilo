@@ -67,6 +67,12 @@ def prepare(runtime, notices, destination):
     licence.mkdir(parents=True, mode=0o755)
     provenance = destination / 'usr/share/tilo-speech/whistle'
     provenance.mkdir(parents=True, mode=0o755)
+    # pathlib's parents=True applies its mode only to the leaf. Image admission
+    # rejects writable ancestors, so normalise every newly created image parent
+    # even when the release operator has a group-writable umask.
+    for path in destination.rglob('*'):
+        if path.is_dir():
+            path.chmod(0o755)
     for name, data in native.items():
         path = library / name
         path.write_bytes(data)

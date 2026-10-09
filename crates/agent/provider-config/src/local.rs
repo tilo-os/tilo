@@ -173,13 +173,20 @@ pub enum ModelArtifactFormat {
     /// of speech recognition; it is never treated as a chat model or launched
     /// by the vLLM supervisor. The consumer checks its language capabilities.
     WhisperGgml,
+    /// Whistle CACT weights, interpreted by the immutable image AOT runtime.
+    /// The downloadable object contains weights, never executable runtime code.
+    WhistleCact,
 }
 
 impl ModelArtifactFormat {
     /// Whether models of this format run inside the process that uses them
     /// rather than behind a supervised vLLM runtime.
     pub const fn runs_in_process(self) -> bool {
-        matches!(self, Self::OnnxFile | Self::WhisperGgml)
+        matches!(self, Self::OnnxFile | Self::WhisperGgml | Self::WhistleCact)
+    }
+
+    pub const fn is_speech(self) -> bool {
+        matches!(self, Self::WhisperGgml | Self::WhistleCact)
     }
 }
 
@@ -279,7 +286,7 @@ impl LocalModelRelease {
         if self.segmentation {
             capabilities.push(InProcessCapability::Segmentation);
         }
-        if self.artifact_format == ModelArtifactFormat::WhisperGgml {
+        if self.artifact_format.is_speech() {
             capabilities.push(InProcessCapability::SpeechRecognition);
         }
         capabilities
@@ -302,7 +309,7 @@ impl LocalModelRelease {
                 "single-file llama.cpp release has no vision projection",
             ));
         }
-        if self.artifact_format == ModelArtifactFormat::WhisperGgml && self.segmentation {
+        if self.artifact_format.is_speech() && self.segmentation {
             return Err(ProvisionError::InvalidCatalog(
                 "speech graph cannot claim segmentation",
             ));
@@ -972,6 +979,30 @@ mod tests {
             face_recognition: false,
             segmentation: true,
         }
+    }
+
+    #[test]
+    fn whistle_weights_declare_speech_without_executable_runtime_or_chat_capabilities() {
+        let mut speech = segmentation_model();
+        speech.artifact_format = ModelArtifactFormat::WhistleCact;
+        speech.segmentation = false;
+        speech.validate_shape().unwrap();
+        assert_eq!(
+            speech.in_process_capabilities(),
+            [InProcessCapability::SpeechRecognition]
+        );
+        assert_eq!(
+            serde_json::to_string(&speech.artifact_format).unwrap(),
+            "\"whistle_cact\""
+        );
+        speech.segmentation = true;
+        assert!(speech.validate_shape().is_err());
+        speech.segmentation = false;
+        speech.context_window = 100;
+        assert!(speech.validate_shape().is_err());
+        speech.context_window = 0;
+        speech.allowed_runtimes.insert(RuntimeKind::Cpu);
+        assert!(speech.validate_shape().is_err());
     }
 
     #[test]

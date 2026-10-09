@@ -34,12 +34,15 @@ impl SpeechRecognition {
         language: &CString,
         complete: bool,
     ) -> Result<String, SpeechError> {
-        self.recognize(samples, complete, |chunk| {
+        self.recognize_with(samples, complete, |chunk| {
             engine.transcribe(chunk, language)
         })
     }
 
-    fn recognize(
+    /// Use the same bounded segmentation with another image-owned decoder.
+    /// # Errors
+    /// Rejects invalid audio, retired sessions and decoder errors.
+    pub fn recognize_with(
         &mut self,
         samples: &[f32],
         complete: bool,
@@ -195,7 +198,7 @@ mod tests {
         let audio = vec![0.5; SAMPLE_RATE];
         let mut recognition = SpeechRecognition::default();
         assert_eq!(
-            recognition.recognize(&audio, false, |_| panic!("opening context must wait")),
+            recognition.recognize_with(&audio, false, |_| panic!("opening context must wait")),
             Ok(String::new())
         );
         assert_eq!(recognition.observed, audio.len());
@@ -205,7 +208,7 @@ mod tests {
         );
         let mut calls = 0;
         assert_eq!(
-            recognition.recognize(&audio, true, |chunk| {
+            recognition.recognize_with(&audio, true, |chunk| {
                 assert_eq!(chunk, audio);
                 calls += 1;
                 Ok("short final 👋".into())
@@ -220,10 +223,10 @@ mod tests {
         assert!(recognition.draft.is_empty());
         let mut recognition = SpeechRecognition::default();
         recognition
-            .recognize(&audio, false, |_| panic!("opening context must wait"))
+            .recognize_with(&audio, false, |_| panic!("opening context must wait"))
             .unwrap();
         assert_eq!(
-            recognition.recognize(&audio[..SAMPLE_RATE / 2], false, |_| panic!(
+            recognition.recognize_with(&audio[..SAMPLE_RATE / 2], false, |_| panic!(
                 "regressed audio cannot decode"
             )),
             Err(SpeechError::Protocol)
@@ -237,30 +240,30 @@ mod tests {
         let mut recognition = SpeechRecognition::default();
         assert_eq!(
             recognition
-                .recognize(&audio, false, |_| Ok("draft".into()))
+                .recognize_with(&audio, false, |_| Ok("draft".into()))
                 .unwrap(),
             "draft"
         );
         assert_eq!(
             recognition
-                .recognize(&audio, true, |_| panic!("unchanged final must reuse draft"))
+                .recognize_with(&audio, true, |_| panic!("unchanged final must reuse draft"))
                 .unwrap(),
             "draft"
         );
         assert!(recognition.retired);
         assert!(recognition.draft.is_empty());
         assert_eq!(
-            recognition.recognize(&audio, true, |_| panic!("retired worker cannot decode")),
+            recognition.recognize_with(&audio, true, |_| panic!("retired worker cannot decode")),
             Err(SpeechError::Protocol)
         );
         let audio = vec![0.5; TARGET + PADDING + 1];
         let mut recognition = SpeechRecognition::default();
         recognition
-            .recognize(&audio, false, |_| Ok("uncut".into()))
+            .recognize_with(&audio, false, |_| Ok("uncut".into()))
             .unwrap();
         let mut calls = 0;
         let text = recognition
-            .recognize(&audio, true, |_| {
+            .recognize_with(&audio, true, |_| {
                 calls += 1;
                 Ok("cut".into())
             })

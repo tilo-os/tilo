@@ -11,12 +11,13 @@ use std::path::Path;
 #[cfg(feature = "whisper")]
 use std::ptr::NonNull;
 
-use agent_provider_config::local::ModelArtifactFormat;
 use zeroize::Zeroizing;
 
 use crate::catalog::VerifiedCatalog;
 use crate::{InProcessCapability, installed_in_process_model};
 
+#[cfg(feature = "whistle-aot")]
+mod aot;
 mod model;
 #[cfg(feature = "whisper")]
 mod recognition;
@@ -57,7 +58,7 @@ pub fn speech_model_file(
         .find(|model| {
             model.id == installed.id
                 && &model.version == revision
-                && model.artifact_format == ModelArtifactFormat::WhisperGgml
+                && model.artifact_format.is_speech()
                 && model.artifact.sha256 == installed.sha256
                 && model.license_id == installed.license_id
         })
@@ -95,6 +96,7 @@ pub fn speech_model_file(
         installed.id,
         installed.revision,
     )
+    .map(|sealed| sealed.with_format(release.artifact_format))
 }
 
 /// Compatibility bytes for existing qualification callers. Production loads
