@@ -42,6 +42,9 @@ enum Cmd {
         service: String,
         #[arg(long)]
         workspace_id: u64,
+        /// Inspect an existing legacy registry without migrating or copying it.
+        #[arg(long)]
+        registry: Option<PathBuf>,
     },
     /// Retry durable removals queued while a home peer was offline.
     HomePeerRetryRemovals {
@@ -181,7 +184,14 @@ fn run() -> anyhow::Result<()> {
             device,
             service,
             workspace_id,
-        } => files_probe::run(&identity_root, &device, &service, workspace_id),
+            registry,
+        } => files_probe::run(
+            &identity_root,
+            &device,
+            &service,
+            workspace_id,
+            registry.as_deref(),
+        ),
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
         Cmd::HomePeerStatus {
             identity_root,
