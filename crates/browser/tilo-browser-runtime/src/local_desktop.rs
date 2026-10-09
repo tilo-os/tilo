@@ -166,9 +166,7 @@ fn installed(app: &str) -> Result<&'static ui::application::ApplicationDefinitio
 /// Commit what the owner changed at the time it did: `AutoCommit::commit`
 /// stamps a change at the epoch, which Activity would show as its time.
 fn commit(doc: &mut AutoCommit) {
-    let now = web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
+    let now = ui::time::unix_now_i64();
     doc.commit_with(automerge::transaction::CommitOptions::default().with_time(now));
 }
 

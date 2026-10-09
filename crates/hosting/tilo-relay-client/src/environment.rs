@@ -227,7 +227,7 @@ async fn handshake(
     };
     write_frame(&mut send, &encode(&hello)?).await?;
     let ack: HelloAck = decode(&read_frame(&mut receive, MAX_ENVIRONMENT_FRAME_BYTES).await?)?;
-    let now = crate::clock::now_ns();
+    let now = tilo_clock::unix_now_ns();
     match relay.relay_user.as_ref() {
         Some(user) => {
             auth::verify_hello_ack(&ack, user, &relay.revocations, now, &client_nonce)?;
