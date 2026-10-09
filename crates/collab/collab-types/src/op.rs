@@ -616,6 +616,11 @@ pub struct SignedOp {
     /// the wire encoding, which keeps every earlier op decodable.
     #[serde(default, with = "encryption_wire")]
     pub encryption: Option<EncryptionMetadata>,
+    /// What each change in `payload` claims to be: its action and the
+    /// storage units it writes, one per change, signed with the op so a
+    /// receiver (a relay that cannot read a sealed payload included) decides
+    /// every change against the author's grants before merging it.
+    pub claims: Vec<crate::claim::ChangeClaim>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -644,6 +649,7 @@ impl SignedOp {
             timestamp,
             seq,
             encryption: None,
+            claims: Vec::new(),
             signature: Signature::from_bytes([0u8; 64]),
         }
     }
@@ -671,8 +677,16 @@ impl SignedOp {
             timestamp,
             seq,
             encryption: Some(encryption),
+            claims: Vec::new(),
             signature: Signature::from_bytes([0u8; 64]),
         }
+    }
+
+    /// The op claiming `claims` for its changes. Sign after setting them.
+    #[must_use]
+    pub fn with_claims(mut self, claims: Vec<crate::claim::ChangeClaim>) -> Self {
+        self.claims = claims;
+        self
     }
 
     /// Canonical bytes the author signs to mint this envelope — the struct
@@ -693,6 +707,7 @@ impl SignedOp {
             timestamp: &'a SystemTime,
             seq: u64,
             encryption: encryption_wire::View<'a>,
+            claims: &'a [crate::claim::ChangeClaim],
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -703,6 +718,7 @@ impl SignedOp {
             timestamp: &self.timestamp,
             seq: self.seq,
             encryption: encryption_wire::View(&self.encryption),
+            claims: &self.claims,
         })
     }
 }
