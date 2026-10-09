@@ -5635,7 +5635,6 @@ mod tests {
                 action_scope: None,
                 include_programmatic: false,
                 needle: "light theme",
-                action_scope: None,
                 wanted: &[ResourceKind::Action],
                 chrome: &state,
                 doc: &doc,
