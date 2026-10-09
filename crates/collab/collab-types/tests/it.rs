@@ -28,3 +28,5 @@ mod role_table;
 mod signing;
 #[path = "validator.rs"]
 mod validator;
+#[path = "wire_stability.rs"]
+mod wire_stability;
