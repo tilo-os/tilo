@@ -924,10 +924,6 @@ impl Rooms {
     }
 }
 
-fn now_ns() -> u64 {
-    tilo_clock::unix_now_ns()
-}
-
 fn system_time(now_ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))

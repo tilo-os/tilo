@@ -313,11 +313,7 @@ impl ManagedModel {
                 license_id: model.license_id.clone(),
                 size_bytes: model.artifact.size_bytes,
                 capabilities: model.in_process_capabilities(),
-                recorded_at_unix_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    }),
+                recorded_at_unix_ms: tilo_clock::unix_now_ms(),
             }),
         }
     }

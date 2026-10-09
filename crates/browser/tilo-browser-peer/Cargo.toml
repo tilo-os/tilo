@@ -24,6 +24,7 @@ iroh = { workspace = true, optional = true }
 iroh-base = { workspace = true, optional = true }
 n0-future = "0.3"
 web-time = "1"
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
@@ -72,7 +73,6 @@ tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
-tilo-clock = { path = "../../platform/tilo-clock" }
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # The node apps probe speaks remote-action frames.
