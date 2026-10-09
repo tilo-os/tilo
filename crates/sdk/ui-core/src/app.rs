@@ -89,6 +89,8 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
+mod input_publication;
+#[cfg(feature = "native")]
 mod surface;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
