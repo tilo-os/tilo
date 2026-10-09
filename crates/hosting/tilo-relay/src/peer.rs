@@ -22,6 +22,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
 use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
+use crate::room_access::{self, Decision, RelayTrust, RoomOperation};
 use crate::store::StoreError;
 use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
@@ -261,31 +262,6 @@ pub type AgentRegistry = Arc<
     >,
 >;
 
-/// Whether `device` may be in `workspace_id` as far as agent delegation is
-/// concerned: `Err` with the reason when it is an agent outside its scope.
-fn agent_admits(
-    agents: &AgentRegistry,
-    device: &[u8; 32],
-    workspace_id: u64,
-) -> Result<(), &'static str> {
-    let agents = agents
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match agents.get(device) {
-        None => Ok(()),
-        Some(None) => Err("the agent was withdrawn"),
-        Some(Some(delegation)) => {
-            if delegation.expires_at_ns <= unix_now_ns() {
-                Err("the agent's delegation expired")
-            } else if delegation.permits_workspace(workspace_id) {
-                Ok(())
-            } else {
-                Err("the agent is not delegated this room")
-            }
-        }
-    }
-}
-
 /// Read-mostly session state [`handle_envelope`] and its per-arm
 /// helpers read on every inbound message for one connection. Built
 /// once per [`run_peer`] call from a [`PeerContext`] plus the
@@ -317,6 +293,38 @@ struct SessionCtx<'a> {
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
     lag: &'a Arc<Lag>,
+}
+
+impl SessionCtx<'_> {
+    /// This relay's certificate and agent trust, as the session sees it.
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: self.revocations,
+            policy: self.trust_policy,
+            own_user: self.own_user_public_key,
+            agents: self.agents,
+        }
+    }
+
+    /// The room admission decision for `peer` on `op`.
+    fn decide(
+        &self,
+        room: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+        op: RoomOperation,
+    ) -> Decision {
+        room_access::decide(room, &self.trust(), peer, op)
+    }
+
+    /// Whether `peer` may act in `room` on `op` now, without enrolment.
+    fn admits(
+        &self,
+        room: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+        op: RoomOperation,
+    ) -> bool {
+        self.decide(room, peer, op).admitted()
+    }
 }
 
 /// What a resuming subscriber has received: the frames this connection wrote
@@ -616,7 +624,7 @@ where
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
                     () = tokio::time::sleep_until(access_audit.due()) => {
-                        let watched = audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?;
+                        let watched = audit_subscriber_access(&peer, &session, &subscribed).await?;
                         access_audit.audited(&peer, &agents, &subscribed, watched);
                         continue;
                     }
@@ -1226,8 +1234,7 @@ async fn authorize_state_frame(
         .cloned()
         .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session)
-        || !state_member(&wr, peer)
+    if !session.admits(&wr, peer, RoomOperation::State)
         || ((subscribed || wr.subscribers.contains_key(&peer.device_public_key))
             && !current_session(&wr, peer, session.outbound))
     {
@@ -1588,22 +1595,18 @@ fn authorize_replay_now(
         Some(store.load_membership()?)
     };
     let runtime = workspace.blocking_lock();
-    let listed = members.as_ref().map_or_else(
-        || runtime.membership.contains(&source.peer.device_public_key),
-        |members| members.contains(&source.peer.device_public_key),
+    let room = members.as_deref().map_or_else(
+        || room_access::Room::current(&runtime),
+        |listed| room_access::Room::with_listed(&runtime, listed),
     );
-    let member = (listed
-        && runtime
-            .membership_ceiling
-            .as_ref()
-            .is_none_or(|ceiling| ceiling.contains(&source.peer.device_public_key)))
-        || runtime
-            .admitted_users
-            .contains(&source.peer.user_public_key)
-        || (source.peer.role == crate::auth::PeerRole::PeerRelay
-            && runtime
-                .known_peer_relays
-                .contains(&source.peer.device_public_key));
+    let member = room_access::decide_in(
+        room,
+        &source.trust(),
+        &source.peer,
+        RoomOperation::Replay,
+        unix_now_ns(),
+    )
+    .admitted();
     if !member
         || !source.authorized(&runtime)
         || !runtime
@@ -1688,65 +1691,38 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
 /// Returns whether every subscribed room's membership is change-notified,
 /// so the next audit can wait for a change instead of the disk.
 async fn audit_subscriber_access(
-    revocations: &Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[u64],
 ) -> Result<bool, PeerError> {
     let mut watched = true;
-    if revocations
-        .read()
-        .is_ok_and(|list| list.is_revoked(&peer.device_public_key))
-    {
-        return Err(PeerError::Protocol(
-            "authenticated device was revoked".into(),
-        ));
-    }
-    if !session
-        .trust_policy
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .admits(&peer.cert, session.own_user_public_key)
-    {
-        return Err(PeerError::Protocol(
-            "collaborator was removed from signed workspace authority".into(),
-        ));
-    }
+    // Relay-wide first, so a revoked or untrusted device ends even with no
+    // bound room left to ask.
+    session
+        .trust()
+        .cert(peer, unix_now_ns())
+        .map_err(|reason| PeerError::Protocol(reason.reason().into()))?;
     for workspace_id in subscribed {
-        agent_admits(session.agents, &peer.device_public_key, *workspace_id)
-            .map_err(|reason| PeerError::Protocol(reason.into()))?;
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
         watched &= workspace.membership_is_current();
-        if peer.role == crate::auth::PeerRole::PeerRelay
-            && peer.user_public_key != *session.own_user_public_key
-        {
-            return Err(PeerError::Protocol(
-                "cross-user certificates cannot federate relay rooms".into(),
-            ));
-        }
-        if !session_peer_authorized(peer, session)
-            || !current_session(&workspace, peer, session.outbound)
-        {
+        if !current_session(&workspace, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
             ));
         }
-        let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-            && peer.user_public_key == *session.own_user_public_key
-            && workspace
-                .known_peer_relays
-                .contains(&peer.device_public_key);
-        if !workspace.admit_authenticated
-            && !workspace.admitted_users.contains(&peer.user_public_key)
-            && !workspace.membership.contains(&peer.device_public_key)
-            && !is_federated
-        {
-            return Err(PeerError::Protocol(
-                "device was removed from workspace membership".into(),
-            ));
+        // A live subscription was enrolled when it subscribed: a device the
+        // room would only enrol now is no longer a member.
+        match session.decide(&workspace, peer, RoomOperation::Subscribe) {
+            Decision::Admit => {}
+            Decision::AdmitAndEnrol | Decision::Deny(room_access::DenyReason::NotAMember) => {
+                return Err(PeerError::Protocol(
+                    "device was removed from workspace membership".into(),
+                ));
+            }
+            Decision::Deny(reason) => return Err(PeerError::Protocol(reason.reason().into())),
         }
     }
     Ok(watched)
@@ -2006,13 +1982,22 @@ async fn handle_subscribe(
     workspace_id: u64,
     resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
-    if let Err(reason) = agent_admits(session.agents, &peer.device_public_key, workspace_id) {
+    // An agent outside its delegation never gets a room bound for it.
+    if let Err(reason) = session
+        .trust()
+        .agent(&peer.device_public_key, workspace_id, unix_now_ns())
+    {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: reason.into(),
+            reason: reason.reason().into(),
         }));
     }
-    let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
+    // Only the relay owner's own devices can be enrolled into an autobound
+    // room, so only they may cause one to be bound.
+    let autobind = session
+        .autobind
+        .filter(|_| peer.user_public_key == *session.own_user_public_key);
+    let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -2027,31 +2012,16 @@ async fn handle_subscribe(
             "subscriber authorization changed".into(),
         ));
     }
-    if peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key != *session.own_user_public_key
-    {
-        return Ok(Some(Envelope::NotAuthorised {
-            workspace_id,
-            reason: "cross-user certificates cannot federate relay rooms".into(),
-        }));
-    }
-    // Membership gates DEVICE subscribers. Same-owner peer relays are
-    // separately gated by their active federation lease, so they don't need
-    // to appear in the workspace membership list.
-    let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key == *session.own_user_public_key
-        && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key)
-        && !wr.admitted_users.contains(&peer.user_public_key)
-        && !is_federated
-    {
-        if wr.admit_authenticated {
+    // Same-owner peer relays are gated by their active federation lease, so
+    // they don't need to appear in the workspace membership list.
+    match session.decide(&wr, peer, RoomOperation::Subscribe) {
+        Decision::Admit => {}
+        Decision::AdmitAndEnrol => {
             let revision = wr.membership_revision;
             drop(wr);
             crate::workspace_io::admit_member(&ws, peer.device_public_key, revision).await?;
             wr = crate::workspace_io::fresh_membership(&ws).await?;
-            if !session_peer_authorized(peer, session)
-                || !current_member(&wr, peer)
+            if !session.admits(&wr, peer, RoomOperation::Subscribe)
                 || (subscribed.contains(&workspace_id)
                     && !current_session(&wr, peer, session.outbound))
             {
@@ -2059,10 +2029,11 @@ async fn handle_subscribe(
                     "subscriber authorization changed".into(),
                 ));
             }
-        } else {
+        }
+        Decision::Deny(reason) => {
             return Ok(Some(Envelope::NotAuthorised {
                 workspace_id,
-                reason: "device not in workspace membership".into(),
+                reason: reason.reason().into(),
             }));
         }
     }
@@ -2118,8 +2089,7 @@ async fn handle_subscribe(
                     (Some(expected), None) => !expected.same_channel(&source.tx),
                     (None, Some(_)) => false,
                 };
-                if !source.alive() || !source.cert(&source.peer) || !state_member(&wr, &source.peer)
-                {
+                if !source.alive() || !source.admits(&wr, &source.peer) {
                     return Err(crate::persistence::error(
                         "replay subscriber authorization changed",
                     ));
@@ -2288,10 +2258,15 @@ pub(crate) struct StateSource {
     revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     own_user: [u8; 32],
+    agents: AgentRegistry,
     federation: Option<Arc<std::sync::atomic::AtomicBool>>,
     session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl StateSource {
+    /// The source of an outbound federation lease. Its trust is the
+    /// relay's own user only — not the live handshake policy, which may admit
+    /// collaborators' roots — and it carries no agent delegations: a peer
+    /// relay is never an agent.
     pub(crate) fn federated(
         peer: AuthenticatedPeer,
         tx: mpsc::Sender<Envelope>,
@@ -2309,6 +2284,7 @@ impl StateSource {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user,
+            agents: AgentRegistry::default(),
             federation: Some(lease),
             session_live: None,
         }
@@ -2331,27 +2307,31 @@ impl StateSource {
             revocations: session.revocations.clone(),
             policy: session.trust_policy.clone(),
             own_user: *session.own_user_public_key,
+            agents: session.agents.clone(),
             federation: None,
             session_live: session.connection_live.cloned(),
         }
     }
-    fn cert(&self, peer: &AuthenticatedPeer) -> bool {
-        peer.cert
-            .expires_at_ns
-            .is_none_or(|expiry| expiry > unix_now_ns())
-            && self
-                .revocations
-                .read()
-                .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
-            && self
-                .policy
-                .read()
-                .is_ok_and(|policy| policy.admits(&peer.cert, &self.own_user))
+    fn trust(&self) -> RelayTrust<'_> {
+        RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.policy,
+            own_user: &self.own_user,
+            agents: &self.agents,
+        }
+    }
+    /// Whether `peer` may hold state in `runtime`'s room under this source's
+    /// trust: the source itself, or a recipient of its frames.
+    fn admits(
+        &self,
+        runtime: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+    ) -> bool {
+        room_access::decide(runtime, &self.trust(), peer, RoomOperation::State).admitted()
     }
     pub(crate) fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
         self.alive()
-            && self.cert(&self.peer)
-            && state_member(runtime, &self.peer)
+            && self.admits(runtime, &self.peer)
             && match &self.federation {
                 Some(lease) => {
                     lease.load(std::sync::atomic::Ordering::SeqCst)
@@ -2363,11 +2343,6 @@ impl StateSource {
                 None => current_session(runtime, &self.peer, &self.tx),
             }
     }
-}
-fn state_member(runtime: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    current_member(runtime, peer)
-        || (peer.role == crate::auth::PeerRole::PeerRelay
-            && runtime.known_peer_relays.contains(&peer.device_public_key))
 }
 
 #[derive(Clone)]
@@ -3879,7 +3854,7 @@ async fn publish_checkpoint_commit(
             let Some(target) = runtime.state_sessions.get(recipient) else {
                 continue;
             };
-            if !state_member(&runtime, &target.peer) || !source.cert(&target.peer) {
+            if !source.admits(&runtime, &target.peer) {
                 continue;
             }
             let replay_phase = target
@@ -4941,7 +4916,13 @@ async fn enqueue_state_inner(
                         let Some(sub) = runtime.subscribers.get(recipient) else { continue };
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
-                        if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
+                        // A host-authored frame has no source trust to ask, and
+                        // checks the recipient's room listing only.
+                        let admitted = match source.as_ref() {
+                            Some(source) => source.admits(&runtime, &target.peer),
+                            None => room_access::listed(room_access::Room::current(&runtime), &target.peer, RoomOperation::State),
+                        };
+                        if !admitted { continue; }
                         let replay_phase = target.replay.as_ref().map(|replay| {
                             replay.phase.load(std::sync::atomic::Ordering::SeqCst)
                         });
@@ -5125,8 +5106,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     // A connection can unsubscribe and subscribe again on the same channel.
     // Check the captured lease after the membership wait, before either writing
     // or fencing: stale work must not affect the replacement subscription.
-    if !session_peer_authorized(peer, session)
-        || !state_member(&runtime, peer)
+    if !session.admits(&runtime, peer, RoomOperation::State)
         || !delivery.current_subscription(&runtime, peer, session.outbound)
     {
         return Ok(());
@@ -5175,8 +5155,7 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         // complete frame write, and is ordered against commits/replay.
         let owner = crate::persistence::handle(&workspace).await;
         let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-        if session_peer_authorized(peer, session)
-            && state_member(&runtime, peer)
+        if session.admits(&runtime, peer, RoomOperation::State)
             && delivery.current_subscription(&runtime, peer, session.outbound)
         {
             owner.read(1, move |_| {
@@ -5828,12 +5807,12 @@ async fn handle_presence(
             };
             if let Some(authority) = authority {
                 legacy_writer &= match authority.rooms() {
-                    Some(rooms) => matches!(
-                        rooms
-                            .legacy_writer_role(authority.room(), peer.device_public_key)
-                            .await,
-                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
-                    ),
+                    Some(rooms) => rooms
+                        .legacy_writer_role(authority.room(), peer.device_public_key)
+                        .await
+                        .is_some_and(|role| {
+                            room_access::role_grants(role, collab_types::caps::Verb::Write)
+                        }),
                     None => false,
                 };
             }
@@ -5924,7 +5903,7 @@ async fn handle_remote_action(
             "workspace membership is unreadable",
         );
     };
-    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
+    if action_peer_admitted(&wr, peer, session).is_err()
         || !current_session(&wr, peer, session.outbound)
     {
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
@@ -5946,7 +5925,7 @@ async fn handle_remote_action(
             "addressed device is not connected to the workspace",
         );
     };
-    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err() {
+    if action_peer_admitted(&wr, &target.peer, session).is_err() {
         return refuse(
             U::NotAuthorised,
             "addressed device may not act in the workspace",
@@ -6128,7 +6107,7 @@ async fn handle_sync_request(
         }));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session) || !state_member(&wr, peer) {
+    if !session.admits(&wr, peer, RoomOperation::State) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "device not in workspace membership".into(),
@@ -6167,8 +6146,7 @@ async fn handle_sync_request(
                     _ => false,
                 };
                 if source.alive()
-                    && source.cert(&source.peer)
-                    && state_member(&wr, &source.peer)
+                    && source.admits(&wr, &source.peer)
                     && same
                     && source
                         .tx
@@ -6204,7 +6182,7 @@ pub(crate) async fn get_or_autobind_workspace(
         autobind.state_root.clone(),
         workspace_id,
         true,
-        true,
+        crate::room_access::AdmissionMode::SameOwner,
         MAX_AUTOBOUND_WORKSPACES,
     )
     .await
@@ -6301,24 +6279,7 @@ fn current_action_peer(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bo
 }
 
 fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
-    peer.cert
-        .expires_at_ns
-        .is_none_or(|expiry| expiry > unix_now_ns())
-        && session
-            .revocations
-            .read()
-            .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
-        && session
-            .trust_policy
-            .read()
-            .is_ok_and(|policy| policy.admits(&peer.cert, session.own_user_public_key))
-}
-
-fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
-    // Private authority is explicit and current. The broad auto-bind switch
-    // allows a Subscribe to enrol an owner device, never bypasses this check.
-    wr.membership.contains(&peer.device_public_key)
-        || wr.admitted_users.contains(&peer.user_public_key)
+    session.trust().cert(peer, unix_now_ns()).is_ok()
 }
 
 /// May this connection originate (or receive) a remote action in this room
@@ -6330,11 +6291,10 @@ fn action_peer_admitted(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    workspace_id: u64,
 ) -> Result<(), UnavailableReason> {
-    if !current_action_peer(peer, session)
-        || agent_admits(session.agents, &peer.device_public_key, workspace_id).is_err()
-        || !current_member(wr, peer)
+    // Private authority is explicit and current: a same-owner room enrols an
+    // owner device on Subscribe, never here.
+    if !current_action_peer(peer, session) || !session.admits(wr, peer, RoomOperation::RemoteAction)
     {
         return Err(UnavailableReason::NotAuthorised);
     }
@@ -6399,8 +6359,7 @@ async fn private_membership<'a>(
     failure: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, crate::workspace::WorkspaceRuntime>, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    let workspace_id = runtime.store.workspace_id();
-    if action_peer_admitted(&runtime, peer, session, workspace_id).is_err()
+    if action_peer_admitted(&runtime, peer, session).is_err()
         || !current_session(&runtime, peer, session.outbound)
     {
         return Err(PeerError::Protocol(failure.into()));
@@ -6606,8 +6565,7 @@ async fn route_private_signed(
         private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
-    let Some((workspace_id, ws)) = private_workspace_binding(action.room, peer, session).await?
-    else {
+    let Some((_, ws)) = private_workspace_binding(action.room, peer, session).await? else {
         return Ok(Some(U::NotAuthorised));
     };
     #[cfg(test)]
@@ -6617,7 +6575,7 @@ async fn route_private_signed(
     }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
-    if action_peer_admitted(&wr, peer, session, workspace_id).is_err()
+    if action_peer_admitted(&wr, peer, session).is_err()
         || !current_session(&wr, peer, session.outbound)
         || !wr
             .action_targets
@@ -6634,7 +6592,7 @@ async fn route_private_signed(
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
     };
-    if action_peer_admitted(&wr, &target.peer, session, workspace_id).is_err()
+    if action_peer_admitted(&wr, &target.peer, session).is_err()
         || target.room != action.room
         || !target.state_tx.same_channel(&sub.tx)
     {
@@ -6794,10 +6752,10 @@ async fn authorize_delivery(
     if !current_action_peer(recipient, session) {
         return trace.reject("delivery_rejected_recipient_cert_current", U::NotAuthorised);
     }
-    if !current_member(&wr, &delivery.source) {
+    if !session.admits(&wr, &delivery.source, RoomOperation::RemoteAction) {
         return trace.reject("delivery_rejected_source_member", U::NotAuthorised);
     }
-    if !current_member(&wr, recipient) {
+    if !session.admits(&wr, recipient, RoomOperation::RemoteAction) {
         return trace.reject("delivery_rejected_recipient_member", U::NotAuthorised);
     }
     if delivery.action.target != recipient.device_public_key {
@@ -6942,6 +6900,7 @@ mod private_transport_tests {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -6978,6 +6937,7 @@ mod private_transport_tests {
             revocations,
             policy: source.policy.clone(),
             own_user: user.public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -7091,6 +7051,7 @@ mod private_transport_tests {
             )
             .unwrap()
             .user_public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -7401,6 +7362,7 @@ mod private_transport_tests {
                 crate::policy::TrustPolicy::AllowMatchingUser,
             )),
             own_user: root_key.verifying_key().to_bytes(),
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
@@ -8120,6 +8082,7 @@ mod private_transport_tests {
             )
             .unwrap()
             .user_public_key,
+            agents: AgentRegistry::default(),
             federation: None,
             session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
         };
