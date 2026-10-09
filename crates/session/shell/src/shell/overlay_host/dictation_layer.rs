@@ -615,6 +615,17 @@ mod tests {
                 .unwrap()
                 .contains("日本語")
         );
+        assert_eq!(
+            node.children.last().unwrap().name.as_deref(),
+            Some(
+                t_args(
+                    "dictation-live-preview",
+                    &[("text", surface.preview_text.as_str().into())]
+                )
+                .as_str()
+            ),
+            "the accessible preview must carry the same uncertainty label as the visible text"
+        );
         assert!(
             !format!("{:?}", surface.prompt.as_ref().unwrap()).contains("Private public fixture")
         );

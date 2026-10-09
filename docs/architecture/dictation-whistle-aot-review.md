@@ -102,6 +102,76 @@ fresh French session returns the identical literal final. This proves fresh
 repeated sessions, not reuse of one native context or cancellation while inside
 an active native call. All eleven owned transient units are inactive.
 
+## Native-call cancellation and synthetic insertion follow-up
+
+The separate [cancellation ledger](dictation-whistle-aot-cancellation.json)
+qualifies both an active streaming call and an active final call on the same AOT
+engine and authenticated public French recording. The review child has opt-in
+fixed begin/end markers containing only the operation number. After observing
+the begin marker, the controller requires two additional CPU ticks (20 ms on
+the measured host), with neither an end marker nor an output reply readable,
+before sending SIGKILL through a pidfd for its exact owned child.
+
+Streaming kill-to-reaped latency was **7.220 ms**; final-call latency was
+**7.214 ms**. Both children exited by SIGKILL, produced zero trailing reply
+bytes and no Done, and stayed at one native thread. The unchanged memory/thread/
+deadline guards admitted both. A fresh French session afterward returned the
+same literal final, with Ready at 0.724 s and final at 12.486 s after Ready.
+All three owned scopes are inactive. This is actual native termination and
+reaping; the compositor's actor cancellation and dictionary revocation retain
+their separate production-owner regression evidence.
+
+Run the existing controller with `--phase worker --mode cancel-draft` or
+`--mode cancel-finish`, using a fresh source/binary receipt and the same admitted
+scope. Cancellation requires the direct worker; trace wrapping is rejected.
+The first copied review directory lacked receipt-listed C++ inputs and failed
+before child launch. Its diagnostic is preserved; no missing observation was
+converted into a passing or skipped case.
+
+Two new headless insertion tests replay **all recorded drafts and literal finals**
+from the original four-language ledger through production native chrome/Notes
+and a real foreign `zwp_text_input_v3` client. Each draft, including the invented
+opening phrases, must leave the field untouched. The final reaches each field
+as one exact commit, with no synthetic key events; native Notes replaces its
+selection and supports undo and redo through owned history. These are replayed
+engine-output insertion journeys, not a concurrent microphone-to-application
+or browser-product qualification. Existing focus-change, cancel/repeat and
+Terminal editing tests retain their independent boundaries.
+
+The visible and accessible preview explicitly says **“May change”**. It remains
+bounded, private and separate from the field; this qualification adds no decoding
+or presentation delay. It does not claim hallucination suppression. Signal
+inspection found quiet French/German prefixes and Spanish background sound;
+high-confidence invented words and quiet real French speech make a fixed
+confidence/volume threshold insufficient evidence for an inclusive speech gate.
+No phrase, reference-aware or language-specific output filter was introduced.
+
+`tools/release/prepare_whistle_aot_package.py` now prepares a **new, private image
+layout candidate** from these exact qualified native objects. It verifies fixed
+source pins, owned regular files, sizes, notices and the bridge/configuration
+source before writing output. Caller-selected native bytes, symlinks and writable
+inputs fail before the destination exists. The actual candidate includes the
+runtime library, bridge and AOT under `/usr/lib64/tilo-speech/whistle/x86-64-v3`,
+both complete upstream notices under `/usr/share/licenses/tilo-speech-whistle`,
+and sources/provenance under `/usr/share/tilo-speech/whistle`. Model bytes are
+excluded. The [package ledger](dictation-whistle-aot-package.json) records the
+actual nine files and forged-code rejection.
+
+This is preparation, not production admission: no root-owned package was
+installed, no model catalogue/format was activated, and no signing or publication
+occurred. The production worker still selects Whisper GGML only. The next source
+step is to connect the immutable runtime and signed model witnesses, CPU
+compatibility and participant licence selection to that worker; a private review
+manifest or matching caller hash must never replace those witnesses.
+
+Follow-up validation: both four-language insertion tests pass (1.135 s combined,
+zero ignored); the accessible preview test passes (0.112 s); required shell
+`--tests` compile passes (47.03 s); strict service all-target Clippy passes
+(0.72 s); all three custody tests pass (zero skipped); both package-custody tests
+pass, including symlink/group-write subcases; Python Ruff/syntax pass. The actual
+native-call cancellation, subsequent fresh recognition and package preparation
+also pass without changing admission controls.
+
 ## Reproduction and remaining boundary
 
 The adjacent [JSON ledger](dictation-whistle-aot-review.json) records source-built
@@ -135,10 +205,11 @@ strict C++ builds, Python Ruff/syntax, four actual confined paced-language
 journeys, silence, EOF, repeat and memory trace. Staged repository checks and the
 affected-package plan are recorded at publication.
 
-Still unqualified: live microphone/account permission, complete native/browser/
-terminal journeys **with this engine**, older physical devices, ARM, busy native
-inference cancellation, engine-specific language/dictionary revocation and
-production immutable runtime/model admission. Existing insertion/undo and
+Still unqualified: live microphone/account permission, complete concurrent native/browser/
+terminal journeys **with this engine**, older physical devices, ARM,
+engine-specific language/dictionary revocation and
+production immutable runtime/model admission (the package candidate is now prepared).
+Existing insertion/undo and
 revocation regressions are transport foundations, not new acoustic evidence.
 The backend is default-off and not selectable on the production model catalogue.
 No model activation, deployment, reboot, permission or trust change occurred.
