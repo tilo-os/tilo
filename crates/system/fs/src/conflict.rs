@@ -49,6 +49,8 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
 
 /// Detect conflict copies that don't yet exist — deterministic across peers, idempotent once present.
 pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
+    #[cfg(test)]
+    ns.note_conflict_scan();
     let mut out = Vec::new();
 
     // (1) concurrent edits of a live file.
