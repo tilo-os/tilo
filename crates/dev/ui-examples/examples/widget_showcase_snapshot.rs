@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui::widget::TaffyTreeExt;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -61,21 +62,14 @@ impl Widget for LabelTile {
         // taffy 0.10's `new_leaf` always inserts and returns `Ok` for a
         // fresh tree; see `tilo_ui::widget::TaffyTreeExt`'s doc comment (not
         // usable here — it's `pub(crate)` and this is an example binary).
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail on a freshly built taffy tree"
-        )]
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn measure(
         &mut self,

@@ -226,9 +226,7 @@ impl Widget for MoreActions {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.button.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(Style::default(), &[child]);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(Style::default(), &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

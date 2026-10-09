@@ -3355,18 +3355,14 @@ impl Widget for NavShell {
         self.built = true;
         self.structure_dirty = false;
         self.invalidation.invalidate();
-        let node = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &nodes, node_map, self)
     }
 
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {

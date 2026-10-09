@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -201,6 +202,7 @@ impl ActionButton {
     reason = "the tests exercise both the inherent constructor above and Widget implementation below"
 )]
 mod tests {
+
     use automerge::{AutoCommit, ROOT, ReadDoc};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
@@ -357,10 +359,7 @@ impl Widget for ActionButton {
                 ..Default::default()
             },
         };
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

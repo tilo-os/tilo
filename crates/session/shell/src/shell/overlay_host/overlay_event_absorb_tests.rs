@@ -11,6 +11,7 @@ use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
@@ -48,9 +49,7 @@ impl Widget for RecordingContent {
             },
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
