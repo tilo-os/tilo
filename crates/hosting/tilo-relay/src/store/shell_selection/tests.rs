@@ -481,6 +481,22 @@ fn retain_synthetic(
         retain(store, &synthetic_frame(authority, msg, checkpoint));
     }
 }
+/// The sequence the baseline checkpoint covers `app`'s record at.
+fn baseline_sequence(meta: &serde_json::Value, app: &str) -> u64 {
+    meta["baseline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| fs::read(producer_fixture().join(row["file"].as_str().unwrap())).unwrap())
+        .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())
+        .find_map(|message| match &message {
+            NeighbourMsg::AppDocument { app_id, .. } if app_id == app => {
+                Some(document_seq(&message))
+            }
+            _ => None,
+        })
+        .unwrap()
+}
 fn document_seq(msg: &NeighbourMsg) -> u64 {
     let NeighbourMsg::AppDocument { envelope, .. } = msg else {
         panic!()
@@ -827,7 +843,8 @@ fn selected_shell_replay_pins_survive_later_selection_and_activation_budget_is_o
             .unwrap()
             .coverage
             .sequence,
-        3
+        baseline_sequence(&meta, "so.tilo.word-processor"),
+        "the pinned replay is the baseline the store selected first"
     );
     let selected = selected_current(&store).unwrap();
     let mut cursor = PublicationCursor::open(&selected).unwrap();
