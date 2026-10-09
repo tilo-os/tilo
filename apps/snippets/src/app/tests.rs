@@ -189,11 +189,14 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     activate(&mut app, "More actions");
     activate(&mut app, "Delete");
     assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
     assert!(
-        app.harness().a11y_node_named("Confirmation").is_some(),
-        "the host asks to confirm the delete"
+        app.state().snippets.get(&made).is_none(),
+        "the confirmed delete applied: {:?}",
+        app.harness().control_failures()
     );
-    app.invoke_confirmed(Snippets::DELETE.with(made)).unwrap();
     assert_eq!(titles(&app), ["Plain", "Templated"]);
     assert!(app.undo(), "the delete is one undo step");
     assert_eq!(app.state().snippets.len(), 3);
@@ -227,6 +230,28 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
         app.surface_mut::<SnippetsApp>().open_id_for_test(),
         Some(copy_id),
         "the copy opens"
+    );
+}
+
+/// The open snippet's folder and tag chips reveal their snippets through the
+/// action each place publishes.
+#[test]
+fn the_folder_and_tag_chips_reveal_their_places() {
+    let tagged = Snippet {
+        tags: ["k8s".to_owned()].into_iter().collect(),
+        ..snippet("Deploy", "kubectl apply")
+    };
+    let mut app = launched(&[tagged, snippet("Other", "")]);
+    activate(&mut app, "Deploy");
+    activate(&mut app, "Tag: k8s");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Tag("k8s".into())
+    );
+    activate(&mut app, "Folder: Ops");
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Folder("Ops".into())
     );
 }
 
@@ -631,11 +656,31 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
 
     app.call("open", serde_json::json!({ "anchor": item }))
         .unwrap();
+    assert!(
+        app.call(
+            "open",
+            serde_json::json!({ "anchor": item_resource_id::<Snippets>("snippets", &Id::from_raw("gone")) })
+        )
+        .is_err(),
+        "a snippet that does not exist is not opened"
+    );
     app.settle();
     assert_eq!(
         app.surface_mut::<SnippetsApp>().open_id_for_test(),
         Some(deploy),
         "opening shows the snippet"
+    );
+    app.call_on(
+        "snippets.library/derived/tag:k8s",
+        "reveal",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        Selection::Tag("k8s".into()),
+        "a tag reveals its snippets"
     );
     app.call_on(
         "snippets.library/derived/tag:k8s",

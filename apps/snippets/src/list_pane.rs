@@ -408,7 +408,7 @@ impl Core {
                 }
                 self.list.pressed = row_at(&self.list, self.pointer);
                 if self.list.pressed.is_some() {
-                    self.body_editor.set_focused(false);
+                    self.body.control_mut().set_focused(false);
                     *ctx.focus_target = Some(ctx.node_id);
                 }
                 true

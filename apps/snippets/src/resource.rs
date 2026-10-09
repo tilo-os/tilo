@@ -156,37 +156,50 @@ impl Snippets {
         }
     }
 
-    /// The places derived from the snippets: each folder files a new
-    /// snippet under itself and renames, each tag renames or comes off.
+    /// The places derived from the snippets: each folder reveals its
+    /// snippets, files a new one under itself and renames; each tag reveals
+    /// its snippets, renames or comes off.
     fn places(&self) -> Vec<Derived<Self>> {
-        let folders = self.folders().into_iter().map(|folder| {
-            Derived::new(folder.clone())
-                .identified(format!("folder:{folder}"))
-                .with(
-                    Self::NEW_SNIPPET
-                        .bind(snippets::NewSnippet::paths().folder, Some(folder.clone())),
-                )
-                .with(Self::RENAME_FOLDER.bind(snippets::RenameFolder::paths().folder, folder))
-        });
-        let tags = self.tags().into_iter().map(|(tag, _)| {
-            Derived::new(tag.clone())
-                .identified(format!("tag:{tag}"))
-                .with(Self::RENAME_TAG.bind(snippets::RenameTag::paths().tag, tag.clone()))
-                .with(Self::REMOVE_TAG.bind(snippets::RemoveTag::paths().tag, tag))
-        });
+        let folders = self.folders().into_iter().map(Self::folder_place);
+        let tags = self.tags().into_iter().map(|(tag, _)| Self::tag_place(tag));
         folders.chain(tags).collect()
+    }
+
+    /// The folder `folder` as a place.
+    pub fn folder_place(folder: String) -> Derived<Self> {
+        Derived::new(folder.clone())
+            .of_kind("folder")
+            .identified(format!("folder:{folder}"))
+            .with_effect(&SnippetsView::RevealFolder {
+                folder: folder.clone(),
+            })
+            .with(
+                Self::NEW_SNIPPET.bind(snippets::NewSnippet::paths().folder, Some(folder.clone())),
+            )
+            .with(Self::RENAME_FOLDER.bind(snippets::RenameFolder::paths().folder, folder))
+    }
+
+    /// The tag `tag` as a place.
+    pub fn tag_place(tag: String) -> Derived<Self> {
+        Derived::new(tag.clone())
+            .of_kind("tag")
+            .identified(format!("tag:{tag}"))
+            .with_effect(&SnippetsView::Reveal { tag: tag.clone() })
+            .with(Self::RENAME_TAG.bind(snippets::RenameTag::paths().tag, tag.clone()))
+            .with(Self::REMOVE_TAG.bind(snippets::RemoveTag::paths().tag, tag))
     }
 }
 
-/// What the library shows, which changes no document.
+/// What the library shows, which changes no document. Revealing is
+/// offered on the tag or folder it shows, never with a name to type.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "snippets.view")]
 pub enum SnippetsView {
     /// Reveal tagged snippets
-    #[effect(view)]
+    #[effect(view, row)]
     Reveal { tag: String },
     /// Reveal snippets in a folder
-    #[effect(view)]
+    #[effect(view, row)]
     RevealFolder { folder: String },
     /// Search snippets
     #[effect(view)]
@@ -205,7 +218,7 @@ impl ResourceApp for SnippetsShell {
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
         let app = SnippetsApp::new();
         // A search hit, or an agent's `open`, shows the snippet it names.
-        cx.on_open(app.opener());
+        cx.on_open_item(app.opener());
         cx.surface(app)
     }
 
@@ -250,7 +263,7 @@ impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Snippets>) {
-        self.attach_dispatcher(cx.dispatcher(), cx.actions());
+        self.attach_dispatcher(cx.dispatcher());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

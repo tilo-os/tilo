@@ -19,12 +19,13 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{Actions, Dispatcher, Submit};
+use ui::framework::{Dispatcher, Submit};
+use ui::framework::{ResourceApp, TextControl};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{Resource, TextEdit, text::splice_between};
+use ui::tilo_resource::Resource;
 use ui::widget::code_editor::CodeEditor;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -41,7 +42,7 @@ use crate::expand::ExpandModal;
 use crate::highlight;
 use crate::list_pane::{ListPane, ListState};
 use crate::model::{Language, Selection, SmartFolder, Snippet, SnippetId, SnippetPaths, Snippets};
-use crate::resource::{SnippetsView, snippets};
+use crate::resource::{SnippetsShell, SnippetsView, snippets};
 use crate::{tr, tr_with};
 
 /// The core every part of the window reads and changes.
@@ -150,13 +151,10 @@ pub(crate) struct OpenMenu {
 pub(crate) struct Core {
     pub(crate) library: Rc<Snippets>,
     pub(crate) selection: Selection,
-    /// Editing cache only; every change is a splice of the open snippet's
-    /// body, applied as a field edit at its path.
-    pub(crate) body_editor: CodeEditor,
+    /// The open snippet's body, bound to its path: it shows the stored text
+    /// and every keystroke is a splice there, a word one undo step.
+    pub(crate) body: TextControl<CodeEditor, Snippets>,
     body_identity: Option<(SnippetId, Language)>,
-    /// The open snippet's body as the document holds it: what was presented,
-    /// and each splice this view applied since.
-    body_stored: String,
     /// The snippet the content column shows.
     pub(crate) open: Option<SnippetId>,
     /// The snippets there were when this view created or duplicated one: the
@@ -171,8 +169,6 @@ pub(crate) struct Core {
     /// The resource's dispatcher, once the framework attaches the view.
     /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
-    /// Bindings of the view's effects, for the folder and tag chips.
-    pub(crate) actions: Option<Actions<Snippets>>,
     /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
@@ -194,11 +190,11 @@ impl Core {
         let mut core = Self {
             library: Rc::default(),
             selection: Selection::default(),
-            body_editor: CodeEditor::local()
-                .with_id("snippets.body")
-                .with_placeholder("snippets-body-placeholder"),
+            body: Self::body_control(
+                Dispatcher::detached(<SnippetsShell as ResourceApp>::ID, ""),
+                None,
+            ),
             body_identity: None,
-            body_stored: String::new(),
             open: None,
             pending_open: None,
             visible: Vec::new(),
@@ -206,7 +202,6 @@ impl Core {
             menu: None,
             toast: None,
             dispatch: None,
-            actions: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
             list: ListState::default(),
@@ -393,70 +388,56 @@ impl Core {
             self.open = Some(made);
         }
         self.recompute_visible();
-        self.sync_body_editor();
+        self.sync_body_editor(None);
     }
 
     /// Edit through the resource's dispatcher from now on.
-    fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>, actions: Actions<Snippets>) {
+    fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
         self.dispatch = Some(dispatcher);
-        self.actions = Some(actions);
         self.body_identity = None;
-        self.sync_body_editor();
+        self.sync_body_editor(None);
     }
 
-    pub(crate) fn sync_body_editor(&mut self) {
-        let snippet = self
-            .open
-            .as_ref()
-            .and_then(|id| self.library.get(id).map(|s| (id, s)));
-        let identity = snippet.map(|(id, s)| (id.clone(), s.language));
+    /// The body editor over snippet `open`'s body, through `dispatch`.
+    fn body_control(
+        dispatch: Dispatcher<Snippets>,
+        open: Option<&SnippetId>,
+    ) -> TextControl<CodeEditor, Snippets> {
+        let editor = CodeEditor::local()
+            .with_id("snippets.body")
+            .with_placeholder("snippets-body-placeholder");
+        let open = open.cloned().unwrap_or_else(|| SnippetId::from_raw(""));
+        TextControl::at(editor, dispatch, Self::paths(&open).body)
+    }
+
+    /// Follow the open snippet: its body, its language's highlighter, and
+    /// the stored text when the document is at hand.
+    pub(crate) fn sync_body_editor(&mut self, doc: Option<&ui::tilo_resource::Doc>) {
+        let identity = self.open.as_ref().and_then(|id| {
+            self.library
+                .get(id)
+                .map(|snippet| (id.clone(), snippet.language))
+        });
         let same_snippet =
             self.body_identity.as_ref().map(|(id, _)| id) == identity.as_ref().map(|(id, _)| id);
-        if self.body_identity != identity {
-            self.body_editor
+        if !same_snippet {
+            let dispatch = self
+                .dispatch
+                .clone()
+                .unwrap_or_else(|| Dispatcher::detached(<SnippetsShell as ResourceApp>::ID, ""));
+            self.body = Self::body_control(dispatch, identity.as_ref().map(|(id, _)| id));
+        }
+        if !same_snippet || self.body_identity != identity {
+            self.body
+                .control_mut()
                 .set_highlighter(identity.as_ref().map(|(_, language)| {
                     Box::new(highlight::EditorHighlighter::new(*language))
                         as Box<dyn ui::widget::code_editor::Highlighter>
                 }));
         }
-        let text = snippet.map_or("", |(_, s)| s.body.as_str()).to_owned();
-        if self.body_editor.value() != text {
-            self.body_editor.set_text(&text);
-        }
-        self.body_stored = text;
-        if !same_snippet {
-            self.body_editor.set_cursor_pos(0);
-            self.body_editor.set_focused(false);
-        }
         self.body_identity = identity;
-        // Adopting document state is not an authored edit.
-        self.body_editor.take_dirty();
-    }
-
-    /// Apply what the person typed in the body as one splice of the stored
-    /// text, now, so the next keystroke splices the text it made. Typing a
-    /// word is one undo step. A refused edit (a viewer's) writes nothing,
-    /// and the editor shows the stored text again.
-    fn flush_body_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let Some(text) = self.body_editor.take_dirty() else {
-            return;
-        };
-        let (Some(id), Some(dispatch)) = (&self.open, &self.dispatch) else {
-            return;
-        };
-        let applied = match splice_between(&self.body_stored, &text) {
-            None => true,
-            Some(TextEdit::Splice { at, delete, insert }) => {
-                Snippets::edit_action(Self::paths(id).body.splice(at, delete, insert))
-                    .is_some_and(|edit| dispatch.apply_now(doc, &edit).is_ok())
-            }
-            Some(_) => false,
-        };
-        if applied {
-            self.body_stored = text;
-        } else {
-            self.body_editor.set_text(&self.body_stored);
-            self.body_editor.take_dirty();
+        if let Some(doc) = doc {
+            self.body.pull(doc);
         }
     }
 
@@ -465,7 +446,7 @@ impl Core {
             && self.expand.is_none()
             && self.menu.is_none()
             && self.body_reachable
-            && self.body_editor.rect().area() > 0.0
+            && self.body.control().rect().area() > 0.0
     }
 
     /// Hand `event` to the body editor when it is the editor's: a press on
@@ -476,12 +457,12 @@ impl Core {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.body_available() {
-            self.body_editor.set_focused(false);
+            self.body.control_mut().set_focused(false);
             return false;
         }
         let modifiers = *ctx.modifiers;
-        let inside = self.body_editor.rect().contains(self.pointer);
-        let captured = self.body_editor.wants_pointer_capture();
+        let inside = self.body.control().rect().contains(self.pointer);
+        let captured = self.body.control().wants_pointer_capture();
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -489,16 +470,16 @@ impl Core {
                 ..
             }
         ) {
-            self.body_editor.set_focused(inside);
+            self.body.control_mut().set_focused(inside);
         }
-        let focused = self.body_editor.is_focused();
+        let focused = self.body.control().is_focused();
         if let WindowEvent::KeyboardInput { event, .. } = event {
             // Escape and the app's own shortcuts leave the editor.
             let global = matches!(&event.logical_key, Key::Named(NamedKey::Escape))
                 || ((modifiers.state().control_key() || modifiers.state().super_key())
                     && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("n")));
             if global {
-                self.body_editor.set_focused(false);
+                self.body.control_mut().set_focused(false);
                 return false;
             }
         }
@@ -512,14 +493,14 @@ impl Core {
             return false;
         }
         let mut handled = false;
-        self.body_editor.handle_event(
+        Widget::handle_event(
+            &mut self.body,
             event,
             &mut ui::widget::EventCtx {
                 handled: &mut handled,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
         );
-        self.flush_body_edit(&mut ctx.state);
         // Pointer motion stays everyone's; the editor only claims what it
         // consumed.
         handled && !matches!(event, WindowEvent::CursorMoved { .. })
@@ -578,7 +559,7 @@ impl Core {
 
     pub(crate) fn start_expand(&mut self, id: &SnippetId) {
         if let Some(s) = self.library.get(id) {
-            self.body_editor.set_focused(false);
+            self.body.control_mut().set_focused(false);
             self.expand = Some(ExpandModal::new(id, s));
         }
     }
@@ -671,7 +652,7 @@ impl Core {
             return;
         }
         menu.open_anchored(anchor, self.window);
-        self.body_editor.set_focused(false);
+        self.body.control_mut().set_focused(false);
         self.menu = Some(OpenMenu {
             menu,
             name,
@@ -730,7 +711,7 @@ impl Core {
                 self.new_snippet();
                 true
             }
-            "c" if !self.body_editor.is_focused() => {
+            "c" if !self.body.control().is_focused() => {
                 if let Some(id) = self.open.clone() {
                     self.copy(&id);
                 }
@@ -1068,24 +1049,24 @@ impl SnippetsApp {
     }
 
     /// Edit through the resource's dispatcher from now on.
-    pub(crate) fn attach_dispatcher(
-        &self,
-        dispatcher: Dispatcher<Snippets>,
-        actions: Actions<Snippets>,
-    ) {
-        self.core
-            .borrow_mut()
-            .attach_dispatcher(dispatcher, actions);
+    pub(crate) fn attach_dispatcher(&self, dispatcher: Dispatcher<Snippets>) {
+        self.core.borrow_mut().attach_dispatcher(dispatcher);
     }
 
-    /// What shows the snippet a search hit's anchor (its item resource)
-    /// names, for [`ViewCx::on_open`](ui::framework::ViewCx::on_open).
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+    /// What shows the snippet a search hit or an agent's `open` names, for
+    /// [`ViewCx::on_open_item`](ui::framework::ViewCx::on_open_item); a
+    /// snippet that is gone is refused.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&SnippetId) -> Result<(), ui::tilo_resource::Refusal> + 'static {
         let requests = Rc::clone(&self.requests);
-        move |anchor| {
-            if let Some((_, id)) = ui::tilo_resource::items::item_of_resource::<Snippets>(anchor) {
-                requests.borrow_mut().push(Action::OpenSnippet(id));
+        let core = Rc::clone(&self.core);
+        move |id| {
+            if core.borrow().library.get(id).is_none() {
+                return Err(ui::tilo_resource::Refusal::new("there is no such snippet"));
             }
+            requests.borrow_mut().push(Action::OpenSnippet(id.clone()));
+            Ok(())
         }
     }
 
@@ -1180,7 +1161,8 @@ impl ui::widget::Decorator for SnippetsApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.core.borrow_mut().sync_body_editor();
+        let (doc, _) = ui::doc::document_ref(state, path);
+        self.core.borrow_mut().sync_body_editor(Some(doc));
         self.settle();
         self.refresh_columns();
         Widget::sync(&mut self.shell, state, path);
@@ -1234,7 +1216,11 @@ impl ui::widget::Decorator for SnippetsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.core.borrow_mut().body_editor.set_rect(Rect::ZERO);
+        self.core
+            .borrow_mut()
+            .body
+            .control_mut()
+            .set_rect(Rect::ZERO);
         Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
         self.paint_toast(scene, transform, text, theme);
     }
@@ -1248,7 +1234,11 @@ impl ui::widget::Decorator for SnippetsApp {
         presence: &PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.core.borrow_mut().body_editor.set_rect(Rect::ZERO);
+        self.core
+            .borrow_mut()
+            .body
+            .control_mut()
+            .set_rect(Rect::ZERO);
         Widget::draw_with_presence(
             &mut self.shell,
             scene,
@@ -1280,7 +1270,8 @@ impl ui::widget::Decorator for SnippetsApp {
             modal.draw(scene, transform, text, theme, window);
             modal.draw_overlay(scene, transform, text, theme, presence);
         } else if core.body_available() {
-            core.body_editor
+            core.body
+                .control_mut()
                 .draw_overlay(scene, transform, text, theme, presence);
         }
     }
@@ -1347,8 +1338,8 @@ impl ui::widget::Decorator for SnippetsApp {
         let core = self.core.borrow();
         if let Some(modal) = &core.expand {
             modal.ime_cursor_rect()
-        } else if core.body_editor.is_focused() {
-            core.body_editor.ime_cursor_rect()
+        } else if core.body.control().is_focused() {
+            core.body.control().ime_cursor_rect()
         } else {
             drop(core);
             Widget::ime_cursor_rect(&self.shell)
@@ -1359,8 +1350,8 @@ impl ui::widget::Decorator for SnippetsApp {
         let core = self.core.borrow();
         if let Some(modal) = &core.expand {
             modal.ime_purpose()
-        } else if core.body_editor.is_focused() {
-            core.body_editor.ime_purpose()
+        } else if core.body.control().is_focused() {
+            core.body.control().ime_purpose()
         } else {
             drop(core);
             Widget::ime_purpose(&self.shell)
@@ -1371,8 +1362,8 @@ impl ui::widget::Decorator for SnippetsApp {
         let core = self.core.borrow();
         if let Some(modal) = &core.expand {
             modal.cursor_shape(point)
-        } else if core.body_available() && core.body_editor.rect().contains(point) {
-            core.body_editor.cursor_shape(point)
+        } else if core.body_available() && core.body.control().rect().contains(point) {
+            core.body.control().cursor_shape(point)
         } else {
             drop(core);
             Widget::cursor_shape(&self.shell, point)
@@ -1410,7 +1401,7 @@ impl ui::widget::Decorator for SnippetsApp {
             );
         }
         if core.body_available()
-            && let Some(node) = core.body_editor.accessibility()
+            && let Some(node) = core.body.control().accessibility()
         {
             children.push(node.with_action_target("snippets.body"));
         }
@@ -1457,14 +1448,12 @@ impl ui::widget::Decorator for SnippetsApp {
                     (None, _) => Some(false),
                 }
             } else if target == "snippets.body" && core.open.is_some() {
-                core.sync_body_editor();
+                core.sync_body_editor(Some(doc.doc()));
                 if matches!(action, ui::a11y::Action::Focus) {
-                    core.body_editor.set_focused(true);
+                    core.body.control_mut().set_focused(true);
                     Some(true)
                 } else {
-                    let accepted = Widget::perform_action(&mut core.body_editor, action, doc, obj);
-                    core.flush_body_edit(doc);
-                    Some(accepted)
+                    Some(Widget::perform_action(&mut core.body, action, doc, obj))
                 }
             } else {
                 let hit = core.hits().find_map(|(_, candidate)| {
@@ -1487,7 +1476,7 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn wants_pointer_capture(&self) -> bool {
         let core = self.core.borrow();
-        (core.body_available() && core.body_editor.wants_pointer_capture()) || {
+        (core.body_available() && core.body.control().wants_pointer_capture()) || {
             drop(core);
             Widget::wants_pointer_capture(&self.shell)
         }
@@ -1495,13 +1484,13 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn wants_tab_input(&self) -> bool {
         let core = self.core.borrow();
-        core.expand.is_some() || (core.body_available() && core.body_editor.is_focused())
+        core.expand.is_some() || (core.body_available() && core.body.control().is_focused())
     }
 
     fn text_review(&self) -> Option<(usize, String)> {
         let core = self.core.borrow();
-        if core.body_available() && core.body_editor.is_focused() {
-            core.body_editor.text_review()
+        if core.body_available() && core.body.control().is_focused() {
+            core.body.control().text_review()
         } else {
             drop(core);
             Widget::text_review(&self.shell)
@@ -1543,7 +1532,7 @@ impl SnippetsApp {
 impl ui::undo::UndoPoints for SnippetsApp {
     fn get_state(&self) -> Option<String> {
         let core = self.core.borrow();
-        serde_json::to_string(&(&core.open, core.body_editor.get_state())).ok()
+        serde_json::to_string(&(&core.open, core.body.control().get_state())).ok()
     }
 
     fn set_state(&mut self, state: &str) {
@@ -1552,7 +1541,7 @@ impl ui::undo::UndoPoints for SnippetsApp {
             serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
             && id == core.open
         {
-            core.body_editor.set_state(&caret);
+            core.body.control_mut().set_state(&caret);
         }
     }
 }

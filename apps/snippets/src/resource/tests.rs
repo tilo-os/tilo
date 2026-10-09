@@ -235,6 +235,17 @@ fn snippets_folders_and_tags_offer_their_verbs() {
 
     let ops = child(&tree, "snippets.library/derived/folder:Ops");
     assert_eq!(ops.label, "Ops");
+    assert_eq!(ops.kind, "snippets.library.folder");
+    assert!(
+        action(ops, "reveal-folder").params().is_empty(),
+        "a folder reveals itself"
+    );
+    assert!(
+        tree.actions
+            .iter()
+            .all(|spec| spec.id != "reveal-folder" && spec.id != "reveal"),
+        "revealing is offered on the place, never with a name to type"
+    );
     let new_here = action(ops, "new-snippet");
     assert_eq!(
         new_here
@@ -261,6 +272,8 @@ fn snippets_folders_and_tags_offer_their_verbs() {
     assert!(state.snippets.values().all(|s| s.folder.0 == "Operations"));
 
     let k8s = child(&tree, "snippets.library/derived/tag:k8s");
+    assert_eq!(k8s.kind, "snippets.library.tag");
+    assert!(action(k8s, "reveal").params().is_empty());
     invoke_spec(
         &mut library,
         action(k8s, "rename-tag"),
@@ -304,12 +317,19 @@ fn search_finds_each_snippet_by_what_it_holds() {
         &paths.description.replace("Roll a deployment"),
     )
     .unwrap();
+    edit(&mut library, &paths.language.set(Language::Shell)).unwrap();
     create(&mut library, "Backup", None);
 
     let entries = Snippets::search(&library.state().unwrap());
     assert_eq!(entries.len(), 2, "one entry per snippet");
     let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
-    for held in ["k8s", "kubectl rollout", "Roll a deployment"] {
+    for held in [
+        "Ops",
+        "shell",
+        "k8s",
+        "kubectl rollout",
+        "Roll a deployment",
+    ] {
         assert!(hit.text.contains(held), "{held} in {:?}", hit.text);
     }
     assert_eq!(

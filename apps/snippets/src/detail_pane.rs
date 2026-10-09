@@ -28,9 +28,12 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::app::{Action, Core, Requests, Shared};
+use crate::model::Snippets;
 use crate::model::{Language, SnippetId};
 use crate::resource::SnippetsView;
 use crate::tr;
+use ui::tilo_actions::ActionBinding;
+use ui::tilo_resource::{Derived, Effect};
 
 /// What the content column shows. A change rebuilds the column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,15 +110,20 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         dropdown: picker,
         core: Rc::clone(core),
     }));
-    // The folder and each tag open the library at them.
-    let actions = core.borrow().actions.clone();
-    let reveal = |view: SnippetsView| actions.as_ref().and_then(|actions| actions.effect(&view));
+    // The folder and each tag reveal their snippets, as the place each is
+    // published as does.
+    let reveal = |place: Derived<Snippets>, view: SnippetsView| {
+        ActionBinding::unit_for(&place.publish(), view.id()).ok()
+    };
     if !folder.is_empty() {
         let mut chip = Chip::new(folder.clone())
             .with_id(format!("snippets.snippet:{id}.folder"))
             .with_lead(ChipLead::Glyph(Icon::Folder))
             .with_accessible_name(format!("Folder: {folder}"));
-        if let Some(reveal) = reveal(SnippetsView::RevealFolder { folder }) {
+        if let Some(reveal) = reveal(
+            Snippets::folder_place(folder.clone()),
+            SnippetsView::RevealFolder { folder },
+        ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -124,7 +132,10 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
             .with_accessible_name(format!("Tag: {tag}"));
-        if let Some(reveal) = reveal(SnippetsView::Reveal { tag: tag.clone() }) {
+        if let Some(reveal) = reveal(
+            Snippets::tag_place(tag.clone()),
+            SnippetsView::Reveal { tag: tag.clone() },
+        ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -488,8 +499,9 @@ impl Widget for BodyWell {
             ground,
         );
         let mut core = self.core.borrow_mut();
-        core.body_editor.set_rect(self.rect);
-        core.body_editor
+        core.body.control_mut().set_rect(self.rect);
+        core.body
+            .control_mut()
             .draw_embedded(scene, transform, text, &theme.on_ground(ground));
     }
 
