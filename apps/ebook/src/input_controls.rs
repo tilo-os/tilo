@@ -21,11 +21,11 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    BlockEditor, Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ColorPicker,
-    ColorPickerOutcome, ColorSwatch, ControlSize, CursorPlacement, NumberInput, Widget,
+    BlockEditor, Button, ButtonFace, ButtonRole, ColorPicker, ColorPickerOutcome, ColorSwatch,
+    ControlSize, CursorPlacement, NumberInput, Widget,
 };
 
-use crate::model::{Annotation, FontEntry, Settings};
+use crate::model::{Annotation, FontEntry, HiColor, Settings};
 use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
 
@@ -382,12 +382,14 @@ pub(crate) enum NoteAction {
     Swallow,
     Save,
     Delete(Uuid),
+    Color(HiColor),
 }
 
 pub(crate) enum NoteSemanticOutcome {
     Save,
     Delete(Uuid),
     Focused,
+    Color(HiColor),
 }
 
 /// On-page note editor: the SDK rich-text editor bound to the note, in a
@@ -400,6 +402,7 @@ pub(crate) struct NoteComposer {
     card: Rect,
     delete: Rect,
     save: Rect,
+    colors: Vec<(Rect, HiColor)>,
     cursor: Point,
 }
 
@@ -409,9 +412,7 @@ struct NoteLayout {
     card: Rect,
     left: f64,
     pad: f64,
-    inner_width: f32,
-    excerpt: String,
-    excerpt_y: f64,
+
     input_rect: Rect,
     delete: Rect,
     save: Rect,
@@ -424,6 +425,7 @@ impl Default for NoteComposer {
             card: Rect::ZERO,
             delete: Rect::ZERO,
             save: Rect::ZERO,
+            colors: Vec::new(),
             cursor: Point::ZERO,
         }
     }
@@ -450,19 +452,30 @@ impl NoteComposer {
                 .with_state(AccessState::new().focusable(true))
                 .with_action_target(target)
         };
+        let colors = self.colors.iter().map(|(rect, color)| {
+            button(
+                color.name(),
+                format!("books.note.color:{}", color.as_str()),
+                *rect,
+            )
+        });
         vec![
             AccessNode::new(Role::Dialog)
                 .with_name("Edit note")
                 .with_state(AccessState::new().modal(true))
-                .with_children(vec![
-                    input,
-                    button(
-                        "Delete note",
-                        format!("books.note.delete:{id}"),
-                        self.delete,
-                    ),
-                    button("Save note", format!("books.note.save:{id}"), self.save),
-                ]),
+                .with_children(
+                    colors
+                        .chain(vec![
+                            input,
+                            button(
+                                "Delete note",
+                                format!("books.note.delete:{id}"),
+                                self.delete,
+                            ),
+                            button("Save note", format!("books.note.save:{id}"), self.save),
+                        ])
+                        .collect(),
+                ),
         ]
     }
 
@@ -483,6 +496,12 @@ impl NoteComposer {
         if !matches!(action, ui::a11y::Action::Activate) {
             return None;
         }
+        if let Some(color) = HiColor::ALL
+            .into_iter()
+            .find(|color| target == format!("books.note.color:{}", color.as_str()))
+        {
+            return Some(NoteSemanticOutcome::Color(color));
+        }
         if target == format!("books.note.save:{id}") {
             Some(NoteSemanticOutcome::Save)
         } else if target == format!("books.note.delete:{id}") {
@@ -502,6 +521,7 @@ impl NoteComposer {
         self.card = Rect::ZERO;
         self.delete = Rect::ZERO;
         self.save = Rect::ZERO;
+        self.colors.clear();
     }
 
     pub(crate) fn id(&self) -> Option<Uuid> {
@@ -521,7 +541,9 @@ impl NoteComposer {
 
     pub(crate) fn hit_test(&self, point: Point) -> Option<NoteAction> {
         let id = self.id()?;
-        if self.delete.contains(point) {
+        if let Some((_, color)) = self.colors.iter().find(|(rect, _)| rect.contains(point)) {
+            Some(NoteAction::Color(*color))
+        } else if self.delete.contains(point) {
             Some(NoteAction::Delete(id))
         } else if self.save.contains(point) {
             Some(NoteAction::Save)
@@ -543,63 +565,61 @@ impl NoteComposer {
         editor.handle_event(ctx).is_some()
     }
 
-    /// Geometry for the card, its header, excerpt, input box and buttons,
+    /// Geometry for the card, colour controls, input box and buttons,
     /// computed once and shared by the drawing helpers.
     fn compute_note_layout(
+        &mut self,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         bounds: Rect,
         anchor_y: Option<f64>,
-        annotation: &Annotation,
     ) -> NoteLayout {
         let spacing = &theme.tokens.spacing;
-        let rhythm = &spacing.rhythm;
-        let margin = f64::from(spacing.s3);
-        let width =
-            f64::from(theme.tokens.metrics.panel_width_utility).min(bounds.width() - 2.0 * margin);
-        let pad = f64::from(rhythm.section);
-        let inner_width = ui::num::f32_of_f64((width - pad * 2.0).max(1.0));
-        let excerpt = if annotation.excerpt.trim().is_empty() {
-            "Selected passage".to_string()
-        } else {
-            format!("\u{201C}{}\u{201D}", annotation.excerpt)
-        };
-        let excerpt_style = theme.text(TextRole::Body).with_italic(true);
-        let (_, excerpt_height) =
-            text_renderer.measure_style(&excerpt, Some(inner_width), &excerpt_style);
-        let header = ChipFace::height(theme);
-        let input_height = 3.0 * f64::from(theme.text(TextRole::Body).line_height_px())
-            + 2.0 * f64::from(spacing.s2);
+        let margin = f64::from(spacing.s2);
+        let viewport = bounds.inset(-margin);
+        let width = f64::from(theme.tokens.metrics.panel_width_utility)
+            .min(viewport.width())
+            .max(1.0);
+        let pad = f64::from(spacing.s3).min(width / 4.0);
+        let colors = ControlSize::Small.height(theme);
+        let gap = f64::from(spacing.rhythm.related);
         let button_h = ControlSize::Regular.height(theme);
-        let gap = f64::from(rhythm.related);
-        let height = pad
-            + header
-            + gap
-            + f64::from(excerpt_height)
-            + gap
-            + input_height
-            + f64::from(rhythm.section)
-            + button_h
-            + pad;
-        let center = f64::midpoint(bounds.x0, bounds.x1);
-        let x0 = (center - width / 2.0).clamp(
-            bounds.x0 + margin,
-            (bounds.x1 - margin - width).max(bounds.x0 + margin),
+        let fixed = 2.0 * pad + colors + 2.0 * gap + button_h;
+        let cap = (viewport.height() - fixed).max(1.0);
+        let floor = f64::from(theme.text(TextRole::Body).line_height_px());
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let input_height = self
+            .editor
+            .as_mut()
+            .map_or(floor, |editor| {
+                editor.host.measure(
+                    width - 2.0 * pad,
+                    ui::num::f32_of_f64(cap),
+                    &on_panel,
+                    text_renderer,
+                )
+            })
+            .max(floor)
+            .min(cap);
+        let height = (fixed + input_height).min(viewport.height()).max(0.0);
+        let anchor_y = anchor_y.unwrap_or_else(|| bounds.center().y);
+        let anchor = Rect::new(bounds.center().x, anchor_y, bounds.center().x, anchor_y);
+        let (card, _) = ui::widget::floating_surface::place_bounded(
+            anchor,
+            (width, height),
+            ui::widget::floating_surface::PopoverSide::Below,
+            gap,
+            viewport,
         );
-        let top_limit = bounds.y0 + margin;
-        let bottom_limit = bounds.y1 - margin;
-        let offset = f64::from(rhythm.group);
-        let y0 = match anchor_y {
-            Some(y) if y + offset + height <= bottom_limit => y + offset,
-            Some(y) if y - gap - height >= top_limit => y - gap - height,
-            _ => (bottom_limit - height).max(top_limit),
-        };
-        let card = Rect::new(x0, y0, x0 + width, y0 + height);
         let left = card.x0 + pad;
-        let excerpt_y = card.y0 + pad + header + gap;
-        let input_y = excerpt_y + f64::from(excerpt_height) + gap;
-        let input_rect = Rect::new(left, input_y, card.x1 - pad, input_y + input_height);
-        let button_y = input_rect.y1 + f64::from(rhythm.section);
+        let input_y = card.y0 + pad + colors + gap;
+        let button_y = card.y1 - pad - button_h;
+        let input_rect = Rect::new(
+            left,
+            input_y.min(button_y),
+            card.x1 - pad,
+            (button_y - gap).max(input_y.min(button_y)),
+        );
         let save_w = ButtonFace::new(Rect::ZERO, "Save")
             .role(ButtonRole::Primary)
             .intrinsic_width(text_renderer, theme);
@@ -610,9 +630,6 @@ impl NoteComposer {
             card,
             left,
             pad,
-            inner_width,
-            excerpt,
-            excerpt_y,
             input_rect,
             delete: Rect::new(left, button_y, left + delete_w, button_y + button_h),
             save: Rect::new(
@@ -624,8 +641,7 @@ impl NoteComposer {
         }
     }
 
-    /// The floating card, the kind chip, the excerpt and the (already laid
-    /// out) shared text input.
+    /// The floating card, colour controls and shared text input.
     fn draw_note_chrome(
         &mut self,
         scene: &mut Scene,
@@ -637,27 +653,31 @@ impl NoteComposer {
     ) {
         ui::widget::floating_surface::paint(scene, transform, layout.card, theme);
         let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
-        let y = layout.card.y0 + layout.pad;
-        let lead = ChipLead::Dot(ReaderPalette::highlight_swatch(annotation.color));
-        let chip_w = ChipFace::intrinsic_width("Note", lead, false, ctx.text, &on_panel);
-        let chip = Rect::new(
-            layout.left,
-            y,
-            layout.left + chip_w,
-            y + ChipFace::height(&on_panel),
-        );
-        ChipFace::new(chip, "Note")
-            .lead(lead)
+        let ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
+        self.colors.clear();
+        let side = ControlSize::Small
+            .height(&on_panel)
+            .min((layout.card.width() - 2.0 * layout.pad) / HiColor::ALL.len() as f64);
+        let top = layout.card.y0 + layout.pad;
+        for (i, color) in HiColor::ALL.into_iter().enumerate() {
+            let rect = Rect::new(
+                layout.left + i as f64 * side,
+                top,
+                layout.left + (i + 1) as f64 * side,
+                top + side,
+            );
+            let dot = rect.inset(-f64::from(on_panel.tokens.spacing.s2).min(side / 4.0));
+            ui::widget::ColorSwatchFace::new(
+                dot,
+                ReaderPalette::highlight_swatch(color),
+                color.name(),
+            )
+            .selected(annotation.color == color)
+            .hovered(rect.contains(self.cursor))
+            .target_rect(rect)
             .paint(ctx.scene, ctx.transform, ctx.text, &on_panel);
-        let style = on_panel.text(TextRole::Body).with_italic(true);
-        ctx.text(
-            &layout.excerpt,
-            &style,
-            on_panel.text_dim,
-            Point::new(layout.left, layout.excerpt_y),
-            Some(layout.inner_width),
-        );
+            self.colors.push((rect, color));
+        }
 
         if let Some(editor) = self.editor.as_mut() {
             editor.layout(layout.input_rect, &on_panel, text_renderer);
@@ -710,7 +730,7 @@ impl NoteComposer {
         if self.id() != Some(annotation.id) {
             return;
         }
-        let layout = Self::compute_note_layout(text_renderer, theme, bounds, anchor_y, annotation);
+        let layout = self.compute_note_layout(text_renderer, theme, bounds, anchor_y);
         self.card = layout.card;
         self.draw_note_chrome(scene, transform, text_renderer, theme, &layout, annotation);
         self.draw_note_buttons(scene, transform, text_renderer, theme, &layout);

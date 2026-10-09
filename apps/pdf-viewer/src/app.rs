@@ -679,6 +679,7 @@ pub struct PdfApp {
 
     // Interaction transients.
     last_mouse: Point,
+    file_open: ui::widget::FileOpenSurface,
     drag: Option<DragState>,
     pan: Option<PanState>,
     /// Some(pointer-x-at-press) while dragging the rail's resize grip.
@@ -1206,6 +1207,7 @@ impl PdfApp {
             portal_save_rx: None,
             portal_action: None,
             last_mouse: Point::ZERO,
+            file_open: ui::widget::FileOpenSurface::default(),
             drag: None,
             pan: None,
             rail_drag: None,

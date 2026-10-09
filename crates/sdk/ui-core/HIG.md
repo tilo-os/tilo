@@ -280,6 +280,12 @@ answer:
   bespoke in-app "OpenDialog", or an app-drawn `ui::FilePicker` used for OS file
   open/save, is a bug. (`ui::FilePicker` exists only for the compositor's own
   portal-backend rendering, or non-filesystem in-cluster pickers.)
+- File-based empty screens use `ui::widget::FileOpenSurface` for the shared
+  chooser invitation and window-wide drag-and-drop feedback. Route its file
+  events before editors and popovers, and open dropped files through the same
+  importer as the Open action. A drop does not require a preceding hover or
+  pointer coordinates. Keep the existing semantic Open action and host chooser;
+  the surface grants no filesystem authority.
 - Prefer host/portal services generally (screenshot, sharing, notifications)
   over reinventing them in-app, so a Tilo app behaves like a native app on
   whatever desktop it runs.

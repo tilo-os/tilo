@@ -15,7 +15,7 @@
 //! window's theme end to end; the reading palette stays on the page.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use crate::icons::Icon;
@@ -150,6 +150,7 @@ struct HudMetrics {
     swatch: f64,
     gap: f64,
     gap_from_anchor: f64,
+    rows: usize,
 }
 
 impl HudMetrics {
@@ -162,11 +163,14 @@ impl HudMetrics {
             swatch: (control_h - f64::from(spacing.s2)).max(f64::from(spacing.s4)),
             gap: f64::from(spacing.s1),
             gap_from_anchor: f64::from(spacing.s2),
+            rows: 1,
         }
     }
 
     fn height(&self) -> f64 {
-        self.control_h + self.pad * 2.0
+        crate::num::f64_of_usize(self.rows) * self.control_h
+            + crate::num::f64_of_usize(self.rows.saturating_sub(1)) * self.gap
+            + self.pad * 2.0
     }
 }
 
@@ -223,34 +227,41 @@ impl SelectionHud {
         placement: HudPlacement,
         cursor: Point,
     ) -> Self {
-        let m = HudMetrics::of(theme);
+        let mut m = HudMetrics::of(theme);
         let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
         let copy = ButtonFace::new(Rect::ZERO, "Copy").control_size(ControlSize::Small);
         let note = ButtonFace::new(Rect::ZERO, "Note").control_size(ControlSize::Small);
         let copy_w = copy.intrinsic_width(tr, &on_panel);
         let note_w = note.intrinsic_width(tr, &on_panel);
         let swatches = controls.swatches;
-        #[allow(clippy::cast_precision_loss, reason = "a handful of highlight colours")]
-        let n = swatches.len() as f64;
         let swatch_cell = m.control_h;
-        let dots_w = n * swatch_cell;
-        let sep = if swatches.is_empty() {
-            0.0
-        } else {
-            m.gap * 2.0 + 1.0
-        };
-        let note_extra = if controls.show_note {
-            m.gap + note_w
-        } else {
-            0.0
-        };
-        let trash_extra = if controls.show_delete {
-            m.gap + m.control_h
-        } else {
-            0.0
-        };
-        let width = m.pad * 2.0 + dots_w + sep + copy_w + note_extra + trash_extra;
-        let rect = place(&m, width, placement);
+        let available = (placement.bounds.width() - 2.0 * m.gap_from_anchor - 2.0 * m.pad).max(1.0);
+        let mut widths = vec![swatch_cell; swatches.len()];
+        widths.push(copy_w);
+        if controls.show_note {
+            widths.push(note_w);
+        }
+        if controls.show_delete {
+            widths.push(m.control_h);
+        }
+        let mut slots = Vec::new();
+        let (mut x, mut y, mut used) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for width in widths {
+            let width = width.min(available);
+            if x > 0.0 && x + width > available {
+                x = 0.0;
+                y += m.control_h + m.gap;
+                m.rows += 1;
+            }
+            slots.push(Rect::new(x, y, x + width, y + m.control_h));
+            used = used.max(x + width);
+            x += width + m.gap;
+        }
+        let rect = place(&m, used + 2.0 * m.pad, placement);
+        let slots = slots
+            .into_iter()
+            .map(|slot| slot + vello::kurbo::Vec2::new(rect.x0 + m.pad, rect.y0 + m.pad))
+            .collect::<Vec<_>>();
         let mut hud = SelectionHud {
             rect,
             shown: true,
@@ -258,15 +269,10 @@ impl SelectionHud {
         };
         floating_surface::paint(scene, transform, rect, theme);
 
-        let row = Rect::new(
-            rect.x0 + m.pad,
-            rect.y0 + m.pad,
-            rect.x1 - m.pad,
-            rect.y1 - m.pad,
-        );
-        let mut x = row.x0;
         for (i, sw) in swatches.iter().enumerate() {
-            let cell = Rect::new(x, row.y0, x + swatch_cell, row.y1);
+            let Some(&cell) = slots.get(i) else {
+                continue;
+            };
             let inset = (swatch_cell - m.swatch) / 2.0;
             let dot = cell.inset(-inset);
             let name = if sw.name.is_empty() {
@@ -280,32 +286,18 @@ impl SelectionHud {
                 .target_rect(cell)
                 .paint(scene, transform, tr, &on_panel);
             hud.buttons.push((cell, HudAction::Highlight(i)));
-            x += swatch_cell;
         }
-        if !swatches.is_empty() {
-            let div_x = x + m.gap + 0.5;
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::chrome::chrome_hairline(&on_panel),
-                None,
-                &Line::new(
-                    Point::new(div_x, row.y0 + m.gap),
-                    Point::new(div_x, row.y1 - m.gap),
-                ),
-            );
-            x += sep;
-        }
-        let place_button = |x: &mut f64, w: f64| {
-            let r = Rect::new(*x, row.y0, *x + w, row.y1);
-            *x += w + m.gap;
-            r
+        let Some(&copy_rect) = slots.get(swatches.len()) else {
+            return hud;
         };
-        let copy_rect = place_button(&mut x, copy_w);
-        let note_rect = controls.show_note.then(|| place_button(&mut x, note_w));
+        let note_rect = controls
+            .show_note
+            .then(|| slots.get(swatches.len() + 1).copied())
+            .flatten();
         let trash_rect = controls
             .show_delete
-            .then(|| place_button(&mut x, m.control_h));
+            .then(|| slots.last().copied())
+            .flatten();
         let face = ButtonFace::new(copy_rect, "Copy")
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
@@ -586,6 +578,45 @@ mod tests {
             assert!(d.moved(), "a real drag latches moved");
             assert!(o2.0 > o.0 && o2.1 > o.1);
             assert_eq!(d.id, "n1");
+        }
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+
+    #[test]
+    fn compact_selection_toolbar_wraps_every_control_inside_its_panel() {
+        let swatches = [HudSwatch::new([255, 220, 0], true); 5];
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let bounds = Rect::new(0.0, 0.0, 240.0, 320.0);
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let hud = SelectionHud::draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &HudControls {
+                    swatches: &swatches,
+                    show_note: true,
+                    show_delete: true,
+                },
+                HudPlacement::new(Point::new(120.0, 120.0), bounds),
+                Point::ZERO,
+            );
+            assert_eq!(hud.buttons().len(), 8);
+            assert_eq!(hud.rect().intersect(bounds), hud.rect());
+            for (index, (rect, _)) in hud.buttons().iter().enumerate() {
+                assert_eq!(rect.intersect(hud.rect()), *rect);
+                for (other, _) in &hud.buttons()[index + 1..] {
+                    assert!(
+                        rect.intersect(*other).is_zero_area(),
+                        "wrapped controls cannot overlap"
+                    );
+                }
+            }
         }
     }
 }

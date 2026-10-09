@@ -349,6 +349,33 @@ pub fn place_aligned(
     (Rect::new(x0, y0, x0 + w, y0 + h), side)
 }
 
+/// Place an editor or other resizable panel fully inside the viewport.
+/// Prefer the requested side, flip when there is more room opposite, and
+/// fall back to overlapping the anchor when neither side can hold the panel.
+/// Unlike menus, editors must keep their input and footer reachable even in
+/// a short window. Callers measure scrollable content against the returned size.
+#[must_use]
+pub fn place_bounded(
+    anchor: Rect,
+    size: (f64, f64),
+    side: PopoverSide,
+    gap: f64,
+    viewport: Rect,
+) -> (Rect, PopoverSide) {
+    let size = (
+        size.0.max(0.0).min(viewport.width().max(0.0)),
+        size.1.max(0.0).min(viewport.height().max(0.0)),
+    );
+    let (rect, side) = place_anchored(anchor, size, side, gap, viewport);
+    let x = rect
+        .x0
+        .clamp(viewport.x0, (viewport.x1 - size.0).max(viewport.x0));
+    let y = rect
+        .y0
+        .clamp(viewport.y0, (viewport.y1 - size.1).max(viewport.y0));
+    (Rect::new(x, y, x + size.0, y + size.1), side)
+}
+
 /// One control of a [`ControlBar`]: an icon button over media, named for
 /// assistive technology and its tooltip.
 #[derive(Clone, Copy, Debug)]
@@ -766,5 +793,36 @@ mod control_bar_tests {
             room.x0 > window.x0 && room.x1 < window.x1,
             "panels keep a margin"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_placement_tests {
+    use super::*;
+
+    #[test]
+    fn editor_placement_flips_and_constrains_oversized_content() {
+        let viewport = Rect::new(8.0, 8.0, 312.0, 232.0);
+        for anchor in [
+            Rect::new(40.0, 10.0, 80.0, 30.0),
+            Rect::new(40.0, 200.0, 80.0, 220.0),
+        ] {
+            let (rect, side) =
+                place_bounded(anchor, (250.0, 100.0), PopoverSide::Below, 8.0, viewport);
+            assert_eq!(rect.intersect(viewport), rect);
+            if anchor.y0 > 100.0 {
+                assert_eq!(side, PopoverSide::Above);
+            } else {
+                assert_eq!(side, PopoverSide::Below);
+            }
+        }
+        let (rect, _) = place_bounded(
+            Rect::new(140.0, 110.0, 180.0, 130.0),
+            (600.0, 900.0),
+            PopoverSide::Below,
+            8.0,
+            viewport,
+        );
+        assert_eq!(rect, viewport);
     }
 }

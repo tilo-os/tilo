@@ -595,3 +595,6 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+file-open-drop-hint = Drop a file here or choose one.
+file-open-release-hint = Release to open

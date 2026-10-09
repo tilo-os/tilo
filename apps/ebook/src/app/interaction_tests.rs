@@ -19,6 +19,20 @@ fn workspace_env(path: &std::path::Path) -> tilo_test_env::ScopedEnv {
     env
 }
 
+// These fixtures exercise page navigation explicitly; fresh live documents
+// default to Scroll, covered by the settings and continuous-flow regressions.
+fn paged_doc() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    BooksDoc::write_settings(
+        &mut doc,
+        &Settings {
+            mode: ReadMode::Paged,
+            ..Settings::default()
+        },
+    );
+    doc
+}
+
 fn app_with_sample() -> BooksApp {
     BooksApp::with_library(
         crate::resource::library_dispatcher_for_test(),
@@ -31,7 +45,7 @@ fn app_with_sample() -> BooksApp {
 fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
     use tilo_actions::Action as _;
 
-    let mut doc = AutoCommit::new();
+    let mut doc = paged_doc();
     for invoke in crate::scenarios::actions(Some(scenario)) {
         let action: crate::actions::EbookAction =
             serde_json::from_value(invoke.arguments[ui::tilo_resource::APPLY_PARAM].clone())
@@ -101,7 +115,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
     // --- phase: accessibility_exposes_library_controls_and_routes_their_real_actions ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Library;
         frame(&mut app, &mut doc, 1100.0, 760.0);
 
@@ -127,7 +141,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
     // --- phase: library_settings_exposes_empty_and_discovered_folder_actions ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Library;
         app.library_paths.clear();
@@ -164,7 +178,7 @@ fn reader_controls_are_accessible_and_live() {
     // --- phase: accessibility_reader_contains_visible_text_and_actionable_chrome ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
         let tree = Widget::accessibility(&app).expect("Books semantic root");
@@ -198,7 +212,7 @@ fn reader_controls_are_accessible_and_live() {
     // --- phase: reader_progress_slider_seeks_accessibly_and_persists_continuous_position ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let chapter = app.library[0].chapters[0].clone();
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..4)
             .map(|index| crate::model::Chapter {
@@ -242,7 +256,7 @@ fn reader_controls_are_accessible_and_live() {
     // --- phase: accessibility_quick_settings_is_modal_and_numeric_controls_are_live ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.reading_settings.open();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
@@ -270,7 +284,7 @@ fn reader_controls_are_accessible_and_live() {
     // --- phase: narrow_large_text_settings_tabs_are_complete_and_semantic ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Shortcuts;
         app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
@@ -418,7 +432,7 @@ fn find_hit(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Point> {
         .action_center(|action| {
             let action = match action {
                 CommentAction::Close => Action::CloseComments,
-                CommentAction::Swallow => Action::Swallow,
+                CommentAction::Swallow | CommentAction::Color(_, _) => Action::Swallow,
                 CommentAction::DeleteHighlight(group) => Action::DeleteHighlight(group),
                 CommentAction::Add(group) => Action::AddComment(group),
                 CommentAction::Edit(id) => Action::EditComment(id),
@@ -776,7 +790,7 @@ fn wheel_turns_pages_and_scrolls_the_shelf() {
     // --- phase: wheel_turns_pages_in_the_reader ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.view, View::Reader);
         let start = (app.chapter, app.page);
@@ -805,7 +819,7 @@ fn wheel_turns_pages_and_scrolls_the_shelf() {
     {
         // Scrolling right must advance (next page); scrolling left must go back.
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.view, View::Reader);
         let start = (app.chapter, app.page);
@@ -837,7 +851,7 @@ fn wheel_turns_pages_and_scrolls_the_shelf() {
     {
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // A short window so the three sample cards overflow into a scroll range.
         frame(&mut app, &mut doc, 560.0, 600.0);
         assert!(app.shelf_max_scroll > 0.0, "shelf overflows this window");
@@ -863,7 +877,7 @@ fn wheel_over_rails_scrolls_the_rail_not_the_book() {
     // --- phase: wheel_over_a_long_toc_scrolls_the_rail_not_the_book_and_reveals_chapter ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let template = app.library[0].chapters[0].clone();
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..32)
             .map(|index| crate::model::Chapter {
@@ -913,7 +927,7 @@ fn wheel_over_rails_scrolls_the_rail_not_the_book() {
     // --- phase: wheel_over_long_annotations_stays_in_the_rail_and_reveals_a_target ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let book_id = app.book_id();
         let mut target = None;
         for index in 0..28 {
@@ -957,7 +971,7 @@ fn font_choice_applies_persists_and_falls_back() {
     {
         use crate::model::FontKind;
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // The reader opens in the serif book face (books read best in serif) —
         // and that is the face the paint pass shapes with.
@@ -1070,7 +1084,7 @@ fn schemes_are_listed_created_and_applied() {
     // --- phase: disabling_a_scheme_hides_it_from_quick_settings ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 820.0);
@@ -1105,7 +1119,7 @@ fn schemes_are_listed_created_and_applied() {
     // --- phase: scheme_manager_new_via_picker_creates_selects_and_edits ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 860.0);
@@ -1154,7 +1168,7 @@ fn schemes_are_listed_created_and_applied() {
     // high-contrast tint, the de-browned dark, and a custom scheme.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let theme = Theme::dark();
 
@@ -1240,7 +1254,7 @@ fn colour_picker_edits_or_leaves_a_scheme() {
     {
         // A custom scheme's page colour, edited through the picker, changes.
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let mut schemes = default_schemes();
         schemes.push(ColorScheme::from_bg("scheme_x", "Test", [0x30, 0x30, 0x30]));
         BooksDoc::write_schemes(&mut doc, &schemes);
@@ -1301,7 +1315,7 @@ fn colour_picker_edits_or_leaves_a_scheme() {
     // --- phase: cancelling_the_picker_leaves_the_scheme_untouched ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let before = open_page_picker(&mut app, &mut doc);
         let swatch = picker_rect(&app, "color_picker.swatch[0]").center();
         assert!(click(&mut app, &mut doc, swatch), "swatch handled");
@@ -1314,7 +1328,7 @@ fn colour_picker_edits_or_leaves_a_scheme() {
     // --- phase: a_swatch_action_and_done_apply_through_semantics ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let before = open_page_picker(&mut app, &mut doc);
         let nodes = app.color_picker.accessibility_nodes();
         let dialog = nodes.first().expect("the sheet is a dialog");
@@ -1391,7 +1405,7 @@ fn font_manager_and_system_picker_set_fonts() {
     // --- phase: font_manager_toggles_shown_and_sets_default ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1200.0, 820.0);
@@ -1438,7 +1452,7 @@ fn font_manager_and_system_picker_set_fonts() {
     {
         use crate::model::FontKind;
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Open the font manager's system-family picker.
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
@@ -1506,7 +1520,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
     // --- phase: drag_selection_spans_paragraphs_and_highlights_the_range ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Wide window so the docked rails don't cover the page centre.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
@@ -1569,7 +1583,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
     // one grouped highlight — proving the mark is text-range, not paragraph.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             app.sel_runs.len() > 3,
@@ -1646,7 +1660,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
     // to the raw character the press landed on.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             app.sel_runs.len() > 3,
@@ -1718,7 +1732,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
     // --- phase: triple_click_selects_the_complete_logical_text_block ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let run = app
             .sel_runs
@@ -1751,7 +1765,7 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: note_action_opens_an_on_page_composer_over_a_selection ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Make a cross-paragraph selection via drag.
         let r0 = app.sel_runs[0];
@@ -1795,7 +1809,7 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: composing_a_note_types_backspaces_and_persists ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         // Select a word, then start a note with the 'm' shortcut.
         let __p = page_point(&app);
@@ -1840,7 +1854,7 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: clicking_a_finished_note_reopens_it_for_editing ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let __p = page_point(&app);
         dbl_click(&mut app, &mut doc, __p);
@@ -1865,7 +1879,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         use ui::offscreen::OffscreenRenderer;
         let (w, h) = (1000u32, 700u32);
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Same page, popover closed then open.
         let closed = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
         app.reading_settings.open();
@@ -1889,7 +1903,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
     // --- phase: aa_button_opens_popover_and_page_tint_persists ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(!app.reading_settings.is_open());
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
@@ -1910,7 +1924,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         // On a wide window the annotations rail is docked-open; the reading
         // settings popover must anchor inside the reading area, never crossing it.
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Reader;
         frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(app.notes_drawer.is_docked(), "wide window docks the rail");
@@ -1942,7 +1956,7 @@ fn type_popover_values_edit_and_persist() {
     // --- phase: composition_setting_relayouts_and_persists ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.layout.is_some(), "reader starts laid out");
 
@@ -1972,7 +1986,7 @@ fn type_popover_values_edit_and_persist() {
     // --- phase: type_popover_steppers_change_and_persist_settings ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
@@ -2017,7 +2031,7 @@ fn type_popover_values_edit_and_persist() {
     // --- phase: type_popover_value_is_click_to_type ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
@@ -2095,7 +2109,7 @@ fn serif_reader_matches_typography_baseline() {
 
     let (width, height) = (1280u32, 800u32);
     let mut app = app_with_sample();
-    let mut doc = AutoCommit::new();
+    let mut doc = paged_doc();
     let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
     let mut renderer = OffscreenRenderer::try_new(width, height)
         .expect("typography baseline requires an offscreen renderer");
@@ -2151,7 +2165,7 @@ fn mathematical_reader_matches_shared_typesetting_baseline() {
 
     let (width, height) = (1280u32, 800u32);
     let mut app = app_with_math_sample();
-    let mut doc = AutoCommit::new();
+    let mut doc = paged_doc();
     let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
     let mut renderer = OffscreenRenderer::try_new(width, height)
         .expect("typography baseline requires an offscreen renderer");
@@ -2203,7 +2217,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
     {
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 720.0);
         let target = find_hit(&app, |a| matches!(a, Action::OpenBook(_))).expect("a book card hit");
         assert!(click(&mut app, &mut doc, target), "book click handled");
@@ -2217,7 +2231,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
         // transient — arm it open so its next chevron registers a NextPage hit,
         // then click that chevron on the real hit-testing path.
         app.arm_reader_bubble_for_shots();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let (c0, p0) = (app.chapter, app.page);
         let next = find_hit(&app, |a| matches!(a, Action::NextPage))
@@ -2236,7 +2250,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
     // a page change without leaving an invisible navigation hit behind.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Settled reader: the bubble is not up, and no NextPage hit is exposed in
         // the bottom band (an invisible bubble never eats a click there).
@@ -2320,7 +2334,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
     {
         let mut app = app_with_sample();
         app.book_idx = 1; // Field Notes has three chapters.
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(app.toc_open(), "contents rail docked-open at 1280");
         assert!(app.num_chapters() >= 2, "multi-chapter book");
@@ -2347,7 +2361,7 @@ fn page_modes_and_turn_animation() {
     // --- phase: continuous_mode_scrolls_the_flow_and_persists ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Switch to continuous scroll through the real command path.
         app.dispatch(
@@ -2382,7 +2396,7 @@ fn page_modes_and_turn_animation() {
     // --- phase: two_up_shows_two_columns_and_turns_by_two ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 820.0);
         app.dispatch(Action::SetMode(ReadMode::TwoUp), &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1280.0, 820.0);
@@ -2415,7 +2429,7 @@ fn page_modes_and_turn_animation() {
     // animates a page turn — it just scrolls.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(
             app.settings.mode,
@@ -2470,7 +2484,7 @@ fn page_modes_and_turn_animation() {
     // --- phase: reduced_motion_settles_an_in_flight_page_turn_immediately ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert!(app.page_turn.is_some());
@@ -2496,7 +2510,7 @@ fn highlight_markers_reanchor_and_open_comments() {
     // plain tap on the same marker opens the highlight's comments.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         // Highlight a range within the first paragraph (single block → movable).
@@ -2613,7 +2627,7 @@ fn highlight_markers_reanchor_and_open_comments() {
     // so the marker doubles as the comment affordance.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let r0 = app.sel_runs[0];
         let end_run = app
@@ -2669,7 +2683,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
     // --- phase: double_click_selects_a_word_then_a_swatch_writes_a_ranged_highlight ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let before = BooksDoc::list_annotations(&doc).len();
         // Double-click a word: the selection is exactly that word's char span.
@@ -2704,7 +2718,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
     // --- phase: continuous_highlight_band_fills_the_gap_between_words ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Find two adjacent runs (words) on the same line with a visible gap.
         let runs = app.sel_runs.clone();
@@ -2733,7 +2747,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
     // --- phase: highlight_colour_toggles_off_and_replaces ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let count = |d: &AutoCommit| {
             BooksDoc::list_annotations(d)
@@ -2787,7 +2801,7 @@ fn em_dash_compounds_set_evenly_in_a_phone_reader() {
         );
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].blocks =
             crate::xhtml::parse_xhtml(&chapter);
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         for width in (360..=430).step_by(2) {
             app.layout = None;
             frame(&mut app, &mut doc, f64::from(width), 900.0);
@@ -2826,7 +2840,7 @@ fn verse_copies_its_line_breaks_and_reports_its_geometry() {
     );
     Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].blocks = blocks;
     app.layout = None;
-    let mut doc = AutoCommit::new();
+    let mut doc = paged_doc();
     frame(&mut app, &mut doc, 1000.0, 700.0);
     app.sel = Some(TextSel {
         anchor: DocPos { block: 0, ch: 0 },
@@ -2887,7 +2901,7 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
     // --- phase: shift_and_ctrl_shift_arrows_extend_selection ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Seed a collapsed selection at the start of the first word.
         let r0 = app.sel_runs[0];
@@ -2940,7 +2954,7 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
     // --- phase: copy_action_copies_the_full_selected_passage ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Select a long span: from the first run to the last, across paragraphs.
         let r0 = app.sel_runs[0];
@@ -2988,7 +3002,7 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
         // A bare `c` copies only when a selection is live (mirroring `h`
         // highlight / `m` note); with no selection it is not consumed.
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.sel.is_none(), "no selection at rest");
         assert!(
@@ -3019,7 +3033,7 @@ fn live_start_is_empty_and_onboards() {
     {
         // A non-demo app must never fabricate marks into a fresh document.
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             BooksDoc::list_annotations(&doc).is_empty(),
@@ -3049,7 +3063,7 @@ fn live_start_is_empty_and_onboards() {
         // and never asks the reader to drop files in a magic folder and reload.
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty());
         assert!(
@@ -3072,7 +3086,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
     {
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 720.0);
         assert!(app.library.len() >= 3, "sample shelf has several books");
         assert_eq!(app.shelf_cursor, 0, "focus starts on the first book");
@@ -3110,7 +3124,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
     {
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // A narrow window forces a single column, so down moves to the next book.
         frame(&mut app, &mut doc, 320.0, 700.0);
         assert_eq!(app.shelf_cols, 1, "one column at this width");
@@ -3125,7 +3139,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
     {
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1440.0, 900.0);
         assert!(
             app.shelf_cols >= 4,
@@ -3141,7 +3155,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // tile plus the top-bar Open action, so there is always a way in.
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(!app.library.is_empty(), "sample shelf has books");
         assert!(
@@ -3194,7 +3208,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
         use crate::model::{LibraryPrefs, LibrarySort, Progress};
         let mut app = app_with_sample();
         app.view = View::Library;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let ids: Vec<String> = app.library.iter().map(|b| b.id.clone()).collect();
         assert!(ids.len() >= 3, "sample shelf has several books");
         // Mark the first book as finished; give the others open times.
@@ -3397,7 +3411,7 @@ fn importing_and_removing_books_keeps_one_identity() {
 
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &pa);
@@ -3431,7 +3445,7 @@ fn importing_and_removing_books_keeps_one_identity() {
         std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &path);
         assert_eq!(app.library.len(), 1);
@@ -3449,7 +3463,7 @@ fn importing_and_removing_books_keeps_one_identity() {
     // --- phase: removing_one_watched_book_preserves_other_source_deduplication ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let removed_id = app.library[0].id.clone();
         let retained_id = app.library[1].id.clone();
         let removed_source = PathBuf::from("/watched/removed.epub");
@@ -3492,7 +3506,7 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
         std::fs::write(&pb, crate::content::SAMPLE_EPUB).unwrap();
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
 
         // Queueing returns while the worker is held inside A's parse, so the UI
         // thread never waits for a parse to finish.
@@ -3576,7 +3590,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
 
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &shared_path);
@@ -3605,7 +3619,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
 
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &src);
         assert!(!app.book_is_shared(0), "starts local");
@@ -3627,7 +3641,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &source);
         let id = app.library[0].id.clone();
         let payload =
@@ -3666,7 +3680,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
 
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let (_, entry) = crate::content::prepare_imported_book(&shared_path, remote);
         BooksDoc::upsert_library_entry(&mut doc, &entry);
         let invocation = tilo_actions::InvocationId::new();
@@ -3693,7 +3707,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let _workspace = workspace_env(workspace.path());
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let id = "book:claimed-but-wrong".to_string();
         let shared_path = crate::content::workspace_book_path(&id);
         std::fs::create_dir_all(shared_path.parent().unwrap()).unwrap();
@@ -3731,7 +3745,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &source);
         let payload = crate::actions::effect_payload(&crate::resource::BooksEffect::Share {
             book: app.library[0].id.clone(),
@@ -3761,7 +3775,7 @@ fn annotation_cards_delete_and_jump_to_their_location() {
     // --- phase: annotation_delete_is_reachable_and_removes_it ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Wide window so the annotations rail is docked-open.
         frame(&mut app, &mut doc, 1280.0, 800.0);
         // Create one highlight via double-click word + swatch.
@@ -3791,7 +3805,7 @@ fn annotation_cards_delete_and_jump_to_their_location() {
     // --- phase: clicking_an_annotation_card_jumps_to_its_location ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Docked notes rail at a wide width so the card (with a JumpTo hit) shows.
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let book_id = app.book_id();
@@ -3839,7 +3853,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
     // Drives the real `SetColor` dispatch arm a swatch click invokes.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Create a highlight over the first word via the real swatch path, so the
         // page layout and annotation store are populated exactly as at runtime.
         frame(&mut app, &mut doc, 1280.0, 800.0);
@@ -3901,7 +3915,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
     // existing highlight, and it deletes that highlight (item: explicit delete).
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Highlight a word.
         let p = page_point(&app);
@@ -3934,7 +3948,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
     // --- phase: shared_selection_hud_shows_in_continuous_mode ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         dispatch(&mut app, &mut doc, Action::SetMode(ReadMode::Continuous));
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Seed a live selection near the top of the flow and redraw.
@@ -3964,7 +3978,7 @@ fn bookmarks_and_their_shortcuts() {
     // --- phase: bookmark_toggles_via_icon_and_key ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let bookmarks = |d: &AutoCommit| {
             BooksDoc::list_annotations(d)
@@ -3986,7 +4000,7 @@ fn bookmarks_and_their_shortcuts() {
     // --- phase: device_local_bookmark_shortcut_rebinds_reader_routing ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.reader_keys.set_shortcut("bookmark", "z"));
 
@@ -4008,7 +4022,7 @@ fn bookmarks_and_their_shortcuts() {
     // --- phase: shortcut_capture_rejects_reserved_reader_commands_accessibly ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Shortcuts;
         app.dispatch(
@@ -4099,7 +4113,7 @@ fn reader_shots_render_within_the_page_box() {
     // --- phase: narrow_max_text_scale_keeps_rendered_runs_inside_the_page_box ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let mut settings = BooksDoc::read_settings(&doc);
         settings.font_scale = Settings::READING_SCALE_MAX;
         BooksDoc::write_settings(&mut doc, &settings);
@@ -4139,7 +4153,7 @@ fn reader_keyboard_escape_and_responsive_rails() {
     {
         let mut app = app_with_sample();
         app.book_idx = 1; // Field Notes: three chapters, so nav is deterministic.
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.chapter, 0);
 
@@ -4187,7 +4201,7 @@ fn reader_keyboard_escape_and_responsive_rails() {
     // --- phase: escape_peels_back_popover_then_overlay_then_book ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         // Layer 1: an open type popover — first Escape closes only that.
@@ -4213,7 +4227,7 @@ fn reader_keyboard_escape_and_responsive_rails() {
     // --- phase: rails_collapse_on_narrow_and_dock_on_wide ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // Wide: both rails docked-open by default.
         frame(&mut app, &mut doc, 1280.0, 720.0);
         assert!(app.toc_open(), "contents docked+open at 1280");
@@ -4236,7 +4250,7 @@ fn reading_position_persists_across_reopen() {
     {
         let mut first = app_with_sample();
         first.book_idx = 1; // multi-chapter
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut first, &mut doc, 1000.0, 700.0);
         let book_id = first.book_id();
 
@@ -4267,7 +4281,7 @@ fn reading_position_persists_across_reopen() {
     {
         let mut first = app_with_sample();
         first.book_idx = 1;
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut first, &mut doc, 1000.0, 700.0);
         for _ in 0..2 {
             first.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
@@ -4342,7 +4356,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
     // overlay (hit-testing the real char range, not "the paragraph").
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         // Highlight a run-spanning range in the first block via a drag.
@@ -4417,7 +4431,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
     // delete one, then trash the whole highlight — all through the real hits.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Make a single-word highlight, then open its overlay directly.
         let p = page_point(&app);
@@ -4507,7 +4521,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
     // `handle_event` and compares against the live resource tree.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let book_id = app.book_id();
         let group = Uuid::from_u128(0x2222_3333_4444_5555_6666_7777_8888_9999);
@@ -4592,7 +4606,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
     {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1000.0, 800.0);
@@ -4643,7 +4657,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
     {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1000.0, 800.0);
@@ -4679,7 +4693,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
     {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1000.0, 800.0);
@@ -4730,7 +4744,7 @@ fn reader_text_rows_fit_at_2x() {
     // the next chapter, and they stay ordered and non-overlapping.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         let rows_at = |app: &mut BooksApp, doc: &mut AutoCommit, scale: f32| -> Vec<Rect> {
             // The contents sidebar may float at a large text scale: open it.
             frame_at_text_scale(app, doc, 1280.0, 800.0, scale);
@@ -4790,7 +4804,7 @@ fn reader_text_rows_fit_at_2x() {
     // and the content box must start below it.
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         // A real 2× frame measures the header box the geometry reserves.
         frame_at_text_scale(&mut app, &mut doc, 1280.0, 800.0, 2.0);
         let geom = app.reader_page_geometry(app.rect, app.settings.mode);
@@ -4862,7 +4876,7 @@ fn reader_controls_fit_their_labels() {
     {
         for scale in [1.0_f32, 2.0] {
             let mut app = app_with_sample();
-            let mut doc = AutoCommit::new();
+            let mut doc = paged_doc();
             frame_at_text_scale(&mut app, &mut doc, 800.0, 900.0, scale);
             let button = app.type_button;
             let theme = Theme::dark().with_text_scale(scale);
@@ -4885,7 +4899,7 @@ fn reader_controls_fit_their_labels() {
     // --- phase: size_stepper_holds_the_widest_value ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = paged_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         frame(&mut app, &mut doc, 1200.0, 820.0);
@@ -4920,4 +4934,204 @@ fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
             ScrollMetrics::new(300.0, 100.0, 40.0),
         );
     }
+}
+
+#[test]
+fn selection_click_away_redraws_and_inline_notes_submit_without_empty_annotations() {
+    let mut app = app_with_sample();
+    let mut doc = paged_doc();
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    let point = page_point(&app);
+    dbl_click(&mut app, &mut doc, point);
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert!(app.sel.is_some_and(|s| !s.is_empty()));
+    let tree = app.accessibility().unwrap();
+    let input = find_semantic_target(&tree, "books.selection.note").expect("direct note field");
+    assert!(input.bounds.is_some());
+    assert!(
+        BooksDoc::list_annotations(&doc).is_empty(),
+        "selection only opens a local draft"
+    );
+    app.drag_select = DragSelect::default();
+    assert!(click(
+        &mut app,
+        &mut doc,
+        Point::new(point.x + 80.0, point.y + 100.0)
+    ));
+    assert!(app.sel.is_none());
+    assert!(
+        app.dirty,
+        "clearing a selection must redraw its tint and overlay"
+    );
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    dbl_click(&mut app, &mut doc, point);
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert!(app.perform_semantic_action(
+        "books.selection.note",
+        &A11yAction::SetValue("A useful note".into()),
+        &mut Edits::lend(&mut doc),
+        &automerge::ROOT
+    ));
+    assert!(BooksDoc::list_annotations(&doc).is_empty());
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert!(app.perform_semantic_action(
+        "books.selection.note.save",
+        &A11yAction::Activate,
+        &mut Edits::lend(&mut doc),
+        &automerge::ROOT
+    ));
+    let annotations = BooksDoc::list_annotations(&doc);
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].note, "A useful note");
+    assert!(annotations[0].created > 0);
+    assert!(annotations[0].start < annotations[0].end);
+    assert!(app.sel.is_none());
+}
+
+#[test]
+fn note_composer_recolors_exact_ranges_and_stays_inside_short_windows() {
+    let mut app = app_with_sample();
+    let mut doc = paged_doc();
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    let point = page_point(&app);
+    dbl_click(&mut app, &mut doc, point);
+    let range = app.sel.unwrap();
+    app.dispatch(Action::AddNote, &mut Edits::lend(&mut doc));
+    let id = app.composing.unwrap();
+    assert!(
+        app.sel.is_none(),
+        "note replaces the transient selection tint"
+    );
+    key_char(&mut app, &mut doc, "x");
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.rect = Rect::new(0.0, 0.0, 360.0, 320.0);
+        app.sync(&doc, &automerge::ROOT);
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let tree = app.accessibility().unwrap();
+        for target in [
+            format!("books.note.input:{id}"),
+            format!("books.note.save:{id}"),
+            "books.note.color:green".into(),
+        ] {
+            let rect = find_semantic_target(&tree, &target)
+                .unwrap()
+                .bounds
+                .unwrap()
+                .to_rect();
+            assert_eq!(rect.intersect(app.rect), rect, "{target} stays reachable");
+        }
+    }
+    assert!(app.perform_semantic_action(
+        "books.note.color:green",
+        &A11yAction::Activate,
+        &mut Edits::lend(&mut doc),
+        &automerge::ROOT
+    ));
+    let note = BooksDoc::list_annotations(&doc)
+        .into_iter()
+        .find(|a| a.id == id)
+        .unwrap();
+    assert_eq!(note.color, HiColor::Green);
+    assert_eq!(note.note, "x");
+    app.composing = None;
+    app.note_composer.close();
+    app.sel = Some(range);
+    app.on_set_color(HiColor::Purple, &mut Edits::lend(&mut doc));
+    let annotations = BooksDoc::list_annotations(&doc);
+    assert_eq!(
+        annotations.len(),
+        1,
+        "recolouring a note must not add a highlight"
+    );
+    let recolored = annotations.iter().find(|a| a.id == id).unwrap();
+    assert_eq!(recolored.color, HiColor::Purple);
+    assert_eq!(recolored.note, "x");
+    assert_eq!(
+        (note.start, note.end),
+        (range.ordered().0.ch, range.ordered().1.ch)
+    );
+}
+
+#[test]
+#[serial]
+fn dropped_epub_imports_even_while_note_editor_is_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("dropped.EPUB");
+    std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+    let mut app = app_with_sample();
+    let mut doc = paged_doc();
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    let point = page_point(&app);
+    dbl_click(&mut app, &mut doc, point);
+    app.dispatch(Action::AddNote, &mut Edits::lend(&mut doc));
+    assert!(app.note_composer.is_open());
+    assert!(feed(&mut app, &mut doc, &WindowEvent::DroppedFile(path)));
+    assert!(app.import_loading.is_some());
+    wait_for_import(&mut app, &mut doc);
+    assert!(app.load_error.is_none(), "{:?}", app.load_error);
+    assert_eq!(app.view, View::Reader);
+    assert_eq!(app.book_id(), crate::content::bundled_sample().unwrap().id);
+}
+
+#[test]
+fn continuous_flow_paints_and_selects_neighbour_chapters_without_snapping() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    let book = Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]);
+    book.chapters = (0..30)
+        .map(|i| crate::model::Chapter {
+            title: format!("Chapter {i}"),
+            href: format!("{i}.xhtml"),
+            blocks: vec![crate::model::Block::Paragraph {
+                spans: vec![crate::model::Span::plain(format!("Text in chapter {i}."))],
+            }],
+        })
+        .collect();
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert_eq!(app.settings.mode, ReadMode::Continuous);
+    assert!(
+        app.sel_runs.iter().any(|run| run.chapter == 1),
+        "next chapter is visible in the same viewport"
+    );
+    let next = app.sel_runs.iter().find(|run| run.chapter == 1).unwrap();
+    let point = Point::new(
+        f64::midpoint(next.x0, next.x1),
+        f64::midpoint(next.y0, next.y1),
+    );
+    let screen_y = next.y0;
+    dbl_click(&mut app, &mut doc, point);
+    assert_eq!(app.chapter, 1);
+    assert!(!app.selection_text().is_empty());
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert!(
+        (app.sel_runs.iter().find(|run| run.chapter == 1).unwrap().y0 - screen_y).abs() < 0.5,
+        "selection does not jump the text"
+    );
+    app.clear_selection();
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    app.dispatch(Action::GotoChapter(0), &mut Edits::lend(&mut doc));
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    let first_height = f64::from(app.layout.as_ref().unwrap().total_height) + app.flow_gap;
+    app.scroll_continuous(first_height + 7.0);
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert_eq!(app.chapter, 1);
+    assert!(
+        (app.scroll_y - 7.0).abs() < 0.5,
+        "overshoot is preserved: scroll={}, chapter={}, first_height={}",
+        app.scroll_y,
+        app.chapter,
+        first_height
+    );
+    app.scroll_continuous(-12.0);
+    frame(&mut app, &mut doc, 900.0, 650.0);
+    assert_eq!(app.chapter, 0);
+    assert!((app.scroll_y - (first_height - 5.0)).abs() < 0.5);
 }

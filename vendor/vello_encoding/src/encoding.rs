@@ -92,6 +92,11 @@ impl Encoding {
 
     /// Appends another encoding to this one with an optional transform.
     pub fn append(&mut self, other: &Self, transform: &Option<Transform>) {
+        // A fragment with no drawing must not erase the forced transform/style
+        // emission left by glyph resolution in the preceding fragment.
+        if other.path_tags.is_empty() && other.draw_tags.is_empty() {
+            return;
+        }
         let glyph_runs_base = {
             let offsets = self.stream_offsets();
             let stops_base = self.resources.color_stops.len();
@@ -608,6 +613,34 @@ impl StreamOffsets {
 #[cfg(test)]
 mod tests {
     use peniko::{Extend, ImageQuality};
+
+    #[test]
+    fn empty_append_preserves_the_state_invalidated_by_glyph_resolution() {
+        use super::{Encoding, Transform};
+        let mut encoding = Encoding::new();
+        let transform = Transform::IDENTITY;
+        encoding.encode_transform(transform);
+        encoding.encode_fill_style(peniko::Fill::NonZero);
+        // Glyph run resolution changes state outside the encoding streams.
+        encoding.force_next_transform_and_style();
+        encoding.append(&Encoding::new(), &None);
+        assert!(encoding.encode_transform(transform));
+        encoding.encode_fill_style(peniko::Fill::NonZero);
+        assert_eq!(encoding.styles.len(), 2);
+    }
+
+    #[test]
+    fn append_keeps_draw_only_fragments_used_by_deferred_glyph_runs() {
+        use super::Encoding;
+        let mut fragment = Encoding::new();
+        fragment.encode_brush(peniko::BrushRef::Solid(peniko::Color::BLACK), 1.0);
+        assert!(fragment.path_tags.is_empty());
+        assert!(!fragment.draw_tags.is_empty());
+        let mut encoding = Encoding::new();
+        encoding.append(&fragment, &None);
+        assert!(encoding.draw_tags == fragment.draw_tags);
+        assert_eq!(encoding.draw_data, fragment.draw_data);
+    }
 
     #[test]
     fn ensure_image_quality_values() {

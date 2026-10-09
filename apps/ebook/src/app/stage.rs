@@ -205,6 +205,7 @@ impl BooksApp {
         if scenario == "note" {
             self.composing = Some(COMPOSED_NOTE);
             self.note_composer.open(COMPOSED_NOTE, Some(&self.dispatch));
+            self.clear_selection();
         }
     }
 }

@@ -418,6 +418,7 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
+    file_open: ui::widget::FileOpenSurface,
     missing_codec: Option<String>,
     formats_focused: bool,
     formats_label: String,
@@ -815,6 +816,7 @@ impl PlayerApp {
             source_generation: 0,
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
+            file_open: ui::widget::FileOpenSurface::default(),
             missing_codec: None,
             formats_focused: false,
             formats_label: crate::i18n::t("video-formats-title"),
@@ -2649,6 +2651,17 @@ impl Widget for PlayerApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(outcome) = self.file_open.handle_event(event) {
+            if let ui::widget::FileOpenEvent::Open(path) = outcome
+                && let Err(error) = self.open_path(&path)
+            {
+                self.open_error = Some(error);
+            }
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
+
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -3874,6 +3887,40 @@ mod tests {
             assert_eq!(app.title, "No media");
             assert!(!app.player.is_playing());
         }
+    }
+
+    #[test]
+    fn dropping_a_video_opens_the_normal_decoder_and_supersedes_a_pending_picker() {
+        let mut app = synth_app();
+        let (services, recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || app.trigger_open(None).unwrap());
+        assert_eq!(recorder.pick_requests().len(), 1);
+        let mut state = ui::State::new();
+        let mut taffy = taffy::TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus = None;
+        let mut ctx = ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: ui::widget::Edits::lend(&mut state.doc),
+            path: &state.root,
+            node_id: node,
+            taffy: &mut taffy,
+            handled: &mut handled,
+            focus_target: &mut focus,
+        };
+        app.handle_event(
+            &WindowEvent::DroppedFile(PathBuf::from("/workspace/dropped.mp4")),
+            &mut ctx,
+        );
+        assert!(handled);
+        assert!(app.portal_open.is_none());
+        assert!(app.current_source_id.is_some());
+        assert_eq!(app.queue.len(), 1);
+        assert!(app.open_error.is_none());
+        app.sync(&state.doc, &state.root);
+        assert!(app.player.latest_frame().is_some());
     }
 
     /// A player pinned to the deterministic synthesized backend, so the app's

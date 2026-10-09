@@ -55,6 +55,7 @@ mod reading_settings;
 pub mod resource;
 mod scenarios;
 pub mod search_provider;
+mod selection_composer;
 mod shelf_controls;
 #[cfg(test)]
 mod test_epub;

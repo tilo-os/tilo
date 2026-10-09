@@ -220,7 +220,10 @@ fn lived_in(scenario: &str) -> bool {
 
 /// The reading settings `scenario` reads with.
 fn settings(scenario: &str) -> Option<Settings> {
-    let mut settings = Settings::default();
+    let mut settings = Settings {
+        mode: ReadMode::Paged,
+        ..Settings::default()
+    };
     match scenario {
         "serif" => settings.font_id = "serif".into(),
         "dark" => settings.theme = ReadTheme::Dark,

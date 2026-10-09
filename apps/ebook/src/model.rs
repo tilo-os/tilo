@@ -521,7 +521,7 @@ impl ReadMode {
         match self {
             ReadMode::Paged => "Pages",
             ReadMode::Continuous => "Scroll",
-            ReadMode::TwoUp => "Two pages",
+            ReadMode::TwoUp => "Book",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -867,7 +867,7 @@ impl Default for Settings {
             font_id: String::new(),
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
-            mode: ReadMode::Paged,
+            mode: ReadMode::Continuous,
             composition: CompositionStyle::Book,
         }
     }
@@ -1034,7 +1034,7 @@ mod tests {
             }
         }
 
-        // --- phase: read_mode_round_trips_and_defaults_to_paged ---
+        // --- phase: read_mode_round_trips_and_defaults_to_scroll ---
         {
             for m in ReadMode::ALL {
                 assert_eq!(ReadMode::from_str(m.as_str()), m);
@@ -1042,8 +1042,8 @@ mod tests {
             assert_eq!(ReadMode::from_str("nonsense"), ReadMode::Paged);
             assert_eq!(
                 Settings::default().mode,
-                ReadMode::Paged,
-                "readers open paged by default"
+                ReadMode::Continuous,
+                "new readers open a continuous book flow"
             );
             assert_eq!(ReadMode::TwoUp.page_stride(), 2, "a spread turns two pages");
             assert_eq!(ReadMode::Paged.page_stride(), 1);

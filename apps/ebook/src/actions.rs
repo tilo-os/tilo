@@ -243,6 +243,8 @@ pub enum EbookAction {
     /// Recolour every row of a highlight group (its per-block pieces and its
     /// comments) so the mark stays coherent.
     ChangeHighlightColor { group: String, color: String },
+    /// Recolour a standalone note without recreating its text or anchor.
+    ChangeNoteColor { id: String, color: String },
     /// Delete a whole highlight — its per-block pieces *and* every comment on it.
     DeleteHighlight { group: String },
     /// Add a comment (a note row sharing the highlight's `group`) to a highlight.
@@ -584,6 +586,10 @@ impl EbookAction {
             }
             Self::ChangeHighlightColor { group, color } => {
                 Self::parse_uuid(group, "highlight")?;
+                Self::validate_color(color)?;
+            }
+            Self::ChangeNoteColor { id, color } => {
+                Self::parse_uuid(id, "note")?;
                 Self::validate_color(color)?;
             }
             Self::DeleteHighlight { group } => {
@@ -1066,6 +1072,15 @@ impl Action for EbookAction {
             EbookAction::ChangeHighlightColor { group, color } => {
                 Self::apply_change_highlight_color(doc, group, color)
             }
+            EbookAction::ChangeNoteColor { id, color } => {
+                let id = Self::parse_uuid(id, "note")?;
+                let annotation = BooksDoc::list_annotations(doc)
+                    .into_iter()
+                    .find(|a| a.id == id && a.kind == AnnoKind::Note && a.group == a.id)
+                    .ok_or_else(|| Self::refused("standalone note is unavailable"))?;
+                BooksDoc::write_annotation_color(doc, annotation.id, HiColor::from_str(color));
+                Ok(())
+            }
             EbookAction::DeleteHighlight { group } => {
                 Self::apply_delete_highlight(doc, group);
                 Ok(())
@@ -1542,6 +1557,28 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
 
 /// Document mutations on one annotation row (or comment). Views stay on the
 /// resource separately; this only attaches CRDT-backed ops.
+fn note_color_action_spec(annotation: &Annotation) -> ActionSpec {
+    let id = annotation.id;
+    let group = annotation.group;
+    ActionSpec::prompted(
+        "change-color",
+        "Change colour",
+        "Colour",
+        "yellow, green, blue, pink, purple",
+        ExecutionLocus::ClientLocal,
+        move |name| {
+            encode(&if group == id {
+                EbookAction::ChangeNoteColor {
+                    id: id.to_string(),
+                    color: HiColor::from_str(name.trim()).as_str().into(),
+                }
+            } else {
+                change_color_action(group, HiColor::from_str(name.trim()))
+            })
+        },
+    )
+}
+
 fn with_annotation_document_actions(
     mut resource: Resource,
     annotation: &Annotation,
@@ -1604,6 +1641,7 @@ fn with_annotation_document_actions(
         }
         AnnoKind::Note => {
             let id = annotation.id;
+            resource = resource.with_action(note_color_action_spec(annotation));
             let edit_id = if comment { "edit-comment" } else { "edit" };
             let edit_label = if comment { "Edit comment" } else { "Edit note" };
             let delete_id = if comment { "delete-comment" } else { "delete" };
@@ -3070,5 +3108,42 @@ mod tests {
                     .note
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod note_color_tests {
+    use super::*;
+
+    #[test]
+    fn standalone_note_recolor_is_published_and_preserves_the_note() {
+        let mut doc = AutoCommit::new();
+        let note =
+            Annotation::new("book:color", AnnoKind::Note, 0, 1).with_note("Keep this thought");
+        let id = note.id;
+        BooksDoc::upsert_annotation(&mut doc, &note);
+        let resources = annotation_resources(&BooksDoc::list_annotations(&doc));
+        assert!(resources[0].actions.iter().any(|a| a.id == "change-color"));
+        let action = EbookAction::ChangeNoteColor {
+            id: id.to_string(),
+            color: "purple".into(),
+        };
+        let encoded = encode(&action);
+        let mut replay = doc.fork();
+        let decoded: EbookAction = serde_json::from_slice(&encoded.payload).unwrap();
+        decoded.apply(&mut replay).unwrap();
+        let changed = BooksDoc::list_annotations(&replay).pop().unwrap();
+        assert_eq!(changed.color, HiColor::Purple);
+        assert_eq!(changed.note, note.note);
+        assert_eq!(changed.group, note.group);
+        assert_eq!(changed.blocks, BooksDoc::list_annotations(&doc)[0].blocks);
+        assert!(
+            EbookAction::ChangeNoteColor {
+                id: id.to_string(),
+                color: "invalid".into()
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
     }
 }

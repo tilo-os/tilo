@@ -122,16 +122,26 @@ change.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the files listed
 below and the publication identity in `Cargo.toml` (see "Published forks").
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
 against the published crate to confirm.
 
-The patch is one thing: size the bump-allocated scratch buffers from what a
+The main patch sizes the bump-allocated scratch buffers from what a
 frame measurably uses instead of from upstream's fixed, worst-case constants.
+The rendering fixes below also preserve scene composition and driver correctness.
 See the `[patch.crates-io]` comment in the root `Cargo.toml` and the module
 doc on `vendor/vello/src/bump_budget.rs` for why.
+
+## `vendor/vello_encoding/src/encoding.rs`: empty scene append preserves state
+
+Appending a fragment without path or draw tags is a no-op. Previously an empty
+suffix cleared the forced transform/style emission left by deferred glyph
+resolution. An unfocused rich-text paragraph ending in a glyph run could then
+translate the parent's next shape by the last glyph's position: a sidebar
+painted over the editor instead of at the edge of the window. Draw-only glyph
+fragments still append normally. The two encoding regressions cover both paths.
 
 ## `vendor/vello_encoding/src/config.rs`
 

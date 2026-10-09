@@ -32,6 +32,7 @@ pub(crate) struct ReaderPosition {
     pub(crate) page: usize,
     pub(crate) page_count: usize,
     pub(crate) chapter_count: usize,
+    pub(crate) continuous: bool,
 }
 
 pub(crate) struct ReaderBubble {
@@ -193,6 +194,13 @@ fn label(
     center_x1: f64,
     position: ReaderPosition,
 ) -> String {
+    if position.continuous {
+        return format!(
+            "Chapter {} of {}",
+            position.chapter + 1,
+            position.chapter_count.max(1)
+        );
+    }
     let page = position.page + 1;
     let pages = position.page_count.max(1);
     let base = format!("{page} of {pages}");

@@ -8,6 +8,34 @@
 // tool, the search query) stays local because it is per-peer.
 
 impl PdfApp {
+    fn handle_file_open_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &ui::widget::Edits<'_>,
+    ) -> bool {
+        if self.has_document {
+            return false;
+        }
+        let Some(outcome) = self.file_open.handle_event(event) else {
+            return false;
+        };
+        if let ui::widget::FileOpenEvent::Open(path) = outcome {
+            self.portal_rx = None;
+            self.portal_contents_rx = None;
+            self.finish_portal_action(
+                false,
+                Some("a dropped file replaced the file chooser".into()),
+            );
+            self.cancel_pending_open();
+            if let Some((_, answer)) = self.pending_reopen.take() {
+                answer.withdraw();
+            }
+            self.open_chosen(&path, state);
+        }
+        self.dirty = true;
+        true
+    }
+
     // ---- small view-state helpers -----------------------------------
 
     /// Re-flow the chrome regions after a layout-affecting toggle and keep
@@ -598,6 +626,10 @@ impl PdfApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
+        if self.handle_file_open_event(event, state) {
+            *handled = true;
+            return;
+        }
         self.shift_down = modifiers.state().shift_key();
         match event {
             // A file dragged in from outside imports as pages: the page rail
@@ -2662,6 +2694,27 @@ mod event_tests {
             app.portal_rx.is_none(),
             "the portal channel clears after a cancel"
         );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn dropping_a_pdf_on_an_empty_window_opens_without_a_preceding_hover() {
+        let mut app = PdfApp::empty();
+        let mut state = ui::State::new();
+        app.sync_settled(&mut state.doc, &state.root);
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(std::path::PathBuf::from(
+            "/workspace/stale.pdf",
+        )));
+        ui::host::scoped(&services, || app.request_open_via_portal());
+        assert_eq!(recorder.pick_requests().len(), 1);
+        let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
+        let mut rig = Rig::with(app, state);
+        assert!(rig.feed(Modifiers::default(), &WindowEvent::DroppedFile(path)));
+        rig.app.sync_settled(&mut rig.st.doc, &rig.st.root);
+        assert!(rig.app.has_document);
+        assert_eq!(rig.app.doc_name, "sample.pdf");
+        assert!(rig.app.doc.page_count() >= 1);
     }
 
     /// A file dragged over the window rings the page rail as a drop target;

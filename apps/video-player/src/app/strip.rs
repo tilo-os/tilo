@@ -289,9 +289,13 @@ impl PlayerApp {
             },
         };
         let cursor: Point = self.last_cursor;
-        self.status_action_rect =
+        self.status_action_rect = if codec_message.is_some() {
             EmptyState::paint_focused(&mut ctx, self.rect, &content, cursor, self.formats_focused)
-                .unwrap_or(Rect::ZERO);
+        } else {
+            self.file_open
+                .paint(&mut ctx, self.rect, &content, cursor, self.open_focused)
+        }
+        .unwrap_or(Rect::ZERO);
     }
 
     /// The letterbox, for a staged loading state that holds back the picture.

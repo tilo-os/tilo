@@ -975,10 +975,10 @@ mod tests {
                 crate::model::CompositionStyle::Ragged,
                 "composition style persists"
             );
-            // A fresh document defaults to the paged reading mode.
+            // A fresh document defaults to continuous scrolling.
             assert_eq!(
                 BooksDoc::read_settings(&AutoCommit::new()).mode,
-                crate::model::ReadMode::Paged
+                crate::model::ReadMode::Continuous
             );
             assert_eq!(
                 BooksDoc::read_settings(&AutoCommit::new()).composition,

@@ -32,6 +32,7 @@ pub(crate) enum CommentAction {
     Add(Uuid),
     Edit(Uuid),
     Delete(Uuid),
+    Color(Uuid, HiColor),
 }
 
 #[derive(Clone)]
@@ -49,6 +50,9 @@ pub(crate) struct CommentOverlay {
     editor: Option<NoteEditor>,
     /// Each comment as written, one read-only view per comment id.
     views: HashMap<Uuid, RichTextView>,
+    scroll: f64,
+    max_scroll: f64,
+    list_clip: Rect,
 }
 
 impl CommentOverlay {
@@ -65,6 +69,7 @@ impl CommentOverlay {
         let mut controls = self
             .hits
             .iter()
+            .filter(|hit| !hit.rect.is_zero_area())
             .filter_map(|hit| {
                 let (target, label): (String, String) = match hit.action {
                     CommentAction::Close => {
@@ -83,6 +88,10 @@ impl CommentOverlay {
                     CommentAction::Delete(id) => (
                         format!("books.comments.delete:{id}"),
                         "Delete comment".into(),
+                    ),
+                    CommentAction::Color(group, color) => (
+                        format!("books.comments.color:{group}:{}", color.as_str()),
+                        format!("Highlight {}", color.name()),
                     ),
                     CommentAction::Swallow => return None,
                 };
@@ -134,6 +143,9 @@ impl CommentOverlay {
                 CommentAction::Add(id) => format!("books.comments.add:{id}"),
                 CommentAction::Edit(id) => format!("books.comments.edit:{id}"),
                 CommentAction::Delete(id) => format!("books.comments.delete:{id}"),
+                CommentAction::Color(group, color) => {
+                    format!("books.comments.color:{group}:{}", color.as_str())
+                }
                 CommentAction::Swallow => return None,
             };
             (candidate == target).then_some(hit.action)
@@ -244,6 +256,9 @@ impl CommentOverlay {
 
 impl CommentOverlay {
     pub(crate) fn open(&mut self, group: Uuid) {
+        if self.group != Some(group) {
+            self.scroll = 0.0;
+        }
         self.group = Some(group);
     }
 
@@ -287,6 +302,19 @@ impl CommentOverlay {
     /// whether the person finished it (Enter or Escape), which closes the
     /// editor; the text is already in the document.
     pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
+        if self.is_open()
+            && let winit::event::WindowEvent::MouseWheel { delta, .. } = ctx.event
+        {
+            let delta = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                    -f64::from(*y) * f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line)
+                }
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            self.scroll = (self.scroll + delta).clamp(0.0, self.max_scroll);
+            *ctx.handled = true;
+            return false;
+        }
         let Some(editor) = self.editor.as_mut() else {
             return false;
         };
@@ -323,29 +351,18 @@ impl CommentOverlay {
     /// Card rect sized to its content, beside the highlight it belongs to
     /// (below it when there is room, else above), inside `area`.
     fn card_rect(&self, area: Rect, theme: &Theme, cw: f64, ch: f64) -> Rect {
-        let (ax, atop, abot) = self.anchor.map_or_else(
-            || {
-                let c = area.center();
-                (c.x, c.y, c.y)
-            },
-            |(x0, y0, x1, y1)| (f64::midpoint(x0, x1), y0, y1),
+        let anchor = self.anchor.map_or_else(
+            || Rect::from_center_size(area.center(), (0.0, 0.0)),
+            |(x0, y0, x1, y1)| Rect::new(x0, y0, x1, y1),
         );
-        let margin = f64::from(theme.tokens.spacing.s3);
-        let gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let x0 = (ax - cw / 2.0).clamp(
-            area.x0 + margin,
-            (area.x1 - margin - cw).max(area.x0 + margin),
-        );
-        let top = area.y0 + margin;
-        let bottom = area.y1 - margin;
-        let y0 = if abot + gap + ch <= bottom {
-            abot + gap
-        } else if atop - gap - ch >= top {
-            atop - gap - ch
-        } else {
-            (bottom - ch).max(top)
-        };
-        Rect::new(x0, y0, x0 + cw, y0 + ch)
+        ui::widget::floating_surface::place_bounded(
+            anchor,
+            (cw, ch),
+            ui::widget::floating_surface::PopoverSide::Below,
+            f64::from(theme.tokens.spacing.rhythm.related),
+            area.inset(-f64::from(theme.tokens.spacing.s3)),
+        )
+        .0
     }
 
     /// A small plain icon button inside the card, with its private hit.
@@ -414,15 +431,28 @@ impl CommentOverlay {
             CommentAction::DeleteHighlight(group),
         );
         let y = y + line + layout.gap;
-        let style = theme.text(TextRole::Body).with_italic(true);
-        ctx.text(
-            layout.excerpt,
-            &style,
-            theme.text_dim,
-            Point::new(ix0, y),
-            Some(layout.inner_w),
-        );
-        y + layout.excerpt_h + layout.gap
+        let side = ControlSize::Small
+            .height(theme)
+            .min((ix1 - ix0) / HiColor::ALL.len() as f64);
+        for (i, color) in HiColor::ALL.into_iter().enumerate() {
+            let rect = Rect::new(
+                ix0 + i as f64 * side,
+                y,
+                ix0 + (i + 1) as f64 * side,
+                y + side,
+            );
+            ui::widget::ColorSwatchFace::new(
+                rect.inset(-f64::from(theme.tokens.spacing.s2).min(side / 4.0)),
+                ReaderPalette::highlight_swatch(color),
+                color.name(),
+            )
+            .selected(layout.color == color)
+            .hovered(rect.contains(cursor))
+            .target_rect(rect)
+            .paint(ctx.scene, ctx.transform, ctx.text, theme);
+            self.push_hit(rect, CommentAction::Color(layout.group, color));
+        }
+        y + side + layout.gap
     }
 
     /// Each comment as a row (its text, Edit and Delete), rows separated by
@@ -550,7 +580,7 @@ impl CommentOverlay {
         // Tap-away closes. It is deliberately behind the card and its controls.
         self.push_hit(viewport, CommentAction::Close);
 
-        let (color, excerpt, comments) = gather_content(annotations, group, default_color);
+        let (color, _, comments) = gather_content(annotations, group, default_color);
         let base = ctx.theme;
         let theme = base.on_ground(ui::chrome::panel_ground(base));
         let spacing = &theme.tokens.spacing;
@@ -561,12 +591,6 @@ impl CommentOverlay {
         let inner_w = ui::num::f32_of_f64((cw - pad * 2.0).max(1.0));
         let controls = 2.0 * ControlSize::Small.height(&theme) + f64::from(spacing.rhythm.tight);
         let text_w = ui::num::f32_of_f64((f64::from(inner_w) - controls - gap).max(1.0));
-        let excerpt_style = theme.text(TextRole::Body).with_italic(true);
-        let excerpt_h = f64::from(
-            ctx.text
-                .measure_style(&excerpt, Some(inner_w), &excerpt_style)
-                .1,
-        );
         let row_heights = self.comment_row_heights(ctx.text, &theme, &comments, text_w);
         self.views
             .retain(|id, _| comments.iter().any(|comment| comment.id == *id));
@@ -574,17 +598,22 @@ impl CommentOverlay {
         let header_h = ChipFace::height(&theme).max(ControlSize::Small.height(&theme));
         let add_h = ControlSize::Small.height(&theme);
         let comments_h = row_heights.iter().sum::<f64>();
-        let ch = pad + header_h + gap + excerpt_h + gap + comments_h + gap + add_h + pad;
+        let ch = pad
+            + header_h
+            + gap
+            + ControlSize::Small.height(&theme)
+            + gap
+            + comments_h
+            + gap
+            + add_h
+            + pad;
 
         let layout = CommentCard {
             card: self.card_rect(area, &theme, cw, ch),
             pad,
             header_h,
             gap,
-            inner_w,
             text_w,
-            excerpt: &excerpt,
-            excerpt_h,
             color,
             group,
             comments: &comments,
@@ -593,8 +622,22 @@ impl CommentOverlay {
         ui::widget::floating_surface::paint(ctx.scene, ctx.transform, layout.card, base);
         let mut panel = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &theme);
         let y = self.draw_card_and_header(&mut panel, cursor, &layout);
-        let y = self.draw_comment_rows(&mut panel, cursor, &layout, y);
-        self.draw_add_button(&mut panel, cursor, &layout, y + gap);
+        let footer_y = layout.card.y1 - pad - add_h;
+        self.list_clip = Rect::new(layout.ix0(), y, layout.ix1(), (footer_y - gap).max(y));
+        self.max_scroll = (comments_h - self.list_clip.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+        panel.scene.push_clip_layer(
+            vello::peniko::Fill::NonZero,
+            panel.transform,
+            &self.list_clip,
+        );
+        let first_hit = self.hits.len();
+        self.draw_comment_rows(&mut panel, cursor, &layout, y - self.scroll);
+        panel.scene.pop_layer();
+        for hit in self.hits.iter_mut().skip(first_hit) {
+            hit.rect = hit.rect.intersect(self.list_clip);
+        }
+        self.draw_add_button(&mut panel, cursor, &layout, footer_y);
     }
 
     #[cfg(test)]
@@ -615,10 +658,7 @@ struct CommentCard<'a> {
     pad: f64,
     header_h: f64,
     gap: f64,
-    inner_w: f32,
     text_w: f32,
-    excerpt: &'a str,
-    excerpt_h: f64,
     color: HiColor,
     group: Uuid,
     comments: &'a [Annotation],
@@ -785,5 +825,79 @@ mod tests {
             ));
             assert_eq!(overlay.editing_id(), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_comment_tests {
+    use super::*;
+    use taffy::{NodeId, TaffyTree};
+    use vello::{Scene, kurbo::Affine};
+    use winit::event::{DeviceId, Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
+
+    #[test]
+    fn long_comment_threads_scroll_inside_a_bounded_card_with_reachable_colors_and_footer() {
+        let mut doc = AutoCommit::new();
+        let highlight = Annotation::new("book:comments", AnnoKind::Highlight, 0, 0);
+        let group = highlight.group;
+        crate::doc::BooksDoc::upsert_annotation(&mut doc, &highlight);
+        for _ in 0..12 {
+            let note = Annotation::new("book:comments", AnnoKind::Note, 0, 0)
+                .with_group(group)
+                .with_note(
+                    "A long comment that wraps onto several lines in a compact window. ".repeat(4),
+                );
+            crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
+        }
+        let annotations = crate::doc::BooksDoc::list_annotations(&doc);
+        let mut overlay = CommentOverlay::default();
+        overlay.open(group);
+        overlay.set_anchor(Some((20.0, 260.0, 300.0, 290.0)));
+        let viewport = Rect::new(0.0, 0.0, 360.0, 320.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        overlay.draw(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
+            viewport,
+            viewport,
+            Point::ZERO,
+            &annotations,
+            HiColor::Yellow,
+        );
+        assert!(overlay.max_scroll > 0.0);
+        assert_eq!(overlay.list_clip.intersect(viewport), overlay.list_clip);
+        for hit in &overlay.hits {
+            if hit.action != CommentAction::Close {
+                assert_eq!(hit.rect.intersect(viewport), hit.rect);
+            }
+        }
+        assert_eq!(
+            overlay.semantic_action(&format!("books.comments.color:{group}:pink")),
+            Some(CommentAction::Color(group, HiColor::Pink))
+        );
+        assert!(
+            overlay
+                .hits
+                .iter()
+                .any(|hit| hit.action == CommentAction::Add(group) && !hit.rect.is_zero_area())
+        );
+        let event = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: TouchPhase::Moved,
+        };
+        let mut handled = false;
+        overlay.handle_event(&mut InputEventCtx {
+            event: &event,
+            scale_factor: 1.0,
+            modifiers: Modifiers::default(),
+            state: ui::widget::Edits::lend(&mut doc),
+            root: &automerge::ROOT,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+            handled: &mut handled,
+        });
+        assert!(handled);
+        assert!(overlay.scroll > 0.0);
     }
 }

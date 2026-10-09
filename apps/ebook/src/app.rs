@@ -42,6 +42,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::time::{Duration, Instant};
 
+#[cfg(test)]
 use ui::ColorCompat;
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
@@ -487,6 +488,7 @@ impl TextSel {
 /// (which has no text renderer) can map a pointer to a [`DocPos`].
 #[derive(Clone, Copy)]
 struct SelRun {
+    chapter: usize,
     block: usize,
     x0: f64,
     x1: f64,
@@ -526,7 +528,7 @@ impl Pane {
     /// scrolling pane shows whole lines only, so its edges never slice one.
     fn shows(&self, ly: f32, lh: f32) -> bool {
         if self.partial {
-            ly >= self.win_start - 0.5 && ly + lh <= self.win_end + 0.5
+            ly + lh > self.win_start && ly < self.win_end
         } else {
             ly >= self.win_start - 0.5 && ly < self.win_end
         }
@@ -1000,6 +1002,7 @@ pub struct BooksApp {
     /// Shared multiline input for standalone page notes. Highlight comments
     /// keep using the comment overlay but share the same CRDT annotation model.
     note_composer: NoteComposer,
+    selection_composer: crate::selection_composer::SelectionComposer,
     /// Floating highlight-comments panel. It owns open/anchor state, drawing,
     /// and its modal hit stack; the app only applies emitted domain actions.
     comment_overlay: CommentOverlay,
@@ -1019,6 +1022,11 @@ pub struct BooksApp {
     /// The current chapter's `(total_flow_height, viewport_height)`,
     /// recorded each `draw` so the wheel/keys can clamp scroll.
     flow_extent: (f64, f64),
+    flow_layouts: HashMap<usize, ChapterLayout>,
+    flow_book: String,
+    flow_gap: f64,
+    flow_chapters: usize,
+    progress_after_layout: bool,
     /// After a backward chapter roll in continuous mode, land at the foot of
     /// the new chapter once laid out (mirrors `pending_last_page`).
     pending_scroll_end: bool,
@@ -1118,7 +1126,7 @@ pub struct BooksApp {
     /// Capture-only clean page and drawers, applied after layout resolution.
     shot_drawers: Option<(bool, bool)>,
     shelf_focus_visible: bool,
-    file_hover: bool,
+    file_open: ui::widget::FileOpenSurface,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
@@ -1270,6 +1278,7 @@ impl BooksApp {
             page_top_block: 0,
             composing: None,
             note_composer: NoteComposer::default(),
+            selection_composer: crate::selection_composer::SelectionComposer::default(),
             comment_overlay: CommentOverlay::default(),
             press_hl_group: None,
             pending_last_page: false,
@@ -1277,6 +1286,11 @@ impl BooksApp {
             swipe_accum: 0.0,
             scroll_y: 0.0,
             flow_extent: (0.0, 0.0),
+            flow_layouts: HashMap::new(),
+            flow_book: String::new(),
+            flow_gap: 0.0,
+            flow_chapters: 0,
+            progress_after_layout: false,
             pending_scroll_end: false,
             page_turn: None,
             reduce_motion: false,
@@ -1326,7 +1340,7 @@ impl BooksApp {
             cur_page_count: 1,
             shot_drawers: None,
             shelf_focus_visible: false,
-            file_hover: false,
+            file_open: ui::widget::FileOpenSurface::default(),
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
@@ -1706,23 +1720,11 @@ impl BooksApp {
     /// Move the continuous-scroll offset by `delta` px, rolling into the
     /// neighbouring chapter when the scroll runs off either end.
     fn scroll_continuous(&mut self, delta: f64) {
-        let (total_h, view_h) = self.flow_extent;
-        let max_scroll = (total_h - view_h).max(0.0);
-        let target = self.scroll_y + delta;
-        if target < -0.5 && self.chapter > 0 {
-            self.chapter -= 1;
-            self.selected_block = None;
-            self.pending_scroll_end = true;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else if target > max_scroll + 0.5 && self.chapter + 1 < self.num_chapters() {
-            self.chapter += 1;
-            self.selected_block = None;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else {
-            self.scroll_y = target.clamp(0.0, max_scroll);
-        }
+        self.clear_selection();
+        // Keep the full gesture, including its overshoot. Layout resolves the
+        // chapter at the top of the viewport and paints its neighbours without
+        // snapping or discarding the rest of a touch/trackpad movement.
+        self.scroll_y += delta;
     }
 
     // --- Library loading + the host file picker -----------------------------
@@ -2355,6 +2357,8 @@ impl BooksApp {
     }
 
     fn on_goto_chapter(&mut self, c: usize) {
+        self.scroll_y = 0.0;
+        self.clear_selection();
         self.chapter = c.min(self.num_chapters().saturating_sub(1));
         self.page = 0;
         self.selected_block = None;
@@ -2402,6 +2406,35 @@ impl BooksApp {
         // replaces it. Resolves to the same action the palette's
         // "Highlight selection" dispatches — one source of truth.
         if let Some(sel) = self.sel.filter(|s| !s.is_empty()) {
+            let notes = self
+                .selection_standalone_notes()
+                .map(|a| a.id)
+                .collect::<Vec<_>>();
+            if !notes.is_empty() {
+                // A passage with a note has one colour. Recolour the existing
+                // annotation rather than stacking a second highlight over it.
+                for id in notes {
+                    self.edit(
+                        doc,
+                        &crate::actions::EbookAction::ChangeNoteColor {
+                            id: id.to_string(),
+                            color: c.as_str().into(),
+                        },
+                    );
+                }
+                self.clear_selection();
+                return;
+            }
+            if let Some(group) = self.selection_highlight_group()
+                && self
+                    .annotations
+                    .iter()
+                    .any(|a| a.kind == AnnoKind::Note && a.group == group && a.color != c)
+            {
+                self.edit(doc, &crate::actions::change_color_action(group, c));
+                self.clear_selection();
+                return;
+            }
             if let Some(plan) = self.resolve_highlight_plan(sel, c) {
                 self.edit(doc, &plan.into_action());
             }
@@ -2409,7 +2442,116 @@ impl BooksApp {
         }
     }
 
+    fn selection_standalone_notes(&self) -> impl Iterator<Item = &Annotation> {
+        let range = self.sel.map(|selection| selection.ordered());
+        self.annotations.iter().filter(move |annotation| {
+            let Some((start, end)) = range else {
+                return false;
+            };
+            annotation.kind == AnnoKind::Note
+                && annotation.group == annotation.id
+                && annotation.chapter == self.chapter
+                && annotation.block >= start.block
+                && annotation.block <= end.block
+                && annotation.start < annotation.end
+                && annotation.start
+                    < (if annotation.block == end.block {
+                        end.ch
+                    } else {
+                        usize::MAX
+                    })
+                && annotation.end
+                    > (if annotation.block == start.block {
+                        start.ch
+                    } else {
+                        0
+                    })
+        })
+    }
+
+    fn handle_file_event(&mut self, event: &WindowEvent) -> bool {
+        let Some(outcome) = self.file_open.handle_event(event) else {
+            return false;
+        };
+        self.dirty = true;
+        if let ui::widget::FileOpenEvent::Open(path) = outcome {
+            let epub = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
+            if !epub {
+                self.load_error = Some(format!(
+                    "Couldn't open {}: only EPUB books can be added",
+                    path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned()
+                    )
+                ));
+            } else if let Err(error) = self.begin_import(path, ImportKind::Open) {
+                self.settle_import_failure(error, "ebook.importer_unavailable");
+            }
+        }
+        true
+    }
+
+    fn recolor_composing_note(&self, color: HiColor, doc: &mut ui::widget::Edits<'_>) {
+        let Some(annotation) = self
+            .composing
+            .and_then(|id| self.annotations.iter().find(|a| a.id == id))
+        else {
+            return;
+        };
+        let action = if annotation.group == annotation.id {
+            crate::actions::EbookAction::ChangeNoteColor {
+                id: annotation.id.to_string(),
+                color: color.as_str().into(),
+            }
+        } else {
+            crate::actions::change_color_action(annotation.group, color)
+        };
+        self.edit(doc, &action);
+    }
+
+    fn submit_selection_note(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if self.selection_composer.text().trim().is_empty() {
+            return;
+        }
+        let Some(draft) = self.selection_note_draft(String::new()) else {
+            return;
+        };
+        let id = draft.id;
+        let blocks = self.selection_composer.clip_blocks();
+        self.edit(doc, &draft.into_action());
+        if let Some(first) = BooksDoc::list_annotations(doc)
+            .into_iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.blocks.into_iter().next())
+        {
+            self.edit(
+                doc,
+                &crate::actions::EbookAction::EditNoteText {
+                    id: id.to_string(),
+                    edit: tilo_document::RichTextAction::PasteFragment {
+                        region: tilo_document::action::RegionKind::Body,
+                        start_block: first.id.clone(),
+                        start: 0,
+                        end_block: first.id,
+                        end: 0,
+                        blocks,
+                        adopt_first_style: true,
+                    },
+                },
+            );
+            self.edit(
+                doc,
+                &crate::actions::finalize_annotation_action(id, unix_now_ms()),
+            );
+        }
+        self.clear_selection();
+    }
+
     fn on_add_note(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.mouse_down = false;
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
         if let Some(draft) = self.selection_note_draft(String::new()) {
@@ -2417,6 +2559,7 @@ impl BooksApp {
             self.edit(doc, &draft.into_action());
             self.composing = Some(id);
             self.note_composer.open(id, Some(&self.dispatch));
+            self.clear_selection();
         }
     }
 
@@ -2429,6 +2572,7 @@ impl BooksApp {
     }
 
     fn on_edit_note(&mut self, id: Uuid) {
+        self.mouse_down = false;
         if self
             .annotations
             .iter()
@@ -2436,7 +2580,6 @@ impl BooksApp {
         {
             self.composing = Some(id);
             self.note_composer.open(id, Some(&self.dispatch));
-            self.notes_drawer.open();
             self.notes_scroll_to_annotation = Some(id);
         }
     }
@@ -2461,6 +2604,7 @@ impl BooksApp {
     }
 
     fn on_open_comments(&mut self, group: Uuid) {
+        self.mouse_down = false;
         // The overlay owns interaction while it is up: drop any live
         // selection so its toolbar doesn't fight the popover.
         self.clear_selection();
@@ -2899,6 +3043,10 @@ impl BooksApp {
             CommentAction::Add(group) => Action::AddComment(group),
             CommentAction::Edit(id) => Action::EditComment(id),
             CommentAction::Delete(id) => Action::DeleteComment(id),
+            CommentAction::Color(group, color) => {
+                self.edit(doc, &crate::actions::change_color_action(group, color));
+                return;
+            }
         };
         self.dispatch(action, doc);
     }
@@ -3531,6 +3679,7 @@ impl BooksApp {
         self.sel = None;
         self.selected_block = None;
         self.dragging_sel = false;
+        self.selection_composer.clear();
     }
 
     /// Map a screen point to a [`DocPos`] using the run geometry recorded
@@ -3564,6 +3713,7 @@ impl BooksApp {
         let target = self
             .sel_runs
             .iter()
+            .filter(|r| r.chapter == self.chapter)
             .min_by(|a, b| match vdist(a).partial_cmp(&vdist(b)) {
                 Some(std::cmp::Ordering::Equal) | None => hdist(a)
                     .partial_cmp(&hdist(b))
@@ -3575,7 +3725,7 @@ impl BooksApp {
         let mut line: Vec<&SelRun> = self
             .sel_runs
             .iter()
-            .filter(|r| (r.y0 - ty0).abs() < 0.5 && r.col == tcol)
+            .filter(|r| r.chapter == self.chapter && (r.y0 - ty0).abs() < 0.5 && r.col == tcol)
             .collect();
         line.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal));
         let first = line.first()?;
@@ -4259,7 +4409,7 @@ impl BooksApp {
     fn painted_block_bounds(&self, index: usize) -> Option<Rect> {
         self.sel_runs
             .iter()
-            .filter(|run| run.block == index)
+            .filter(|run| run.chapter == self.chapter && run.block == index)
             .map(|run| Rect::new(run.x0, run.y0, run.x1, run.y1))
             .reduce(|bounds, run| bounds.union(run))
     }
@@ -4391,6 +4541,9 @@ impl Widget for BooksApp {
         self.commit_pending_share(edits);
         self.open_pending_book(edits);
         self.deliver_effect_replies();
+        if std::mem::take(&mut self.progress_after_layout) {
+            self.persist_progress(edits);
+        }
     }
 
     #[allow(
@@ -4595,6 +4748,20 @@ impl Widget for BooksApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            self.mouse_down = false;
+        }
+        if self.handle_file_event(event) {
+            *ctx.handled = true;
+            return;
+        }
         let mut input_ctx = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -4629,36 +4796,6 @@ impl Widget for BooksApp {
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
             WindowEvent::Focused(true) => self.rescan_watched(ctx.state.doc()),
-            // A file dragged over the window lights the shelf's add tile; an
-            // EPUB dropped anywhere opens like one chosen in the picker.
-            WindowEvent::HoveredFile(_) => {
-                self.file_hover = true;
-                self.dirty = true;
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.file_hover = false;
-                self.dirty = true;
-            }
-            WindowEvent::DroppedFile(path) => {
-                self.file_hover = false;
-                self.dirty = true;
-                let epub = path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
-                if !epub {
-                    self.load_error = Some(format!(
-                        "Couldn't open {}: only EPUB books can be added",
-                        path.file_name().map_or_else(
-                            || path.display().to_string(),
-                            |name| name.to_string_lossy().into_owned()
-                        )
-                    ));
-                } else if let Err(error) = self.begin_import(path.clone(), ImportKind::Open) {
-                    self.settle_import_failure(error, "ebook.importer_unavailable");
-                }
-                *ctx.handled = true;
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
@@ -4746,6 +4883,7 @@ impl Widget for BooksApp {
             })
             .collect::<Vec<_>>();
         controls.reverse();
+        controls.extend(self.selection_composer.accessibility_nodes());
         // A modal surface is the whole interactive world while it is open;
         // do not leave the visually dimmed reader/settings controls navigable
         // behind it. This also gives Tab a natural focus trap.
@@ -4851,6 +4989,21 @@ impl Widget for BooksApp {
         let Some(path) = path.downcast_ref::<ObjId>() else {
             return false;
         };
+        if target == "books.selection.note.save"
+            && matches!(action, A11yAction::Activate)
+            && self.sel.is_some_and(|s| !s.is_empty())
+        {
+            self.submit_selection_note(doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            return true;
+        }
+        if target == "books.selection.note"
+            && self.selection_composer.perform_action(action, doc, path)
+        {
+            self.dirty = true;
+            return true;
+        }
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -4966,6 +5119,7 @@ impl Widget for BooksApp {
                 }
                 NoteSemanticOutcome::Delete(id) => self.on_delete_annotation(id, doc),
                 NoteSemanticOutcome::Focused => {}
+                NoteSemanticOutcome::Color(color) => self.recolor_composing_note(color, doc),
             }
             self.refresh_from_doc(doc);
             self.dirty = true;
@@ -5090,10 +5244,11 @@ impl Widget for BooksApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep the loop pumping while a flap is mid-slide, a page turn is
         // easing in, or the floating page bubble is lingering/fading.
-        !self.reduce_motion
-            && (self.flaps_animating()
-                || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                || self.reader_bubble.needs_frame(ui::time::now()))
+        self.progress_after_layout
+            || (!self.reduce_motion
+                && (self.flaps_animating()
+                    || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
+                    || self.reader_bubble.needs_frame(ui::time::now())))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -5362,6 +5517,46 @@ fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
 
 impl BooksApp {
     fn forward_shared_input_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
+        if let Some(outcome) = self.selection_composer.handle_event(ctx) {
+            if outcome == tilo_rich_text::FieldOutcome::Submit {
+                self.submit_selection_note(&mut ctx.state);
+            } else if outcome == tilo_rich_text::FieldOutcome::Cancel {
+                self.clear_selection();
+            }
+            self.refresh_from_doc(ctx.state.doc());
+            self.dirty = true;
+            *ctx.handled = true;
+            return true;
+        }
+        if matches!(
+            ctx.event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.note_composer.is_open()
+            && self.note_composer.hit_test(self.cursor) != Some(NoteAction::Swallow)
+        {
+            self.handle_left_press_overlay(&mut ctx.state, ctx.handled);
+            return true;
+        }
+        if matches!(
+            ctx.event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && let Some(action) = self.comment_overlay.hit_test(self.cursor)
+            && action != CommentAction::Swallow
+        {
+            self.dispatch_comment_action(action, &mut ctx.state);
+            self.refresh_from_doc(ctx.state.doc());
+            self.dirty = true;
+            *ctx.handled = true;
+            return true;
+        }
         let mut input_handled = false;
         // The editors write the text as it is typed; finishing only closes.
         if self
@@ -5410,7 +5605,12 @@ impl BooksApp {
                 }
             }
         }
+        input_handled |= *ctx.handled;
         if input_handled {
+            if let WindowEvent::CursorMoved { position, .. } = ctx.event {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
             self.refresh_from_doc(ctx.state.doc());
             self.dirty = true;
             *ctx.handled = true;
@@ -5582,6 +5782,7 @@ impl BooksApp {
                     self.finish_composing(doc);
                 }
                 NoteAction::Delete(id) => self.on_delete_annotation(id, doc),
+                NoteAction::Color(color) => self.recolor_composing_note(color, doc),
             }
             self.refresh_from_doc(doc);
             self.dirty = true;
@@ -5667,6 +5868,9 @@ impl BooksApp {
             && comment_action.is_none()
             && top.is_none()
             && bubble_action.is_none();
+        if on_page && self.settings.mode.is_continuous() {
+            self.activate_flow_chapter_at(self.cursor);
+        }
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
@@ -5721,6 +5925,7 @@ impl BooksApp {
                 // Double click selects a word and preserves word granularity
                 // while dragging.
                 Granularity::Word => {
+                    self.selection_composer.clear();
                     if let Some(dp) = self.press_doc {
                         self.select_word_at(dp);
                         if let Some(s) = self.sel {
@@ -5733,6 +5938,7 @@ impl BooksApp {
                 // Triple click selects the complete logical flow block and
                 // expands subsequent dragging block-by-block.
                 Granularity::Line => {
+                    self.selection_composer.clear();
                     if let Some(dp) = self.press_doc {
                         let (start, end) = self.line_span_at(dp);
                         self.sel = Some(TextSel {
@@ -5759,8 +5965,8 @@ impl BooksApp {
                     }
                 }
                 Granularity::Char => {
-                    self.sel = None; // fresh press clears any prior selection
-                    self.selected_block = None;
+                    consumed_page = true;
+                    self.clear_selection();
                     self.drag_unit = DragUnit::Char;
                     if let Some(dp) = self.press_doc {
                         self.drag_anchor_span = (dp, dp);
@@ -6292,7 +6498,7 @@ impl BooksApp {
                 // whole pages — the wheel delta drives the column directly.
                 if self.settings.mode.is_continuous() {
                     let before = (self.chapter, self.scroll_y);
-                    self.scroll_continuous(dy * 1.4);
+                    self.scroll_continuous(dy);
                     return (self.chapter, self.scroll_y) != before;
                 }
                 self.turn_accum += dy;
@@ -6897,7 +7103,7 @@ impl BooksApp {
         DropZoneFace::new("Add a book")
             .icon(Icon::Plus)
             .message("Drop an EPUB here or choose one")
-            .drag_over(self.file_hover)
+            .drag_over(self.file_open.is_hovering())
             .paint(ctx, tile, 0.0);
         let hit = tile.intersect(body);
         if hit.height() > 0.0 {
@@ -6920,7 +7126,10 @@ impl BooksApp {
             error: self.load_error.is_some(),
             ..EmptyStateContent::new("Your library is empty")
         };
-        if let Some(action) = EmptyState::paint(ctx, body, &content, self.cursor) {
+        if let Some(action) = self
+            .file_open
+            .paint(ctx, body, &content, self.cursor, false)
+        {
             self.push_hit(action, Action::OpenViaPortal);
         }
     }
@@ -7044,6 +7253,8 @@ impl BooksApp {
         self.chapter = self.chapter.min(nchap.saturating_sub(1));
 
         let mode = self.settings.mode;
+        self.flow_chapters = nchap;
+        self.flow_gap = f64::from(theme.tokens.spacing.rhythm.section);
         // Measure the running header's line box at this frame's chrome scale
         // before the geometry reserves its slot (see `running_header_h`).
         self.running_header_h = ctx.line_box(TextRole::Caption);
@@ -7052,8 +7263,13 @@ impl BooksApp {
 
         // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
-        let layout =
+        let mut layout =
             self.resolve_chapter_layout(ctx.text, &lib, &geom, font_sig, &base_family, font_mult);
+        if mode.is_continuous()
+            && let Some(book) = lib.get(self.book_idx)
+        {
+            layout = self.resolve_flow_layout(ctx.text, book, &geom, layout);
+        }
         self.resolve_pending_seek_fraction(&layout, mode, &geom);
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
@@ -7082,6 +7298,11 @@ impl BooksApp {
             comment_group: self.comment_overlay.group(),
         };
         let (sel_anchor, comment_box) = self.draw_reader_columns(ctx, &frame, &panes, &geom, mode);
+        if mode.is_continuous()
+            && let Some(book) = lib.get(self.book_idx)
+        {
+            self.draw_flow_neighbours(ctx, book, &frame, &geom);
+        }
         self.comment_overlay.set_anchor(comment_box);
         self.resolve_pending_sel_edge();
 
@@ -7091,6 +7312,201 @@ impl BooksApp {
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
         self.draw_reader_footer_and_chrome(ctx, lib, &geom, sel_anchor);
+        if mode.is_continuous() {
+            let key = (
+                self.chapter,
+                self.reading_block(),
+                (self.current_progress_fraction() * 10_000.0).round() as u16,
+            );
+            self.progress_after_layout = self.last_persisted != Some(key);
+        }
+    }
+
+    fn resolve_flow_layout(
+        &mut self,
+        text: &mut TextRenderer,
+        book: &Book,
+        geom: &ReaderPageGeometry,
+        mut layout: ChapterLayout,
+    ) -> ChapterLayout {
+        if self.flow_book != book.id {
+            self.flow_layouts.clear();
+            self.flow_book.clone_from(&book.id);
+        }
+        self.flow_layouts.insert(self.chapter, layout.clone());
+        let gap = self.flow_gap;
+        // During a selection the addressed chapter may begin below the
+        // viewport. Leave its negative offset intact so a click does not
+        // jump the text beneath the pointer.
+        if !self.mouse_down && self.sel.is_none() && self.composing.is_none() {
+            while self.scroll_y < 0.0 && self.chapter > 0 {
+                self.chapter -= 1;
+                layout = self.flow_chapter_layout(text, book, self.chapter, geom);
+                self.scroll_y += f64::from(layout.total_height) + gap;
+            }
+            while self.scroll_y >= f64::from(layout.total_height) + gap
+                && self.chapter + 1 < book.chapters.len()
+            {
+                self.scroll_y -= f64::from(layout.total_height) + gap;
+                self.chapter += 1;
+                layout = self.flow_chapter_layout(text, book, self.chapter, geom);
+            }
+            // At the end, fill the viewport with the preceding text rather
+            // than allowing a final short chapter to become a blank screen.
+            let mut remaining = f64::from(layout.total_height);
+            let mut tail = self.chapter;
+            while remaining - self.scroll_y < f64::from(geom.content_h)
+                && tail + 1 < book.chapters.len()
+            {
+                tail += 1;
+                remaining += gap
+                    + f64::from(
+                        self.flow_chapter_layout(text, book, tail, geom)
+                            .total_height,
+                    );
+            }
+            if tail + 1 == book.chapters.len() {
+                self.scroll_y = self.scroll_y.min(remaining - f64::from(geom.content_h));
+                while self.scroll_y < 0.0 && self.chapter > 0 {
+                    self.chapter -= 1;
+                    layout = self.flow_chapter_layout(text, book, self.chapter, geom);
+                    self.scroll_y += f64::from(layout.total_height) + gap;
+                }
+                self.scroll_y = self.scroll_y.max(0.0);
+            }
+        }
+        layout
+    }
+
+    /// Cache reflow for the visible chapters; no full-book layout on opening.
+    fn flow_chapter_layout(
+        &mut self,
+        text: &mut TextRenderer,
+        book: &Book,
+        chapter: usize,
+        geom: &ReaderPageGeometry,
+    ) -> ChapterLayout {
+        let (family, multiplier, signature, _) = self.body_font();
+        let key = LayoutKey::new(
+            chapter,
+            geom.content_w,
+            geom.content_h,
+            &self.settings,
+            signature,
+            text.text_scale(),
+        );
+        if let Some(layout) = self
+            .flow_layouts
+            .get(&chapter)
+            .filter(|layout| layout.key == key)
+        {
+            return layout.clone();
+        }
+        let layout = layout_chapter(
+            text,
+            &ChapterLayoutRequest {
+                blocks: book
+                    .chapters
+                    .get(chapter)
+                    .map_or(&[], |chapter| chapter.blocks.as_slice()),
+                content_width: geom.content_w,
+                content_height: geom.content_h,
+                settings: &self.settings,
+                chapter,
+                language: &book.language,
+                base_family: &family,
+                font_multiplier: multiplier,
+                font_signature: signature,
+            },
+        );
+        self.flow_layouts.insert(chapter, layout.clone());
+        layout
+    }
+
+    fn draw_flow_neighbours(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        book: &Book,
+        active: &ReaderFrame<'_>,
+        geom: &ReaderPageGeometry,
+    ) {
+        let gap = f64::from(ctx.theme.tokens.spacing.rhythm.section);
+        let clip = Rect::new(
+            geom.content_x - 8.0,
+            geom.content_y,
+            geom.content_x + f64::from(geom.content_w) + 8.0,
+            geom.content_y + f64::from(geom.content_h),
+        );
+        ctx.scene
+            .push_clip_layer(Fill::NonZero, ctx.transform, &clip);
+        let mut positions = Vec::new();
+        if self.scroll_y < 0.0 && self.chapter > 0 {
+            let previous = self.flow_chapter_layout(ctx.text, book, self.chapter - 1, geom);
+            let offset = -f64::from(previous.total_height) - gap;
+            positions.push((self.chapter - 1, offset, previous));
+        }
+        let mut offset = f64::from(active.layout.total_height) + gap;
+        let mut chapter = self.chapter + 1;
+        while offset < self.scroll_y + f64::from(geom.content_h) && chapter < book.chapters.len() {
+            let layout = self.flow_chapter_layout(ctx.text, book, chapter, geom);
+            let next = offset + f64::from(layout.total_height) + gap;
+            positions.push((chapter, offset, layout));
+            offset = next;
+            chapter += 1;
+        }
+        for (chapter, offset, layout) in positions {
+            let pane = Pane {
+                x: geom.content_x,
+                y: geom.content_y,
+                w: geom.content_w,
+                win_start: (self.scroll_y - offset) as f32,
+                win_end: (self.scroll_y - offset) as f32 + geom.content_h,
+                partial: true,
+                col: 0,
+            };
+            let frame = ReaderFrame {
+                layout: &layout,
+                chapter,
+                sel_ord: None,
+                ..*active
+            };
+            self.draw_pane(ctx, &frame, &pane);
+        }
+        ctx.scene.pop_layer();
+        // Bounded reflow cache: retain nearby chapters rather than the book.
+        let visible_end = chapter;
+        self.flow_layouts.retain(|chapter, _| {
+            chapter.abs_diff(self.chapter) <= 1
+                || (*chapter >= self.chapter && *chapter < visible_end)
+        });
+    }
+
+    fn activate_flow_chapter_at(&mut self, point: Point) {
+        let chapter = self
+            .sel_runs
+            .iter()
+            .find(|run| run.y0 <= point.y && point.y < run.y1)
+            .map(|run| run.chapter);
+        let Some(chapter) = chapter.filter(|chapter| *chapter != self.chapter) else {
+            return;
+        };
+        let gap = self.flow_gap;
+        if chapter > self.chapter {
+            for index in self.chapter..chapter {
+                if let Some(layout) = self.flow_layouts.get(&index) {
+                    self.scroll_y -= f64::from(layout.total_height) + gap;
+                }
+            }
+        } else {
+            for index in chapter..self.chapter {
+                if let Some(layout) = self.flow_layouts.get(&index) {
+                    self.scroll_y += f64::from(layout.total_height) + gap;
+                }
+            }
+        }
+        self.clear_selection();
+        self.chapter = chapter;
+        self.layout = self.flow_layouts.get(&chapter).cloned();
     }
 
     /// Resolve the current page/scroll index against the fresh layout:
@@ -7135,7 +7551,14 @@ impl BooksApp {
                 self.scroll_y = max_scroll;
                 self.pending_scroll_end = false;
             }
-            self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
+            let end = if self.chapter + 1 == self.flow_chapters {
+                max_scroll
+            } else {
+                f64::from(layout.total_height) + self.flow_gap
+            };
+            if !self.mouse_down && self.sel.is_none() && self.composing.is_none() {
+                self.scroll_y = self.scroll_y.clamp(0.0, end);
+            }
             self.page = layout
                 .pages
                 .iter()
@@ -7225,6 +7648,7 @@ impl BooksApp {
             page: self.page,
             page_count: self.cur_page_count,
             chapter_count: nchap.max(1),
+            continuous: self.settings.mode.is_continuous(),
         };
         let slider_active = self.progress_dragging || band.contains(self.cursor);
         let bubble = self
@@ -7713,7 +8137,7 @@ impl BooksApp {
         pane: &Pane,
     ) -> (SelAnchor, CommentBoxBounds) {
         // ---- note bands + bookmark glyphs (behind text) -----------------
-        Self::draw_pane_note_bands(ctx, frame, pane);
+        self.draw_pane_note_bands(ctx, frame, pane);
 
         // ---- selection + ranged-highlight bands; rebuild sel_runs -------
         let bands = self.draw_pane_selection_bands(ctx, frame, pane);
@@ -7731,7 +8155,12 @@ impl BooksApp {
     }
 
     /// Note-comment bands and bookmark glyphs, drawn behind the text.
-    fn draw_pane_note_bands(ctx: &mut PaintCtx<'_>, frame: &ReaderFrame<'_>, pane: &Pane) {
+    fn draw_pane_note_bands(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        frame: &ReaderFrame<'_>,
+        pane: &Pane,
+    ) {
         let palette = frame.palette;
         let (content_x, content_w) = (pane.x, pane.w);
         for b in &frame.layout.blocks {
@@ -7752,19 +8181,7 @@ impl BooksApp {
                 .filter(|a| a.chapter == chapter && a.block == b.index)
             {
                 match a.kind {
-                    AnnoKind::Highlight => {}
-                    AnnoKind::Note => {
-                        let band = Rect::new(
-                            content_x + f64::from(b.indent) - 4.0,
-                            by0,
-                            content_x + f64::from(content_w),
-                            by1,
-                        );
-                        ctx.fill_round(
-                            band,
-                            4.0,
-                            palette.highlight_fill(a.color).with_alpha_factor(0.5),
-                        );
+                    AnnoKind::Note if a.group == a.id => {
                         let bar = Rect::new(
                             content_x + f64::from(b.indent) - 10.0,
                             by0,
@@ -7780,7 +8197,12 @@ impl BooksApp {
                             palette.ink_dim,
                             1.6,
                         );
+                        self.push_hit(
+                            Rect::new(gx, by0, gx + 20.0, by0 + 20.0),
+                            Action::EditNote(a.id),
+                        );
                     }
+                    AnnoKind::Highlight | AnnoKind::Note => {}
                     AnnoKind::Bookmark => {
                         let gx = content_x + f64::from(content_w) + 6.0;
                         Icon::Bookmark.draw_filled(
@@ -7808,7 +8230,10 @@ impl BooksApp {
             .annos
             .iter()
             .filter(|a| {
-                a.chapter == frame.chapter && a.kind == AnnoKind::Highlight && a.start < a.end
+                a.chapter == frame.chapter
+                    && (a.kind == AnnoKind::Highlight
+                        || (a.kind == AnnoKind::Note && a.group == a.id))
+                    && a.start < a.end
             })
             .collect();
         let mut bands = PaneBands::default();
@@ -7883,6 +8308,7 @@ impl BooksApp {
             let x0 = content_x + indent + f64::from(run.x);
             let x1 = x0 + f64::from(w);
             self.sel_runs.push(SelRun {
+                chapter: frame.chapter,
                 block: b.index,
                 x0,
                 x1,
@@ -7892,16 +8318,18 @@ impl BooksApp {
                 cl: run.char_len,
                 col: pane.col,
             });
-            if self.page_first_doc.is_none() {
+            if frame.chapter == self.chapter && self.page_first_doc.is_none() {
                 self.page_first_doc = Some(DocPos {
                     block: b.index,
                     ch: run.char_start,
                 });
             }
-            self.page_last_doc = Some(DocPos {
-                block: b.index,
-                ch: run.char_start + run.char_len,
-            });
+            if frame.chapter == self.chapter {
+                self.page_last_doc = Some(DocPos {
+                    block: b.index,
+                    ch: run.char_start + run.char_len,
+                });
+            }
             let run_end = run.char_start + run.char_len;
             let grow = |acc: &mut Option<(f64, f64)>, bx0: f64, bx1: f64| {
                 *acc = Some(match *acc {
@@ -7963,15 +8391,17 @@ impl BooksApp {
                 let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                 ctx.fill_round(band, 4.0, palette.highlight_fill(a.color));
                 self.hi_bands.push(band);
-                bands
-                    .group_top
-                    .entry(a.group)
-                    .and_modify(|e| {
-                        if band.y0 < e.0 {
-                            *e = (band.y0, a.color);
-                        }
-                    })
-                    .or_insert((band.y0, a.color));
+                if a.kind == AnnoKind::Highlight {
+                    bands
+                        .group_top
+                        .entry(a.group)
+                        .and_modify(|e| {
+                            if band.y0 < e.0 {
+                                *e = (band.y0, a.color);
+                            }
+                        })
+                        .or_insert((band.y0, a.color));
+                }
                 if frame.comment_group == Some(a.group) {
                     bands.comment_box = Some(match bands.comment_box {
                         Some((x0, y0, x1, y1)) => (
@@ -8221,12 +8651,25 @@ impl BooksApp {
         let del_group = self.selection_highlight_group();
         // The HUD is app chrome: it reads the window's theme end to end and
         // the reading palette stays on the page.
+        let selected_color = del_group
+            .and_then(|group| {
+                self.annotations
+                    .iter()
+                    .find(|a| a.group == group)
+                    .map(|a| a.color)
+            })
+            .or_else(|| {
+                self.selection_standalone_notes()
+                    .next()
+                    .map(|note| note.color)
+            })
+            .unwrap_or(self.hi_color);
         let swatches: Vec<ui::HudSwatch> = HiColor::ALL
             .iter()
             .map(|&col| {
                 ui::HudSwatch::new(
                     [col.rgb().0, col.rgb().1, col.rgb().2],
-                    self.hi_color == col,
+                    selected_color == col,
                 )
                 .named(col.name())
             })
@@ -8238,6 +8681,25 @@ impl BooksApp {
         );
         // The toolbar stays inside the reading column, clear of the rails.
         let bounds = Rect::new(geom.center_x0, body_y0, geom.center_x1, body_y1);
+        let selection_box = self.sel.map(|s| s.ordered()).and_then(|(start, end)| {
+            let end_char = end.ch;
+            self.sel_runs
+                .iter()
+                .filter(|run| {
+                    run.chapter == self.chapter
+                        && run.block >= start.block
+                        && run.block <= end.block
+                        && (run.block != start.block || run.cs + run.cl > start.ch)
+                        && (run.block != end.block || run.cs < end_char)
+                })
+                .map(|run| Rect::new(run.x0, run.y0, run.x1, run.y1))
+                .reduce(|a, b| a.union(b))
+        });
+        let placement = ui::HudPlacement {
+            below: selection_box.map(|rect| rect.y1),
+            avoid: selection_box,
+            ..ui::HudPlacement::new(anchor_pt, bounds)
+        };
         let hud = ui::SelectionHud::draw(
             ctx.scene,
             ctx.transform,
@@ -8248,10 +8710,16 @@ impl BooksApp {
                 show_note: true,
                 show_delete: del_group.is_some(),
             },
-            ui::HudPlacement::new(anchor_pt, bounds),
+            placement,
             self.cursor,
         );
 
+        if self.dispatch.read_only() {
+            self.selection_composer.clear();
+        } else {
+            self.selection_composer
+                .draw(ctx, hud.rect(), bounds, selection_box);
+        }
         // Swallow taps on the bar body, and route each control to a command.
         self.push_hit(hud.rect(), Action::Swallow);
         for &(rect, action) in hud.buttons() {
@@ -8292,6 +8760,16 @@ impl BooksApp {
         let Some(annotation) = self.annotations.iter().find(|a| a.id == id) else {
             return;
         };
+        let anchor_y = anchor_y.or_else(|| {
+            self.sel_runs
+                .iter()
+                .find(|run| {
+                    run.chapter == annotation.chapter
+                        && run.block == annotation.block
+                        && run.cs + run.cl > annotation.start
+                })
+                .map(|run| run.y1)
+        });
         self.note_composer.draw(
             ctx.scene,
             ctx.transform,
