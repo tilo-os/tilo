@@ -93,7 +93,7 @@ impl BrowserWindow {
     }
 
     /// Present the document's bookmarks, preferences and site exceptions.
-    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+    pub(crate) fn present_state(&mut self, state: &crate::resource::Browser) {
         self.page.present_state(state);
     }
 

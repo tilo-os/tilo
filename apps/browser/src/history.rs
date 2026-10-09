@@ -26,9 +26,11 @@
 //! "most-recent / most-visited" default the overlay shows the moment the
 //! address bar is focused.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
+use ui::tilo_resource::{self, Atom, Counter, Model, Refusal, resource};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -311,163 +313,105 @@ pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
     ]
 }
 
+/// One visited page in the person's record.
+#[derive(Model, Clone, Debug, PartialEq)]
+pub struct Visit {
+    /// Title: the last page title seen. Written whole.
+    #[model(label)]
+    pub title: Atom,
+    /// When it was last visited, in Unix seconds.
+    pub last: u64,
+    /// How often it was visited: visits on two devices add up.
+    pub count: Counter,
+}
+
 /// The person's browsing history as a resource of their own room: each
 /// visited page, keyed by URL, with its title, last visit and visit count.
-pub struct BrowsingHistory;
-
-/// The edits of [`BrowsingHistory`].
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum HistoryAction {
-    /// A page finished loading at `at` (Unix seconds).
-    Visit { url: String, title: String, at: u64 },
-    /// Forget one page.
-    Forget { url: String },
-    /// Forget every page.
-    Clear,
+/// It follows them to their other devices and never reaches a
+/// collaborator.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct BrowsingHistory {
+    /// Visited pages, by URL. Only visiting and forgetting change them.
+    #[model(readonly)]
+    pub visits: BTreeMap<String, Visit>,
 }
 
-/// The map of visits at the record's root, keyed by URL.
-const VISITS: &str = "visits";
-const VISIT_TITLE: &str = "title";
-const VISIT_LAST: &str = "last";
-const VISIT_COUNT: &str = "count";
-
-fn visits(doc: &tilo_actions::Doc) -> Option<automerge::ObjId> {
-    use automerge::ReadDoc;
-    match doc.get(&automerge::ROOT, VISITS).ok().flatten() {
-        Some((automerge::Value::Object(automerge::ObjType::Map), id)) => Some(id),
-        _ => None,
-    }
-}
-
-fn read_visit(
-    doc: &tilo_actions::Doc,
-    visits: &automerge::ObjId,
-    url: &str,
-) -> Option<HistoryEntry> {
-    use automerge::ReadDoc;
-    let Some((automerge::Value::Object(automerge::ObjType::Map), visit)) =
-        doc.get(visits, url).ok().flatten()
-    else {
-        return None;
-    };
-    let scalar = |key: &str| {
-        doc.get(&visit, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.into_scalar().ok())
-    };
-    Some(HistoryEntry {
-        url: url.to_owned(),
-        title: scalar(VISIT_TITLE)
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default(),
-        last_visit: scalar(VISIT_LAST)
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0),
-        visit_count: scalar(VISIT_COUNT)
-            .and_then(|value| value.as_u64())
-            .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX)),
-    })
-}
-
-fn read_visits(doc: &tilo_actions::Doc) -> Vec<HistoryEntry> {
-    use automerge::ReadDoc;
-    let Some(visits) = visits(doc) else {
-        return Vec::new();
-    };
-    doc.keys(&visits)
-        .filter_map(|url| read_visit(doc, &visits, &url))
-        .collect()
-}
-
-impl tilo_actions::Action for HistoryAction {
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        use automerge::transaction::Transactable;
-        match self {
-            Self::Visit { url, title, at } => {
-                let url = url.trim();
-                if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
-                    return Err(tilo_actions::ActionError::Refused(
-                        "a visit names one page's URL".into(),
-                    ));
-                }
-                let visits = match visits(doc) {
-                    Some(visits) => visits,
-                    None => doc.put_object(automerge::ROOT, VISITS, automerge::ObjType::Map)?,
-                };
-                let previous = read_visit(doc, &visits, url);
-                let title = bounded_text(title, MAX_HISTORY_TITLE_BYTES);
-                let visit = match &previous {
-                    Some(_) => match automerge::ReadDoc::get(doc, &visits, url)? {
-                        Some((_, visit)) => visit,
-                        None => doc.put_object(&visits, url, automerge::ObjType::Map)?,
-                    },
-                    None => doc.put_object(&visits, url, automerge::ObjType::Map)?,
-                };
-                if previous.is_none() || !title.trim().is_empty() {
-                    doc.put(&visit, VISIT_TITLE, title)?;
-                }
-                let last = previous.as_ref().map_or(0, |entry| entry.last_visit);
-                doc.put(&visit, VISIT_LAST, (*at).max(last))?;
-                let count = previous.as_ref().map_or(0, |entry| entry.visit_count);
-                doc.put(&visit, VISIT_COUNT, u64::from(count.saturating_add(1)))?;
-                // Keep the most useful pages; the rest fall off.
-                let kept = History::from_entries(read_visits(doc));
-                if kept.len() < automerge::ReadDoc::length(doc, &visits) {
-                    let keep: std::collections::BTreeSet<&str> = kept
-                        .entries()
-                        .iter()
-                        .map(|entry| entry.url.as_str())
-                        .collect();
-                    let drop: Vec<String> = automerge::ReadDoc::keys(doc, &visits)
-                        .filter(|url| !keep.contains(url.as_str()))
-                        .collect();
-                    for url in drop {
-                        doc.delete(&visits, url)?;
-                    }
-                }
+#[resource(kind = "browser.browsing-history", label = "Browsing history")]
+impl BrowsingHistory {
+    /// Record a visit to a page.
+    ///
+    /// Recording a visit is the browser keeping its history, not an edit of
+    /// the person's to take back.
+    #[action(housekeeping)]
+    pub fn visit(
+        &mut self,
+        #[param("The page's address")] url: String,
+        #[param("The page's title; blank keeps the one known")] title: String,
+        #[param("When it finished loading, in Unix seconds")] at: u64,
+    ) -> Result<(), Refusal> {
+        let url = url.trim();
+        if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
+            return Err(Refusal::new("a visit names one page's URL"));
+        }
+        let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
+        if let Some(visit) = self.visits.get_mut(url) {
+            if !title.trim().is_empty() {
+                visit.title = Atom(title);
             }
-            Self::Forget { url } => {
-                if let Some(visits) = visits(doc)
-                    && automerge::ReadDoc::get(doc, &visits, url.as_str())?.is_some()
-                {
-                    doc.delete(&visits, url.as_str())?;
-                }
-            }
-            Self::Clear => {
-                if visits(doc).is_some() {
-                    doc.delete(automerge::ROOT, VISITS)?;
-                }
-            }
+            visit.last = visit.last.max(at);
+            visit.count.add(1);
+        } else {
+            let mut count = Counter::default();
+            count.add(1);
+            self.visits.insert(
+                url.to_owned(),
+                Visit {
+                    title: Atom(title),
+                    last: at,
+                    count,
+                },
+            );
+        }
+        // Keep the most useful pages; the rest fall off.
+        if self.visits.len() > MAX_HISTORY_ENTRIES {
+            let kept: std::collections::BTreeSet<String> = History::of(self)
+                .entries
+                .into_iter()
+                .map(|entry| entry.url)
+                .collect();
+            self.visits.retain(|url, _| kept.contains(url));
         }
         Ok(())
     }
 
-    fn locus(&self) -> tilo_actions::ExecutionLocus {
-        tilo_actions::ExecutionLocus::ClientLocal
+    /// Forget one page.
+    #[action]
+    pub fn forget(&mut self, #[param("The page's address")] url: String) {
+        self.visits.remove(&url);
     }
 
-    /// Recording a visit is the browser keeping its history, not an edit of
-    /// the person's to take back; forgetting is theirs.
-    fn change_kind(&self) -> tilo_actions::ChangeKind {
-        match self {
-            Self::Visit { .. } => tilo_actions::ChangeKind::Housekeeping,
-            Self::Forget { .. } | Self::Clear => tilo_actions::ChangeKind::Content,
-        }
+    /// Forget every page.
+    #[action]
+    pub fn clear_history(&mut self) {
+        self.visits.clear();
     }
 }
 
-impl ui::tilo_resource::Resource for BrowsingHistory {
-    const KIND: &'static str = "browser.browsing-history";
-    const LABEL: &'static str = "Browsing history";
-    const ACTION_TYPE: &'static str = "browser.history.action";
-
-    type State = History;
-    type Action = HistoryAction;
-
-    fn read(doc: &ui::tilo_resource::Doc) -> Result<History, ui::tilo_resource::ModelError> {
-        Ok(History::from_entries(read_visits(doc)))
+impl History {
+    /// The history the person's record holds.
+    pub fn of(record: &BrowsingHistory) -> History {
+        History::from_entries(
+            record
+                .visits
+                .iter()
+                .map(|(url, visit)| HistoryEntry {
+                    url: url.clone(),
+                    title: visit.title.0.clone(),
+                    last_visit: visit.last,
+                    visit_count: u32::try_from(visit.count.get()).unwrap_or(u32::MAX),
+                })
+                .collect(),
+        )
     }
 }
 
@@ -680,25 +624,23 @@ mod tests {
     #[test]
     fn browsing_history_record_counts_visits_and_merges_devices() {
         use ui::tilo_resource::Replica;
-        let visit = |url: &str, title: &str, at: u64| HistoryAction::Visit {
-            url: url.into(),
-            title: title.into(),
-            at,
+        let visit = |url: &str, title: &str, at: u64| {
+            BrowsingHistory::VISIT.with(browsing_history::Visit {
+                url: url.into(),
+                title: title.into(),
+                at,
+            })
+        };
+        let entries = |record: &Replica<BrowsingHistory>| {
+            History::of(&record.state().unwrap()).entries().to_vec()
         };
         let mut laptop = Replica::<BrowsingHistory>::new();
-        laptop
-            .apply_action(&visit("https://a.test", "Alpha", 111))
-            .unwrap();
-        laptop
-            .apply_action(&visit("https://b.test", "Beta", 222))
-            .unwrap();
-        laptop
-            .apply_action(&visit("https://a.test", "", 333))
-            .unwrap();
-        let history = laptop.state().unwrap();
+        laptop.apply(visit("https://a.test", "Alpha", 111)).unwrap();
+        laptop.apply(visit("https://b.test", "Beta", 222)).unwrap();
+        laptop.apply(visit("https://a.test", "", 333)).unwrap();
+        let history = entries(&laptop);
         assert_eq!(history.len(), 2);
         let alpha = history
-            .entries()
             .iter()
             .find(|entry| entry.url == "https://a.test")
             .unwrap();
@@ -707,18 +649,12 @@ mod tests {
 
         let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
         laptop
-            .apply_action(&visit("https://kept.test", &long_title, 1))
+            .apply(visit("https://kept.test", &long_title, 1))
             .unwrap();
         let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
-        assert!(
-            laptop
-                .apply_action(&visit(&too_long_url, "ignored", 1))
-                .is_err()
-        );
-        let history = laptop.state().unwrap();
+        assert!(laptop.apply(visit(&too_long_url, "ignored", 1)).is_err());
         assert_eq!(
-            history
-                .entries()
+            entries(&laptop)
                 .iter()
                 .find(|entry| entry.url == "https://kept.test")
                 .unwrap()
@@ -727,27 +663,28 @@ mod tests {
             MAX_HISTORY_TITLE_BYTES
         );
 
-        let mut phone = Replica::<BrowsingHistory>::from_doc(laptop.doc().clone().fork());
-        phone
-            .apply_action(&visit("https://c.test", "Gamma", 444))
-            .unwrap();
+        let mut phone = laptop.fork();
+        phone.apply(visit("https://c.test", "Gamma", 444)).unwrap();
+        phone.apply(visit("https://a.test", "", 400)).unwrap();
+        laptop.apply(visit("https://a.test", "", 350)).unwrap();
         laptop
-            .apply_action(&HistoryAction::Forget {
-                url: "https://b.test".into(),
-            })
+            .apply(BrowsingHistory::FORGET.with("https://b.test".to_owned()))
             .unwrap();
-        tilo_automerge::ApplyIncoming::merge_incoming(laptop.doc_mut(), phone.doc_mut()).unwrap();
-        let urls: Vec<String> = laptop
-            .state()
-            .unwrap()
-            .entries()
+        laptop.sync_with(&mut phone).unwrap();
+        assert_eq!(laptop.state().unwrap(), phone.state().unwrap());
+        let merged = entries(&laptop);
+        let urls: Vec<&str> = merged.iter().map(|entry| entry.url.as_str()).collect();
+        assert!(urls.contains(&"https://c.test"));
+        assert!(!urls.contains(&"https://b.test"));
+        let alpha = merged
             .iter()
-            .map(|entry| entry.url.clone())
-            .collect();
-        assert!(urls.contains(&"https://c.test".to_string()));
-        assert!(!urls.contains(&"https://b.test".to_string()));
+            .find(|entry| entry.url == "https://a.test")
+            .unwrap();
+        assert_eq!(alpha.visit_count, 4, "visits on two devices add up");
 
-        laptop.apply_action(&HistoryAction::Clear).unwrap();
-        assert!(laptop.state().unwrap().is_empty());
+        laptop
+            .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
+            .unwrap();
+        assert!(entries(&laptop).is_empty());
     }
 }

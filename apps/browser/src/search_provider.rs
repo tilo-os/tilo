@@ -321,18 +321,16 @@ mod tests {
 
             let mut history = crate::history::History::new();
             history.record_at("https://rust.example.test", "Rust notes", 1);
-            let mut document = automerge::AutoCommit::new();
-            crate::resource::Browser::initialize(&mut document).unwrap();
-            tilo_actions::Action::apply(
-                &crate::actions::BrowserAction::AddBookmark {
-                    url: "https://rust.example.test/book".into(),
-                    title: "Rust book".into(),
-                    tag: "test-search-bookmark".into(),
-                },
-                &mut document,
-            )
-            .unwrap();
-            let state = crate::resource::Browser::read(&document).unwrap();
+            let mut document = ui::tilo_resource::Replica::<crate::resource::Browser>::new();
+            document
+                .apply(crate::resource::Browser::ADD_BOOKMARK.with(
+                    crate::resource::browser::AddBookmark {
+                        url: "https://rust.example.test/book".into(),
+                        title: Some("Rust book".into()),
+                    },
+                ))
+                .unwrap();
+            let state = document.state().unwrap();
             let index = BrowserSearchIndex::default();
             index.sync(&history);
             let mut entries = index.entries();

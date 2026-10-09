@@ -188,13 +188,7 @@ fn history_roundtrip(
         .person::<browser::history::BrowsingHistory>()
         .ok_or("missing ordinary Browser history record")?;
     let visits = |url: &str| {
-        history.with(|state| {
-            state
-                .entries()
-                .iter()
-                .find(|entry| entry.url == url)
-                .map_or(0, |entry| entry.visit_count)
-        })
+        history.with(|state| state.visits.get(url).map_or(0, |visit| visit.count.get()))
     };
     let before = visits(url);
     let fragment = format!("{url}#second");

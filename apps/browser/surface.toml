@@ -1,0 +1,135 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "browser.application"
+label = "Browser"
+version = 1
+
+[[resources.fields]]
+owner = "browser"
+path = "bookmarks"
+stored = "collection"
+title = "Bookmarks"
+type = "Collection<Bookmark>"
+
+[[resources.fields]]
+owner = "bookmark"
+path = "bookmarks.*.url"
+readonly = true
+stored = "value"
+title = "Address: one absolute http(s) URL in its normalized form, so"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "bookmark"
+path = "bookmarks.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "browser"
+path = "preferences"
+stored = "record"
+title = "Preferences"
+type = "Settings"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.adblock_enabled"
+stored = "value"
+title = "Ad and tracker blocking: block ads & trackers via the engine's"
+type = "bool"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.clear_on_exit"
+stored = "value"
+title = "Clear data on exit: clear browsing history & cookies on exit"
+type = "bool"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.search_engine"
+stored = "value"
+title = "Search engine: the query template (e.g. `https://duckduckgo.com/?q=`)"
+type = "String"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.homepage"
+stored = "value"
+title = "Homepage: the URL opened on startup / new tab"
+type = "String"
+
+[[resources.fields]]
+owner = "browser"
+path = "site_exceptions"
+readonly = true
+stored = "value"
+title = "Sites without tracker protection, by exact origin"
+type = "Set<String>"
+
+[[resources.verbs]]
+description = "Bookmark a page."
+id = "add-bookmark"
+kind = "undoable"
+label = "Bookmark a page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+description = "The page's absolute http(s) address"
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+description = "Its title; the address when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove a bookmark."
+id = "remove-bookmark"
+kind = "undoable"
+label = "Remove a bookmark"
+
+[[resources.verbs.params]]
+name = "bookmark"
+required = true
+
+[resources.verbs.params.schema]
+description = "Bookmark"
+type = "string"
+
+[[resources.verbs]]
+description = "Turn tracker protection on or off for a site."
+id = "set-site-protection"
+kind = "undoable"
+label = "Turn tracker protection on or off for a site"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+description = "The site's address or exact origin, such as https://example.org"
+type = "string"
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+description = "Whether tracker protection is on for the site"
+type = "boolean"

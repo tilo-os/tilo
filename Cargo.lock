@@ -1377,6 +1377,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-history",
  "tilo-net",
  "tilo-paths",
  "tilo-test-env",

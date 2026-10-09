@@ -9,8 +9,8 @@
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
 //!    presentation mirrors of those preferences. Every control submits a
-//!    [`BrowserAction`] through the resource's dispatcher; it never writes
-//!    the document itself.
+//!    field edit at the preference's path through the resource's
+//!    dispatcher; it never writes the document itself.
 //!
 //! The chrome applies the engine side effects of the preferences it is
 //! presented. Clear-history and clear-site-data are explicit one-shot
@@ -27,11 +27,11 @@ use ui::widget::{
     Toggle, Widget,
 };
 
-use crate::actions::BrowserAction;
 use crate::resource::Browser;
+use ui::tilo_resource::{self, Model, Path, Refusal};
 
 /// The doors the pane's controls use, injected by Browser. Preferences are
-/// [`BrowserAction`]s submitted through the resource's dispatcher; the
+/// field edits submitted through the resource's dispatcher; the
 /// one-shot effects and closing the pane are the published operations, so
 /// pointer, keyboard and assistive-tech changes take the same path as Ctrl+K
 /// and agents.
@@ -87,20 +87,6 @@ impl SettingsPresentation {
 /// Boxed-widget currency the `ui` tree speaks.
 type El = Box<dyn Widget>;
 
-// === CRDT paths ======================================================
-// Flat scalar/text paths written on the app root object, mirroring the
-// `browser.*` convention in `browser_widget.rs`. Exposed so the chrome
-// can reference the same keys when it seeds or inspects the document.
-
-/// Boolean toggle: block ads & trackers. Written by the ad-block [`Toggle`].
-pub const ADBLOCK_PATH: &str = "settings.adblock";
-/// Boolean toggle: clear history & cookies when the browser exits.
-pub const CLEAR_ON_EXIT_PATH: &str = "settings.clear_on_exit";
-/// Automerge `Text` object holding the search-engine query template.
-pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
-/// Automerge `Text` object holding the homepage URL.
-pub const HOMEPAGE_PATH: &str = "settings.homepage";
-
 /// Default search-engine query template. The `?q=` suffix lets the
 /// chrome build a search URL by appending typed terms.
 pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
@@ -112,18 +98,33 @@ pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 /// Durable browser preferences, as the browser document holds them.
 ///
 /// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
-/// search and homepage; a document that never set a preference reads its
-/// default.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// search and homepage; a new browser record starts with them. The
+/// homepage and search engine are always absolute http(s) addresses.
+#[derive(Clone, Debug, PartialEq, Eq, Model)]
+#[model(check = Settings::valid)]
 pub struct Settings {
-    /// Block ads & trackers via the engine's content blocker.
+    /// Ad and tracker blocking: block ads & trackers via the engine's
+    /// content blocker.
     pub adblock_enabled: bool,
-    /// Clear browsing history & cookies on exit.
+    /// Clear data on exit: clear browsing history & cookies on exit.
     pub clear_on_exit: bool,
-    /// Search-engine query template (e.g. `https://duckduckgo.com/?q=`).
+    /// Search engine: the query template (e.g. `https://duckduckgo.com/?q=`).
     pub search_engine: String,
-    /// Homepage URL opened on startup / new tab.
+    /// Homepage: the URL opened on startup / new tab.
     pub homepage: String,
+}
+
+impl Settings {
+    /// A homepage and a search engine are web addresses the engine opens.
+    fn valid(&self) -> Result<(), Refusal> {
+        if crate::actions::normalized_bookmark_url(&self.homepage).is_none() {
+            return Err(Refusal::new("the homepage is an absolute http(s) URL"));
+        }
+        if crate::actions::normalized_bookmark_url(&self.search_engine).is_none() {
+            return Err(Refusal::new("the search engine is an absolute http(s) URL"));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Settings {
@@ -242,7 +243,7 @@ impl SettingsPane {
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.edits.clone(),
-                    homepage_action,
+                    Browser::paths().preferences.homepage,
                 ),
                 field_block(
                     "Search engine",
@@ -250,7 +251,7 @@ impl SettingsPane {
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.edits.clone(),
-                    search_engine_action,
+                    Browser::paths().preferences.search_engine,
                 ),
             ]),
         );
@@ -265,7 +266,7 @@ impl SettingsPane {
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.edits.clone(),
-                    adblock_action,
+                    Browser::paths().preferences.adblock_enabled,
                 )),
                 large_text,
             ),
@@ -277,7 +278,7 @@ impl SettingsPane {
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.edits.clone(),
-                    clear_on_exit_action,
+                    Browser::paths().preferences.clear_on_exit,
                 )),
                 large_text,
             ),
@@ -426,20 +427,20 @@ fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) ->
 }
 
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
-/// edits are the preference action `build` makes of the typed value.
+/// edits replace the preference at `path` with the typed value.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(String) -> BrowserAction,
+    path: Path<Browser, String>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
     let input = match edits {
-        Some(edits) => input.on_change(move |value| edits.apply(&build(value.to_string()))),
+        Some(edits) => input.on_change(move |value| edits.submit(path.replace(value))),
         None => input,
     };
     Box::new(
@@ -454,28 +455,12 @@ fn field_block(
 fn preference_toggle(
     toggle: Toggle,
     edits: Option<ui::framework::Dispatcher<Browser>>,
-    build: fn(bool) -> BrowserAction,
+    path: Path<Browser, bool>,
 ) -> Toggle {
     match edits {
-        Some(edits) => toggle.on_change(move |enabled| edits.apply(&build(enabled))),
+        Some(edits) => toggle.on_change(move |enabled| edits.submit(path.set(enabled))),
         None => toggle,
     }
-}
-
-fn adblock_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetAdblock { enabled }
-}
-
-fn clear_on_exit_action(enabled: bool) -> BrowserAction {
-    BrowserAction::SetClearOnExit { enabled }
-}
-
-fn homepage_action(url: String) -> BrowserAction {
-    BrowserAction::SetHomepage { url }
-}
-
-fn search_engine_action(template: String) -> BrowserAction {
-    BrowserAction::SetSearchEngine { template }
 }
 
 fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
@@ -572,8 +557,7 @@ mod tests {
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&doc, &root);
-            assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
-            assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
+            assert_eq!(doc.length(&root), 0, "presenting writes no document");
             let presentation = SettingsPresentation::from_settings(&settings);
             assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
             assert_eq!(
