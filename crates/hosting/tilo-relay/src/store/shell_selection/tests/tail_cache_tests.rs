@@ -41,7 +41,7 @@ impl TailFixture {
             .collect();
         let mut owner = seeded_owner(SYNTHETIC_ROOM, &cert, &key, documents, now);
         let checkpoint = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
-        let next_seq = r0_seq(&checkpoint) + 1;
+        let next_seq = after_r0(&checkpoint);
         let branch =
             automerge::AutoCommit::load(&owner.document("selector.app", "r0").unwrap()).unwrap();
         Self {
@@ -69,7 +69,7 @@ impl TailFixture {
         self.branch.commit();
         let bytes = changes_since(&mut self.branch, &heads);
         let seq = self.next_seq;
-        self.next_seq += 1;
+        self.next_seq = self.next_seq.checked_add(1).unwrap();
         let msg = synthetic_signed_record(
             &self.key,
             self.authority.room(),
@@ -88,7 +88,6 @@ impl TailFixture {
             &collab_types::DocumentMutation::Snapshot(self.branch.save()),
             (self.next_seq, self.now),
         );
-        self.next_seq += 1;
         let NeighbourMsg::AppDocument { envelope, .. } = next else {
             panic!()
         };
@@ -100,7 +99,7 @@ impl TailFixture {
             .durable_bootstrap_messages(&self.key, self.now, 2)
             .unwrap();
         // The checkpoint re-signs `r0`; later keystrokes follow its sequence.
-        self.next_seq = r0_seq(&messages) + 1;
+        self.next_seq = after_r0(&messages);
         messages
             .iter()
             .map(|msg| synthetic_frame(&self.authority, msg, true))
@@ -117,8 +116,8 @@ impl TailFixture {
     }
 }
 
-/// The signed sequence of the `r0` snapshot a checkpoint carries.
-fn r0_seq(checkpoint: &[NeighbourMsg]) -> u64 {
+/// The signed sequence after the `r0` snapshot a checkpoint carries.
+fn after_r0(checkpoint: &[NeighbourMsg]) -> u64 {
     checkpoint
         .iter()
         .find_map(|msg| match msg {
@@ -126,7 +125,7 @@ fn r0_seq(checkpoint: &[NeighbourMsg]) -> u64 {
                 record_id,
                 envelope,
                 ..
-            } if record_id == "r0" => Some(envelope.seq),
+            } if record_id == "r0" => envelope.seq.checked_add(1),
             _ => None,
         })
         .unwrap()
@@ -205,7 +204,7 @@ fn tail_delta_retain_is_constant_in_history() {
         let (_, selected, _) = retain_frame(&store, &bytes, 0);
         assert!(selected);
     }
-    assert_eq!(constructed() - before, count);
+    assert_eq!(constructed().checked_sub(before), Some(count));
     assert_eq!(
         replay_frames(&store).len(),
         33,
@@ -224,10 +223,10 @@ fn tail_cache_publishes_what_a_full_selection_would() {
     let mut fast_selections = 0;
     let mut retains = 0;
     let mut retain_both = |bytes: &[u8], seq: u64| {
-        retains += 1;
+        retains = retains.saturating_add(1);
         let (fast_outcome, selected, _) = try_retain_frame(&fast, bytes, seq)
             .unwrap_or_else(|error| panic!("retain {retains} (seq {seq}) with cursors: {error}"));
-        fast_selections += usize::from(selected);
+        fast_selections = fast_selections.saturating_add(usize::from(selected));
         full.tail_cache.invalidate();
         let (full_outcome, _, _) = try_retain_frame(&full, bytes, seq)
             .unwrap_or_else(|error| panic!("retain {retains} (seq {seq}) selecting: {error}"));
@@ -258,7 +257,7 @@ fn tail_cache_publishes_what_a_full_selection_would() {
     let (bytes, seq) = fixture.keystroke();
     assert_eq!(retain_both(&bytes, seq), Publication::Original);
     let second = fixture.covering_checkpoint();
-    checkpoint_frames += second.len();
+    checkpoint_frames = checkpoint_frames.saturating_add(second.len());
     for bytes in second {
         retain_both(&bytes, 0);
     }
@@ -277,5 +276,5 @@ fn tail_cache_publishes_what_a_full_selection_would() {
     // Every checkpoint frame, the route's first tail, and the duplicate and
     // older retains selected; the obsolete tail and the nine plain tails after
     // the first did not.
-    assert_eq!(fast_selections, checkpoint_frames + 3);
+    assert_eq!(fast_selections, checkpoint_frames.saturating_add(3));
 }

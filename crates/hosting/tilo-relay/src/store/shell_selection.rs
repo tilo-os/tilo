@@ -492,7 +492,7 @@ impl Selection {
         self.wanted.insert(0, key);
         self.wanted.truncate(tail_cache::ROUTES);
     }
-    /// ValidateExtras finished one route's ordered tails.
+    /// `ValidateExtras` finished one route's ordered tails.
     fn finish_route_tails(&mut self) {
         let last = self.tail_last.take();
         if let Some((route, readiness)) = self.tail_readiness.take()

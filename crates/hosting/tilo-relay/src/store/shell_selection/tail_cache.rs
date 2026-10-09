@@ -68,11 +68,13 @@ impl SharedTailCache {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let mut registry = registry().lock().unwrap_or_else(PoisonError::into_inner);
         registry.retain(|_, cache| cache.strong_count() > 0);
-        if let Some(cache) = registry.get(&root).and_then(Weak::upgrade) {
-            return Self(cache);
-        }
-        let cache = Arc::new(Mutex::new(TailCache::default()));
-        registry.insert(root, Arc::downgrade(&cache));
+        let existing = registry.get(&root).and_then(Weak::upgrade);
+        let cache = existing.unwrap_or_else(|| {
+            let cache = Arc::new(Mutex::new(TailCache::default()));
+            registry.insert(root, Arc::downgrade(&cache));
+            cache
+        });
+        drop(registry);
         Self(cache)
     }
     fn lock(&self) -> MutexGuard<'_, TailCache> {
@@ -243,7 +245,7 @@ impl FastTail {
     /// Whether an admitted [`Admission::Tail`], now durable, is published as
     /// an original without selection: it sorts after every accepted tail on
     /// its route and is dependency-complete after them, exactly as the next
-    /// selection's ValidateExtras would find. The cursor re-checks the floor
+    /// selection's `ValidateExtras` would find. The cursor re-checks the floor
     /// and is unchanged when this returns false.
     pub(crate) fn append(&mut self, bytes: &[u8], workspace: u64) -> bool {
         let Some((frame, key, seq)) = incoming_tail(bytes, workspace) else {
