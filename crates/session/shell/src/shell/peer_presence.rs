@@ -292,8 +292,14 @@ fn fold_typed_presence(
         if let PresencePayload::Interaction(update) = payload {
             let kind = update.actor.kind;
             let sequence = update.sequence;
-            let update = (*update)
-                .normalized_by_broker(tilo_actions::InteractionActor { id: user, kind }, sequence);
+            let update = (*update).normalized_by_broker(
+                tilo_actions::InteractionActor {
+                    id: user,
+                    kind,
+                    for_person: None,
+                },
+                sequence,
+            );
             let _ = presence.observe_interaction(update);
         } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
         {
@@ -1145,6 +1151,7 @@ mod tests {
             actor: tilo_actions::InteractionActor {
                 id: actor.to_string(),
                 kind: tilo_actions::InteractionActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {

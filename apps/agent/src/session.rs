@@ -1535,6 +1535,7 @@ impl Session {
             actor: tilo_actions::InteractionActor {
                 id: self.cfg.agent_id.clone(),
                 kind: tilo_actions::InteractionActorKind::Agent,
+                for_person: None,
             },
             phase,
             action: tilo_actions::InteractionAction {
@@ -2783,6 +2784,7 @@ impl Session {
             actor: tilo_actions::InteractionActor {
                 id: agent_id.clone(),
                 kind: tilo_actions::InteractionActorKind::Agent,
+                for_person: None,
             },
             phase,
             action: tilo_actions::InteractionAction {

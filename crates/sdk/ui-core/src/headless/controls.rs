@@ -685,6 +685,7 @@ mod locus_tests {
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-test-only".into(),
                 kind: tilo_actions::InteractionActorKind::Person,
+                for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
             action: tilo_actions::InteractionAction {

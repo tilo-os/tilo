@@ -18,7 +18,7 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
 use std::collections::HashMap;
-use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
+use tilo_actions::{InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
@@ -148,13 +148,8 @@ impl PresenceCtx {
         }
 
         let user = UserId(interaction.actor.id.clone());
-        self.set_participant_kind(
-            &user,
-            match interaction.actor.kind {
-                InteractionActorKind::Person => ParticipantKind::Person,
-                InteractionActorKind::Agent => ParticipantKind::Agent,
-            },
-        );
+        self.set_participant_kind(&user, ParticipantKind::from(interaction.actor.kind));
+        self.set_acting_for(&user, interaction.actor.for_person.clone().map(UserId));
         let first_received_at = self
             .interactions
             .get(&interaction.invocation)
@@ -219,7 +214,7 @@ impl PresenceCtx {
     pub fn agent_marker_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
         let mut newest = HashMap::<&str, &InteractionPresenceEntry>::new();
         for entry in self.interactions.values().filter(|entry| {
-            entry.visible_at(now) && entry.interaction.actor.kind == InteractionActorKind::Agent
+            entry.visible_at(now) && entry.interaction.actor.kind.acts_for_someone()
         }) {
             let slot = newest
                 .entry(entry.interaction.actor.id.as_str())
@@ -310,7 +305,7 @@ impl PresenceCtx {
         surface: &str,
         now: Instant,
     ) -> Option<AgentActionMarker> {
-        if interaction.actor.kind != InteractionActorKind::Agent
+        if !interaction.actor.kind.acts_for_someone()
             || !valid_marker_rect(locus)
             || !valid_marker_rect(viewport)
         {
@@ -405,11 +400,7 @@ impl PresenceCtx {
             return None;
         }
         let user = UserId(interaction.actor.id.clone());
-        let actor = actor_label(
-            self,
-            &user,
-            interaction.actor.kind == InteractionActorKind::Agent,
-        );
+        let actor = actor_label(self, &user, interaction.actor.kind.acts_for_someone());
         let state = match &interaction.phase {
             InteractionPhase::Waiting {
                 reason: Some(reason),
@@ -439,7 +430,7 @@ impl PresenceCtx {
             .cloned()
             .unwrap_or_else(|| {
                 crate::i18n::widget_format(
-                    if interaction.actor.kind == InteractionActorKind::Agent {
+                    if interaction.actor.kind.acts_for_someone() {
                         "interaction-agent"
                     } else {
                         "interaction-collaborator"
@@ -620,7 +611,7 @@ impl PresenceCtx {
             .values()
             .filter(|entry| {
                 entry.visible_at(now)
-                    && entry.interaction.actor.kind == InteractionActorKind::Agent
+                    && entry.interaction.actor.kind.acts_for_someone()
                     && entry.interaction.actor.id == actor_id
             })
             .max_by(|left, right| {
@@ -687,7 +678,7 @@ impl PresenceCtx {
         let bar = Rect::new(rect.x0, rect.y0 + 7.0, rect.x0 + 3.0, rect.y1 - 7.0);
         scene.fill(Fill::NonZero, transform, phase_color, None, &bar);
 
-        let is_agent = interaction.actor.kind == InteractionActorKind::Agent;
+        let is_agent = interaction.actor.kind.acts_for_someone();
         let glyph_center = Point::new(rect.x0 + 15.0, rect.y0 + 16.0);
         let glyph_outline = theme.on_surface(actor_color).ink;
         if is_agent {
@@ -958,6 +949,7 @@ fn actor_label(presence: &PresenceCtx, user: &UserId, is_agent: bool) -> String 
         .map(String::as_str)
         .filter(|name| !name.trim().is_empty());
     match (is_agent, roster_name) {
+        (true, Some(name)) if presence.is_agent(user) => presence.kind_label(user, name),
         (true, Some(name)) => crate::history_source::agent_display_label(name),
         (true, None) => "Agent".to_string(),
         (false, Some(name)) => name.to_string(),
@@ -978,7 +970,10 @@ fn entry_belongs_to_app(entry: &InteractionPresenceEntry, app_id: &str) -> bool 
 mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
-    use tilo_actions::{ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor};
+    use tilo_actions::{
+        ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
+        InteractionActorKind,
+    };
     use uuid::Uuid;
 
     fn interaction(
@@ -993,6 +988,7 @@ mod tests {
             actor: InteractionActor {
                 id: "quill".into(),
                 kind: InteractionActorKind::Agent,
+                for_person: None,
             },
             phase,
             action: InteractionAction {
@@ -1008,6 +1004,43 @@ mod tests {
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
         }
+    }
+
+    /// An agent or a Shortcut acting for a person is named with that person
+    /// and gets the software mark and marker a person's activity never does.
+    #[test]
+    fn an_actor_is_named_with_the_person_it_acts_for() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("ada".into()), "Ada");
+        presence.set_display_name(UserId("quill".into()), "Claude");
+        let mut agent = interaction(30, 1, InteractionPhase::Applying);
+        agent.actor.for_person = Some("ada".into());
+        assert!(presence.apply_interaction_at(agent.clone(), at).unwrap());
+        let claude = UserId("quill".into());
+        assert_eq!(presence.display_name(&claude), "Claude, for Ada");
+        assert_eq!(presence.acting_for(&claude), Some(&UserId("ada".into())));
+        assert!(presence.is_agent(&claude));
+        assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
+
+        let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
+        shortcut.actor = InteractionActor::new("shortcut:morning", InteractionActorKind::Shortcut);
+        presence.set_display_name(UserId("shortcut:morning".into()), "Morning");
+        assert!(presence.apply_interaction_at(shortcut, at).unwrap());
+        let morning = UserId("shortcut:morning".into());
+        assert_eq!(presence.display_name(&morning), "Morning · Shortcut");
+        assert_eq!(presence.agent_marker_interactions(at).len(), 2);
+
+        let mut person = interaction(32, 1, InteractionPhase::Applying);
+        person.actor = InteractionActor::new("bob", InteractionActorKind::Person);
+        presence.set_display_name(UserId("bob".into()), "Bob");
+        assert!(presence.apply_interaction_at(person, at).unwrap());
+        assert_eq!(presence.display_name(&UserId("bob".into())), "Bob");
+        assert_eq!(
+            presence.agent_marker_interactions(at).len(),
+            2,
+            "a collaborator's own action keeps the plain outline"
+        );
     }
 
     fn paint_marker(

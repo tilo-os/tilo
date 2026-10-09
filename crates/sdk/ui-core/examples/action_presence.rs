@@ -58,6 +58,7 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
         actor: tilo_actions::InteractionActor {
             id: "scribe".into(),
             kind: tilo_actions::InteractionActorKind::Agent,
+            for_person: None,
         },
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {

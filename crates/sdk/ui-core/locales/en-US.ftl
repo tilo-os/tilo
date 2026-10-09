@@ -383,6 +383,10 @@ relative-ago-years = { $count ->
 
 # A software participant in history, presence and activity rows.
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Shortcut
+participant-app = { $name } · App
+# An agent, a Shortcut or an app acting for a person.
+participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 interaction-action-status = { $action } ({ $phase }) - { $name }

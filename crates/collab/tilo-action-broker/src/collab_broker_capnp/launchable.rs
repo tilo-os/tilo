@@ -458,6 +458,14 @@ mod tests {
 
     /// A broker session hosting `workspace`, and its room.
     fn broker(workspace: &Workspace) -> (Arc<CapnpBrokerState>, String) {
+        let (state, room, _) = broker_with_fanout(workspace);
+        (state, room)
+    }
+
+    /// [`broker`], with the fanout local subscribers hear the room on.
+    fn broker_with_fanout(
+        workspace: &Workspace,
+    ) -> (Arc<CapnpBrokerState>, String, Arc<FanoutState>) {
         let room = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
@@ -472,7 +480,7 @@ mod tests {
             None,
             tree.services(),
         );
-        (state, room)
+        (state, room, fanout)
     }
 
     type Streams =
@@ -667,6 +675,76 @@ mod tests {
             Some(&LaunchPlace::Focus),
             "a person's own invocation opens where they are"
         );
+    }
+
+    /// An agent's action shows in the view it runs in, named with the
+    /// person it acts for; a person's own action on this device does not
+    /// put a second marker on what their view already shows.
+    #[test]
+    fn an_agents_action_is_present_in_the_view_it_runs_in() {
+        use collab_types::{CapOverride, Scope, Subject, Verb};
+        let mut workspace = workspace();
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Write,
+        ));
+        workspace.grant_capability(CapOverride::grant(
+            Subject::agent("scribe"),
+            Scope::App(APP.into()),
+            Verb::Write,
+        ));
+        let (state, room, fanout) = broker_with_fanout(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_rooms(
+            vec![room.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+
+        let owner = Caller::local_person("owner").in_room(&room);
+        invoke(&state, &owner, "5", "new-window", None).expect("the person acts");
+        assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+        assert!(
+            heard.try_recv().is_err(),
+            "a person's own view already shows them"
+        );
+
+        let agent = Caller::local_agent("scribe")
+            .in_room(&room)
+            .acting_for("owner");
+        invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
+        assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
+        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload: ui::collaboration::PresencePayload::Interaction(interaction),
+        }) = heard.try_recv()
+        else {
+            panic!("the agent's action shows in its view");
+        };
+        assert_eq!(user_id, "agent:scribe");
+        assert_eq!(
+            key,
+            ui::presence::PresenceKey::resource(APP, "files.app", "files.app")
+        );
+        assert_eq!(
+            interaction.actor,
+            tilo_actions::InteractionActor::new(
+                "agent:scribe",
+                tilo_actions::InteractionActorKind::Agent
+            )
+            .acting_for("owner")
+        );
+        assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
+        assert_eq!(interaction.action.id, "new-window");
     }
 
     /// An application target reaches an app that never ran in the workspace:

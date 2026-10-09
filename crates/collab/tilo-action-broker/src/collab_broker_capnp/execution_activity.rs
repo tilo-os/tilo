@@ -83,22 +83,88 @@ impl ExecutionScope {
     }
 }
 
+/// Where an invocation runs and who runs it: what the observation bus
+/// reports for an execution, and what the action's view shows of an actor
+/// that is not the person at its own keyboard.
 #[derive(Clone)]
 pub(super) struct ActivityTarget {
-    scope: ExecutionScope,
+    scope: Option<ExecutionScope>,
     principal: String,
     peer_id: u64,
     route: CrdtRoute,
     address: ActionAddress,
+    /// The actor as its presence in the view names it, when it is shown
+    /// there: an agent, an app, a person acting from another device, or
+    /// anyone acting for someone else.
+    shown: Option<ShownActor>,
 }
-impl ActivityTarget {
-    pub(super) fn new(
-        scope: Option<ExecutionScope>,
+
+#[derive(Clone)]
+pub(super) struct ShownActor {
+    pub(super) actor: tilo_actions::InteractionActor,
+    pub(super) action: tilo_actions::InteractionAction,
+    pub(super) resource: tilo_actions::ActionResource,
+    /// Last sequence published for this invocation.
+    pub(super) sequence: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl ShownActor {
+    /// How `caller`, admitted as `actor`, appears in the view it acts in;
+    /// `None` for a person acting for themselves on this device, whose own
+    /// view already shows what they do.
+    fn of(
+        caller: Option<&Caller>,
         actor: &BrokerActor,
         surface: &PublishedSurface,
         action: &PublishedAction,
     ) -> Option<Self> {
-        let scope = scope?;
+        let kind = match caller.map(Caller::principal) {
+            Some(CallerPrincipal::Agent(_)) => tilo_actions::InteractionActorKind::Agent,
+            Some(CallerPrincipal::App(_)) => tilo_actions::InteractionActorKind::App,
+            Some(CallerPrincipal::Person(_)) | None if actor.is_agent => {
+                tilo_actions::InteractionActorKind::Agent
+            }
+            Some(CallerPrincipal::Person(_)) | None => tilo_actions::InteractionActorKind::Person,
+        };
+        let for_person = caller.and_then(Caller::acting_for_person);
+        let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());
+        if !kind.acts_for_someone() && for_person.is_none() && !remote {
+            return None;
+        }
+        let mut shown = tilo_actions::InteractionActor::new(actor.id.clone(), kind);
+        shown.for_person = for_person.map(str::to_owned);
+        Some(Self {
+            actor: shown,
+            action: tilo_actions::InteractionAction {
+                id: action.action.clone(),
+                label: action.action_label.clone(),
+                app: Some(tilo_actions::ActionApp {
+                    id: surface.app_id.clone(),
+                    label: surface.app_id.clone(),
+                }),
+            },
+            resource: tilo_actions::ActionResource {
+                id: action.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+            },
+            sequence: Arc::default(),
+        })
+    }
+}
+
+impl ActivityTarget {
+    pub(super) fn new(
+        scope: Option<ExecutionScope>,
+        actor: &BrokerActor,
+        caller: Option<&Caller>,
+        surface: &PublishedSurface,
+        action: &PublishedAction,
+    ) -> Option<Self> {
+        let shown = ShownActor::of(caller, actor, surface, action);
+        if scope.is_none() && shown.is_none() {
+            return None;
+        }
         // A fixed queue length also needs a bound on each retained value.
         // Unsupported metadata yields no presence, never a guessed target.
         if [
@@ -120,7 +186,16 @@ impl ActivityTarget {
             peer_id: surface.peer_id,
             route: surface.route.clone(),
             address: ActionAddress::new(action.resource.clone(), action.action.clone()),
+            shown,
         })
+    }
+
+    pub(super) fn route(&self) -> &CrdtRoute {
+        &self.route
+    }
+
+    pub(super) fn shown(&self) -> Option<&ShownActor> {
+        self.shown.as_ref()
     }
 }
 
@@ -174,7 +249,9 @@ impl ActivityBus {
         self.publish_status(target, status);
     }
     pub(super) fn publish_status(&self, target: Option<&ActivityTarget>, status: ExecutionStatus) {
-        let Some(target) = target else {
+        let Some((target, scope)) =
+            target.and_then(|target| target.scope.as_ref().map(|scope| (target, scope)))
+        else {
             return;
         };
         let Ok(mut bus) = self.0.lock() else {
@@ -201,8 +278,8 @@ impl ActivityBus {
             epoch: bus.epoch,
             sequence,
             source_time_ms,
-            execution: target.scope.execution,
-            invocation: target.scope.invocation,
+            execution: scope.execution,
+            invocation: scope.invocation,
             principal: target.principal.clone(),
             peer_id: target.peer_id,
             route: target.route.clone(),

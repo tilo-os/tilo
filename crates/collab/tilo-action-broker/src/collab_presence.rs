@@ -98,6 +98,7 @@ mod tests {
                 actor: tilo_actions::InteractionActor {
                     id: "quill".into(),
                     kind: tilo_actions::InteractionActorKind::Agent,
+                    for_person: None,
                 },
                 phase: tilo_actions::InteractionPhase::Committed,
                 action: tilo_actions::InteractionAction {

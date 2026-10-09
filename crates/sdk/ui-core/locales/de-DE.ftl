@@ -378,6 +378,10 @@ relative-ago-years = { $count ->
 
 # Ein Software-Teilnehmer in Verlauf, Präsenz und Aktivität.
 participant-agent = { $name } · Agent
+participant-shortcut = { $name } · Kurzbefehl
+participant-app = { $name } · App
+# Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
+participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
 interaction-action-status = { $action } ({ $phase }) - { $name }

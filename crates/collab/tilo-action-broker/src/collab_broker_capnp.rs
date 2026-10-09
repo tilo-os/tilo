@@ -3250,8 +3250,7 @@ impl CapnpBrokerState {
                     .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
             }
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            self.publish_activity(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -5064,7 +5063,13 @@ impl CapnpBrokerState {
             id,
             PendingInvocation {
                 caller: continuing,
-                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(
+                    execution.clone(),
+                    actor,
+                    caller,
+                    &offered.0,
+                    &offered.1,
+                ),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -5143,8 +5148,7 @@ impl CapnpBrokerState {
             return Err("the application invocation stream closed; outcome unknown".into());
         }
         if let Some(pending) = registry.get(&id) {
-            self.execution_activity
-                .publish(pending.activity.as_ref(), &pending.update);
+            self.publish_activity(pending.activity.as_ref(), &pending.update);
         }
         drop(registry);
         self.local_turn.notify_one();
@@ -5152,6 +5156,69 @@ impl CapnpBrokerState {
     }
 
     /// Observe subsequent broker execution events without scheduling app work.
+    /// Report an invocation's progress on the observation bus, and in the
+    /// view it runs in for an actor that view does not already show: an
+    /// agent, an app, someone acting for a person, a person on another
+    /// device. Nothing is performed out of sight; the view names who acts.
+    fn publish_activity(
+        &self,
+        target: Option<&ActivityTarget>,
+        update: &tilo_actions::InvocationUpdate,
+    ) {
+        self.execution_activity.publish(target, update);
+        let Some((target, shown)) = target.and_then(|target| Some((target, target.shown()?)))
+        else {
+            return;
+        };
+        let phase = match update {
+            tilo_actions::InvocationUpdate::Accepted { .. }
+            | tilo_actions::InvocationUpdate::Progress { .. }
+            | tilo_actions::InvocationUpdate::Item { .. } => {
+                tilo_actions::InteractionPhase::Applying
+            }
+            tilo_actions::InvocationUpdate::Succeeded { .. } => {
+                tilo_actions::InteractionPhase::Committed
+            }
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                tilo_actions::InteractionPhase::Failed {
+                    code: Some(error.code.clone()),
+                    message: error.message.clone(),
+                }
+            }
+            tilo_actions::InvocationUpdate::Cancelled { .. } => {
+                tilo_actions::InteractionPhase::Cancelled { message: None }
+            }
+        };
+        let sequence = shown
+            .sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: update.invocation(),
+            sequence,
+            actor: shown.actor.clone(),
+            phase,
+            action: shown.action.clone(),
+            resource: shown.resource.clone(),
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        };
+        if interaction.validate().is_err() {
+            return;
+        }
+        let route = target.route();
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: shown.actor.id.clone(),
+            key: PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind),
+            payload: PresencePayload::Interaction(Box::new(interaction)),
+        };
+        if let Some(fanout) = self.fanout.upgrade() {
+            // No connection is peer 0: the view the action runs in sees it too.
+            fanout.fanout_to_route(&event, 0, &route.to_cluster_scope());
+        }
+    }
+
     /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
     /// consumers must clear stale presence on lag/closure. Dropping a receiver
     /// changes neither sessions nor app state. This is host-local provenance,
@@ -5774,8 +5841,7 @@ impl CapnpBrokerState {
                         );
                         continue;
                     }
-                    self.execution_activity
-                        .publish(invocation.activity.as_ref(), &update);
+                    self.publish_activity(invocation.activity.as_ref(), &update);
                     self.record_completion(id, invocation.completion_owner(), update.clone());
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -8913,9 +8979,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
-            state
-                .execution_activity
-                .publish(pending.activity.as_ref(), &update);
+            state.publish_activity(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -10240,14 +10304,14 @@ impl presence_handle::Server for CapnpPresenceHandle {
             let mut update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
             let actor = self.verified_identity.broker_actor();
-            let normalized_actor = tilo_actions::InteractionActor {
-                id: CapnpBrokerState::participant_id(&self.verified_identity),
-                kind: if actor.is_agent {
+            let normalized_actor = tilo_actions::InteractionActor::new(
+                CapnpBrokerState::participant_id(&self.verified_identity),
+                if actor.is_agent {
                     tilo_actions::InteractionActorKind::Agent
                 } else {
                     tilo_actions::InteractionActorKind::Person
                 },
-            };
+            );
             let sequence = {
                 let mut sequences = self.interaction_sequences.lock().map_err(|_| {
                     capnp::Error::failed("interaction sequence registry unavailable".into())
@@ -17607,8 +17671,7 @@ impl CapnpBrokerState {
                 ExecutionStatus::CancellationRequested,
             );
         } else {
-            self.execution_activity
-                .publish(pending.activity.as_ref(), update);
+            self.publish_activity(pending.activity.as_ref(), update);
         }
     }
 

@@ -26,6 +26,20 @@ pub const MAX_DETAIL_BYTES: usize = 2 * 1024;
 pub enum InteractionActorKind {
     Person,
     Agent,
+    /// A Shortcut running steps for a person.
+    Shortcut,
+    /// An application acting under its own identity.
+    App,
+}
+
+impl InteractionActorKind {
+    /// Software acting for someone (an agent, a Shortcut, an app), never a
+    /// person at their own keyboard: shown with the agent mark and named
+    /// with whom it acts for.
+    #[must_use]
+    pub const fn acts_for_someone(self) -> bool {
+        !matches!(self, Self::Person)
+    }
 }
 
 /// Identity attached by the broker to the normalized interaction event.
@@ -34,6 +48,29 @@ pub enum InteractionActorKind {
 pub struct InteractionActor {
     pub id: String,
     pub kind: InteractionActorKind,
+    /// The person an agent, a Shortcut or an app acts for, as the host
+    /// admitted the delegation: what presence names as "Claude, for Ada".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_person: Option<String>,
+}
+
+impl InteractionActor {
+    /// `id`, of `kind`, acting for nobody but itself.
+    #[must_use]
+    pub fn new(id: impl Into<String>, kind: InteractionActorKind) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            for_person: None,
+        }
+    }
+
+    /// The same actor, acting for `person`.
+    #[must_use]
+    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+        self.for_person = Some(person.into());
+        self
+    }
 }
 
 /// A stable character range within a document block.
@@ -186,6 +223,9 @@ impl SemanticInteraction {
             return Err(issue("version", "unsupported interaction version"));
         }
         validate_id("actor.id", &self.actor.id)?;
+        if let Some(person) = &self.actor.for_person {
+            validate_id("actor.for_person", person)?;
+        }
         validate_id("action.id", &self.action.id)?;
         validate_label("action.label", &self.action.label)?;
         validate_resource(&self.resource)?;
@@ -368,6 +408,7 @@ mod tests {
             actor: InteractionActor {
                 id: "agent:scribe".into(),
                 kind: InteractionActorKind::Agent,
+                for_person: None,
             },
             phase: InteractionPhase::Applying,
             action: InteractionAction {
@@ -441,6 +482,7 @@ mod tests {
             InteractionActor {
                 id: "agent:reviewer".into(),
                 kind: InteractionActorKind::Agent,
+                for_person: None,
             },
             17,
         );

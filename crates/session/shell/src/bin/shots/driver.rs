@@ -1012,6 +1012,7 @@ impl ShellDriver {
                     actor: tilo_actions::InteractionActor {
                         id: actor,
                         kind: tilo_actions::InteractionActorKind::Person,
+                        for_person: None,
                     },
                     phase: tilo_actions::InteractionPhase::Applying,
                     action: tilo_actions::InteractionAction {
@@ -1225,6 +1226,7 @@ impl ShellDriver {
                         actor: tilo_actions::InteractionActor {
                             id: "ada".to_string(),
                             kind: tilo_actions::InteractionActorKind::Person,
+                            for_person: None,
                         },
                         phase: tilo_actions::InteractionPhase::Applying,
                         action: tilo_actions::InteractionAction {
@@ -1263,6 +1265,7 @@ impl ShellDriver {
                     actor: tilo_actions::InteractionActor {
                         id: "ada".to_string(),
                         kind: tilo_actions::InteractionActorKind::Person,
+                        for_person: None,
                     },
                     phase: tilo_actions::InteractionPhase::Applying,
                     action: tilo_actions::InteractionAction {

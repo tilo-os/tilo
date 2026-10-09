@@ -1295,10 +1295,14 @@ mod tests {
             "relative-ago-years",
             "participant-agent",
             "participant-unknown-agent",
+            "participant-shortcut",
+            "participant-app",
+            "participant-acting-for",
         ] {
             let mut args = FluentArgs::new();
             args.set("count", FluentValue::from(2));
             args.set("name", FluentValue::from("scribe"));
+            args.set("person", FluentValue::from("Ada"));
             for (locale, bundle) in [("en-US", &en), ("de-DE", &de)] {
                 let (value, clean) = format_from_bundle(bundle, key, Some(&args))
                     .unwrap_or_else(|| panic!("{locale}.ftl lacks {key}"));

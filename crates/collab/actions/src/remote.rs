@@ -123,6 +123,8 @@ pub struct Caller {
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
     execution: Option<ExecutionLease>,
+    // The person a non-person principal acts for, as the host admitted it.
+    acting_for: Option<String>,
 }
 
 impl Caller {
@@ -137,6 +139,7 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
         }
     }
 
@@ -151,6 +154,7 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
         }
     }
 
@@ -164,6 +168,7 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
         }
     }
 
@@ -179,6 +184,7 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
         }
     }
 
@@ -199,6 +205,7 @@ impl Caller {
             room: None,
             foreign: false,
             execution: None,
+            acting_for: None,
         }
     }
 
@@ -244,6 +251,22 @@ impl Caller {
     pub fn from_foreign_device(mut self, foreign: bool) -> Self {
         self.foreign = foreign;
         self
+    }
+
+    /// The caller acts for `person`, by that person's policy principal id:
+    /// an agent, a Shortcut or an app the person started. Set only by the
+    /// host that admitted the delegation, never from a payload. It names who
+    /// the actor works for in presence and history; it widens nothing.
+    #[must_use]
+    pub fn acting_for(mut self, person: impl Into<String>) -> Self {
+        self.acting_for = Some(person.into());
+        self
+    }
+
+    /// The person this caller acts for, when it is not that person.
+    #[must_use]
+    pub fn acting_for_person(&self) -> Option<&str> {
+        self.acting_for.as_deref()
     }
 
     /// Confine the caller to one room: the connection was admitted to that
