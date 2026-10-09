@@ -106,7 +106,6 @@ impl Relay {
             scope: AgentScope {
                 rooms: vec![room.into()],
                 apps: Vec::new(),
-                may_confirm: false,
             },
             issued_at_ns: 1,
             expires_at_ns,
