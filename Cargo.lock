@@ -14787,6 +14787,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
+ "tilo-history",
  "tilo-net",
  "workspace-hack",
 ]
