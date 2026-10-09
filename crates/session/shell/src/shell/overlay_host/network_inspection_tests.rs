@@ -66,7 +66,7 @@ fn quick_settings_network_inspection_reads_ordinary_worker_adoption_and_failed_c
     workspace.set_owner("shell-fixture");
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
-    let handle: WorkspaceTreeHandle = Arc::new(parking_lot::RwLock::new(tree));
+    let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::new(tree);
     let chrome = ChromeState::new_with_fixture_handle(
         handle,
         crate::shell::hosted_inputs::HostedTileInputs::default(),
@@ -147,7 +147,7 @@ fn connection_fixture() -> (Chrome, ShellOverlayHost, crate::shell::status::Stat
     workspace.set_owner("shell-fixture");
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
-    let handle: WorkspaceTreeHandle = Arc::new(parking_lot::RwLock::new(tree));
+    let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::new(tree);
     let chrome = ChromeState::new_with_fixture_handle(
         handle,
         crate::shell::hosted_inputs::HostedTileInputs::default(),

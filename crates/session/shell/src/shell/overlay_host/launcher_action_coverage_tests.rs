@@ -123,7 +123,7 @@ fn workspace_creation_chrome() -> crate::shell::chrome_state::Chrome {
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
     ChromeState::new_with_fixture_handle(
-        std::sync::Arc::new(parking_lot::RwLock::new(tree)),
+        crate::shell::state::WorkspaceTreeHandle::new(tree),
         crate::shell::hosted_inputs::HostedTileInputs::default(),
     )
 }

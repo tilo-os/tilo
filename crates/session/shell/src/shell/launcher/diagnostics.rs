@@ -19,7 +19,7 @@ struct ManagedOptions {
 }
 
 fn managed_path() -> io::Result<PathBuf> {
-    xdg_paths::config_dir()
+    tilo_paths::config_dir()
         .filter(|root| root.is_absolute())
         .map(|root| root.join("tilo/diagnostics/session.json"))
         .ok_or_else(|| {

@@ -4072,17 +4072,7 @@ impl App {
             }
         }
         let source = ci::parse(from, self.worktree.as_ref())?;
-        if matches!(source, ci::Source::Worktree)
-            && let Some(explicit @ Builder::Host) = builder
-        {
-            // Fail before connecting: no host build is possible off Linux.
-            choose_builder(
-                Some(explicit),
-                &VmTools::default(),
-                cfg!(target_os = "linux"),
-                std::env::consts::OS,
-            )?;
-        }
+        validate_swap_host_builder(&source, builder)?;
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
@@ -6072,6 +6062,24 @@ fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]
     ]);
     words.extend(command.iter().map(|w| vmbuild::sh_quote(w)));
     words
+}
+
+fn validate_swap_host_builder(
+    source: &ci::Source,
+    builder: Option<Builder>,
+) -> Result<(), CliError> {
+    if matches!(source, ci::Source::Worktree)
+        && let Some(explicit @ Builder::Host) = builder
+    {
+        // Fail before connecting: no host build is possible off Linux.
+        choose_builder(
+            Some(explicit),
+            &VmTools::default(),
+            cfg!(target_os = "linux"),
+            std::env::consts::OS,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_frame_cpu_component(component: &str, enabled: bool) -> Result<(), CliError> {
