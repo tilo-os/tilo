@@ -480,10 +480,16 @@ impl<R: Resource> ResourceRoot<R> {
             let _profile = super::profiling::Scope::start("framework.resource_tree");
             tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state)
         };
-        let mut bound = self.bindings.declarations(state);
+        let mut bound = {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.bound_declarations");
+            self.bindings.declarations(state)
+        };
         let mut rows = Vec::new();
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.surface_publication");
             bound.extend(surface.bound_declarations());
             availability.extend(surface.availability());
             rows.extend(
@@ -528,7 +534,12 @@ impl<R: Resource> ResourceRoot<R> {
         }
         // The app's own effects come before the framework's history and
         // render operations: an app answering `diff` its own way is asked.
-        for spec in self.effects.specs() {
+        let effects = {
+            #[cfg(feature = "test-support")]
+            let _profile = super::profiling::Scope::start("framework.effect_specs");
+            self.effects.specs()
+        };
+        for spec in effects {
             let shadowed = resource
                 .actions
                 .iter()
