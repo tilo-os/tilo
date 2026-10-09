@@ -27,14 +27,14 @@ owner = "sheet"
 path = "sheets.*.source"
 readonly = true
 stored = "value"
-title = "The file the sheet was imported from, which opening again reveals"
+title = "Source file"
 type = "Option<Atom>"
 
 [[resources.fields]]
 owner = "sheet"
 path = "sheets.*.color"
 stored = "value"
-title = "Tab colour: an index into the palette, none for the plain tab"
+title = "Tab colour"
 type = "Option<u32>"
 
 [[resources.fields]]
@@ -71,7 +71,7 @@ owner = "chart"
 path = "sheets.*.charts.*.area"
 readonly = true
 stored = "record"
-title = "The cells it charts. Changed by its verb, which checks the range"
+title = "Range"
 type = "Area"
 
 [[resources.fields]]
@@ -115,7 +115,7 @@ owner = "comment"
 path = "sheets.*.comments.*.area"
 readonly = true
 stored = "record"
-title = "The cells it is about"
+title = "Range"
 type = "Area"
 
 [[resources.fields]]
@@ -151,7 +151,7 @@ owner = "comment"
 path = "sheets.*.comments.*.author"
 readonly = true
 stored = "value"
-title = "Who started it"
+title = "Author"
 type = "Atom"
 
 [[resources.fields]]
@@ -180,7 +180,7 @@ owner = "reply"
 path = "sheets.*.comments.*.replies.*.author"
 readonly = true
 stored = "value"
-title = "Who wrote it"
+title = "Author"
 type = "Atom"
 
 [[resources.fields]]
