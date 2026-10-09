@@ -10,6 +10,7 @@ import re
 import uuid
 from pathlib import Path
 
+from acceptance.cohort import COMPONENTS
 from acceptance.action_jobs import begin, invoke, require
 from acceptance.vm import TiloVm, VmError, first_json, wait_until
 
@@ -197,6 +198,30 @@ def install_open(door, fixture, installed_before, out):
             "runtime": verified["runtime"], "mapped_backing": "calculator-mapped-sdk.json"}
 
 
+def verified_fixture_for_cohort(fixture, receipt):
+    # Called only after app.cohort has verified actual current nine-member
+    # selection/source/owner custody. Architecture comes from those members.
+    members = receipt.get("cohort_members")
+    require(receipt.get("component") == "userspace" and isinstance(members, list)
+            and len(members) == len(COMPONENTS)
+            and [member.get("component") for member in members if isinstance(member, dict)] == list(COMPONENTS),
+            "verified nine-member cohort required for fixture architecture")
+    require(all(isinstance(member.get("build"), dict)
+                and isinstance(member["build"].get("target"), str) for member in members),
+            "cohort member build target is malformed")
+    targets = {member["build"]["target"] for member in members}
+    require(len(targets) == 1 and targets <= {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"},
+            "cohort architecture is missing, malformed or mixed")
+    architecture = next(iter(targets)).removesuffix("-unknown-linux-gnu")
+    require(isinstance(fixture, dict) and isinstance(fixture.get("offer"), dict)
+            and isinstance(fixture["offer"].get("target"), dict), "official fixture target is malformed")
+    require(fixture.get("package_id") == "so.tilo.calculator" and fixture.get("independent_owner") ==
+            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06"
+            and fixture.get("offer", {}).get("target", {}).get("architecture") == architecture,
+            "independently verified official fixture differs from actual cohort architecture")
+    return architecture
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tilo-vm", default="tilo-vm")
@@ -214,12 +239,9 @@ def main():
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     vm = OwnerVm(args.tilo_vm, args.vm, args.slot, args.out / "commands.log")
-    _, _, installed_sdk = app.cohort(vm, args, args.out)
+    receipt, _, installed_sdk = app.cohort(vm, args, args.out)
     fixture = json.loads(args.fixture.read_text())
-    require(fixture.get("package_id") == "so.tilo.calculator" and fixture.get("independent_owner") ==
-            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06"
-            and fixture.get("offer", {}).get("target", {}).get("architecture") == "aarch64",
-            "expected independently verified official ARM fixture receipt required")
+    verified_fixture_for_cohort(fixture, receipt)
     door = app.store(vm, args.out)
     app.mapped(vm, "store", installed_sdk, vm.slot_uid(), args.out)
     first = review(door, fixture, args.thin, args.directories, args.out, args.initial_up)

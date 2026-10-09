@@ -27,6 +27,49 @@ def value(**changes):
 
 
 class ChooserSafety(unittest.TestCase):
+    def test_official_fixture_architecture_comes_from_every_verified_cohort_member(self):
+        import copy
+        def receipt(architecture):
+            return {"component": "userspace", "cohort_members": [
+                {"component": name, "build": {"target": architecture + "-unknown-linux-gnu"}}
+                for name in driver.COMPONENTS]}
+        def fixture(architecture):
+            return {"package_id": "so.tilo.calculator", "independent_owner":
+                "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
+                "offer": {"target": {"architecture": architecture}}}
+        for architecture in ("x86_64", "aarch64"):
+            self.assertEqual(driver.verified_fixture_for_cohort(fixture(architecture), receipt(architecture)), architecture)
+        for changes in ({"independent_owner": "ab" * 32}, {"package_id": "so.tilo.notes"},
+                        {"offer": {"target": {"architecture": "aarch64"}}}):
+            wrong = fixture("x86_64"); wrong.update(changes)
+            with self.assertRaises(VmError):
+                driver.verified_fixture_for_cohort(wrong, receipt("x86_64"))
+        base = receipt("x86_64")
+        for wrong in ({}, {"component": "apps+runtime"},
+                      {"component": "userspace", "cohort_members": base["cohort_members"][:-1]}):
+            with self.assertRaises(VmError):
+                driver.verified_fixture_for_cohort(fixture("x86_64"), wrong)
+        for target in (None, "aarch64-unknown-linux-gnu", "x86_64", "riscv64-unknown-linux-gnu"):
+            wrong = copy.deepcopy(base); wrong["cohort_members"][2]["build"]["target"] = target
+            with self.assertRaises(VmError):
+                driver.verified_fixture_for_cohort(fixture("x86_64"), wrong)
+
+    def test_malformed_member_build_and_fixture_target_refuse(self):
+        import copy
+        base = {"component": "userspace", "cohort_members": [
+            {"component": component, "build": {"target": "x86_64-unknown-linux-gnu"}}
+            for component in driver.COMPONENTS]}
+        fixture = {"package_id": "so.tilo.calculator", "independent_owner":
+            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
+            "offer": {"target": {"architecture": "x86_64"}}}
+        for build in (None, [], "x86_64", {"target": []}):
+            wrong = copy.deepcopy(base); wrong["cohort_members"][0]["build"] = build
+            with self.assertRaises(VmError):
+                driver.verified_fixture_for_cohort(fixture, wrong)
+        for wrong in (None, [], {"offer": None}, {"offer": {"target": []}}):
+            with self.assertRaises(VmError):
+                driver.verified_fixture_for_cohort(wrong, base)
+
     def test_refuses_competing_and_malformed_requests(self):
         for rows in ([], [row(), row(identity=OTHER)], [row(identity="guess")], [row(operation="execute")]):
             with self.assertRaises(VmError):
