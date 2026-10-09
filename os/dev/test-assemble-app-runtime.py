@@ -194,6 +194,24 @@ class AssemblyNamespaces(unittest.TestCase):
             self.assertNotIn('COHORT_TAPP_DIR', run.call_args.kwargs['env'])
             self.assertEqual(run.call_args.kwargs['env']['APP_DIR'], 'notes')
 
+    def test_developer_capture_is_readable_in_owned_namespace_but_outside_component_tree(self):
+        with tempfile.TemporaryDirectory(prefix='assembly-compiler-') as directory:
+            stage = Path(directory)
+            capture = stage / 'compiler-capture'
+            capture.mkdir()
+            (capture / 'manifest.json').write_text('actual captured unit inventory')
+            argv = ASSEMBLER.namespace_command(SOURCE.parents[2], stage, stage,
+                                               'thin-app', compiler=capture)
+            self.assertEqual(argv[argv.index('--compiler-capture') + 1], str(capture))
+            self.assertFalse(capture.is_relative_to(stage / 'tree'))
+            output = Path(argv[argv.index('--compiler-interface-out') + 1])
+            self.assertFalse(output.is_relative_to(stage / 'tree'))
+            inside = argv.index('python3')
+            script = "from pathlib import Path; assert Path(" + repr(str(capture / 'manifest.json')) + ").read_text() == 'actual captured unit inventory'"
+            result = subprocess.run(argv[:inside] + ['python3', '-c', script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_catalogue_uses_all_native_manifests_and_one_release(self):
         rows = ASSEMBLER.applications(SOURCE.parents[2])
         self.assertEqual(len(rows), len(list((SOURCE.parents[2]/'apps').glob('*/tilo-app.toml'))))
