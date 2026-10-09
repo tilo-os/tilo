@@ -1540,16 +1540,18 @@ impl Widget for Scrollable {
             self.content_h = cl.content_size.height.max(cl.size.height);
             self.clamp();
         }
+        // Content placed below knows what this view shows of it
+        // (`widget::layout_clip`), so a long collection lays out only that.
+        let clip = self.content_viewport_rect();
         if let Some(c) = &mut self.child {
             if let Some(child_node) = self.child_node {
-                c.apply_layout(
-                    taffy,
-                    child_node,
-                    Point::new(
-                        self.rect.x0 - f64::from(self.offset_x),
-                        self.rect.y0 - f64::from(self.offset_y),
-                    ),
+                let origin = Point::new(
+                    self.rect.x0 - f64::from(self.offset_x),
+                    self.rect.y0 - f64::from(self.offset_y),
                 );
+                crate::widget::with_layout_clip(clip, || {
+                    c.apply_layout(taffy, child_node, origin);
+                });
                 let cl = taffy.layout(child_node).copied().unwrap_or_default();
                 if c.child_clip_rect().is_some() {
                     self.content_w = cl.size.width;
@@ -1601,15 +1603,15 @@ impl Widget for Scrollable {
                         px(rect.width()),
                         px(rect.height()),
                     );
+                    let clip = self.content_viewport_rect();
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-                        child.apply_layout(
-                            taffy,
-                            node,
-                            Point::new(
-                                self.rect.x0 - f64::from(self.offset_x),
-                                self.rect.y0 - f64::from(self.offset_y),
-                            ),
+                        let origin = Point::new(
+                            self.rect.x0 - f64::from(self.offset_x),
+                            self.rect.y0 - f64::from(self.offset_y),
                         );
+                        crate::widget::with_layout_clip(clip, || {
+                            child.apply_layout(taffy, node, origin);
+                        });
                     }
                 }
             }
@@ -2111,6 +2113,92 @@ mod tests {
         fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
             std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
         }
+    }
+
+    /// Records the layout clip it is placed under.
+    struct ClipSpy {
+        rect: Rect,
+        clip: Rc<Cell<Option<Rect>>>,
+    }
+
+    impl Widget for ClipSpy {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(2000.0),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+            self.clip.set(crate::widget::layout_clip());
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn name(&self) -> &'static str {
+            "ClipSpy"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn content_is_placed_under_the_viewport_as_its_layout_clip() {
+        let clip = Rc::new(Cell::new(None));
+        let mut scroll = Scrollable::new_vertical().with_child(Box::new(ClipSpy {
+            rect: Rect::ZERO,
+            clip: clip.clone(),
+        }));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+            )
+            .unwrap();
+        assert_eq!(crate::widget::layout_clip(), None);
+        scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
+        assert_eq!(clip.get(), Some(scroll.content_viewport_rect()));
+        assert_eq!(
+            crate::widget::layout_clip(),
+            None,
+            "the clip ends with the content's placement"
+        );
+
+        // A view inside another narrows to what both show.
+        let outer = Rect::new(0.0, 0.0, 400.0, 100.0);
+        crate::widget::with_layout_clip(outer, || {
+            scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
+        });
+        assert_eq!(
+            clip.get(),
+            Some(scroll.content_viewport_rect().intersect(outer))
+        );
     }
 
     #[test]
