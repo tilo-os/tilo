@@ -1,10 +1,12 @@
-"""Essential 5: idle CPU, wakeups and frames; memory per app cgroup; frame work
-during interactions. Software rendering in a VM skews GPU-bound numbers, so
-every result carries the renderer it was measured on."""
+"""Essential 5: idle CPU, wakeups, frames and RAM; memory per app cgroup; frame work
+during interactions; boot to a usable greeter; the render-path gate. Software
+rendering in a VM skews GPU-bound numbers, so every result carries the renderer it
+was measured on, and so does every performance record (acceptance/records.py)."""
 
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .. import core
@@ -113,6 +115,32 @@ def memory(ctx, apps: list[str]) -> dict:
     }
 
 
+def guest_ram_used_mib(ctx) -> int:
+    """The guest's memory in use, MemTotal less MemAvailable: what the running system
+    holds and could not hand back without swapping. The dev VM's whole system: its
+    seat0 greeter, tilo-vmd and the slot's session."""
+    out = ctx.vm.exec("awk '/^MemTotal:|^MemAvailable:/ {print $1, $2}' /proc/meminfo", check=False)
+    kib = {line.split()[0].rstrip(":"): int(line.split()[1])
+           for line in out.splitlines() if len(line.split()) == 2 and line.split()[1].isdigit()}
+    if "MemTotal" not in kib or "MemAvailable" not in kib:
+        raise core.Unobservable(f"/proc/meminfo did not name MemTotal and MemAvailable: {out[-200:]!r}")
+    return (kib["MemTotal"] - kib["MemAvailable"]) // 1024
+
+
+def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
+    suffix = f".{variant}" if variant else ""
+    window = {"window_s": m["seconds"]}
+    ctx.record(f"idle.shell_cpu_pct{suffix}", "percent", [m["shell_cpu_pct"]], **window)
+    ctx.record(f"idle.session_cpu_pct{suffix}", "percent", [m["user_cpu_pct_total"]], **window)
+    ctx.record(f"idle.ram_mib{suffix}", "MiB", [ram_mib], what="guest MemTotal - MemAvailable")
+    if not variant:
+        # Context switches of the compositor's main thread, its loop: each is a wakeup or
+        # a preemption.
+        ctx.record("idle.wakeups_per_s.shell", "per_s", [m["shell_wakeups_per_s"]], **window)
+        ctx.record("idle.loop_ticks_per_s", "per_s", [m["shell_loop_ticks_per_s"]], **window)
+        ctx.record("idle.frames", "count", [m["frames_painted"]], **window)
+
+
 def _open_several(ctx):
     """Open the four apps; return the ones still open 8 s later.
 
@@ -168,8 +196,11 @@ def idle_empty(ctx, res):
     ctx.reset()
     time.sleep(5)
     m = measure(ctx, ctx.config["idle_seconds"])
+    m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R01-idle-empty.json", json.dumps(m, indent=1))
+    if m["shell_cpu_pct"] is not None:
+        _record_idle(ctx, m, m["guest_ram_used_mib"])
     problems = _budget_problems(m, ctx.config["budgets"], "idle")
     expect(not problems, "; ".join(problems))
 
@@ -179,8 +210,11 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"])
+    m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     res.metrics.update(m, renderer=ctx.facts.get("renderer"))
     ctx.write("R02-idle-apps.json", json.dumps(m, indent=1))
+    if m["shell_cpu_pct"] is not None and len(opened) == 4:
+        _record_idle(ctx, m, m["guest_ram_used_mib"], "four_apps")
     ctx.facts["apps_open_for_memory"] = opened
     problems = _budget_problems(m, ctx.config["budgets"], "idle_apps")
     closed = ctx.facts.get("apps_closed_after_open") or []
@@ -192,6 +226,19 @@ def idle_apps(ctx, res):
     expect(not problems, "; ".join(problems))
 
 
+def _record_memory(ctx, m: dict) -> None:
+    if m["shell"]:
+        ctx.record("memory.shell_anon_mib", "MiB", [m["shell"]["anon_rss_mb"]])
+    ctx.record("memory.session_mib", "MiB", [m["session_memory_mb"]],
+               what="the compositor's and the open apps' cgroups")
+    for app, a in m["apps"].items():
+        if a["shared_with"] or a.get("memory_mb") is None:
+            continue
+        short = app.rsplit(".", 1)[-1]
+        ctx.record(f"memory.app_mib.{short}", "MiB", [a["memory_mb"]], app=app)
+        ctx.record(f"memory.app_anon_mib.{short}", "MiB", [a["anon_mb"]], app=app)
+
+
 @check("R03", AREA, "Memory: each open app's cgroup and the compositor stay within budget")
 def mem(ctx, res):
     opened = ctx.facts.get("apps_open_for_memory") or _open_several(ctx)
@@ -199,6 +246,7 @@ def mem(ctx, res):
     res.metrics.update(apps=m["apps"], shell=m["shell"], session_memory_mb=m["session_memory_mb"],
                        top=m["procs"][:15], guest_mem_mb=m["guest_mem_mb"])
     ctx.write("R03-memory.json", json.dumps(m, indent=1))
+    _record_memory(ctx, m)
     b = ctx.config["budgets"]
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
@@ -261,6 +309,9 @@ def frame_work(ctx, res):
     display = ctx.facts.get("display") or {}
     res.metrics.update(st, renderer=ctx.facts.get("renderer"), display=display)
     ctx.write("R04-frames.csv", core.trace_csv(rows))
+    ctx.record("render.frame_cpu_ms", "ms",
+               [r["cpu_us"] / 1000 for r in rows if r.get("painted") == 1 and isinstance(r.get("cpu_us"), int)],
+               interactions="overview, focus, zoom")
     b = ctx.config["budgets"]
     expect(st["painted"] > 0, "no frame painted during the interactions")
     if not core.has_cpu(rows):
@@ -277,3 +328,71 @@ def frame_work(ctx, res):
         if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
             problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+
+
+# -- the installed-desktop gates of build-image.yml, on this run's VM -------------
+
+BOOT_GATE = "/usr/libexec/tilo/boot-performance-gate.sh"
+BOOT_TOTAL = re.compile(r"kernel\+userspace reached usable greeter in (\d+)\.(\d{3})s")
+BOOT_PHASES = re.compile(r"phases: kernel ([0-9.]+)s, initrd ([0-9.]+)s, userspace to greeter ([0-9.]+)s")
+GATE_EXIT = re.compile(r"^GATE-EXIT=(\d+)$", re.M)
+
+
+def parse_boot_gate(text: str) -> dict:
+    """The boot gate's output: its exit status, kernel+userspace seconds to a usable
+    greeter and, when it printed them, the kernel, initrd and userspace phases."""
+    exit_ = GATE_EXIT.search(text)
+    total = BOOT_TOTAL.search(text)
+    phases = BOOT_PHASES.search(text)
+    out = {"exit": int(exit_.group(1)) if exit_ else None,
+           "to_greeter_s": int(total.group(1)) + int(total.group(2)) / 1000 if total else None}
+    if phases:
+        out.update(kernel_s=float(phases.group(1)), initrd_s=float(phases.group(2)),
+                   userspace_s=float(phases.group(3)))
+    return out
+
+
+@check("R06", AREA, "The VM booted kernel and userspace to a usable greeter within budget")
+def boot(ctx, res):
+    """The release gate's boot check (os/tests/boot_performance_gate.sh, shipped in the
+    image): graphical.target and greetd's login endpoint up, no device timeout, the
+    image's boot contract, all within the budget. It reads this boot's monotonic
+    timestamps, so it may run at any point of the run."""
+    budget = ctx.config["budgets"]["boot_to_greeter_s"]
+    text = ctx.vm.root_exec(f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget} {BOOT_GATE} 2>&1; echo GATE-EXIT=$?",
+                            timeout=180)
+    ctx.write("R06-boot-gate.txt", text)
+    gate = parse_boot_gate(text)
+    res.metrics.update({k: v for k, v in gate.items() if k != "exit"}, budget_s=budget)
+    said = " | ".join(l.strip() for l in text.splitlines()[-8:] if l.strip() and "GATE-EXIT" not in l)
+    if gate["to_greeter_s"] is None:
+        raise core.Unobservable(f"the boot gate named no time to the greeter (exit {gate['exit']}): {said}")
+    ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
+    for phase in ("kernel", "initrd", "userspace"):
+        ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
+    expect(gate["exit"] == 0, f"the boot gate failed: {said}")
+
+
+RENDER_REPORT = "/usr/libexec/tilo-session-report"
+RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM render phase")
+
+
+@check("R07", AREA, "The session presented within the render-path budgets (tilo-session-report --render-gate)")
+def render_gate(ctx, res):
+    """The release gate's render check on this run's session: direct GPU scanout where
+    the renderer shares the scanout GPU, and every DRM render phase and the painted
+    frames' main-thread work within the budgets build-image.yml holds a KVM guest to."""
+    b = ctx.config["budgets"]
+    text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
+                       f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",
+                       timeout=120, check=False)
+    ctx.write("R07-render-gate.txt", text)
+    exit_ = GATE_EXIT.search(text)
+    failures = [l.split("render gate: FAIL ", 1)[1] for l in text.splitlines() if "render gate: FAIL " in l]
+    res.metrics.update(failures=failures, renderer=ctx.facts.get("renderer"))
+    if exit_ is None or (exit_.group(1) != "0" and not failures):
+        raise core.Unobservable(f"{RENDER_REPORT} did not judge the session: {text.strip()[-300:]}")
+    unobserved = [f for f in failures if f.startswith(RENDER_UNOBSERVABLE)]
+    if unobserved:
+        raise core.Unobservable("; ".join(unobserved))
+    expect(not failures, "; ".join(failures) + f" [renderer: {ctx.facts.get('renderer')}]")
