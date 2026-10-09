@@ -92,17 +92,16 @@ where
         ));
         let service: app_host::Client = capnp_rpc::new_client(server);
         let rpc = RpcSystem::new(network, Some(service.client));
-        let disconnect = rpc.get_disconnector();
         let mut rpc = Box::pin(rpc);
         tokio::select! {
-            _ = &mut shutdown => {
-                tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                    let (disconnected, driven) = tokio::join!(disconnect, &mut rpc);
-                    disconnected.map_err(|error| error.to_string())?;
-                    driver_result(driven)
-                }).await.map_err(|_| "app-host test transport did not disconnect".to_owned())?
-            },
+            biased;
             result = &mut rpc => driver_result(result),
+            // Explicit fixture shutdown cancels its owned driver. Running a
+            // second disconnect future while a peer closes can release the
+            // connection state before the driver's message loop observes EOF.
+            // Drop the RPC future and transport together on this thread;
+            // ConnectedService::stop still joins and reports driver panics.
+            _ = &mut shutdown => Ok(()),
         }
     })
 }
@@ -112,5 +111,92 @@ fn driver_result(result: Result<(), capnp::Error>) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(error) if error.kind == capnp::ErrorKind::Disconnected => Ok(()),
         Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyHost;
+
+    impl app_host::Server for EmptyHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            mut results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            results.get().init_entries(0);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn connected_service_stops_and_joins_after_peer_disconnect() {
+        for iteration in 0..128 {
+            let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+            let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+            assert!(client.list().unwrap().is_empty());
+            drop(client);
+            assert_eq!(
+                service.shutdown(),
+                Ok(()),
+                "owned driver iteration {iteration}"
+            );
+        }
+    }
+
+    #[test]
+    fn connected_service_stops_and_joins_with_a_live_idle_peer() {
+        let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+        assert!(client.list().unwrap().is_empty());
+        assert_eq!(service.shutdown(), Ok(()));
+        drop(client);
+    }
+
+    #[test]
+    fn peer_close_races_owned_driver_shutdown() {
+        for iteration in 0..512 {
+            let (service, fd) = ConnectedService::start(EmptyHost).unwrap();
+            let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+            assert!(client.list().unwrap().is_empty());
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let stop_barrier = barrier.clone();
+            let stop = std::thread::spawn(move || {
+                stop_barrier.wait();
+                service.shutdown()
+            });
+            barrier.wait();
+            drop(client);
+            assert_eq!(
+                stop.join().unwrap(),
+                Ok(()),
+                "concurrent close iteration {iteration}"
+            );
+        }
+    }
+
+    struct PanickingHost;
+    impl app_host::Server for PanickingHost {
+        fn list(
+            self: capnp::capability::Rc<Self>,
+            _params: app_host::ListParams,
+            _results: app_host::ListResults,
+        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+            std::future::poll_fn(|_| panic!("injected owned service failure"))
+        }
+    }
+
+    #[test]
+    fn connected_service_shutdown_still_reports_driver_panics() {
+        let (service, fd) = ConnectedService::start(PanickingHost).unwrap();
+        let client = crate::client::BlockingClient::from_connected_fd(fd).unwrap();
+        assert!(client.list().is_err());
+        drop(client);
+        assert_eq!(
+            service.shutdown(),
+            Err("app-host test service panicked".into())
+        );
     }
 }
