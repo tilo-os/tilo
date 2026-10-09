@@ -915,11 +915,6 @@ readers = [
 
 
 [[cargo]]
-package = "tilo-relay-protocol"
-inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
-readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
-
-[[cargo]]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules and pinned
 # MoQ bundle to two isolated Chromium profiles.
