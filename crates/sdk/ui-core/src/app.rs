@@ -1657,6 +1657,7 @@ impl App {
             &mut declared,
         );
         trace.finish(CacheResult::NotApplicable);
+        tilo_startup_metrics::startup_mark("actions-declared-done");
         *self.actions.resource_cache.borrow_mut() = Some(ResourceCache {
             key: key.clone(),
             declared,

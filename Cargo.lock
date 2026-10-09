@@ -18146,7 +18146,6 @@ dependencies = [
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "tilo-clock",

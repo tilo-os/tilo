@@ -211,14 +211,17 @@ class StartupMarksTests(unittest.TestCase):
         self.assertIsNone(open_segments(4_000, got))
 
 
-# One warm open: requested at 10 000 ms, the launcher ran 10 120–10 190 ms, the app's main
-# at 10 230.5 ms (41 ms after its process was created), its first frame 400 ms later.
+# One warm open: requested at 10 000 ms, the launcher ran 10 120–10 190 ms, bubblewrap
+# until 10 200 ms, the Landlock shim exec'd the app at 10 215 ms, its main ran at
+# 10 230.5 ms and its first frame 400 ms later.
 SPLIT_OPEN = {
-    "origin_epoch_ms": 10_230, "origin_epoch_us": 10_230_500, "exec_to_main_us": 41_000,
+    "origin_epoch_ms": 10_230, "origin_epoch_us": 10_230_500,
     "launcher": [{"name": "launcher-start", "epoch_us": 10_120_000},
                  {"name": "package-verified", "epoch_us": 10_150_000},
                  {"name": "dbus-proxies-ready", "epoch_us": 10_175_000},
-                 {"name": "sandbox-argv-ready", "epoch_us": 10_190_000}],
+                 {"name": "sandbox-argv-ready", "epoch_us": 10_190_000},
+                 {"name": "sandbox-entered", "epoch_us": 10_200_000},
+                 {"name": "sandbox-exec", "epoch_us": 10_215_000}],
     "events": [{"name": "app-launch-start", "ns": 10_000}, {"name": "first-frame-presented", "ns": 400_000_000}],
 }
 
@@ -230,9 +233,10 @@ class OpenSegmentTests(unittest.TestCase):
     def test_the_segments_add_up_to_the_open(self):
         got = open_segments(10_000, self.marks())
         self.assertEqual(got, {"request_to_launcher": 120.0, "launcher": 70.0, "sandbox_to_main": 40.5,
-                               "main_to_first_frame": 400.0, "exec_to_main": 41.0,
+                               "main_to_first_frame": 400.0, "exec_to_main": 15.5,
                                "launcher_phases": {"package-verified": 30.0, "dbus-proxies-ready": 25.0,
-                                                   "sandbox-argv-ready": 15.0}})
+                                                   "sandbox-argv-ready": 15.0, "sandbox-entered": 10.0,
+                                                   "sandbox-exec": 15.0}})
         whole = sum(got[name] for name in ("request_to_launcher", "launcher", "sandbox_to_main",
                                            "main_to_first_frame"))
         self.assertAlmostEqual(whole, 630.5)
@@ -244,7 +248,7 @@ class OpenSegmentTests(unittest.TestCase):
         series = segment_series([open_, unsplit])
         self.assertEqual(series["request_to_launcher"], [120.0])
         self.assertEqual(series["launcher_phase.dbus-proxies-ready"], [25.0])
-        self.assertEqual(series["exec_to_main"], [41.0])
+        self.assertEqual(series["exec_to_main"], [15.5])
         self.assertEqual(series["request_to_spawn"], [9.0, 8.0])
         self.assertNotIn("main_to_first_frame", series)
 
