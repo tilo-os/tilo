@@ -22,13 +22,14 @@ use tilo_clock::{unix_now_ms, unix_now_ns};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck, HelloAck2};
+use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::compute::ComputeJobSpec;
 use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
     MAX_COMPUTE_FRAME_BYTES,
 };
 use crate::frame::{read_frame, write_frame};
+use crate::handshake::{EndpointTrust, HandshakeError, ServerAuth};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
 use crate::workspace::SharedWorkspace;
@@ -60,6 +61,16 @@ pub enum ComputeSessionError {
     /// The Iroh connection could not be established.
     #[error("compute transport connection: {0}")]
     Connection(String),
+}
+
+impl From<HandshakeError> for ComputeSessionError {
+    fn from(error: HandshakeError) -> Self {
+        match error {
+            HandshakeError::Io { source, .. } => Self::Io(source),
+            HandshakeError::Codec { source, .. } => Self::Codec(source),
+            HandshakeError::Auth(error) => Self::Auth(error),
+        }
+    }
 }
 
 /// Iroh handler for the versioned personal-compute ALPN.
@@ -254,42 +265,28 @@ async fn find_workspace(
     workspaces.lock().await.get(&workspace_id).cloned()
 }
 
+/// The compute handshake runs under the live policy; the control stream is
+/// then the owner's alone and every further stream is admitted by its
+/// workspace.
 async fn authenticate_server(
     protocol: &ComputeProtocol,
     send: &mut SendStream,
     receive: &mut RecvStream,
 ) -> Result<AuthenticatedPeer, ComputeSessionError> {
-    let hello: Hello = postcard::from_bytes(&read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
-    let revocations = protocol
-        .revocations
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let policy = protocol
-        .trust_policy
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let peer = auth::accept_hello(
-        &hello,
-        &protocol.own_user_public_key,
-        &policy,
-        &revocations,
-        unix_now_ns(),
-    )?;
-    let mut nonce = [0; 32];
-    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
-    let acknowledgement = auth::build_hello_ack(
-        protocol.own_cert.clone(),
-        &protocol.own_signing_key,
-        nonce,
-        &hello.client_nonce,
-    );
-    write_frame(send, &postcard::to_allocvec(&acknowledgement)?).await?;
-    let final_ack: HelloAck2 =
-        postcard::from_bytes(&read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
-    auth::verify_hello_ack2(&final_ack, &peer.device_public_key, &nonce)?;
-    Ok(peer)
+    let server = ServerAuth {
+        own_user: &protocol.own_user_public_key,
+        cert: &protocol.own_cert,
+        key: &protocol.own_signing_key,
+        revocations: &protocol.revocations,
+    };
+    Ok(server
+        .authenticate(
+            EndpointTrust::Live(&protocol.trust_policy),
+            receive,
+            send,
+            MAX_COMPUTE_FRAME_BYTES,
+        )
+        .await?)
 }
 
 /// Refresh membership, admit `device` if the workspace allows it, and load
