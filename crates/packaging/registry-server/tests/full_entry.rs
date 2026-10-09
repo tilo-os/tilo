@@ -294,10 +294,18 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
                 .map(|version| format!("{}.root", version.tapp_blake3_hex))
                 .collect()
         );
+        let stored = names(&data_dir.join("payload-blobs"));
+        let (twins, blobs): (BTreeSet<String>, BTreeSet<String>) =
+            stored.into_iter().partition(|name| name.ends_with(".zst"));
         assert_eq!(
-            names(&data_dir.join("payload-blobs")).len(),
+            blobs.len(),
             MAX_ENTRY_VERSIONS + 1,
             "one binary per listed release plus the shared library"
+        );
+        assert_eq!(
+            twins,
+            blobs.iter().map(|blob| format!("{blob}.zst")).collect(),
+            "every stored blob has its compressed twin"
         );
         let staged_bytes: u64 = std::fs::read_dir(data_dir.join("staged-artifacts"))
             .unwrap()
