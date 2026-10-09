@@ -374,6 +374,28 @@ impl<R: Resource> Dispatcher<R> {
         Self::new(app_id, R::KIND, false, Some(me))
     }
 
+    /// What a [`detached`](Self::detached) dispatcher handed to the door
+    /// and nothing took yet — a destructive verb or a removal waiting for
+    /// the person's confirmation — as the actions the door would apply once
+    /// they agreed. Taking them empties the queue.
+    ///
+    /// # Errors
+    /// Returns why a queued invocation does not build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_asked(&self) -> Result<Vec<R::Action>, String> {
+        self.queue
+            .borrow_mut()
+            .drain(..)
+            .map(|(invocation, _)| {
+                tilo_resource::build_action::<R>(
+                    &invocation.address.action,
+                    &invocation.arguments,
+                    tilo_resource::origin_now_ms(),
+                )
+            })
+            .collect()
+    }
+
     /// Who edits through this dispatcher: the participant this view is
     /// for, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
