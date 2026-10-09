@@ -3039,7 +3039,7 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
 /// Build one `{name}` form for a serialized graph. The value is the graph's
 /// typed value at `value_path`, which the app reads when it acts on it; the
 /// checkbox shares the graph's checked value at `enabled_path`. The app routes
-/// that path through its resource action with `ViewCx::route_graph_bool` when
+/// that path to a field of its resource with `ViewCx::route_graph_bool` when
 /// the value belongs in the document.
 ///
 /// Reusing either path in another component or ordinary graph control creates
@@ -3125,16 +3125,11 @@ mod tests {{
 
     #[derive(ui::prelude::Model, Default, Debug, Clone, PartialEq)]
     pub struct GraphFlags {{
-        flags: std::collections::BTreeMap<String, bool>,
+        enabled: bool,
     }}
 
     #[ui::prelude::resource(kind = "template.form-flags", label = "Form flags")]
-    impl GraphFlags {{
-        #[action]
-        fn set_enabled(&mut self, value: bool) {{
-            self.flags.insert("shared-enabled".into(), value);
-        }}
-    }}
+    impl GraphFlags {{}}
 
     struct GraphForm {{
         root: Element,
@@ -3167,7 +3162,7 @@ mod tests {{
 
         fn view(cx: &mut ui::prelude::ViewCx<GraphFlags>) -> Element {{
             let context = register_ui_graph(UiBuildContext::default());
-            cx.route_graph_bool(context.values(), "shared-enabled", |state| state.flags.get("shared-enabled").copied().unwrap_or(false), GraphFlags::SET_ENABLED);
+            cx.route_graph_bool(context.values(), "shared-enabled", GraphFlags::paths().enabled);
             let document = graph_document();
             let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
             cx.surface(GraphForm {{ root, values: context.values().clone() }})
@@ -3185,13 +3180,14 @@ mod tests {{
         let mut app = TestApp::<GraphApp>::new().expect("the graph app opens");
         app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck)
             .expect("the ordinary graph toggle invokes the resource action");
-        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        assert!(app.state().enabled);
         app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
             .expect("the component follows the ordinary graph toggle");
         app.set_role(ui::Role::Viewer);
-        assert!(app.invoke(GraphFlags::SET_ENABLED.with(false)).is_err(), "a viewer cannot invoke the routed edit");
+        let off = Invoke::edit(&GraphFlags::paths().enabled.set(false)).expect("an edit");
+        assert!(app.invoke(off).is_err(), "a viewer cannot make the routed edit");
         let _ = app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck);
-        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        assert!(app.state().enabled);
         app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
             .expect("refusal preserves the displayed resource value");
     }}
@@ -3231,7 +3227,7 @@ mod tests {{
         );
         let state = app.harness().dump_json();
         assert!(!state.contains("shared-value"), "typing never writes the document");
-        assert!(state.contains("shared-enabled"));
+        assert!(app.state().enabled, "the routed toggle writes the document");
 
         let context = register_ui_graph(UiBuildContext::default());
         let invalid = ui::UiDocument::from_json(
@@ -10297,14 +10293,14 @@ fn app_readme(spec: &AppSpec) -> String {
 /// arguments for it.
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("greeting", "set-name", r#"{"name":"Ada"}"#),
+        Template::Starter => ("greeting", "clear", "{}"),
         Template::Document => (
             "document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Collection => ("items", "set-draft", r#"{"draft":"Buy milk"}"#),
-        Template::Graph => ("graph-project", "set-draft", r#"{"draft":"Launch plan"}"#),
+        Template::Collection => ("items", "add", r#"{"title":"Buy milk"}"#),
+        Template::Graph => ("graph-project", "create", "{}"),
     }
 }
 

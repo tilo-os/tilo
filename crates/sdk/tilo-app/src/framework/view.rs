@@ -517,11 +517,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
-    /// Route a serialized screen's text inputs over `path` through the
-    /// resource ([`UiValues::route`](ui_core::UiValues::route)): they show
-    /// `read` of it and each edit invokes `action` with the input's new text.
-    /// A view that may not invoke `action` leaves the path unrouted.
-    pub fn route_graph_text(
+    /// Route a serialized screen's text inputs over `path` through a verb
+    /// ([`UiValues::route`](ui_core::UiValues::route)): they show `read` of
+    /// the resource and each edit invokes `action` with the input's new
+    /// text. A field is routed by its path instead
+    /// ([`Self::route_graph_text`]).
+    pub fn route_graph_text_with(
         &self,
         values: &ui_core::UiValues,
         path: &str,
@@ -538,9 +539,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         values.route(path, shown, binding);
     }
 
-    /// Route a serialized screen's checked controls through the resource:
-    /// they show `read` and each edit invokes its typed `action`.
-    pub fn route_graph_bool(
+    /// Route a serialized screen's checked controls through a verb: they
+    /// show `read` and each edit invokes its typed `action`. A field is
+    /// routed by its path instead ([`Self::route_graph_bool`]).
+    pub fn route_graph_bool_with(
         &self,
         values: &ui_core::UiValues,
         path: &str,
@@ -1102,6 +1104,30 @@ where
         let initial = self.follow_path(path, move |value| sink.set(value));
         state.set(initial);
         state
+    }
+
+    /// Route a serialized screen's text inputs over `ui_path` to the text
+    /// field at `path` ([`UiValues::route`](ui_core::UiValues::route)): they
+    /// show it and each edit replaces it.
+    pub fn route_graph_text(
+        &self,
+        values: &ui_core::UiValues,
+        ui_path: &str,
+        path: Path<R, String>,
+    ) {
+        let shown = self.value_at(&path);
+        if let Some(binding) = self.actions().edit_binding(path, Path::replace) {
+            values.route(ui_path, shown, binding);
+        }
+    }
+
+    /// Route a serialized screen's checked controls over `ui_path` to the
+    /// flag at `path`: they show it and each toggle sets it.
+    pub fn route_graph_bool(&self, values: &ui_core::UiValues, ui_path: &str, path: Path<R, bool>) {
+        let shown = self.value_at(&path);
+        if let Some(binding) = self.actions().edit_binding(path, Path::set) {
+            values.route_bool(ui_path, shown, binding);
+        }
     }
 
     /// A toolkit control whose value is not the field's own type: a slider

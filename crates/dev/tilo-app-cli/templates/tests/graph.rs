@@ -1,14 +1,14 @@
 use generated_app::{App, Projects};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{Invoke, Replica, TestApp};
 
 #[test]
 fn creating_a_project_needs_a_name_and_clears_the_draft() {
     let mut projects = Replica::<Projects>::new();
     assert!(projects.apply(Projects::CREATE.invoke()).is_err());
     projects
-        .apply(Projects::SET_DRAFT.with("Atlas"))
+        .apply(Invoke::edit(&Projects::paths().draft.replace("Atlas")).expect("an edit"))
         .expect("draft");
     projects.apply(Projects::CREATE.invoke()).expect("create");
     let state = projects.state().expect("projects");

@@ -8,10 +8,14 @@ contains this project's longer workflow. Use `tilo-app --help` or a command's
 
 1. Put durable state in the `#[derive(Model)]` resource. Give collection items
    stable ids. Widget structs hold visual caches, not a second copy of app state.
-2. Expose each edit as an `#[action]` method on a `#[resource]` implementation.
-   Bind the view to that action through `ViewCx`: `cx.input`, `cx.checkbox`,
-   `cx.button`, `cx.control`, or `cx.each`. A click handler alone is not the app's
+2. Edit fields at their typed paths and make everything else an `#[action]`
+   verb on the `#[resource]` implementation; never write a setter verb. Bind the
+   view through `ViewCx`: `cx.input(p.title)`, `cx.checkbox(key, p.done)`,
+   `cx.control(make, p.level)` for fields, `cx.button(key, Verb.with(..))` for
+   verbs, `cx.form::<Params>()` for a verb's parameters, and `cx.each` for
+   collections (`let p = cx.paths()`). A click handler alone is not the app's
    public API: accessibility, automation and collaborators use the same actions.
+   Commit the public surface with `tilo-app surface`.
 3. Use shared widgets and the theme. Put visible strings in `locales/*.ftl`,
    and pass Fluent message ids to controls. Start empty; keep sample data in
    tests or explicit demos. Tilo OS owns window chrome.

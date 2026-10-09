@@ -1,19 +1,30 @@
 use example_bound_controls::{App, Preferences};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{Atom, Edit, Invoke, Replica, TestApp};
 
-/// Validation is in the actions, so it holds for callers with no control.
+#[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
+fn edit(edit: &Edit<Preferences>) -> Invoke<Preferences> {
+    Invoke::edit(edit).expect("an edit serializes")
+}
+
+/// Validation is the model's own check, so it holds for callers with no
+/// control: an agent's edit, a script.
 #[test]
-fn actions_refuse_out_of_range_values() {
+fn edits_out_of_range_are_refused() {
+    let p = Preferences::paths();
     let mut prefs = Replica::<Preferences>::new();
-    assert!(prefs.apply(Preferences::SET_VOLUME.with(2.0)).is_err());
-    assert!(prefs.apply(Preferences::SET_REFRESH.with(0.0)).is_err());
-    assert!(prefs.apply(Preferences::SET_REGION.with("Mars")).is_err());
+    assert!(prefs.apply(edit(&p.volume.set(2.0))).is_err());
+    assert!(prefs.apply(edit(&p.refresh_minutes.set(0.0))).is_err());
+    assert!(
+        prefs
+            .apply(edit(&p.region.set(Atom("Mars".into()))))
+            .is_err()
+    );
     assert_eq!(prefs.state().expect("preferences"), Preferences::default());
 }
 
-/// Each control invokes its action, and the resource holds what was chosen.
+/// Each control edits its field, and the resource holds what was chosen.
 #[test]
 fn every_control_edits_its_field() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -48,10 +59,11 @@ fn every_control_edits_its_field() {
 /// agent makes it, shows up in the control.
 #[test]
 fn controls_follow_edits_from_elsewhere() {
+    let p = Preferences::paths();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Preferences::SET_REFRESH.with(45.0))
+    app.invoke(edit(&p.refresh_minutes.set(45.0)))
         .expect("set refresh");
-    app.invoke(Preferences::SET_UPDATES.with(false))
+    app.invoke(edit(&p.updates.set(false)))
         .expect("set updates");
     app.harness()
         .expect(
@@ -76,10 +88,14 @@ fn a_viewer_cannot_change_preferences() {
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");
-    assert!(app.invoke(Preferences::SET_NAME.with("Eve")).is_err());
+    assert!(
+        app.invoke(edit(&Preferences::paths().name.replace("Eve")))
+            .is_err()
+    );
 }
 
-/// Every control that causes an effect is bound to a published action.
+/// Every control that causes an effect is bound to what the resource
+/// publishes.
 #[test]
 fn initial_native_app_contract_is_certified() {
     let mut app = TestApp::<App>::new().expect("the app opens");

@@ -1,26 +1,27 @@
 use generated_app::{App, Document};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, ResourceApp as _, TestApp};
+use ui::prelude::{Invoke, Replica, ResourceApp as _, TestApp};
+
+/// Writing the body: a field edit at its path, as the body input makes it.
+fn body(text: &str) -> Invoke<Document> {
+    Invoke::edit(&Document::paths().body.replace(text)).expect("an edit")
+}
 
 /// Two collaborators typing in the same field at once converge on one text.
 #[test]
 fn concurrent_edits_converge() {
     let mut left = Replica::<Document>::new();
-    left.apply(Document::SET_BODY.with("hello world"))
-        .expect("seed");
+    left.apply(body("hello world")).expect("seed");
     let mut right = left.fork();
-    left.apply(Document::SET_BODY.with("hello brave world"))
-        .expect("left edit");
-    right
-        .apply(Document::SET_BODY.with("hello world!"))
-        .expect("right edit");
+    left.apply(body("hello brave world")).expect("left edit");
+    right.apply(body("hello world!")).expect("right edit");
     left.sync_with(&mut right).expect("sync");
     assert_eq!(left.state().expect("document").body, "hello brave world!");
     assert_eq!(right.state().expect("document").body, "hello brave world!");
 }
 
-/// The inputs invoke the actions, the preview follows, and undo reverts.
+/// The inputs edit the fields, the preview follows, and undo reverts.
 #[test]
 fn the_preview_follows_the_inputs_and_undo_reverts() {
     let mut app = TestApp::<App>::new().expect("the app opens");

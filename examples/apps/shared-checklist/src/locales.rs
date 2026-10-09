@@ -26,4 +26,10 @@ pub mod keys {
     pub const CHECKLIST_PROGRESS: LabelKey = LabelKey::new("checklist-progress");
     pub const CHECKLIST_TITLE_PLACEHOLDER: LabelKey = LabelKey::new("checklist-title-placeholder");
     pub const CHECKLIST_UNTITLED: LabelKey = LabelKey::new("checklist-untitled");
+    pub const SHARED_CHECKLIST_ADD: LabelKey = LabelKey::new("shared-checklist-add");
+    pub const SHARED_CHECKLIST_CHECKLIST_NAME: LabelKey =
+        LabelKey::new("shared-checklist-checklist-name");
+    pub const SHARED_CHECKLIST_CLEAR_DONE: LabelKey = LabelKey::new("shared-checklist-clear-done");
+    pub const SHARED_CHECKLIST_ITEM_DONE: LabelKey = LabelKey::new("shared-checklist-item-done");
+    pub const SHARED_CHECKLIST_ITEM_TITLE: LabelKey = LabelKey::new("shared-checklist-item-title");
 }

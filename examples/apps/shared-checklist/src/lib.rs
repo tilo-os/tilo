@@ -2,7 +2,7 @@
 //!
 //! The app has no networking, no locking and no undo stack of its own. Its
 //! state is a CRDT the system owns and syncs, so every choice that matters
-//! for collaboration is made in the resource type:
+//! for collaboration is made in the model's field types:
 //!
 //! - A `String` field is collaborative text. Two people typing in the same
 //!   title merge character by character.
@@ -10,8 +10,12 @@
 //!   them, deterministically on every replica.
 //! - A `Collection` gives each item a stable id (`cx.id()`), so concurrent
 //!   adds keep both items and an edit follows its item wherever it moves.
-//! - Each action is one undo step and one attributed version. Undo takes back
-//!   the local participant's last action, not a collaborator's.
+//! - Each edit of a field and each verb is one undo step and one attributed
+//!   version. Undo takes back the local participant's own, not a
+//!   collaborator's.
+//!
+//! The next item's title is typed into a form: local to this window, never
+//! synced or undone, and submitted as one invocation of `add`.
 //!
 //! The tests are the lesson: they fork a second replica, edit both sides
 //! concurrently and show what the merge keeps.
@@ -27,6 +31,7 @@ fn install_catalog() {
     locales::install();
 }
 
+use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -34,6 +39,7 @@ use ui::prelude::*;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Item {
     /// Collaborative text.
+    #[model(label)]
     pub title: String,
     /// A register: concurrent toggles settle on one value.
     pub done: bool,
@@ -43,8 +49,6 @@ pub struct Item {
 pub struct Checklist {
     /// Collaborative text, like every `String`.
     pub name: String,
-    /// The title of the next item, shared so collaborators see it typed.
-    pub draft: String,
     pub items: Collection<Item>,
 }
 
@@ -57,47 +61,22 @@ impl Checklist {
     }
 }
 
+/// The name, every title and every done flag are edited at their paths; the
+/// verbs are what a field edit cannot say.
 #[resource(kind = "example.checklist", label = "Checklist")]
 impl Checklist {
-    /// Rename the checklist.
+    /// Add an item.
     #[action]
-    pub fn rename(&mut self, #[param("Checklist name")] name: String) {
-        self.name = name;
-    }
-
-    /// Set the title of the next item.
-    #[action]
-    pub fn set_draft(&mut self, #[param("Title of the next item")] draft: String) {
-        self.draft = draft;
-    }
-
-    /// Add the drafted item.
-    #[action]
-    pub fn add(&mut self, cx: &mut ActionCx) -> Result<(), &'static str> {
-        let title = self.draft.trim().to_owned();
+    pub fn add(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Title of the new item")] title: String,
+    ) -> Result<(), &'static str> {
+        let title = title.trim().to_owned();
         if title.is_empty() {
             return Err("an item needs a title");
         }
         self.items.push(cx.id(), Item { title, done: false });
-        self.draft.clear();
-        Ok(())
-    }
-
-    /// Retitle an item.
-    #[action]
-    pub fn retitle(
-        &mut self,
-        item: &Id,
-        #[param("New title")] title: String,
-    ) -> Result<(), &'static str> {
-        self.items.get_mut(item).ok_or("no such item")?.title = title;
-        Ok(())
-    }
-
-    /// Check an item off, or back on.
-    #[action]
-    pub fn set_done(&mut self, item: &Id, #[param("Done")] done: bool) -> Result<(), &'static str> {
-        self.items.get_mut(item).ok_or("no such item")?.done = done;
         Ok(())
     }
 
@@ -121,21 +100,11 @@ impl Checklist {
 }
 
 fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
-    let Some(id) = row.item().cloned() else {
-        return Box::new(Column::new());
-    };
-    let done_id = id.clone();
-    let done = row.checkbox_with(
-        "checklist-done-label",
-        |item| item.done,
-        Checklist::SET_DONE.map(move |done| (done_id.clone(), done)),
-    );
+    let p = row.paths();
+    let done = row.checkbox(keys::CHECKLIST_DONE_LABEL, p.done);
     let title = row
-        .input_with(
-            |item| item.title.clone(),
-            Checklist::RETITLE.map(move |title| (id.clone(), title)),
-        )
-        .with_placeholder("checklist-title-placeholder");
+        .input(p.title)
+        .with_placeholder(keys::CHECKLIST_TITLE_PLACEHOLDER);
     Box::new(ui::row![done, title])
 }
 
@@ -167,18 +136,21 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
         install_catalog();
+        let p = cx.paths();
         let name = cx
-            .input_with(|checklist| checklist.name.clone(), Checklist::RENAME)
+            .input(p.name)
             .with_id("name-input")
-            .with_placeholder("checklist-name-placeholder");
+            .with_placeholder(keys::CHECKLIST_NAME_PLACEHOLDER);
+        // The next item's title is this window's own until it is added.
+        let next = cx.form::<checklist::Add>();
         let draft = cx
-            .input_with(|checklist| checklist.draft.clone(), Checklist::SET_DRAFT)
+            .input(checklist::Add::paths().title)
             .with_id("draft-input")
-            .with_placeholder("checklist-draft-placeholder");
-        let add = cx.button("checklist-add", Checklist::ADD.invoke());
+            .with_placeholder(keys::CHECKLIST_DRAFT_PLACEHOLDER);
+        let add = cx.button(keys::CHECKLIST_ADD, next.submit());
         let progress = cx.text(progress_text).with_id("progress");
         let rows = cx.each(|checklist| &checklist.items, item_row);
-        let clear = cx.button("checklist-clear-done", Checklist::CLEAR_DONE.invoke());
+        let clear = cx.button(keys::CHECKLIST_CLEAR_DONE, Checklist::CLEAR_DONE.invoke());
         Box::new(ui::column![
             labeled_field("checklist-name-label", name),
             ui::row![labeled_field("checklist-draft-label", draft), add],

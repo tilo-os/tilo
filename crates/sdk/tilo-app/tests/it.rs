@@ -51,6 +51,7 @@ pub mod person_records;
 pub mod private_windows;
 #[path = "publication_per_keystroke.rs"]
 pub mod publication_per_keystroke;
+#[cfg(feature = "test-support")]
 #[path = "reactivity.rs"]
 pub mod reactivity;
 #[path = "render_view.rs"]

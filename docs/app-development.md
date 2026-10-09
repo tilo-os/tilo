@@ -191,21 +191,23 @@ Use `on_effect` for external work and `on_view` for transient presentation
 state; use the domain path below for document mutations, parameters, explicit
 contracts, or an action shared by several controls.
 
-### The domain path: bind a declared action
+### The domain path: bind a field or a verb
 
 An interactive control binds to the same action that search, scripts and
-agents see:
+agents see. In a framework view that is a path or a verb, never an id string:
 
 ```rust
-let resource = document_resource(&model);
-let save = ui::tilo_actions::ActionBinding::unit_for(&resource, "save")?;
-let button = ui::Button::new("save", "Save").on_action(save);
+let p = cx.paths();
+let title = cx.input(p.title);                                   // field edits
+let pinned = cx.checkbox(keys::NOTES_PINNED, p.pinned);
+let save = cx.button(keys::NOTES_SAVE, Notes::SAVE.invoke());   // a verb
 ```
 
-`ActionBinding::unit_for` looks up the actual `ActionSpec` on the resource, so
-the UI cannot silently drift to a parallel contract. Parameterized controls
-use `ActionBinding::new` to map typed control values to JSON arguments, or
-`static_json_for` for a fixed, strictly validated argument object.
+Controls look the action up on the resource's published tree by its key, so
+the UI cannot drift to a parallel contract; one bound to something the
+resource does not publish fails `TestApp` and `tilo-app check`. A control
+built outside the view (a row a table creates on demand) binds through
+`cx.actions()`: `actions.bind(control, Notes::OPEN.map(..))`.
 
 The control emits only an inert typed intent. The app host re-resolves its
 stable address against the fresh resource tree, applies current permissions
@@ -215,6 +217,8 @@ confirmation flow used by the command palette. Document actions use the shared
 collaboration and undo-history executor. Effects and background jobs use the
 same admitted/progress/terminal lifecycle as remote callers. Do not duplicate
 the operation in `on_click`, a private command enum, or a second mutation path.
+[docs/action-model-recipe.md](action-model-recipe.md) walks through the model,
+verbs, views, forms and surfaces.
 
 ### Command palettes come from resources
 
@@ -684,9 +688,10 @@ change instead, as an LTO profile cannot link the toolkit dynamically.
 ([The web](#the-web)).
 
 Every template starts on the app framework (`ui::framework`): the app's
-state is a `#[derive(Model)]` resource, every edit is an `#[action]` method in
-its `#[resource]` impl, and `impl ResourceApp` supplies a view that binds
-controls to those actions. `main` is one line, `ui::framework::run::<App>()`,
+state is a `#[derive(Model)]` resource whose fields are edited at their typed
+paths, operations beyond setting a field are `#[action]` verbs in its
+`#[resource]` impl, and `impl ResourceApp` supplies a view that binds controls
+to those paths and verbs. `main` is one line, `ui::framework::run::<App>()`,
 which provides the live window, durable record storage, sync and
 collaboration, a History mode, per-author undo, permissions, the action
 palette, agents, scripts, search, and the standard `--shots`,
@@ -699,9 +704,9 @@ generated template also includes a native-contract test, so ordinary
 invalid virtual-collection metadata, or unstable synthetic identity.
 Interaction-specific states remain covered by `tilo-app scenario run --audit`.
 
-`starter` binds a profile resource to a text field, checkbox, number field,
-slider and dropdown (`cx.input`, `cx.checkbox`, and `cx.control` for any other
-toolkit control); `data` begins with a selectable `DataTable` over a
+`starter` binds a profile resource's fields by path to a text field,
+checkbox, number field, slider and dropdown (`cx.input`, `cx.checkbox`, and
+`cx.control` for any other toolkit control); `data` begins with a selectable `DataTable` over a
 100-million-row sparse model with a background page request, stale-result
 suppression, targeted row notifications, and retained cell buttons that open
 rows through the resource (`cx.actions()` binds controls a table, list or tree
@@ -977,22 +982,30 @@ fn main() {
 }
 ```
 
-The library declares the resource, its actions, and the view:
+The library declares the model, its verbs, and the view:
 
 ```rust
 use ui::prelude::*;
 
-#[derive(Model, Default)]
+#[derive(Model, Default, Clone, PartialEq)]
 pub struct List {
     pub title: String,
+    pub books: Collection<Book>,
+}
+
+#[derive(Model, Default, Clone, PartialEq)]
+pub struct Book {
+    #[model(label)]
+    pub title: String,
+    pub read: bool,
 }
 
 #[resource(kind = "reading.list", label = "Reading list")]
 impl List {
-    /// Rename the list.
+    /// Add a book.
     #[action]
-    pub fn rename(&mut self, title: String) {
-        self.title = title;
+    pub fn add(&mut self, cx: &mut ActionCx, title: String) {
+        self.books.push(cx.id(), Book { title, read: false });
     }
 }
 
@@ -1004,12 +1017,25 @@ impl ResourceApp for App {
     const TITLE: &'static str = "Reading list";
 
     fn view(cx: &mut ViewCx<List>) -> Element {
+        let p = cx.paths();
+        let next = cx.form::<list::Add>();
+        let books = cx.each(|list| &list.books, |row| {
+            let p = row.paths();
+            Box::new(ui::row![row.checkbox(keys::LIST_READ, p.read), row.input(p.title)])
+        });
         Box::new(ui::column![
-            cx.input(|list| list.title.clone(), List::RENAME).with_id("title"),
+            cx.input(p.title).with_id("title"),
+            ui::row![cx.input(list::Add::paths().title), cx.button(keys::LIST_ADD, next.submit())],
+            books,
         ])
     }
 }
 ```
+
+Fields are edited where they are (`cx.input(p.title)` submits
+`p.title.replace(..)`), so a setter verb is never written. The form is the
+`add` verb's parameters, local to the window until its button submits them
+as one invocation.
 
 The same declaration is shared by the real event loop, screenshots, the
 headless driver and `TestApp`. Use toolkit widgets for controls so focus,
@@ -1075,9 +1101,7 @@ Declare a semantic control once. Pointer, direct-touch tap, keyboard,
 accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
-let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
-Button::new("save", "app-save")
-    .on_action(save)
+cx.button(keys::APP_SAVE, Document::SAVE.invoke())
     .role(ButtonRole::Primary)
 ```
 
@@ -2011,6 +2035,19 @@ let name = TextInput::local()
 
 `Text`, fitted `Button` labels, input placeholders and accessible names,
 collection names, and table headers resolve through the same catalog.
+
+The generated registry also declares one `LabelKey` constant per message of
+`locales/en-US.ftl` in `locales::keys`, which `ViewCx` buttons, checkboxes and
+placeholders accept: `cx.button(keys::PROJECT_SAVE, ..)`. A misspelt key then
+does not compile. Every `tilo-app` build, `tilo-app add` and
+`tilo-app locale sync` keeps the constants in step with the catalog, and
+`tilo-app check` fails on a literal key the catalog lacks and on a shipped
+translation missing a source message.
+
+History renders each change from the app's catalogue by convention:
+`<app>-<type>-<field>` for a field edit, `<app>-<verb>` for a verb, where
+`<app>` is the last part of the app id (`bookmarks-bookmark-favorite`,
+`bookmarks-add`); `tilo-app check` lists the missing ones.
 `I18nManager::set_locale("de-DE")` advances one observable catalog revision;
 the next normal synchronization pass invalidates paint, intrinsic measurement,
 and accessibility together. `Text::from_state` also reruns its formatter on a
@@ -2645,6 +2682,13 @@ headless launch path used by generated projects. Prefer semantic assertions
 over pixel coordinates: inspect roles, names, selected/expanded state, and
 focus after dispatching keyboard or pointer input. Use deterministic rendering
 only for visual behavior that semantics cannot express.
+
+`tilo-app check` runs the app contract beside the tests: verbs that read a
+clock, randomness, files, the network or another process, label keys the
+catalog lacks, incomplete shipped translations, controls bound to something
+the resource does not publish, and a public surface that differs from the
+committed `surface.toml` (write it with `tilo-app surface`; a stored field
+read differently needs a new `#[resource(version = N)]`) all fail it.
 
 The toolkit's debug and capture switches are `TILO_UI_*` environment
 variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the

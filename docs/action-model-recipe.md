@@ -1,242 +1,247 @@
-# Building an app on the resource + action model
+# Building an app on resources, actions and views
 
-Every collaborative operation in a Tilo app is an **action**: a small serializable
-value that deterministically mutates the shared Automerge document. Actions are
-the single path by which app state changes — so undo, multi-peer replay, and the
-Ctrl+K command palette all use the same implementation.
+Every Tilo app is written one way. Its state is a typed **model** stored in a
+CRDT document, every change is an **action** on that model, and its pixels
+are **views** that read the model and submit actions. People, collaborators,
+agents, Shortcuts, the palette, search and accessibility all reach the app
+through the same published actions, so a button and an agent can never do
+different things. The contract behind this recipe is
+[docs/architecture/resources.md](architecture/resources.md); permissions are
+in [docs/architecture/permissions.md](architecture/permissions.md).
 
-The action is the event handler. A button, a context-menu item, a swipe, and a
-Ctrl+K row that all do the same thing dispatch the **same** action.
+This recipe builds a small bookmarks app. `apps/snippets` is the full-size
+reference, and `examples/apps/` has one small app per idea.
 
-The reference implementation is `apps/ebook/src/actions.rs` (Books).
+## 1. The model
 
-## Classify each interaction
-
-Classify every interaction before implementing it:
-
-- **Document-mutating** → an `Action`. It changes the shared CRDT (creating a
-  highlight, editing a note, renaming a track, deleting a row). It must replay
-  byte-identically on a peer, so it crosses the executor.
-- **Presentation / view state** → plain app code, *never* an action. Which book
-  is open, the scroll position, the current selection, an overlay being open.
-  Nothing to replicate; dispatching it as an action would be wrong.
-- **A reusable resource view** → a `ResourceViewSpec` bound to explicit
-  `OperationKind::View` actions. “Editor”, “Reader”, “Map”, and “Timeline” are
-  stable presentations another workspace surface can discover and open; a view
-  may also declare how a host mounts it. The declaration is shared; caret,
-  scroll, zoom, selection, and which view is locally selected remain local
-  presentation state.
-
-An operation that only opens a panel belongs to presentation state.
-
-## The five pieces (all in `apps/<app>/src/actions.rs`)
-
-### 1. A `type_id` and an action enum
+The state is a struct with `#[derive(Model)]`. The derive is the whole
+storage contract; an app never touches the document.
 
 ```rust
-pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
+use ui::prelude::*;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum EbookAction {
-    EditAnnotationNote { id: String, note: String },
-    DeleteAnnotation   { id: String },
-    AddNote            { book_id: String, id: String, text: String },
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+#[model(check = Bookmark::valid)]
+pub struct Bookmark {
+    /// Names the bookmark in history, search and agents' views.
+    #[model(label)]
+    pub title: String,
+    pub url: String,
+    pub favorite: bool,
+    pub tags: Set<String>,
+    /// Changed only by the `visit` verb.
+    #[model(readonly)]
+    pub visits: Counter,
 }
-```
 
-One variant per document-mutating operation. Payloads carry **everything** the
-mutation needs — including any freshly-minted id (see determinism below).
-
-### 2. `impl Action` — the deterministic mutation
-
-```rust
-impl Action for EbookAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> { /* mutate doc */ Ok(()) }
-    fn locus(&self) -> ExecutionLocus { ExecutionLocus::ClientLocal }
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Bookmarks {
+    pub bookmarks: Collection<Bookmark>,
 }
-```
 
-**`apply` must be pure w.r.t. the payload.** No `Uuid::new_v4()`, no
-`SystemTime::now()`, no RNG, no reading global state — those make replay diverge.
-Mint ids and timestamps at *authoring* time and put them in the payload
-(`AddNote { id, .. }`), so the same envelope replays identically on every peer.
-A malformed payload is a **no-op**, not an error, so a bad replay can't wedge.
-
-`locus`: `ClientLocal` for personal marks/settings; `ServerPreferred` for
-operations a server should order authoritatively (fall back to local).
-
-### 3. Registration
-
-```rust
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<EbookAction>(EBOOK_ACTION_TYPE);
-}
-```
-
-Called once at app start so the palette and remote replay can decode the type.
-
-### 4. The resource tree (`provide_resources`)
-
-A `Resource` is something the app currently has *open* — and resources nest. The
-book owns its annotations; a highlight owns its comments. Each exports `ActionSpec`s.
-
-```rust
-let mut root = Resource::new(format!("ebook.book:{book_id}"), "ebook.book", title);
-
-// book-level action that needs an argument → prompted (palette shows an input step)
-root = root.with_action(ActionSpec::prompted(
-    "add-note", "Add note", "Note", "your note…", ExecutionLocus::ClientLocal,
-    move |text| encode(&EbookAction::AddNote { book_id: bid.clone(),
-                                               id: Uuid::new_v4().to_string(),  // minted HERE, once
-                                               text: text.into() }),
-));
-
-for a in annotations_for(doc, book_id) {                    // nested sub-resources
-    let child = Resource::new(format!("ebook.annotation:{id}"), "ebook.annotation", label)
-        .with_action(ActionSpec::prompted("edit", "Edit note", …, move |t| encode(&EditAnnotationNote{…})))
-        .with_action(ActionSpec::immediate("delete", "Delete annotation",
-                     EBOOK_ACTION_TYPE, &EbookAction::DeleteAnnotation { id }).unwrap());
-    root = root.with_child(child);
-}
-vec![root]
-```
-
-When the resource has a reusable presentation, declare it independently from
-its ordinary actions. The stable view id is not the action id:
-
-```rust
-root = root.with_view(
-    ResourceViewSpec::new("reader", "Reader", "open-reader")
-        .with_primary(true)
-        .with_mount(ResourceViewMountSpec::new(
-            "mount-reader",
-            "slot_capability",
-            "slot_view",
-        )),
-);
-```
-
-`open-reader` and `mount-reader` are still permission-checked actions, but the
-view catalogue is the authority for what counts as a composable view. Do not
-infer views from `OperationKind::View`, parameter names, or an action named
-`open`. Sibling views need distinct, localised human labels.
-
-- `ActionSpec::immediate(id, label, type_id, &action)` — fires a pre-encoded action.
-- `ActionSpec::prompted(id, label, arg_label, placeholder, locus, |text| …)` —
-  the palette collects one argument, then the closure builds the action. The
-  closure is presentation-side; only its `EncodedAction` output crosses a boundary.
-
-### 5. Expose it from the widget
-
-```rust
-impl ResourceProvider for MyApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.open_thing() { Some(x) => provide_resources(&x, doc), None => Vec::new() }
+impl Bookmark {
+    /// True after every change, from any path: a field edit, a verb, an
+    /// agent's edit.
+    pub fn valid(&self) -> Result<(), Refusal> {
+        if self.url.trim().is_empty() {
+            return Err(Refusal::new("a bookmark needs an address"));
+        }
+        Ok(())
     }
 }
 ```
 
-`Widget::resources()` is the hook the shell's one Ctrl+K palette
-(`ui::ActionPalette`) walks. Return an **empty** tree when nothing is open — a
-steady, level-triggered value, recomputed each frame.
+Pick each field's type for how concurrent edits should merge: a `String`
+merges character by character, a `bool` or number is last-writer-wins, a
+`Counter` adds up, a `Set` merges per element, a `Collection` keeps a stable
+id per item so concurrent adds keep both. Short codes that should not merge
+characters are `Atom`s.
 
-## Wiring existing UI to the same actions
+## 2. Paths and field edits
 
-A toolbar button, a context-menu row, and
-the Ctrl+K entry must all resolve to the **same** `EncodedAction`, dispatched the
-same way (the host records the undo boundary and attributes the author). Don't
-leave the button calling `self.delete_annotation(id)` while only Ctrl+K goes
-through the action — route the button through the action too.
-
-**You do not write the dispatch plumbing.** The toolkit owns it. Embed one
-`ui::ActionHost` field and hand it your domain action; it brackets the undo
-boundary (captures `doc.get_heads()` once, on the event's first action), encodes
-under your `type_id`, remembers the last action for the covenant test, and
-applies it through the executor (pinned actor + committed change, so it replays
-byte-identically on peers). There is no per-app `perform_action`, no
-`DiscardTransport`, no `action_commit_before` / `last_dispatched` fields — those
-were identical in every app and now live once in `ui::ActionHost`.
+The derive gives every field a typed path, and every path offers the edits
+its type supports. Editing a field is a built-in action: there is no
+`set_title` verb to write.
 
 ```rust
-struct MyApp {
-    actions: ui::ActionHost,   // the ONLY action-dispatch state an app holds
-    // …
-}
+let p = Bookmarks::paths().bookmarks.item(&id);
+let star = p.favorite.set(true);             // Edit<Bookmarks>
+let retitle = p.title.replace("Tilo docs");  // the smallest splice
+let tag = p.tags.insert(&"docs".to_owned());
+```
 
-// At every affordance (button, swatch, context-menu row) that mutates the doc,
-// dispatch the SAME action its ActionSpec exports — one source of truth:
-self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
+An edit replays, syncs, undoes and is named in history like any action, and
+applies at its path without reading the rest of the record. The model's
+`check` runs after it. `#[model(readonly)]` fields offer no edits.
 
-impl Widget for MyApp {
-    // The host drains this after each event and records exactly one undo
-    // boundary bracketing it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+## 3. Verbs
+
+Operations that are more than setting a field are methods:
+
+```rust
+#[resource(kind = "bookmarks.library", label = "Bookmarks")]
+impl Bookmarks {
+    /// Add a bookmark.
+    #[action]
+    pub fn add(&mut self, cx: &mut ActionCx, url: String, title: String) {
+        self.bookmarks.push(cx.id(), Bookmark { url, title, ..Bookmark::default() });
+    }
+
+    /// Delete a bookmark.
+    #[action(destructive)]
+    pub fn delete(&mut self, bookmark: &Id) -> Result<(), Refusal> {
+        self.bookmarks.remove(bookmark).map(drop).ok_or_else(|| Refusal::new("no such bookmark"))
+    }
+
+    /// Record a visit.
+    #[action]
+    pub fn visit(&mut self, bookmark: &Id) {
+        if let Some(b) = self.bookmarks.get_mut(bookmark) { b.visits.add(1) }
     }
 }
 ```
 
-`ActionHost::last_dispatched()` exposes the last
-`EncodedAction` for the covenant test below (affordance == `ActionSpec`).
+- A verb's id is its method name in kebab case (`add`, `delete`); its doc
+  comment is its label. `Bookmarks::ADD` is its typed reference, and
+  `bookmarks::Add { url, title }` its parameter struct (a module named after
+  the record type).
+- A verb whose first parameter is `&Id` is also offered on each item, with
+  the item bound.
+- `destructive` asks for confirmation from people; returning `Err` refuses
+  the verb and changes nothing.
+- A verb runs again on every replica, so its body must not read a clock,
+  randomness, files, the network, the environment or another process. Mint
+  ids with `cx.id()`, read the time with `cx.now_ms()`, and take everything
+  else as a parameter. `tilo-app check` refuses such reads.
 
-Content *search* is a separate hook: `Widget::search_providers()` folds a
-`SearchProvider`'s hits into the same palette as their own group, and
-`Widget::activate_search_result()` handles the chosen row as **navigation**
-(presentation), not a dispatched action. Use it to make records findable
-(contacts, tracks, files); use actions for things that *change* the document.
+## 4. The view
 
-## Verification requirements
+A view reads the model and binds controls to paths and verbs:
 
-Assert production behavior without tautological helpers, `#[ignore]` tests, or
-weakened assertions:
+```rust
+pub struct App;
 
-- Dispatch the action through the envelope and assert the doc changed **and** it
-  is recorded as one undo boundary.
-- Replay the same `EncodedAction` on a second, independent doc and assert the two
-  converge byte-identically (this is the collaboration guarantee).
-- Assert the toolbar/menu affordance constructs the **same** `EncodedAction` the
-  palette does — one source of truth, proven.
+impl ResourceApp for App {
+    type Resource = Bookmarks;
+    const ID: &'static str = "org.example.bookmarks";
+    const TITLE: &'static str = "Bookmarks";
 
-## Adoption status (2026-09-01)
+    fn view(cx: &mut ViewCx<Bookmarks>) -> Element {
+        // A form: the new bookmark's parameters, local to this window,
+        // never synced or undone, submitted as one invocation of `add`.
+        let form = cx.form::<bookmarks::Add>();
+        let new = bookmarks::Add::paths();
+        let url = cx.input(new.url).with_placeholder(keys::BOOKMARKS_URL_PLACEHOLDER);
+        let add = cx.button(keys::BOOKMARKS_ADD, form.submit());
 
-The `tilo_actions` spine, unified Ctrl+K palette/action door, and framework
-`ActionHost` are broadly adopted across the app catalogue. Generic dispatch
-retains the document actor, infers app ownership when a caller omits it, and can
-inherit ambient purpose/work-group context from a task or agent run while
-preserving explicit per-action fields.
+        let rows = cx.each(|library| &library.bookmarks, |row| {
+            let Some(id) = row.item().cloned() else {
+                return Box::new(Column::new()) as Element;
+            };
+            let p = row.paths();
+            Box::new(ui::row![
+                row.checkbox(keys::BOOKMARKS_FAVORITE, p.favorite),
+                row.input(p.title),
+                row.button(keys::BOOKMARKS_DELETE, Bookmarks::DELETE.with(id)),
+            ])
+        });
+        Box::new(ui::column![ui::row![url, add], rows])
+    }
+}
+```
 
-Native co-edit editors are the deliberate exception to coarse action replay:
-splitting an atomic text splice into a second `RemoveBlocks`-style action can
-duplicate or reorder collaborative edits. `Widget::take_commit_context()` lets
-Writer and Typst stamp the native commit boundary with the same durable
-`ActionContext` without changing the edit grain or actor. Presentation caches
-and transient settings remain non-semantic; durable settings controls attach
-pane-specific context instead of blanket-labeling mixed state.
+- `cx.paths()` are the scope's paths: the record's at the root, the item's in
+  a row of `cx.each`.
+- `cx.input(path)`, `cx.checkbox(label, path)`, `cx.control(make, path)` show
+  the value at the path and submit field edits; typing a word or dragging a
+  slider is one undo step. `cx.control_map(make, path, show, store)` binds a
+  control whose value is another type (a slider for an `Option<f64>`).
+- `cx.button(label, …)` submits a verb (`Bookmarks::DELETE.with(id)`), a field
+  edit (`p.favorite.set(true)`) or a form (`form.submit()`).
+- `cx.text(|state| …)` and `cx.value(|state| …)` read anything with a closure;
+  `cx.value_at(&path)` reads one field.
+- A control bound to a path wakes only when a change touched that path; one
+  bound with a closure re-reads after every change. Prefer paths in large
+  lists.
+- Labels and placeholders are Fluent message ids. The generated
+  `locales::keys` constants (`keys::BOOKMARKS_ADD`) are checked by the
+  compiler; `tilo-app` keeps them in step with `locales/en-US.ftl`.
+- A control bound to an action the resource does not publish, or to a
+  read-only field, fails under `TestApp` and `tilo-app check` rather than
+  greying out.
+- `cx.on_open_item(|id| …)` shows the item a search hit or an agent's `open`
+  names, and may refuse one that is gone.
 
-## Where the model does not reach yet: text editing
+Verbs taking a value from a control use the closure forms:
+`cx.input_with(|state| state.query.clone(), Library::SEARCH)` invokes the
+verb with each committed text.
 
-An app's *content* is not addressable the way the shell's surface is. There is
-no externally reachable "insert this text at the caret" — `ActionHost`
-dispatches in-process — so anything driving an app from outside has to place a
-caret by coordinate and send keystrokes.
+## 5. Hand-written surfaces
 
-That is the intended direction of travel, not a permanent shape: **text editing
-should become paragraph- (sub-resource-) addressed actions**, so that changing a
-document is an invocation against a named part of it rather than a gesture aimed
-at a pixel.
+A custom widget (an editor, a canvas) takes part through `ResourceSurface`.
+It submits the same typed values through the dispatcher it is given in
+`attach`, never an action id or an argument map:
 
-This distinction matters because driving failures have landed in the coordinate
-path rather than the action path: during demo work, a click at a
-remembered point landed on the style panel and moved focus off the page, so a
-"passing" proof proved nothing for hours; a caret was aimed at a coordinate that
-stopped being the page once a second window opened beside it; tiles turned out
-to be registered under two names, so an exact-name lookup found nothing while
-the window was plainly on screen. The enumerate-and-invoke path — a model
-choosing from an app's exported catalogue — worked first time and never regressed.
+```rust
+fn attach(&mut self, cx: SurfaceCx<Bookmarks>) {
+    self.dispatch = Some(cx.dispatcher());
+}
 
-Pointer gestures are a different case and are legitimately coordinate-based: a
-drag *is* a path across the screen, and clicking a file row *is* pointing at it.
-An edit to a paragraph is not.
+// After an event:
+dispatch.submit(Bookmarks::paths().bookmarks.item(&id).favorite.set(true));
+dispatch.submit(Bookmarks::VISIT.with(id.clone()));
+// Inside the event, when the widget must see its own edit at once:
+dispatch.submit_now(&mut ctx.edits(), path.splice(at, 0, "x"))?;
+```
 
-This work is not scheduled. The limitation and rationale are recorded here for
-future implementation.
+`TextControl::at(control, dispatcher, path)` binds a `TextInput` or
+`CodeEditor` to a text field: each keystroke is a splice at the path.
+
+## 6. History messages
+
+History renders each change in the reader's language from the app's
+catalogue, by convention: `<app>-<type>-<field>` for a field edit,
+`<app>-<verb>` for a verb, where `<app>` is the last part of the app id:
+
+```ftl
+bookmarks-bookmark-favorite = { $new ->
+    [true] Starred { $item }
+   *[false] Unstarred { $item } }
+bookmarks-bookmark-title = Retitled { $item }
+bookmarks-add = Added { $title }
+```
+
+Without a message the framework says it generically from the field's doc
+comment. `tilo-app check` lists the missing ones.
+
+## 7. The public surface
+
+`tilo-app surface` writes the app's verbs, their parameters and its stored
+fields to `surface.toml`; commit it. `tilo-app check` and CI fail when the
+code and the file disagree, when a stored field is read differently without
+a new `#[resource(version = N, migrate = …)]`, or when a control is bound to
+something the resource does not publish. The packaged file is what the OS
+offers of the app while it is closed.
+
+A document that does not read as the model shows why in place of the view,
+and every action reports itself unavailable for that reason; the last state
+is never shown as current.
+
+## 8. Testing
+
+```rust
+// No window: the verb and the model's check.
+let mut library = Replica::<Bookmarks>::new();
+library.apply(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))?;
+
+// The real component: controls, permissions, undo and history.
+let mut app = TestApp::<App>::new()?;
+app.harness().perform_named("url", &Action::SetValue("https://tilo.so".into()))?;
+app.harness().click_named("add")?;
+assert_eq!(app.state().bookmarks.len(), 1);
+assert!(app.undo());
+```
+
+`Replica` applies actions through the same door as the host; `TestApp` drives
+the production view, roles (`with_role`), actors and undo, and asserts on the
+structured history entries (`app.versions()`).
