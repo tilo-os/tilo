@@ -322,6 +322,15 @@ mod tests {
             for id in ["add-row", "add-column", "delete-table"] {
                 assert!(table.actions.iter().any(|action| action.id == id), "{id}");
             }
+            assert_eq!(table.children.len(), 4, "every stable cell is navigable");
+            assert!(table.children.iter().all(|cell| {
+                cell.actions.iter().any(|action| action.id == "go-to")
+                    && cell.actions.iter().any(|action| action.id == "delete-row")
+                    && cell
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "delete-column")
+            }));
             let published = <crate::framework::Document as ui::tilo_resource::Resource>::children(
                 &<crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
                     .expect("the seeded document reads"),

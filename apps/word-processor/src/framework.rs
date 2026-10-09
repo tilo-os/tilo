@@ -39,7 +39,7 @@ fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
         .unwrap_or_else(tilo_content::ContentStore::memory);
     match crate::import_action(file.bytes(), format, &content) {
         // The file's text and the comments it brought, as one step.
-        Ok(action) => Invoke::apply(&crate::model::action(&action))
+        Ok(action) => Invoke::edit(&crate::model::edit(&action))
             .map(|import| vec![Invoke::group([import, Document::ADOPT_COMMENTS.invoke()])])
             .unwrap_or_default(),
         Err(error) => {

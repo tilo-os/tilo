@@ -380,26 +380,59 @@ impl Document {
             return Vec::new();
         };
         let mut objects = Vec::new();
+        let cells = state.featured("cell");
         let mut tables: Vec<String> = Vec::new();
-        for cell in state.featured("cell") {
-            if let Some(table) = attr_str(&cell, "table")
+        for cell in &cells {
+            if let Some(table) = attr_str(cell, "table")
                 && !tables.iter().any(|known| known == table)
             {
                 tables.push(table.to_owned());
             }
         }
         for table in tables.into_iter().take(MAX_OBJECTS) {
-            objects.push(
-                Derived::new("Table")
-                    .identified(format!("table:{table}"))
-                    .with(Self::ADD_ROW.bind(document::AddRow::paths().table, table.clone()))
-                    .with(Self::ADD_COLUMN.bind(document::AddColumn::paths().table, table.clone()))
-                    .with(Self::DELETE_TABLE.bind(document::DeleteTable::paths().table, table)),
-            );
+            let mut node = Derived::new("Table")
+                .of_kind("table")
+                .identified(format!("table:{table}"))
+                .with(Self::ADD_ROW.bind(document::AddRow::paths().table, table.clone()))
+                .with(Self::ADD_COLUMN.bind(document::AddColumn::paths().table, table.clone()))
+                .with(Self::DELETE_TABLE.bind(document::DeleteTable::paths().table, table.clone()));
+            // Each cell goes to its text, and deletes its row or column.
+            for cell in cells
+                .iter()
+                .filter(|cell| attr_str(cell, "table") == Some(table.as_str()))
+            {
+                let (row, column) = (attr_index(cell, "row"), attr_index(cell, "col"));
+                node = node.with_child(
+                    Derived::new(format!(
+                        "Cell {}, {}",
+                        row.saturating_add(1),
+                        column.saturating_add(1)
+                    ))
+                    .of_kind("table-cell")
+                    .identified(format!("cell:{}", cell.id))
+                    .with(
+                        Self::DELETE_ROW
+                            .bind(document::DeleteRow::paths().table, table.clone())
+                            .and(document::DeleteRow::paths().row, row),
+                    )
+                    .with(
+                        Self::DELETE_COLUMN
+                            .bind(document::DeleteColumn::paths().table, table.clone())
+                            .and(document::DeleteColumn::paths().column, column),
+                    )
+                    .with_effect(&crate::effects::WordProcessorEffect::GoTo {
+                        block: cell.id.clone(),
+                        start: 0,
+                        end: cell.text.chars().count(),
+                    }),
+                );
+            }
+            objects.push(node);
         }
         for image in state.featured("image").into_iter().take(MAX_OBJECTS) {
             objects.push(
                 Derived::new("Image")
+                    .of_kind("image")
                     .identified(format!("image:{}", image.id))
                     .with(
                         Self::DELETE_IMAGE
@@ -414,6 +447,7 @@ impl Document {
             };
             objects.push(
                 Derived::new(label)
+                    .of_kind("change")
                     .identified(format!("change:{}", change.id))
                     .with(
                         Self::ACCEPT_CHANGE
@@ -964,7 +998,7 @@ mod tests {
         .unwrap();
         reopened
             .apply(Invoke::group([
-                Invoke::apply(&action(&import)).unwrap(),
+                Invoke::edit(&edit(&import)).unwrap(),
                 Document::ADOPT_COMMENTS.invoke(),
             ]))
             .unwrap();

@@ -94,6 +94,81 @@ impl Operations for RichText {
         <Self as tilo_resource::Resource>::continuable(op)
     }
 
+    /// What history says of an edit: typing, a format over so many
+    /// characters, a paragraph style, an object inserted or removed.
+    fn describe(op: &RichTextAction) -> tilo_resource::path::OpDescription {
+        use tilo_actions::EditOp;
+        let mut args = std::collections::BTreeMap::new();
+        let mut put = |name: &str, value: serde_json::Value| {
+            if let Some(scalar) = tilo_actions::Scalar::from_json(&value) {
+                args.insert(name.to_owned(), scalar);
+            }
+        };
+        let op = match op {
+            RichTextAction::SpliceText { ins, del, .. } => {
+                put("typed", ins.chars().count().into());
+                put("erased", (*del).into());
+                EditOp::Splice
+            }
+            RichTextAction::ReplaceSelection { .. }
+            | RichTextAction::ReplaceMatches { .. }
+            | RichTextAction::PasteFragment { .. }
+            | RichTextAction::ContinueParagraph { .. }
+            | RichTextAction::AppendParagraph { .. }
+            | RichTextAction::InsertParagraph { .. }
+            | RichTextAction::SplitBlock { .. } => EditOp::Splice,
+            RichTextAction::SetMark {
+                spans, name, value, ..
+            } => {
+                put("mark", name.as_str().into());
+                put("on", value.is_some().into());
+                let characters: usize = spans
+                    .iter()
+                    .map(|span| span.end.saturating_sub(span.start))
+                    .sum();
+                put("characters", characters.into());
+                EditOp::Mark
+            }
+            RichTextAction::SetParagraphStyle { kind, level, .. } => {
+                put("kind", kind.as_str().into());
+                if let Some(level) = level {
+                    put("level", (*level).into());
+                }
+                EditOp::Set
+            }
+            RichTextAction::ApplyNamedStyle { style, .. } => {
+                put("style", style.as_str().into());
+                EditOp::Set
+            }
+            RichTextAction::SetBlockAttr { key, .. }
+            | RichTextAction::ClearBlockAttr { key, .. } => {
+                put("attribute", key.as_str().into());
+                EditOp::Set
+            }
+            RichTextAction::InsertTable { .. } | RichTextAction::InsertFilledTable { .. } => {
+                put("object", "table".into());
+                EditOp::Insert
+            }
+            RichTextAction::InsertImage { .. } => {
+                put("object", "image".into());
+                EditOp::Insert
+            }
+            RichTextAction::InsertPageBreak { .. } => {
+                put("object", "page-break".into());
+                EditOp::Insert
+            }
+            RichTextAction::RemoveBlocks { blocks } => {
+                put("blocks", blocks.len().into());
+                EditOp::Remove
+            }
+            RichTextAction::ReplaceBody { .. } | RichTextAction::ReplaceFormatted { .. } => {
+                EditOp::Replace
+            }
+            _ => EditOp::Mark,
+        };
+        tilo_resource::path::OpDescription { op, args }
+    }
+
     /// The caret after typed text, an inserted paragraph, a split.
     fn lands(&self, op: &RichTextAction) -> Option<tilo_resource::Place> {
         <Self as tilo_resource::Resource>::lands(self.state.as_ref()?, op)

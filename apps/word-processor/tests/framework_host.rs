@@ -282,8 +282,8 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
         also_clear: Vec::new(),
     };
     // Through `group`, the door an agent uses for a multi-part edit.
-    app.invoke_confirmed(Invoke::group([Invoke::<Document>::apply(
-        &word_processor::model::action(&bold),
+    app.invoke_confirmed(Invoke::group([Invoke::<Document>::edit(
+        &word_processor::model::edit(&bold),
     )
     .unwrap()]))
         .unwrap();
@@ -860,4 +860,107 @@ fn layout_and_spelling_language_follow_the_person() {
     let language =
         app.with_surface(|editor: &mut WordProcessorWidget| editor.spell_language().to_owned());
     assert_eq!(language.as_deref(), Some("de_DE"));
+}
+
+/// What an agent does in a document for a person is history the person
+/// reads in their language: the app's sentence for each edit and verb, and
+/// who did it for whom.
+#[test]
+fn history_entries_render_as_the_apps_sentences() {
+    use tilo_document::action::{MarkVal, RegionKind, RichTextAction, Span};
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    let mut app = open();
+    let kind = <Document as ui::tilo_resource::Resource>::KIND;
+    let block = app.read_document(|doc| {
+        let c = word_processor::model::open(doc).unwrap();
+        tilo_doc::model::blocks_in_order(doc, &c).remove(0)
+    });
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let edit = |op: RichTextAction| serde_json::json!({ "edit": word_processor::model::edit(&op) });
+    for op in [
+        RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: block.clone(),
+            at: 0,
+            del: 0,
+            ins: "Quarterly report".into(),
+        },
+        RichTextAction::SetMark {
+            region: RegionKind::Body,
+            spans: vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 9,
+            }],
+            name: "strong".into(),
+            value: Some(MarkVal::Bool(true)),
+            also_clear: Vec::new(),
+        },
+        RichTextAction::SetParagraphStyle {
+            region: RegionKind::Body,
+            blocks: vec![block.clone()],
+            kind: "heading".into(),
+            level: Some(1),
+            ordered: None,
+        },
+    ] {
+        app.call_by(agent.clone(), kind, "field-edit", edit(op))
+            .unwrap();
+    }
+    app.call_by(
+        agent.clone(),
+        kind,
+        "append-paragraph",
+        serde_json::json!({"text": "Revenue grew."}),
+    )
+    .unwrap();
+    app.call_by(
+        agent.clone(),
+        kind,
+        "insert-table",
+        serde_json::json!({"after": block, "rows": 2, "columns": 3}),
+    )
+    .unwrap();
+    app.call_by(
+        agent,
+        kind,
+        "add-comment",
+        serde_json::json!({"block": block, "start": 0, "end": 9, "text": "Which quarter?"}),
+    )
+    .unwrap();
+
+    let english = include_str!("../locales/en-US.ftl");
+    let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let entries: Vec<_> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .collect();
+    let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
+    assert_eq!(
+        sentences,
+        [
+            "Edited the text",
+            "Made 9 characters bold",
+            "Made a heading of level 1",
+            "Added a paragraph",
+            "Inserted a table of 2 by 3",
+            "Commented: Which quarter?",
+        ]
+    );
+    let invoker = entries[0].invoker.as_ref().unwrap();
+    assert_eq!(
+        (invoker.kind, invoker.on_behalf_of.as_deref()),
+        (ActorKind::Agent, Some("ada")),
+        "the entry names the agent and the person it acted for"
+    );
 }

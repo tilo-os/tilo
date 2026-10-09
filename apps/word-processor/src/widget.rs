@@ -1717,7 +1717,7 @@ impl WordProcessorWidget {
         }
         dispatch.group(|| {
             for op in &envelopes {
-                dispatch.apply(&crate::model::action(op));
+                dispatch.submit(crate::model::edit(op));
             }
         });
         match participant {
@@ -10174,7 +10174,7 @@ impl WordProcessorWidget {
         let action = crate::import_action(&bytes, format, self.inner.content_store())?;
         let dispatch = cx.dispatcher();
         dispatch.group(|| {
-            dispatch.apply(&crate::model::action(&action));
+            dispatch.submit(crate::model::edit(&action));
             dispatch.invoke(crate::model::Document::ADOPT_COMMENTS.invoke());
         });
         self.set_file(path.to_path_buf(), format);

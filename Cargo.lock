@@ -21938,6 +21938,7 @@ dependencies = [
  "tilo-doc-pdf",
  "tilo-document",
  "tilo-files",
+ "tilo-history",
  "tilo-paths",
  "tilo-resource",
  "tilo-rich-text",

@@ -254,7 +254,34 @@ file-choice-keep = Version im Arbeitsbereich behalten
 file-choice-use = Gewählte Datei verwenden
 
 ## History: what each change did, by field and by verb
-word-processor-document-body = Text bearbeitet
+word-processor-document-body = { $op ->
+    [splice] Text bearbeitet
+    [mark] { $on ->
+        [true] { $characters } Zeichen formatiert: { $mark ->
+            [strong] fett
+            [em] kursiv
+            [underline] unterstrichen
+            [strike] durchgestrichen
+           *[other] { $mark }
+        }
+       *[false] { $mark } von { $characters } Zeichen entfernt
+    }
+    [set] { $kind ->
+        [heading] Überschrift der Ebene { $level } erstellt
+        [list_item] Liste erstellt
+        [paragraph] Absatz erstellt
+       *[other] Absatzformat geändert
+    }
+    [insert] { $object ->
+        [table] Tabelle eingefügt
+        [image] Bild eingefügt
+        [page-break] Seitenumbruch eingefügt
+       *[other] In den Text eingefügt
+    }
+    [remove] { $blocks } Objekte entfernt
+    [replace] Ganzen Text ersetzt
+   *[other] Text bearbeitet
+}
 word-processor-append-paragraph = Absatz hinzugefügt
 word-processor-insert-table = Tabelle mit { $rows } × { $columns } eingefügt
 word-processor-add-row = Tabellenzeile hinzugefügt

@@ -47,7 +47,7 @@ fn block(app: &TestApp<WordProcessorApp>, prefix: &str) -> String {
 fn group(app: &mut TestApp<WordProcessorApp>, actions: &[RichTextAction]) {
     let members = actions
         .iter()
-        .map(|action| Invoke::<Document>::apply(&word_processor::model::action(action)).unwrap());
+        .map(|action| Invoke::<Document>::edit(&word_processor::model::edit(action)).unwrap());
     app.invoke_confirmed(Invoke::group(members)).unwrap();
 }
 

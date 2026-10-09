@@ -130,7 +130,7 @@ pub enum WordProcessorEffect {
     ///
     /// Types at your caret like the keyboard: it replaces your selection,
     /// and your caret moves past it. Repeat to keep typing.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     TypeText {
         #[param(
             "Text typed at the caret, replacing the selection (empty only erases a selection)"
@@ -141,12 +141,12 @@ pub enum WordProcessorEffect {
     ///
     /// Presses Enter at your caret: splits the paragraph (an empty list item
     /// becomes a paragraph).
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     NewParagraph,
     /// Erase text.
     ///
     /// Backspace or Delete at your caret, or erases your selection.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     EraseText {
         #[param(
             "backward (Backspace, default) or forward (Delete)",
@@ -160,7 +160,7 @@ pub enum WordProcessorEffect {
     ///
     /// Flips bold, italic, underline or strike on your selection, off where
     /// it covers all of it (super and sub also the caret paragraph).
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     ToggleMark {
         #[param("The inline mark to toggle", choices = TOGGLED_MARKS)]
         mark: String,
@@ -169,7 +169,7 @@ pub enum WordProcessorEffect {
     ///
     /// Sets formatting on your selection whatever it has now: bold, italic,
     /// underline or strike on or off, or font, size, colour or highlight.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     SetFormat {
         #[param("The inline mark", choices = FORMATS)]
         name: String,
@@ -181,7 +181,7 @@ pub enum WordProcessorEffect {
     /// Clear text format.
     ///
     /// Removes one inline format from your selection, or the caret paragraph.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     ClearFormat {
         #[param("The inline mark to remove", choices = FORMATS)]
         name: String,
@@ -190,7 +190,7 @@ pub enum WordProcessorEffect {
     ///
     /// Makes your selected paragraphs (or the caret paragraph) a heading, a
     /// list or a body paragraph.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     SetParagraphStyle {
         #[param("Paragraph kind", choices = ["paragraph", "heading", "list_item"])]
         kind: String,
@@ -203,7 +203,7 @@ pub enum WordProcessorEffect {
     ///
     /// Applies a named style (body, heading1-3, quote, list, or a custom
     /// style) to your selected paragraphs, or the caret paragraph.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     ApplyNamedStyle {
         #[param("Named style id")]
         style: String,
@@ -212,7 +212,7 @@ pub enum WordProcessorEffect {
     ///
     /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
     /// replacing your selection.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
         text: Option<String>,
@@ -220,7 +220,7 @@ pub enum WordProcessorEffect {
         markdown: Option<String>,
     },
     /// Align paragraph.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     Align {
         #[param("How the caret paragraph lines up", choices = ["left", "center", "right", "justify"])]
         align: String,
@@ -228,7 +228,7 @@ pub enum WordProcessorEffect {
     /// Insert table here.
     ///
     /// An empty table after the caret paragraph.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     InsertTableHere {
         #[param("Rows (default 2)")]
         rows: Option<usize>,
@@ -236,12 +236,12 @@ pub enum WordProcessorEffect {
         columns: Option<usize>,
     },
     /// Insert page break.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     InsertPageBreak,
     /// Add or change hyperlink.
     ///
     /// Links your selected text.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     SetHyperlink {
         #[param("A web address (https://…), a mail address (mailto:…) or a #bookmark")]
         target: String,
@@ -249,7 +249,7 @@ pub enum WordProcessorEffect {
     /// Replace selection.
     ///
     /// Replaces your selection with the text (empty deletes it).
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
         text: String,
@@ -257,7 +257,7 @@ pub enum WordProcessorEffect {
     /// Comment on selection.
     ///
     /// Adds a comment about your selected text.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     CommentSelection {
         #[param("The comment")]
         text: String,
@@ -265,7 +265,7 @@ pub enum WordProcessorEffect {
     /// Place image.
     ///
     /// Places an image another action produced at your caret.
-    #[effect(view, participant, permission = "write")]
+    #[effect(edit, participant)]
     PlaceImage {
         #[param("The image's content hash")]
         content: String,

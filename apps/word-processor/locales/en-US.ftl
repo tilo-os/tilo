@@ -263,7 +263,34 @@ panel-align-justify = Justify
 a11y-more-tools = More formatting and document tools
 
 ## History: what each change did, by field and by verb
-word-processor-document-body = Edited the text
+word-processor-document-body = { $op ->
+    [splice] Edited the text
+    [mark] { $on ->
+        [true] Made { $characters } characters { $mark ->
+            [strong] bold
+            [em] italic
+            [underline] underlined
+            [strike] struck through
+           *[other] { $mark }
+        }
+       *[false] Removed { $mark } from { $characters } characters
+    }
+    [set] { $kind ->
+        [heading] Made a heading of level { $level }
+        [list_item] Made a list
+        [paragraph] Made a body paragraph
+       *[other] Changed the paragraph style
+    }
+    [insert] { $object ->
+        [table] Inserted a table
+        [image] Inserted an image
+        [page-break] Inserted a page break
+       *[other] Inserted into the text
+    }
+    [remove] Removed { $blocks } objects
+    [replace] Replaced the whole text
+   *[other] Edited the text
+}
 word-processor-append-paragraph = Added a paragraph
 word-processor-insert-table = Inserted a table of { $rows } by { $columns }
 word-processor-add-row = Added a row to a table
