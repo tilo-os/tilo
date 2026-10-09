@@ -2246,6 +2246,11 @@ fn validate_structural_precondition(
                 .participants
                 .iter()
                 .find(|value| value.record_id == record_id);
+            // Restoring a serialized document writes a new CRDT revision that
+            // reaches the selected state, so its bytes are not the selected
+            // version's. Every other restore puts the selected bytes back.
+            let derived_content = crate::content_kind::RecordContentKind::for_name(&binding.name)
+                .is_serialized_document();
             record_id == request.review.record_id
                 && snapshot.versions.iter().any(|version| {
                     version.id == prior_revision.version_id
@@ -2256,6 +2261,8 @@ fn validate_structural_precondition(
                     version.id == *selected_version
                         && proposed.is_some_and(|proposed| {
                             version.content_hash == proposed.proposed_version.content_hash
+                                || (derived_content
+                                    && proposed.proposed_version.content_hash.is_some())
                         })
                 })
                 && !binding.tombstoned

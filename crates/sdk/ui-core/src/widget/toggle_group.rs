@@ -49,6 +49,170 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTre
 /// it as `None`).
 pub const NONE_CHOSEN: usize = usize::MAX;
 
+/// One painted segmented strip, identified independently of its position.
+/// Keep `id` stable while the strip remains mounted.
+#[derive(Clone, Copy, Debug)]
+pub struct SegmentedTouchGroup<'a> {
+    id: usize,
+    rects: &'a [Rect],
+    selected: usize,
+    swipe: bool,
+}
+
+impl<'a> SegmentedTouchGroup<'a> {
+    #[must_use]
+    pub const fn new(id: usize, rects: &'a [Rect], selected: usize) -> Self {
+        Self {
+            id,
+            rects,
+            selected,
+            swipe: true,
+        }
+    }
+
+    /// Vertical and multi-select strips accept taps, not mode swipes.
+    #[must_use]
+    pub const fn tap_only(mut self) -> Self {
+        self.swipe = false;
+        self
+    }
+
+    #[must_use]
+    pub fn contains(self, point: Point) -> bool {
+        self.rects.iter().any(|rect| rect.contains(point))
+    }
+}
+
+/// The input owner applies a selection through its existing admitted action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentedTouchResult {
+    Unhandled,
+    Captured,
+    Selected { group: usize, index: usize },
+}
+
+impl SegmentedTouchResult {
+    #[must_use]
+    pub fn handled(self) -> bool {
+        self != Self::Unhandled
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SegmentTouchStart {
+    finger: u64,
+    group: usize,
+    point: Point,
+    selected: usize,
+    count: usize,
+}
+
+/// The retained control and painted strips share one touch recognizer.
+/// Only a completed single-finger gesture chooses; cancellation, a second
+/// finger, a removed strip or an externally changed selection refuses it.
+#[derive(Debug, Default)]
+pub struct SegmentedTouch {
+    contacts: std::collections::BTreeSet<u64>,
+    start: Option<SegmentTouchStart>,
+}
+
+impl SegmentedTouch {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        !self.contacts.is_empty()
+    }
+
+    /// Refuse an in-flight gesture when a modal or mode removes its owner.
+    pub fn cancel(&mut self) {
+        self.contacts.clear();
+        self.start = None;
+    }
+
+    pub fn handle(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        groups: &[SegmentedTouchGroup<'_>],
+    ) -> SegmentedTouchResult {
+        use winit::event::TouchPhase;
+        let point = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started => {
+                if self.is_active() {
+                    self.contacts.insert(touch.id);
+                    self.start = None;
+                    return SegmentedTouchResult::Captured;
+                }
+                let Some(group) = groups.iter().find(|group| group.contains(point)) else {
+                    return SegmentedTouchResult::Unhandled;
+                };
+                self.contacts.insert(touch.id);
+                self.start = Some(SegmentTouchStart {
+                    finger: touch.id,
+                    group: group.id,
+                    point,
+                    selected: group.selected,
+                    count: group.rects.len(),
+                });
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Moved if self.contacts.contains(&touch.id) => {
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Cancelled if self.contacts.remove(&touch.id) => {
+                self.start = None;
+                SegmentedTouchResult::Captured
+            }
+            TouchPhase::Ended if self.contacts.remove(&touch.id) => {
+                let start = self.start.take();
+                let Some(start) =
+                    start.filter(|start| start.finger == touch.id && !self.is_active())
+                else {
+                    return SegmentedTouchResult::Captured;
+                };
+                let Some(group) = groups.iter().find(|group| {
+                    (group.id, group.selected, group.rects.len())
+                        == (start.group, start.selected, start.count)
+                }) else {
+                    return SegmentedTouchResult::Captured;
+                };
+                let delta = point - start.point;
+                let height = group
+                    .rects
+                    .iter()
+                    .map(|rect| rect.height())
+                    .fold(0.0, f64::max);
+                let swipe = group
+                    .swipe
+                    .then(|| {
+                        ToggleGroup::swipe_selection(
+                            delta,
+                            height,
+                            group.selected,
+                            group.rects.len(),
+                        )
+                    })
+                    .flatten();
+                let tap = (delta.hypot() <= crate::gesture::TouchGestureArena::TAP_SLOP)
+                    .then(|| group.rects.iter().position(|rect| rect.contains(point)))
+                    .flatten();
+                swipe
+                    .or(tap)
+                    .map_or(SegmentedTouchResult::Captured, |index| {
+                        SegmentedTouchResult::Selected {
+                            group: group.id,
+                            index,
+                        }
+                    })
+            }
+            _ => SegmentedTouchResult::Unhandled,
+        }
+    }
+}
+
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
 /// counts are bounded far below `u32::MAX`, so routing through `u32` (which
 /// `f64` represents exactly) avoids the precision loss a direct cast risks.
@@ -231,8 +395,7 @@ pub struct ToggleGroup {
     scroll_x: f64,
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
-    active_touch: Option<u64>,
-    touch_start: Option<Point>,
+    touch: SegmentedTouch,
     /// Something that changes the measured size landed since the last layout.
     layout_dirty: bool,
     /// Focus came from a press: the ring is for keyboard focus, and returns
@@ -295,8 +458,7 @@ impl ToggleGroup {
             measured_width: None,
             rows: 1,
             scroll_x: 0.0,
-            active_touch: None,
-            touch_start: None,
+            touch: SegmentedTouch::default(),
             layout_dirty: true,
             pressed_into_focus: false,
             orientation: Orientation::Horizontal,
@@ -1696,61 +1858,25 @@ impl ToggleGroup {
         node_id: NodeId,
     ) {
         if !self.is_enabled() {
+            self.touch.cancel();
             return;
         }
-        let pos = Point::new(
-            touch.location.x / scale_factor,
-            touch.location.y / scale_factor,
-        );
-        match touch.phase {
-            winit::event::TouchPhase::Started
-                if self.active_touch.is_none() && self.rect.contains(pos) =>
-            {
-                self.active_touch = Some(touch.id);
-                self.touch_start = Some(pos);
+        let group = SegmentedTouchGroup::new(0, &self.segment_rects, self.selected);
+        let group = if self.orientation == Orientation::Horizontal && self.chosen.is_none() {
+            group
+        } else {
+            group.tap_only()
+        };
+        let result = self.touch.handle(touch, scale_factor, &[group]);
+        if result.handled() {
+            *handled = true;
+            if touch.phase == winit::event::TouchPhase::Started {
                 self.pressed_into_focus |= !self.is_focused;
                 *focus_target = Some(node_id);
-                *handled = true;
             }
-            winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                *handled = true;
-            }
-            winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                if let Some(start) = self.touch_start.take() {
-                    if self.orientation == Orientation::Horizontal
-                        && self.chosen.is_none()
-                        && let Some(index) = Self::swipe_selection(
-                            pos - start,
-                            self.metrics
-                                .height
-                                .max(StripMetrics::stock(ControlSize::Large).height),
-                            self.selected,
-                            self.segments.len(),
-                        )
-                    {
-                        self.request_selection(index);
-                    } else if (pos - start).hypot() < self.metrics.height
-                        && let Some(index) = self
-                            .segment_rects
-                            .iter()
-                            .position(|segment| segment.contains(pos))
-                    {
-                        self.request_selection(index);
-                    }
-                }
-                *handled = true;
-            }
-            winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                self.active_touch = None;
-                self.touch_start = None;
-                *handled = true;
-            }
-            winit::event::TouchPhase::Started if self.active_touch.is_some() => {
-                self.touch_start = None;
-                *handled = true;
-            }
-            _ => {}
+        }
+        if let SegmentedTouchResult::Selected { index, .. } = result {
+            self.request_selection(index);
         }
     }
 
@@ -1887,7 +2013,7 @@ impl Widget for ToggleGroup {
             return node;
         }
         let height = self.strip_height() + self.caption_height;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 // Fit the labels (measured in `measure`) unless asked to
                 // fill; a multi-select strip and a tab strip take the row's
@@ -1916,9 +2042,8 @@ impl Widget for ToggleGroup {
                 0.0
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -2202,7 +2327,7 @@ impl Widget for ToggleGroup {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.active_touch.is_some()
+        self.touch.is_active()
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
@@ -2363,18 +2488,7 @@ impl crate::resources::PublishesResources for ToggleGroup {
 }
 
 impl crate::widget::controls::ActionControls for ToggleGroup {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let Some(action) = &self.action else {
             // A choice kept in view state is made through the segments'
@@ -2392,14 +2506,6 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         (0..self.segments.len())
             .map(|index| action.metadata(self.segment_id(index)))
             .collect()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
     }
 }
 
@@ -2467,6 +2573,58 @@ mod tests {
             &*commits.borrow(),
             &[1, 0],
             "only two deliberate swipes invoke the real view operation"
+        );
+    }
+
+    #[test]
+    fn painted_strips_refuse_removed_changed_and_interrupted_touch_owners() {
+        use winit::event::TouchPhase::{Cancelled, Ended, Started};
+        let rects = [
+            Rect::new(0.0, 0.0, 100.0, 48.0),
+            Rect::new(100.0, 0.0, 200.0, 48.0),
+        ];
+        let group = SegmentedTouchGroup::new(42, &rects, 0);
+        let mut recognizer = SegmentedTouch::default();
+        let event = |id, phase, x, y| winit::event::Touch {
+            // SAFETY: device identity is opaque and not consulted by the recognizer.
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        };
+        assert_eq!(
+            recognizer.handle(&event(1, Started, 180.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert_eq!(
+            recognizer.handle(&event(1, Ended, 80.0, 24.0), 1.0, &[]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(2, Started, 180.0, 24.0), 1.0, &[group]);
+        let changed = SegmentedTouchGroup::new(42, &rects, 1);
+        assert_eq!(
+            recognizer.handle(&event(2, Ended, 80.0, 24.0), 1.0, &[changed]),
+            SegmentedTouchResult::Captured
+        );
+        recognizer.handle(&event(3, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(3, Ended, 80.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(5, Started, 180.0, 24.0), 1.0, &[group]);
+        recognizer.handle(&event(4, Cancelled, 80.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(5, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Captured
+        );
+        assert!(!recognizer.is_active());
+        recognizer.handle(&event(6, Started, 180.0, 24.0), 1.0, &[group]);
+        assert_eq!(
+            recognizer.handle(&event(6, Ended, 80.0, 24.0), 1.0, &[group]),
+            SegmentedTouchResult::Selected {
+                group: 42,
+                index: 1
+            }
         );
     }
 

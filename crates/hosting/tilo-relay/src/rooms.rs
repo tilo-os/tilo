@@ -40,14 +40,16 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub use admin::{
-    ROOM_ADMIN_ALPN, RoomAdminClient, RoomAdminError, RoomAdminProtocol, RoomCommand, RoomReply,
-    RoomSummary,
-};
+pub use admin::RoomAdminProtocol;
 pub use collaboration::{
-    CancelInvitationRequest, CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest,
-    IssueInvitationRequest, IssuedInvitation, PendingInvitation, RemoveMemberRequest,
-    RoomJoinService, SetMemberRoleRequest,
+    CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest, RoomJoinService,
+};
+// The administration wire vocabulary and the device's client, under the
+// daemon's historic paths.
+pub use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply,
+    RoomSummary, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -659,7 +661,9 @@ impl Rooms {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
-        runtime.admit_authenticated = false;
+        if std::mem::replace(&mut runtime.admit_authenticated, false) {
+            crate::authority_epoch::bump();
+        }
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),
@@ -920,10 +924,6 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-}
-
-fn now_ns() -> u64 {
-    tilo_clock::unix_now_ns()
 }
 
 fn system_time(now_ns: u64) -> SystemTime {

@@ -49,7 +49,7 @@ pub const CODE_EDITOR_ACTION_TYPE: &str = "code_editor.action";
 /// Build a deliberately-invalid action envelope for resource input or
 /// serialization failures. Resource closures cannot return `Result`; this
 /// keeps failures visible to the shared action host rather than panicking.
-fn invalid_arguments(message: &str) -> EncodedAction {
+pub(crate) fn invalid_arguments(message: &str) -> EncodedAction {
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: message.as_bytes().to_vec(),
@@ -500,10 +500,11 @@ fn apply_create_file(
 }
 
 fn apply_replace_text(doc: &mut Doc, id: &str, text: &str) -> Result<(), ActionError> {
-    if text.len() > 8 * 1024 * 1024 {
-        return Err(ActionError::Refused(
-            "replacement text must be at most 8 MiB".to_string(),
-        ));
+    if text.len() > crate::disk::MAX_TEXT_BYTES as usize {
+        return Err(ActionError::Refused(format!(
+            "replacement text must be at most {} bytes",
+            crate::disk::MAX_TEXT_BYTES
+        )));
     }
     current_entry(doc, id, EntryKind::File)?;
     let base = EditorDoc::read_buffer_key(doc, id)
@@ -747,7 +748,7 @@ fn validate_create(
     seed: &str,
 ) -> Result<(), ActionError> {
     if uuid::Uuid::parse_str(id).is_err()
-        || seed.len() > 8 * 1024 * 1024
+        || seed.len() > crate::disk::MAX_TEXT_BYTES as usize
         || !matches!(kind, "file" | "folder")
         || !valid_path(path)
         || path.rsplit('/').next() != Some(name)
@@ -991,7 +992,8 @@ pub(crate) fn publish_file_document(file: &CollaborativeFile) -> Resource {
         file.name.clone()
     };
     let mut resource = Resource::new(file_resource_id(&file.id), "code_editor.file", label)
-        .with_action(replace_text_action(file.id.clone()));
+        .with_action(replace_text_action(file.id.clone()))
+        .with_action(crate::text_operations::edit_action(file.id.clone()));
     resource = resource.with_action(entry_rename_action(
         file.id.clone(),
         EntryKind::File,

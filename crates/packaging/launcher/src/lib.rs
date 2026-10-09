@@ -65,6 +65,8 @@ pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+#[cfg(unix)]
+pub mod registration_gate;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

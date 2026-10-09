@@ -127,7 +127,7 @@ impl Widget for DisplayBars {
 
     /// The bars hold no children for the default walk, so their clocks'
     /// deadlines are gathered here.
-    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.bars
             .iter()
             .filter_map(|(_, bar)| bar.next_wake_deadline())

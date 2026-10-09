@@ -45,7 +45,7 @@ impl sealed::Sealed for LegacyNative {}
 impl sealed::Sealed for BoundedNative {}
 impl Storage for LegacyNative {
     type Room = CachedDocument;
-    type Document = AutoCommit;
+    type Document = CachedDocument;
     type Checkpoint = AcceptedCheckpoint;
     type Retention = ();
     type CertificateRoster = BTreeMap<[u8; 32], VerifiedCertificate>;

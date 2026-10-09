@@ -951,6 +951,7 @@ fn operation(effect: &MusicEffect) -> Option<SpotifyOperation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_resource::Effect as _;
     use ui::widget::controls::ActionControls as _;
 
     #[test]
@@ -1338,7 +1339,23 @@ mod tests {
             row.actions.is_empty(),
             "remote rows do not offer local queue edits"
         );
+        let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            app.take_effect_result(invocation)
+        else {
+            panic!("the real remote refresh must settle its pending job");
+        };
+        assert_eq!(
+            output.value.as_ref().unwrap()["remote_queue"]["queue"][0]["name"],
+            "Remote song"
+        );
+        MusicEffect::SpotifyQueue
+            .bound()
+            .contract
+            .result
+            .validate(&output)
+            .expect("provider snapshot completion must match its declared result");
         app.finish_spotify_operation(1, Err("late reply".into()));
+        assert!(app.take_effect_result(invocation).is_none());
         assert!(
             app.source_error.is_none(),
             "duplicate completion is ignored"

@@ -55,16 +55,15 @@ impl Widget for HeaderTitle {
     ) -> NodeId {
         self.theme = theme.clone();
         self.measured = None;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 1.0,
             min_size: Size {
                 width: Dimension::length(0.0),
                 height: Dimension::length(0.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

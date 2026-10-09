@@ -70,8 +70,12 @@ pub mod app_host_capnp {
 pub use package_store::{Catalog, InstalledPackage, PackageStore, Pinning};
 pub use tilo_app_package::PackageId;
 
-/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
-pub fn default_socket_path() -> PathBuf {
-    let base = xdg_paths::xdg::runtime_dir().unwrap_or_else(std::env::temp_dir);
-    base.join("tilo").join("services").join("app-host.sock")
+/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
+/// `None` without a runtime directory. Never the shared temp directory, where
+/// any local user could bind the name first.
+pub fn default_socket_path() -> Option<PathBuf> {
+    tilo_paths::xdg::runtime_dir()
+        .map(|base| base.join("tilo").join("services").join("app-host.sock"))
 }
+
+pub mod local_package;

@@ -37,6 +37,20 @@ class ProvisionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 module.apply(etc, "bob", root / "key.pub", lambda *_: None)
 
+    def test_several_owner_keys(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            etc = root / "etc"
+            etc.mkdir()
+            for name in ("a", "b"):
+                subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / name)], check=True)
+            request = root / "keys.pub"
+            request.write_text((root / "a.pub").read_text() + "\n" + (root / "b.pub").read_text())
+            module.apply(etc, "bob", request, lambda *_: None)
+            installed = (etc / "ssh/authorized_keys/bob").read_text().splitlines()
+            self.assertEqual([line.split() for line in installed],
+                             [(root / name).with_suffix(".pub").read_text().split()[:2] for name in ("a", "b")])
+
     def test_symlink_and_key_options_refused(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)

@@ -83,3 +83,14 @@ history-output = Merged result
 history-none = No merged result was recorded in this version
 history-page-output = Merged result
 history-page-originals = Original inputs unavailable and recorded choices
+
+## Opposite-only aligned source lines
+
+diff-gap-added-right = { $count ->
+    [one] 1 added line on Right
+   *[other] { $count } added lines on Right
+}
+diff-gap-removed-left = { $count ->
+    [one] 1 removed line on Left
+   *[other] { $count } removed lines on Left
+}

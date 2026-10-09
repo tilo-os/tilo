@@ -89,3 +89,44 @@ and on dispatch or a pull request changing the test with RPMs built from that
 commit first (`dist/ci/run-package-job.sh` with the fedora-44 target of
 `dist/ci/package-targets.txt`). `report.md`, screenshots, the guest journal and session logs
 are the run's artifact.
+
+## Files workspace recovery before first initialization
+
+A remembered home peer is a recovery lead, not evidence that a local Files
+workspace is empty. `home-peers.json` stores certified relay identities and
+numeric collaboration room IDs; it does not contain the Files namespace UUID
+or its ticket. The authenticated relay content-discovery response supplies
+that binding. An offline or unconfigured host must not be interpreted as
+"no existing files".
+
+Before starting a Files daemon, inspect the selected existing cache:
+
+```sh
+fs workspace-status --cache-dir /path/to/existing/cache
+```
+
+This reads bindings only and prints public workspace UUIDs, namespace
+presence and whether existing state can be resumed. It does not contact peers,
+repair files, initialize storage, or print tickets. A local ticket without a
+saved namespace is not sufficient recovery material. Malformed or ambiguous
+bindings fail; a saved namespace bound to a different discovered workspace
+requires a separate cache rather than loading it under another authority.
+
+A recovery launch uses the ordinary daemon with
+`serve --require-existing-workspace --cache-dir /path/to/existing/cache` and
+the mount, certified identity root, existing ACL and data-plane arguments for
+that installation. The guard runs before identity loading, transport binding
+or cache creation. Once admitted, the ordinary daemon validates/recovers the
+namespace and authenticates remote peers; the preflight is not a permission
+grant or a substitute for those checks. It also cannot prove that a saved
+namespace is healthy or that an offline remote can currently be reached.
+
+For an existing person with no local namespace, first establish the Files
+binding advertised by their already-enrolled home peer through authenticated
+content discovery. The current host package does not yet deliver the primary
+Files service, and registration currently expects a running daemon. This
+bootstrap gap must be repaired before a fresh host can complete remote
+recovery automatically. Do not work around it by creating an empty namespace
+and describing it as recovered data. A genuinely new workspace is a separate,
+explicit initialization decision; existing host folders remain ordinary local
+files until a separately authorized import into that workspace.

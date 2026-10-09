@@ -395,6 +395,10 @@ pub fn service_document_invocation(
     }
 }
 
+/// The word processor's document, the resource its editing actions are on.
+pub const WP_DOCUMENT: &str =
+    <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND;
+
 /// # Panics
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
@@ -402,22 +406,12 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("so.tilo.word-processor", "align-center"),
-            ("so.tilo.word-processor", "delete"),
-            ("so.tilo.word-processor", "insert-table"),
-            ("so.tilo.word-processor", "place-image"),
-            ("dev.tilo.word-processor", "align-center"),
-            ("dev.tilo.word-processor", "delete"),
-            ("dev.tilo.word-processor", "insert-table"),
-            ("dev.tilo.word-processor", "place-image"),
-            ("dev.tilo.photos", "rotate-right"),
-            ("dev.tilo.photos", "export-edited-content"),
-            ("so.tilo.word-processor", "align-center"),
-            ("so.tilo.word-processor", "delete"),
-            ("so.tilo.word-processor", "insert-table"),
-            ("so.tilo.word-processor", "place-image"),
-            ("so.tilo.photos", "rotate-right"),
-            ("so.tilo.photos", "export-edited-content"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "align-center"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "place-image"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "align-center"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "place-image"),
         ],
     )
 }
@@ -437,7 +431,7 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 )]
 pub fn spawn_with_agent_actions(
     path: &Path,
-    actions: &[(&str, &str)],
+    actions: &[(&str, &str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
     shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
@@ -474,7 +468,7 @@ pub fn spawn_with_agent_actions(
             ),
         )
         .expect("the harness owner lets the test agent answer in documents");
-    for (app, action) in actions {
+    for (app, resource, action) in actions {
         workspace
             .grant_as(
                 &principal,
@@ -482,6 +476,7 @@ pub fn spawn_with_agent_actions(
                     ui::permissions::Subject::agent("scribe"),
                     ui::permissions::Scope::Action {
                         app: (*app).to_string(),
+                        resource: (*resource).to_string(),
                         action: (*action).to_string(),
                     },
                     ui::permissions::Verb::Write,

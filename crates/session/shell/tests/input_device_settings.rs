@@ -4,6 +4,7 @@
 //! `input` section reader and the per-device reconfiguration — against a
 //! recording device instead of libinput, so it runs without a seat.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -67,7 +68,7 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     );
     let mut watch = SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO);
     assert!(
-        !watch.changed(Instant::now()),
+        watch.changed_sections(Instant::now()).is_empty(),
         "the first look is a baseline"
     );
 
@@ -95,7 +96,11 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
         }}),
         Duration::from_secs(2),
     );
-    assert!(watch.changed(Instant::now()), "the rewrite is noticed");
+    assert_eq!(
+        watch.changed_sections(Instant::now()),
+        BTreeSet::from(["input".to_string()]),
+        "the rewrite is noticed, as an input change"
+    );
     input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
     assert_eq!(devices[0].applied.len(), 2, "reconfigured exactly once");
     let changed = devices[0].applied[1];
@@ -111,13 +116,16 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
         &serde_json::json!({"input": {"tap_to_click": false, "tap_drag_lock": true}}),
         Duration::from_secs(4),
     );
-    assert!(watch.changed(Instant::now()));
+    assert_eq!(
+        watch.changed_sections(Instant::now()),
+        BTreeSet::from(["input".to_string()])
+    );
     input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
     let off = devices[0].applied[2];
     assert_eq!(off.tap, Some(false));
     assert_eq!(off.tap_drag_lock, Some(false));
     assert!(
-        !watch.changed(Instant::now()),
+        watch.changed_sections(Instant::now()).is_empty(),
         "no further change, no further reconfiguration"
     );
 

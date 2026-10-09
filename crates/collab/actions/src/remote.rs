@@ -30,6 +30,11 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+/// The shared view action that asks the platform to reveal a running window.
+pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
+/// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
+pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+
 mod catalogue;
 mod pending;
 
@@ -38,7 +43,7 @@ pub use catalogue::{
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
 };
-pub use pending::{Completer, Pending, PendingPoll, pending};
+pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 
 use crate::context::ActionContext;
 use crate::door::ActionAddress;
@@ -729,6 +734,20 @@ pub trait ActionHost {
     /// The latest state of an invocation `caller` started, or `None` for an
     /// id this caller does not own.
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
+
+    /// Resolves the next time invocation `id` (owned by `caller`) may have
+    /// changed state, so a waiter observes it again then instead of on a
+    /// timer. `None` when this host cannot tell; the caller then observes on
+    /// its own schedule.
+    ///
+    /// Wakeups may be spurious: the waiter must [`observe`](Self::observe)
+    /// again and tolerate finding nothing new. A host that answers `Some`
+    /// must eventually resolve it even when nothing changes, so a change it
+    /// failed to signal costs latency, never a stalled waiter.
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let _ = (caller, id);
+        None
+    }
 
     /// Ask a running invocation to stop.
     ///

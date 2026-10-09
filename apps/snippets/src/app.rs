@@ -156,7 +156,7 @@ impl Action {
 #[derive(Clone)]
 struct Toast {
     message: String,
-    shown_at: ui::clock::Instant,
+    shown_at: ui::time::Instant,
 }
 
 /// An open menu of the snippet: its language picker or its overflow menu.
@@ -621,7 +621,7 @@ impl Core {
     fn toast(&mut self, message: &str) {
         self.toast = Some(Toast {
             message: message.to_string(),
-            shown_at: ui::clock::now(),
+            shown_at: ui::time::now(),
         });
     }
 
@@ -747,7 +747,7 @@ impl Core {
 
     fn update_toast(&mut self) {
         if self.toast.as_ref().is_some_and(|toast| {
-            ui::clock::now().saturating_duration_since(toast.shown_at)
+            ui::time::now().saturating_duration_since(toast.shown_at)
                 >= ui::widget::toast::DEFAULT_TTL
         }) {
             self.toast = None;

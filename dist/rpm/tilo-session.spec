@@ -94,6 +94,8 @@ Requires:       xdg-dbus-proxy
 # The session wrapper synchronizes desktop identity with both systemd's user
 # manager and classic D-Bus activation, so host services such as GCR's prompt
 # helper cannot retain the previous desktop's routing state.
+Requires:       fuse3
+Requires:       python3
 Requires:       dbus-tools
 # The wrapper owns graphical-session.target while Tilo is logged in. This makes
 # standard session services available and stops them before another desktop
@@ -199,6 +201,11 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 
 %install
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
+install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
+install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
+install -Dpm 0755 bin/tilo-enroll %{buildroot}%{_bindir}/tilo-enroll
+install -Dpm 0755 libexec/tilo-files-workspace %{buildroot}%{_libexecdir}/tilo-files-workspace
+install -Dpm 0644 systemd-user/tilo-files-workspace.service %{buildroot}%{_userunitdir}/tilo-files-workspace.service
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
 install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
 install -Dpm 0644 applications/tilo-import-folders.desktop %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
@@ -265,6 +272,12 @@ install -Dpm 0644 wayland-sessions/tilo-app.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-app.desktop
 
 %check
+# Files readiness and normal same-person enrollment are first-party tools.
+# Keep automatic ELF requirements enabled for these host executables; only the
+# separately signed private app/runtime stores are excluded above.
+for program in fs tilo-relay-admin tilo-enroll; do
+    test -x %{buildroot}%{_bindir}/$program
+done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
@@ -326,6 +339,11 @@ done
 
 %files
 %{_bindir}/tilo-shell
+%{_bindir}/fs
+%{_bindir}/tilo-relay-admin
+%{_bindir}/tilo-enroll
+%{_libexecdir}/tilo-files-workspace
+%{_userunitdir}/tilo-files-workspace.service
 %{_bindir}/tilo-launcher
 %{_bindir}/tilo-import-folders
 %{_datadir}/applications/tilo-import-folders.desktop

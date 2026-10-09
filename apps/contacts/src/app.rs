@@ -254,7 +254,7 @@ const MORE_BUTTON: &str = "contacts.more";
 
 /// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
-    ("name", "Sort by name", SortKey::Name),
+    ("name", "Sort by last name", SortKey::Name),
     ("organization", "Sort by organization", SortKey::Org),
 ];
 

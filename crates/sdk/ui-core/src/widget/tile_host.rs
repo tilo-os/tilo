@@ -1,6 +1,5 @@
 use crate::presence::PresenceCtx;
 use crate::record::{RecordCheckout, RecordId, RecordStore};
-use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -600,7 +599,11 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+        // A refused creation remains a document error until explicit replacement.
+        if self.record_creation_refused {
+            return;
+        }
+        if !self.uses_host_record() {
             self.clear_record_binding();
             return;
         }
@@ -612,7 +615,11 @@ impl TileHost {
     /// Admit a newly created scratch resource owned by this caller. Creation
     /// applies only to this exact checkout, never to later record intents.
     pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+        // A refused creation remains a document error until explicit replacement.
+        if self.record_creation_refused {
+            return;
+        }
+        if !self.uses_host_record() {
             self.clear_record_binding();
             return;
         }
@@ -621,7 +628,15 @@ impl TileHost {
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
     }
 
-    /// External surfaces own no host record: detach any earlier record
+    fn uses_host_record(&self) -> bool {
+        match &self.content {
+            TileContent::App(app) => app.uses_host_record(),
+            TileContent::Stub { .. } => true,
+            TileContent::Notice { .. } => false,
+        }
+    }
+
+    /// External surfaces and symbolic notices own no host record: detach any earlier record
     /// custody so the outer document is never lent to them.
     fn clear_record_binding(&mut self) {
         if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none() {
@@ -1208,6 +1223,9 @@ impl TileHost {
         self.record_transition_error = None;
         self.record_intent_transition_blocked = false;
         self.content = content;
+        if !self.uses_host_record() {
+            self.clear_record_binding();
+        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let registration = match &self.content {
             TileContent::App(root) => {
@@ -2928,43 +2946,12 @@ fn draw_card_text(
     title: &str,
     detail: &str,
 ) {
-    // Derived from the card's own luminance: it's a black surface under
-    // high-contrast and white elsewhere, so a fixed ramp slot is only
-    // legible on one of them.
-    let card = theme.tokens.colors.surfaces.content;
-    let on_card = theme.on_content().ink;
-    // The floor here is measured for an ideal glyph but an antialiased glyph
-    // anti-aliases: derived at 4.5:1 it measured 3.8:1 on screen against
-    // the light card, a tier under the floor it was picked to clear.
-    let on_card_dim = theme
-        .on_surface_at(card, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
-        .ink_dim;
-    let text_style = theme.text(TextRole::Title);
-    let (tw, th) = tr.measure_style(title, None, &text_style);
-    let x = rect.center().x - f64::from(tw) / 2.0;
-    let y = centered_text_top(rect.y0, rect.height(), f64::from(th));
-    tr.draw_style(
-        scene,
-        title,
-        on_card,
-        translated(transform, x, y),
-        None,
-        &text_style,
-    );
-    if detail.is_empty() {
-        return;
-    }
-    let sm = theme.text(TextRole::Caption);
-    let (sw, _) = tr.measure_style(detail, None, &sm);
-    let sx = rect.center().x - f64::from(sw) / 2.0;
-    tr.draw_style(
-        scene,
-        detail,
-        on_card_dim,
-        translated(transform, sx, y + f64::from(th) + 8.0),
-        None,
-        &sm,
-    );
+    let mut content = super::EmptyStateContent::new(title);
+    content.message = (!detail.is_empty()).then_some(detail);
+    let mut paint = crate::paint::PaintCtx::new(scene, transform, tr, theme);
+    // These are explanatory status cards, not one-line diagnostic summaries.
+    // The shared stack wraps the full recovery text within the tile's gutter.
+    super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 
 #[cfg(test)]
@@ -3365,9 +3352,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4185,9 +4170,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4238,9 +4221,7 @@ mod tests {
             self.0
                 .borrow_mut()
                 .push(super::super::panic_scope::current());
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4784,6 +4765,79 @@ mod tests {
             &PresenceCtx::empty(),
         );
         scene
+    }
+
+    #[test]
+    fn symbolic_notices_do_not_acquire_scratch_record_custody() {
+        let store = RecordStore::in_memory();
+        let checkout = tab_checkout(7120);
+        let mut host = TileHost::new(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Opening here…".into(),
+        });
+        host.rect = Rect::new(20.0, 20.0, 480.0, 300.0);
+        for create in [false, true, false] {
+            if create {
+                host.bind_or_create_record(store.clone(), checkout.clone());
+            } else {
+                host.bind_record(store.clone(), checkout.clone());
+            }
+            host.sync(&AutoCommit::new(), &ROOT);
+            assert!(host.binding.is_none());
+            assert!(host.pending_binding.is_none());
+            assert!(
+                host.record_error.is_none(),
+                "notice must retain its launch status"
+            );
+            assert!(host.history_owner().is_none());
+            assert!(
+                store.open_records().is_empty(),
+                "a notice owns no scratch document"
+            );
+            assert!(Widget::presented(&host));
+            let _ = paint(&mut host, &Theme::default());
+        }
+
+        // A genuine failed document creation remains refused on group rebind.
+        host.refuse_record_binding("creation refused".into());
+        host.bind_record(store.clone(), checkout.clone());
+        assert!(host.record_creation_refused());
+        assert_eq!(host.record_error.as_deref(), Some("creation refused"));
+
+        // Explicit replacement with an external notice clears that old refusal.
+        host.replace_content(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Could not open it here".into(),
+        });
+        host.bind_record(store, checkout);
+        assert!(!host.record_creation_refused());
+        assert!(host.record_error.is_none());
+        assert!(host.binding.is_none());
+    }
+
+    #[test]
+    fn replacing_a_document_with_a_notice_detaches_the_record() {
+        let store = RecordStore::in_memory();
+        let checkout = tab_checkout(7121);
+        store.create_record(&checkout).unwrap();
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        host.bind_record(store.clone(), checkout.clone());
+        let old_owner = host.history_owner().expect("document history");
+        host.replace_content(TileContent::Notice {
+            title: "Browser".into(),
+            detail: "Restoring this window…".into(),
+        });
+        assert!(
+            old_owner.validate().is_err(),
+            "outgoing document owner is retired"
+        );
+        assert!(host.binding.is_none());
+        assert!(host.history_owner().is_none());
+        assert!(host.record_error.is_none());
+        assert!(
+            store.open_records().contains(&checkout),
+            "saved document survives"
+        );
     }
 
     #[test]

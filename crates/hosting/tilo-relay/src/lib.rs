@@ -70,16 +70,12 @@
 
 #[cfg(feature = "agents")]
 pub mod agents;
-pub mod antientropy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
-// The relay session client (v2 actions, agent reads, interactive owners)
-// needs the daemon's delivery and join records, so it lives in the daemon
-// crate; `tilo-relay-client` holds only the frame codec.
+#[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-pub mod client;
-pub mod coedit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
 #[cfg(not(target_arch = "wasm32"))]
@@ -102,7 +98,6 @@ pub mod environment_host;
 pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
-pub mod framing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
@@ -110,19 +105,19 @@ pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
 #[cfg(not(target_arch = "wasm32"))]
+mod membership_watch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
-pub mod position;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;
-mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 #[cfg(feature = "web")]
@@ -137,12 +132,15 @@ pub mod workspace_join;
 tilo_automerge_isolate::test_worker!();
 
 // The records and wire messages shared with relay clients live in
-// `tilo-relay-protocol`, and the frame codec in `tilo-relay-client`, so
-// clients need not link the daemon. The daemon keeps addressing them here.
+// `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the
+// session clients (relay, co-edit, anti-entropy, room administration and
+// workspace join) in `tilo-relay-session`, so clients need not link the
+// daemon. The daemon keeps addressing them here.
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
     auth, certify, config, home_peer, live, mesh, policy, process_lease,
 };
+pub use tilo_relay_session::{antientropy, client, coedit, framing, position};
 
 /// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its

@@ -19,7 +19,8 @@ use super::ResourceKind;
 use super::action_api::{ActionVisibility, ResourceRef};
 
 /// The app id chrome-level actions are attributed to — not exported by any
-/// packaged app, so they need a stable name to be addressed by.
+/// packaged app, so they need a stable name to be addressed by. The chrome
+/// is also the one resource those actions are on.
 pub const SHELL_APP_ID: &str = "shell";
 
 /// What invoking `resource` requires, or `None` when it only shows
@@ -35,13 +36,14 @@ pub fn required_capability(
         return Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
+                resource: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
             },
             Verb::Admin,
         ));
     }
     if resource.provider == super::providers::live_app_actions::PROVIDER_ID
-        && let Some((app, permission, action)) =
+        && let Some((app, permission, resource_id, action)) =
             super::providers::live_app_actions::LiveAppActionsProvider::capability_target(
                 &resource.id,
             )
@@ -57,6 +59,7 @@ pub fn required_capability(
         return Some((
             CapResource::Action {
                 app: app.to_string(),
+                resource: resource_id.to_string(),
                 action: action.to_string(),
             },
             verb,
@@ -81,6 +84,7 @@ pub fn required_capability(
             (
                 CapResource::Action {
                     app: SHELL_APP_ID.to_string(),
+                    resource: SHELL_APP_ID.to_string(),
                     action: resource.id.clone(),
                 },
                 verb,
@@ -92,6 +96,7 @@ pub fn required_capability(
         ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
+                resource: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
             },
             Verb::Write,
@@ -377,6 +382,22 @@ mod tests {
                         .unwrap_or_else(|| panic!("{id} must be gated"));
                 assert_eq!(verb, Verb::Invite, "{id}");
             }
+
+            // Managing who is a member, and minting or revoking the
+            // credentials that admit someone, is administration.
+            for id in [
+                "member.role.set",
+                "member.remove",
+                "invitation.issue",
+                "invitation.list",
+                "invitation.resend",
+                "invitation.cancel",
+            ] {
+                let (_, verb) =
+                    required_capability(&resource("actions", id), &ResourceKind::Action)
+                        .unwrap_or_else(|| panic!("{id} must be gated"));
+                assert_eq!(verb, Verb::Admin, "{id}");
+            }
         }
 
         // Phase `writing_into_a_document_requires_write`.
@@ -390,6 +411,7 @@ mod tests {
                 cap,
                 CapResource::Action {
                     app: SHELL_APP_ID.to_string(),
+                    resource: SHELL_APP_ID.to_string(),
                     action: "record.bring".to_string(),
                 }
             );

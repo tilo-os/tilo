@@ -6,8 +6,6 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::ExitCode;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use windows_vm::{
     ApplianceConfig, DomainState, EgressLease, EgressPurpose, GraphicsAssignment,
     GraphicsCapabilities, LibvirtBackend, StdCommandRunner, VmBackend,
@@ -204,7 +202,7 @@ fn run() -> Result<(), String> {
             if active_lease()?.is_some() {
                 return Err("an egress lease is already active".to_string());
             }
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "system clock is before the Unix epoch".to_string())?.as_secs();
+            let now = tilo_clock::try_unix_now().ok_or_else(|| "system clock is before the Unix epoch".to_string())?;
             let pending_id = format!("egress-pending-{}", std::process::id());
             write_lease(&pending_id, purpose, now.saturating_add(ttl))?;
             let lease = match backend.open_egress(&config, purpose, now, ttl) {
@@ -560,10 +558,8 @@ fn active_lease() -> Result<Option<(String, EgressPurpose, u64)>, String> {
 }
 
 fn reap_leases<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> Result<(), String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "system clock is before the Unix epoch".to_string())?
-        .as_secs();
+    let now = tilo_clock::try_unix_now()
+        .ok_or_else(|| "system clock is before the Unix epoch".to_string())?;
     let entries = match fs::read_dir(LEASE_ROOT) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

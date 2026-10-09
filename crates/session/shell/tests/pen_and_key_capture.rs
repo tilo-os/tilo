@@ -441,6 +441,9 @@ impl Harness {
         toplevel.set_app_id(app_id.into());
         self.pump();
         let _ = self.fb.paint_settled();
+        // Layout sends the opening xdg configure. Acknowledge it before
+        // the caller can attach its first buffer.
+        self.pump();
         let id = self
             .state
             .workspace_tree
@@ -463,10 +466,20 @@ impl Harness {
     }
 
     /// Give `surface` a first buffer, so it is mapped and can take focus.
-    fn map(&mut self, surface: &wl_surface::WlSurface) {
+    fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
+        self.map_sized(surface, surface_id, (64, 64));
+    }
+
+    fn map_sized(
+        &mut self,
+        surface: &wl_surface::WlSurface,
+        surface_id: u64,
+        (width, height): (i32, i32),
+    ) {
         use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-        // 64×64 ARGB.
-        let (width, height, stride, len) = (64, 64, 256, 16_384_usize);
+        let stride = width.checked_mul(4).expect("ARGB stride");
+        let len = usize::try_from(stride.checked_mul(height).expect("ARGB extent"))
+            .expect("positive ARGB extent");
         let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
@@ -492,7 +505,15 @@ impl Harness {
         surface.damage(0, 0, width, height);
         surface.commit();
         self.pump();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the applied non-null commit maps for input before pixel presentation"
+        );
         let _ = self.fb.paint_settled();
+        assert!(
+            shell::compositor::foreign::store().is_mapped(surface_id),
+            "the real first-buffer commit maps the configured toplevel"
+        );
     }
 
     /// The centre of the app's tile, where a pen lands on it.
@@ -663,7 +684,7 @@ fn a_tablet_aware_app_gets_pressure_and_tilt_and_others_get_a_pointer() {
 fn a_pen_over_a_tablet_aware_app_still_moves_the_cursor_focuses_and_holds_its_stroke() {
     let mut h = Harness::new();
     let (surface, app) = h.open("org.example.Draw");
-    h.map(&surface);
+    h.map(&surface, app);
     let centre = h.centre_of(app);
     let manager = h.bind::<zwp_tablet_manager_v2::ZwpTabletManagerV2>("zwp_tablet_manager_v2", 1);
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
@@ -1383,4 +1404,13 @@ fn an_inhibiting_vm_gets_super_chords_until_focus_or_the_release_chord_takes_the
     drop(h);
     assert!(released);
     assert!(!still_active);
+}
+
+#[test]
+fn a_non_null_shm_commit_maps_for_input_before_async_conversion_finishes() {
+    let mut harness = Harness::new();
+    let (surface, id) = harness.open("org.tilo.test.pending-shm-input");
+    // A valid larger buffer keeps conversion in flight across the wire pump.
+    // Mapping must follow the applied commit, not worker scheduling or paint.
+    harness.map_sized(&surface, id, (2048, 2048));
 }

@@ -928,6 +928,8 @@ qs-devices-output-route = Local output · route current audio here
 qs-devices-output-bluetooth = Bluetooth { $codec } · route current audio here
 qs-devices-tether-requesting = Waiting for phone approval
 qs-devices-tether-consent = Allow once or decline
+qs-devices-tether-preparing = Starting this phone's hotspot
+qs-devices-tether-connecting = Joining the phone's hotspot
 qs-devices-tether-requester = Connected through this phone · select to disconnect
 qs-devices-tether-provider = Sharing this phone's connection · select to disconnect
 qs-devices-tether-denied = Declined on the phone
@@ -1022,14 +1024,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Remote control was removed from { $count } shares; sharing was stopped.
 }
 
-# Media codec pack notices
+# Media formats notices
 codec-hardware-ready = Hardware H.264/HEVC is ready
-codec-installed = Media codecs installed
-codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once RPM Fusion publishes a Mesa build matching this system.
-codec-failed = Media codecs could not be installed
+codec-installed = More video and audio formats are on
+codec-installed-mesa-waiting = { $applies } Hardware H.264/HEVC follows once a matching driver is published.
+codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
-codec-app-name = Media codecs
+codec-app-name = Video and audio formats
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }
@@ -1444,6 +1446,18 @@ search-action-presence-status-sharing-set = Set status privacy
 search-action-presence-status-sharing-set-subtitle = Choose whether status is off, explicit-only, or automatically inferred
 search-action-peer-invite-named = Name collaborator and open invite
 search-action-peer-invite-named-subtitle = Record the display name, then review their invite before creating it
+search-action-member-role-set = Change a member's role
+search-action-member-role-set-subtitle = Make a workspace member a viewer, commenter, or editor
+search-action-member-remove = Remove a member
+search-action-member-remove-subtitle = Take a member out of this workspace and revoke everything they could do here
+search-action-invitation-issue = Create an invitation
+search-action-invitation-issue-subtitle = Mint an invitation to this workspace with a role and a lifetime
+search-action-invitation-list = List pending invitations
+search-action-invitation-list-subtitle = Show the invitations to this workspace nobody has redeemed yet
+search-action-invitation-resend = Resend an invitation
+search-action-invitation-resend-subtitle = Get a pending invitation's token again, without extending it
+search-action-invitation-cancel = Cancel an invitation
+search-action-invitation-cancel-subtitle = Revoke a pending invitation so it can no longer be redeemed
 search-action-agent-invite = Invite agent to workspace
 search-action-agent-invite-subtitle = Start a scoped agent setup; choose every surface it may use
 search-action-record-bring = Add an item to this workspace
@@ -1780,31 +1794,25 @@ onboarding-done-system-care-body = Tilo checks signed system updates automatical
 onboarding-tour-take = Take a quick tour
 onboarding-finish = Continue to desktop
 
-# First-login setup: media codecs
-onboarding-codecs-title = Install media codecs?
-onboarding-codecs-body = H.264 and HEVC, the formats most videos, cameras and calls use, are patented and not part of Tilo. You can add them now with one click.
-onboarding-codecs-enables-title = What it enables
-onboarding-codecs-enables-hardware = Hardware-accelerated video on AMD and Intel graphics.
-onboarding-codecs-enables-playback = H.264 and HEVC playback in videos you open.
-onboarding-codecs-enables-encoding = H.264 and HEVC encoding for screen sharing, recording and calls.
-onboarding-codecs-source-title = Where it comes from
-onboarding-codecs-source = This computer downloads them directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo does not host or distribute them. You can remove them at any time in Settings, Updates. OpenH264 Video Codec provided by Cisco Systems, Inc. The complete Cisco binary license is in /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt and at https://www.openh264.org/BINARY_LICENSE.txt.
-onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when the codecs are ready.
+# First-login setup: more video and audio formats
+onboarding-codecs-title = Play more video and audio formats
+onboarding-codecs-note = Downloaded to this device from the formats' publishers. You can turn it off in Settings.
+onboarding-codecs-background = Setup can continue while the download runs. You will get a notification when it is ready.
 onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-starting = Starting…
-onboarding-codecs-installing-title = Installing media codecs
-onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when the codecs are ready.
-onboarding-codecs-offline-title = Media codecs will install once you are online
-onboarding-codecs-offline-message = This computer is not connected to the internet. Your choice is saved: the codecs install automatically as soon as it is online, and you will get a notification.
-onboarding-codecs-installed-title = Media codecs installed
-onboarding-codecs-failed-title = Media codecs could not be installed
-onboarding-codecs-failed-message = Try again, or install them later from Settings, Updates.
-onboarding-codecs-failed-message-detail = { $error } Try again, or install them later from Settings, Updates.
-onboarding-codecs-installer-failed = The installer could not start: { $error }
+onboarding-codecs-installing-title = Installing more formats
+onboarding-codecs-installing-message = { $status } Setup can continue while the download runs. You will get a notification when it is ready.
+onboarding-codecs-offline-title = Installs once you are online
+onboarding-codecs-offline-message = This device is not connected to the internet. Your choice is saved: the download starts by itself once it is online, and you will get a notification.
+onboarding-codecs-installed-title = More video and audio formats are on
+onboarding-codecs-failed-title = Could not install more formats
+onboarding-codecs-failed-message = Try again, or later from Settings, Updates.
+onboarding-codecs-failed-message-detail = { $error } Try again, or later from Settings, Updates.
+onboarding-codecs-installer-failed = The download could not start: { $error }
 onboarding-codecs-skip = Skip
 onboarding-codecs-not-now = Not now
 onboarding-codecs-retry = Try again
-onboarding-codecs-install = Install media codecs
+onboarding-codecs-install = Install
 
 # Desktop tour
 onboarding-tour-eyebrow = Desktop tour
@@ -2236,8 +2244,6 @@ speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
 projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-service-exited = Projection service exited with { $status }
-projection-service-invalid-discovery = Projection service returned invalid discovery data: { $error }
 projection-mode-unsupported = { $device } does not support { $mode } mode
 projection-service-unavailable = Projection service is unavailable
 projection-service-stopped = Projection service stopped
@@ -2273,6 +2279,7 @@ device-fabric-error-transfer-no-retry = nearby transfer is no longer retryable
 device-fabric-nearby-device = Nearby device
 device-fabric-error-output-gone = that audio output is no longer connected
 device-fabric-error-input-gone = that input is no longer connected
+device-fabric-error-audio-busy = audio changes are still being applied; try again in a moment
 device-fabric-error-spatial-unavailable = spatial calibration is unavailable
 device-fabric-error-proposal-stale = that calibration proposal is no longer current
 device-fabric-error-no-applied-calibration = there is no applied calibration to revert
@@ -2476,6 +2483,8 @@ search-action-activity-acknowledge-keywords = catch up read seen review acknowle
 search-action-activity-tasks = Review workspace goals and agent work
 search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
 search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
+host-history-task-refused-title = Task could not be changed
+host-history-task-refused-body = The workspace did not accept this change. Any draft is kept; check your identity and workspace permissions before retrying.
 
 task-review-inspect = Inspect task evidence
 task-review-steer = Change task instructions
@@ -2483,3 +2492,13 @@ task-review-cancel = Cancel task run
 task-review-retry = Retry task
 task-review-status = Inspect task review availability
 task-review-provider = Task review
+
+shell-launch-registry-unavailable = The app process registry is unavailable.
+shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
+
+shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-retry = Reopen window
+
+device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
+device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
+device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.

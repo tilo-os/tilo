@@ -116,13 +116,21 @@ impl PermissionScope {
         }
     }
 
-    /// One exported operation within an app. An app-wide capability still
-    /// covers this through [`Scope::App`], while [`Scope::Action`] can grant or
-    /// deny the individual operation without widening the rest of the app.
-    pub fn action(app_id: impl Into<String>, action_id: impl Into<String>, op: Verb) -> Self {
+    /// One exported operation on one resource within an app. An app-wide
+    /// capability still covers this through [`Scope::App`], while
+    /// [`Scope::Action`] can grant or deny the individual operation on that
+    /// resource without widening the rest of the app, or the same action on
+    /// its other resources.
+    pub fn action(
+        app_id: impl Into<String>,
+        resource_id: impl Into<String>,
+        action_id: impl Into<String>,
+        op: Verb,
+    ) -> Self {
         Self {
             resource: ResourceRef::Action {
                 app: app_id.into(),
+                resource: resource_id.into(),
                 action: action_id.into(),
             },
             op,
@@ -216,7 +224,7 @@ impl PermissionContext {
             user,
             actor,
             caps,
-            now: unix_now(),
+            now: crate::time::try_unix_now(),
             policy_time: None,
             action_authority: None,
         }
@@ -279,7 +287,7 @@ impl PermissionContext {
     pub(crate) fn at_current_time(&self) -> Result<Self, String> {
         let now = match &self.policy_time {
             Some(sampler) => (sampler.0)()?,
-            None => unix_now().ok_or("execution time unavailable")?,
+            None => crate::time::try_unix_now().ok_or("execution time unavailable")?,
         };
         Ok(self.clone().at_unix_time(now))
     }
@@ -347,10 +355,16 @@ impl PermissionContext {
         }
     }
 
-    /// May the actor perform `action`, published by the app `app_id`? The
-    /// verb is the one the action declares it needs; a grant on the app, or
-    /// on this one action of it, allows it.
-    pub fn permits_action(&self, app_id: &str, action: &tilo_actions::ActionSpec) -> bool {
+    /// May the actor perform `action` on the resource `resource_id`,
+    /// published by the app `app_id`? The verb is the one the action
+    /// declares it needs; a grant on the app, or on this one action of this
+    /// resource, allows it.
+    pub fn permits_action(
+        &self,
+        app_id: &str,
+        resource_id: &str,
+        action: &tilo_actions::ActionSpec,
+    ) -> bool {
         let verb = match action.contract.permission {
             tilo_actions::PermissionRequirement::None => return true,
             tilo_actions::PermissionRequirement::Read => Verb::Read,
@@ -359,7 +373,12 @@ impl PermissionContext {
             tilo_actions::PermissionRequirement::Invite => Verb::Invite,
             tilo_actions::PermissionRequirement::Admin => Verb::Admin,
         };
-        self.check(&PermissionScope::action(app_id, action.id.clone(), verb))
+        self.check(&PermissionScope::action(
+            app_id,
+            resource_id,
+            action.id.clone(),
+            verb,
+        ))
     }
 
     /// May the actor perform this one invocation of `action`, published by
@@ -371,6 +390,7 @@ impl PermissionContext {
     pub fn permits_invocation(
         &self,
         app_id: &str,
+        resource_id: &str,
         action: &tilo_actions::ActionSpec,
         typed: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
@@ -387,7 +407,12 @@ impl PermissionContext {
             tilo_actions::PermissionRequirement::Invite => Verb::Invite,
             tilo_actions::PermissionRequirement::Admin => Verb::Admin,
         };
-        self.check(&PermissionScope::action(app_id, action.id.clone(), verb))
+        self.check(&PermissionScope::action(
+            app_id,
+            resource_id,
+            action.id.clone(),
+            verb,
+        ))
     }
 
     /// `resource`, published by the app `app_id`, as the actor may reach
@@ -399,9 +424,10 @@ impl PermissionContext {
         app_id: &str,
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
+        let resource_id = resource.id.as_str().to_owned();
         resource
             .actions
-            .retain(|action| self.permits_action(app_id, action));
+            .retain(|action| self.permits_action(app_id, &resource_id, action));
         resource.children = resource
             .children
             .into_iter()
@@ -452,15 +478,6 @@ impl std::fmt::Debug for LivePermissions {
     }
 }
 
-/// Seconds since the Unix epoch, or `None` if the clock is before the
-/// epoch (which would make every expiry comparison meaningless).
-fn unix_now() -> Option<u64> {
-    crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
-}
-
 mod action_authority;
 pub mod capability;
 use action_authority::ActionAuthoritySampler;
@@ -508,13 +525,33 @@ mod tests {
                     Subject::agent("scribe"),
                     Scope::Action {
                         app: "notes".into(),
+                        resource: "notes.page:1".into(),
                         action: "note.open".into(),
                     },
                     Verb::Read,
                 )],
             );
-            assert!(narrow.check(&PermissionScope::action("notes", "note.open", Verb::Read)));
-            assert!(!narrow.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+            assert!(narrow.check(&PermissionScope::action(
+                "notes",
+                "notes.page:1",
+                "note.open",
+                Verb::Read
+            )));
+            assert!(!narrow.check(&PermissionScope::action(
+                "notes",
+                "notes.page:1",
+                "note.delete",
+                Verb::Read
+            )));
+            assert!(
+                !narrow.check(&PermissionScope::action(
+                    "notes",
+                    "notes.page:2",
+                    "note.open",
+                    Verb::Read
+                )),
+                "the same action on another page is not granted"
+            );
 
             let broad = PermissionContext::from_capabilities(
                 actor,
@@ -524,7 +561,12 @@ mod tests {
                     Verb::Read,
                 )],
             );
-            assert!(broad.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+            assert!(broad.check(&PermissionScope::action(
+                "notes",
+                "notes.page:2",
+                "note.delete",
+                Verb::Read
+            )));
         }
         // phase: lapsed_capability_no_longer_grants
         // NEGATIVE: a capability that has lapsed is not a capability.
@@ -555,6 +597,57 @@ mod tests {
              confers no authority over the filesystem"
             );
         }
+    }
+
+    #[test]
+    fn invocation_grants_keep_resource_identity_and_argument_permission() {
+        use tilo_actions::{ActionSpec, OperationKind, PermissionRequirement};
+
+        let mut action =
+            ActionSpec::operation("edit", "Edit", OperationKind::Effect, "test.edit", &())
+                .unwrap()
+                .with_permission_of(|_| PermissionRequirement::Write);
+        action.contract.permission = PermissionRequirement::Read;
+        let context = |verb| {
+            PermissionContext::from_capabilities(
+                Actor::agent("scribe"),
+                vec![CapOverride::grant(
+                    Subject::agent("scribe"),
+                    Scope::Action {
+                        app: "notes".into(),
+                        resource: "notes.page:1".into(),
+                        action: "edit".into(),
+                    },
+                    verb,
+                )],
+            )
+        };
+        let arguments = serde_json::Map::new();
+        let write = context(Verb::Write);
+        assert!(write.permits_invocation("notes", "notes.page:1", &action, Some(&arguments), None));
+        assert!(!write.permits_invocation(
+            "notes",
+            "notes.page:2",
+            &action,
+            Some(&arguments),
+            None
+        ));
+        assert!(!write.permits_invocation(
+            "other",
+            "notes.page:1",
+            &action,
+            Some(&arguments),
+            None
+        ));
+        assert!(!context(Verb::Read).permits_invocation(
+            "notes",
+            "notes.page:1",
+            &action,
+            Some(&arguments),
+            None,
+        ));
+        assert!(write.permits_invocation("notes", "notes.page:1", &action, None, None));
+        assert!(!write.permits_invocation("notes", "notes.page:2", &action, None, None));
     }
 
     #[test]

@@ -83,6 +83,13 @@ pub enum PointerSpace {
 pub const DIGEST_KEY_FIELD: &str = "@scope-digest";
 
 impl PresenceKey {
+    /// The key of the widget at `path`, or `None` for one without a presence path.
+    pub fn widget(path: &[PathSegment]) -> Option<Self> {
+        (!path.is_empty()).then(|| Self::Widget {
+            path: path.to_vec(),
+        })
+    }
+
     /// 16-byte digest of this key's canonical (postcard) encoding. Used where
     /// a scope does not fit a bounded carrier, e.g. the 64-byte LIVE_V1
     /// anchor, whose Writer keys can name 130-byte block ids.

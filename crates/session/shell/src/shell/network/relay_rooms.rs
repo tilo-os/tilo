@@ -3,7 +3,7 @@
 //! invitation, admits whoever redeems one and publishes the room's
 //! governance; this device holds the room like any member does.
 use super::{
-    NetCmd, PendingInvitation, ShellNetwork, now_unix_seconds, persist_pending_invitations,
+    NetCmd, PendingInvitation, ShellNetwork, persist_pending_invitations,
     registered_home_peer_addrs, room_topic_id,
 };
 use crate::network::invite::InviteRole;
@@ -13,7 +13,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay::rooms::{CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply};
+use tilo_relay_session::rooms::{
+    CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+};
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
@@ -175,7 +177,7 @@ impl ShellNetwork {
         invitee: Option<&str>,
         expiry_seconds_from_now: u64,
     ) -> Result<(String, [u8; 32], u64), String> {
-        let expiry = now_unix_seconds().saturating_add(expiry_seconds_from_now);
+        let expiry = tilo_clock::unix_now().saturating_add(expiry_seconds_from_now);
         let reply = self.room_admin(
             target.relay.clone(),
             target.certificate.clone(),
@@ -393,7 +395,7 @@ impl ShellNetwork {
         &self,
         relay: &iroh::EndpointAddr,
         certificate: &DeviceCert,
-        summary: &tilo_relay::rooms::RoomSummary,
+        summary: &tilo_relay_session::rooms::RoomSummary,
     ) -> Result<(), String> {
         let room = RoomId::parse(&summary.room).ok_or("the host named an invalid room")?;
         let tree = self

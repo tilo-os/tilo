@@ -973,7 +973,9 @@ impl PortalDialogQueue {
                         ("target", friendly_app_name(&request.target_app).into()),
                     ],
                 ),
-                action: request.action_label.clone(),
+                // A grant covers this action on this resource only, so the
+                // sheet names both.
+                action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
                 choices: AppActionConsent::ALLOWING
                     .iter()

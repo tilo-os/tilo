@@ -83,6 +83,9 @@ pub struct Button {
     enabled: bool,
     /// Where `enabled` comes from, when the app keeps it in a state.
     enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// The page's encouraged action: a focus reset lands here, so Enter
+    /// activates it.
+    default_focus: bool,
     /// Holds the last emitted body/border/label primitives at *logical*
     /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
@@ -155,6 +158,7 @@ impl Button {
             measured_width: None,
             control_size: ControlSize::Regular,
             metrics: FaceMetrics::stock(ControlSize::Regular),
+            default_focus: false,
             on_click: None,
             action: None,
             native_resource: None,
@@ -414,6 +418,15 @@ impl Button {
         let (enabled, binding) = super::binding::local(state);
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
+        self
+    }
+
+    /// Mark this button as its page's encouraged action: when the page is
+    /// rebuilt with a focus reset, keyboard focus starts here, so Enter
+    /// activates it.
+    #[must_use]
+    pub fn with_default_focus(mut self) -> Self {
+        self.default_focus = true;
         self
     }
 
@@ -1401,7 +1414,7 @@ impl Widget for Button {
             self.metrics = metrics;
         }
         let height = px_f32(self.face_height());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             // An intrinsic button never shrinks below its label: a parent
             // with room shows it whole, and only a parent without room
             // (capped by `max_size`) makes the painter elide it.
@@ -1423,9 +1436,8 @@ impl Widget for Button {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1481,13 +1493,7 @@ impl Widget for Button {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
@@ -1694,6 +1700,9 @@ impl Widget for Button {
     fn is_focusable(&self) -> bool {
         true
     }
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.default_focus
+    }
     fn set_focus(&mut self, focused: bool) {
         // A press that focused it keeps its mark; losing focus clears it.
         self.pressed_into_focus &= focused;
@@ -1798,37 +1807,20 @@ impl Widget for Button {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
+        crate::widget::draw_gate_and_peer_focus(
+            self,
+            scene,
+            transform,
+            theme,
+            presence,
+            permissions,
+        );
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -1867,18 +1859,7 @@ impl crate::resources::PublishesResources for Button {
 }
 
 impl crate::widget::controls::ActionControls for Button {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         use crate::widget::{ControlBindingKind, ControlBindingMetadata};
         if let Some(action) = &self.action {

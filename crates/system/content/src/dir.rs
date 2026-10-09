@@ -1,21 +1,35 @@
 //! Content in a local directory, sharded one level on the first two hex digits of the address so
 //! no directory accumulates everything the machine has ever stored.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use crate::memory::check_new_item;
 use crate::{
-    Collected, ContentBackend, ContentError, ContentLimits, ContentReader, Stored, Verifying,
-    valid_hash,
+    Collected, ContentBackend, ContentError, ContentLimits, ContentReader, ContentState, Stored,
+    Verifying, valid_hash,
 };
 
 /// Content in `<root>/<hash[..2]>/<hash>`. Writes stream into a temporary file beside the target
 /// and are renamed into place once complete and hashed, so a reader never sees a partial item
 /// under an address that promises whole content; reads verify as they stream.
+///
+/// A durable store (the default) publishes an item behind a barrier: the item is flushed before
+/// the rename, and the shard directory after it — and the root too when the write created the
+/// shard — so an item `put` has returned for survives a power loss under its address.
+/// [`DirBackend::regenerable`] stores skip every flush.
+///
+/// [`ContentBackend::has`] hashes a file once per file identity (inode, length, timestamps) per
+/// backend: a file replaced or rewritten since is verified again. The quota total is kept in
+/// memory between writes and rescanned only when another writer has written since (every writer
+/// bumps `<root>/.content-store.gen` under the root lock), or before refusing a write, since files
+/// removed behind the store's back make the kept total over-count.
 pub struct DirBackend {
     root: PathBuf,
     /// Directories consulted, read-only, when content is not under `root` — where an earlier
@@ -25,12 +39,69 @@ pub struct DirBackend {
     /// Whether an item is flushed to disk before it is published under its address.
     durable: bool,
     state: Mutex<Index>,
+    /// Items this backend has hashed and found intact, by the identity their file had then.
+    verified: Mutex<HashMap<PathBuf, FileSig>>,
+    #[cfg(test)]
+    probes: Probes,
 }
 
 #[derive(Default)]
 struct Index {
     bytes: usize,
     entries: BTreeMap<String, usize>,
+    /// The root's write generation this index was last brought up to date with, or `None` when it
+    /// must be rescanned before it is trusted.
+    generation: Option<u64>,
+}
+
+/// Bumped under the root write lock by every writer after it changes the store, so a backend
+/// whose kept index names the current generation knows nobody else has written since. Read and
+/// written only under that lock; a missing or unreadable file means "rescan".
+const GENERATION_FILE: &str = ".content-store.gen";
+
+/// What identifies one version of a file without reading it: a file renamed over the item, or
+/// rewritten in place, differs in at least one of these.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileSig {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime_ns: i128,
+}
+
+impl FileSig {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            dev: meta.dev(),
+            #[cfg(unix)]
+            ino: meta.ino(),
+            #[cfg(unix)]
+            ctime_ns: i128::from(meta.ctime())
+                .saturating_mul(1_000_000_000)
+                .saturating_add(i128::from(meta.ctime_nsec())),
+        }
+    }
+}
+
+/// Counts of the expensive operations, so tests can assert they do not happen.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Probes {
+    /// Whole-file hashes of an item already in the store.
+    pub(crate) verifications: AtomicUsize,
+    /// Full directory scans of the store.
+    pub(crate) scans: AtomicUsize,
+    /// Directory flushes.
+    pub(crate) dir_syncs: AtomicUsize,
 }
 
 /// Held around every mutation and the quota scan before it. Separate from [`Index`]: two backends
@@ -51,7 +122,15 @@ impl DirBackend {
             limits,
             durable: true,
             state: Mutex::new(Index::default()),
+            verified: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            probes: Probes::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn probes(&self) -> &Probes {
+        &self.probes
     }
 
     /// Also read content from `dir` (same layout) when it is not under this backend's root.
@@ -106,7 +185,65 @@ impl DirBackend {
         )?)
     }
 
+    /// The root's write generation. Call only under the root write lock.
+    fn read_generation(&self) -> Option<u64> {
+        std::fs::read_to_string(self.root.join(GENERATION_FILE))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Record that this backend changed the store, whose generation was `current` (as read under
+    /// the root write lock still held), and bring `index` — already updated for the change — to
+    /// the new generation.
+    fn bump_generation(&self, index: &mut Index, current: Option<u64>) {
+        // From an unknown generation, start somewhere no other backend can have kept: the clock.
+        let next = current.map_or_else(
+            || tilo_clock::try_unix_now_ns().unwrap_or(1),
+            |current| current.wrapping_add(1),
+        );
+        let path = self.root.join(GENERATION_FILE);
+        if std::fs::write(&path, next.to_string()).is_ok() {
+            index.generation = Some(next);
+        } else {
+            // Without a readable generation every backend rescans, which stays correct. A
+            // generation left as it was would let another backend trust an index missing this
+            // write.
+            let _ = std::fs::remove_file(&path);
+            index.generation = None;
+        }
+    }
+
+    /// Bring `index` up to date for a write: trust it when it names the root's current
+    /// generation, otherwise rescan. Call only under the root write lock. Returns the generation
+    /// read and whether a scan ran.
+    fn refresh_index(&self, index: &mut Index) -> Result<(Option<u64>, bool), ContentError> {
+        let current = self.read_generation();
+        if current.is_some() && index.generation == current {
+            return Ok((current, false));
+        }
+        self.load_index(index)?;
+        index.generation = current;
+        Ok((current, true))
+    }
+
+    /// Flush `dir`'s entries to disk, for a durable store; a regenerable one never waits on it.
+    fn sync_dir(&self, dir: &Path) -> Result<(), ContentError> {
+        if !self.durable {
+            return Ok(());
+        }
+        #[cfg(test)]
+        self.probes.dir_syncs.fetch_add(1, Ordering::Relaxed);
+        tilo_files::native::atomic::sync_directory(dir)?;
+        Ok(())
+    }
+
     fn load_index(&self, index: &mut Index) -> Result<(), ContentError> {
+        #[cfg(test)]
+        self.probes.scans.fetch_add(1, Ordering::Relaxed);
+        // Whatever happens below, the kept index is no longer known to match any generation.
+        index.generation = None;
         let shards = match std::fs::read_dir(&self.root) {
             Ok(shards) => shards,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -212,20 +349,60 @@ impl DirBackend {
         }
     }
 
-    fn intact(path: &Path, hash: &str, limit: usize) -> bool {
+    /// Whether `path` holds the content at `hash`, no larger than `limit`. A file this backend has
+    /// already found intact, and which has not changed since, is not read again.
+    fn intact(&self, path: &Path, hash: &str, limit: usize) -> bool {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        if !meta.is_file()
+            || usize::try_from(meta.len())
+                .ok()
+                .is_none_or(|len| len > limit)
+        {
+            return false;
+        }
+        if self
+            .verified
+            .lock()
+            .is_ok_and(|verified| verified.get(path) == Some(&FileSig::of(&meta)))
+        {
+            return true;
+        }
         let Ok(file) = std::fs::File::open(path) else {
             return false;
         };
-        if file
-            .metadata()
+        // The identity of the file actually hashed, taken before reading it: a change while it
+        // is read leaves a different identity behind, which the next call verifies afresh.
+        let Ok(meta) = file.metadata() else {
+            return false;
+        };
+        if usize::try_from(meta.len())
             .ok()
-            .and_then(|meta| usize::try_from(meta.len()).ok())
             .is_none_or(|len| len > limit)
         {
             return false;
         }
+        #[cfg(test)]
+        self.probes.verifications.fetch_add(1, Ordering::Relaxed);
         let mut reader = Verifying::new(file, hash);
-        std::io::copy(&mut reader, &mut std::io::sink()).is_ok()
+        if std::io::copy(&mut reader, &mut std::io::sink()).is_err() {
+            return false;
+        }
+        self.remember_intact(path.to_path_buf(), FileSig::of(&meta));
+        true
+    }
+
+    fn remember_intact(&self, path: PathBuf, sig: FileSig) {
+        if let Ok(mut verified) = self.verified.lock() {
+            verified.insert(path, sig);
+        }
+    }
+
+    fn forget_intact(&self, path: &Path) {
+        if let Ok(mut verified) = self.verified.lock() {
+            verified.remove(path);
+        }
     }
 }
 
@@ -242,7 +419,7 @@ impl ContentBackend for DirBackend {
             };
             // Content already here is an idempotent write, even if a later configuration tightened
             // the limits.
-            if Self::intact(&path, &hash, usize::MAX) {
+            if self.intact(&path, &hash, usize::MAX) {
                 return Ok(());
             }
             let mut index = self
@@ -250,21 +427,42 @@ impl ContentBackend for DirBackend {
                 .lock()
                 .map_err(|_| ContentError::Io("content store lock poisoned".into()))?;
             let root_lock = self.lock_root_for_write()?;
-            // Rescan under the root lock: the cached index is not authority for admission, since
-            // another process may have written since this backend last looked.
-            self.load_index(&mut index)?;
-            if let Some(old_len) = index.entries.remove(&hash) {
-                // A file under this name that failed verification above is not retained content;
-                // it must not keep consuming quota. The rename below replaces it.
-                index.bytes = index.bytes.saturating_sub(old_len);
+            // The kept index is authority for admission only while no other writer has written
+            // since: every writer bumps the generation under this lock.
+            let (generation, scanned) = self.refresh_index(&mut index)?;
+            if let Err(refusal) = check_admission(&self.limits, &index, &hash, len) {
+                // Files removed behind the store's back make a kept total over-count: look again
+                // before refusing on it.
+                if scanned {
+                    return Err(refusal);
+                }
+                self.load_index(&mut index)?;
+                index.generation = generation;
+                check_admission(&self.limits, &index, &hash, len)?;
             }
-            check_new_item(&self.limits, index.bytes, index.entries.len(), len)?;
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
+            let Some(dir) = path.parent() else {
+                return Err(ContentError::InvalidHash(hash.clone()));
+            };
+            let created_shard = !dir.is_dir();
+            std::fs::create_dir_all(dir)?;
+            if created_shard {
+                self.sync_dir(&self.root)?;
             }
             std::fs::rename(&tmp, &path)?;
+            // A file under this name that failed verification above was not retained content;
+            // the rename replaced it, and with it the quota it held.
+            if let Some(old_len) = index.entries.insert(hash.clone(), len) {
+                index.bytes = index.bytes.saturating_sub(old_len);
+            }
             index.bytes = index.bytes.saturating_add(len);
-            index.entries.insert(hash.clone(), len);
+            self.bump_generation(&mut index, generation);
+            // Hashed while it streamed in: `has` need not read it again.
+            match std::fs::metadata(&path) {
+                Ok(meta) => self.remember_intact(path.clone(), FileSig::of(&meta)),
+                Err(_) => self.forget_intact(&path),
+            }
+            // The rename is durable only once the directory holding the new name is.
+            self.sync_dir(dir)?;
             drop(root_lock);
             drop(index);
             Ok(())
@@ -300,7 +498,15 @@ impl ContentBackend for DirBackend {
 
     fn has(&self, hash: &str) -> bool {
         self.existing(hash)
-            .is_some_and(|path| Self::intact(&path, hash, self.limits.max_item_bytes))
+            .is_some_and(|path| self.intact(&path, hash, self.limits.max_item_bytes))
+    }
+
+    fn state(&self, hash: &str) -> ContentState {
+        if self.has(hash) {
+            ContentState::Resolved
+        } else {
+            ContentState::Unavailable
+        }
     }
 
     fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
@@ -309,6 +515,7 @@ impl ContentBackend for DirBackend {
             .lock()
             .map_err(|_| ContentError::Io("content store lock poisoned".into()))?;
         let root_lock = self.lock_root_for_write()?;
+        let generation = self.read_generation();
         self.load_index(&mut index)?;
         let stale: Vec<(String, usize)> = index
             .entries
@@ -321,10 +528,15 @@ impl ContentBackend for DirBackend {
             let Some(path) = Self::path_in(&self.root, &hash) else {
                 continue;
             };
-            match std::fs::remove_file(path) {
+            self.forget_intact(&path);
+            match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    // What was removed before the failure is a change other writers must see.
+                    self.bump_generation(&mut index, generation);
+                    return Err(error.into());
+                }
             }
             index.entries.remove(&hash);
             index.bytes = index.bytes.saturating_sub(len);
@@ -333,8 +545,28 @@ impl ContentBackend for DirBackend {
                 .saturating_add(u64::try_from(len).unwrap_or(u64::MAX));
             collected.hashes.push(hash);
         }
+        self.bump_generation(&mut index, generation);
         drop(root_lock);
         drop(index);
         Ok(collected)
     }
+}
+
+/// Admit `len` new bytes under `hash` against `index`'s total. A file already under the name that
+/// failed verification is not retained content and must not count against the write that
+/// replaces it.
+fn check_admission(
+    limits: &ContentLimits,
+    index: &Index,
+    hash: &str,
+    len: usize,
+) -> Result<(), ContentError> {
+    let (bytes, entries) = match index.entries.get(hash) {
+        Some(old_len) => (
+            index.bytes.saturating_sub(*old_len),
+            index.entries.len().saturating_sub(1),
+        ),
+        None => (index.bytes, index.entries.len()),
+    };
+    check_new_item(limits, bytes, entries, len)
 }
