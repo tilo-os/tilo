@@ -114,6 +114,15 @@ impl<R, T> Path<R, T> {
         Path::from_segments(segments)
     }
 
+    /// The value at this path in `root`, if it is there.
+    pub fn get<'a>(&self, root: &'a R) -> Option<&'a T>
+    where
+        R: Model + 'static,
+        T: 'static,
+    {
+        root.get_at(&self.segments)?.downcast_ref()
+    }
+
     /// Whether `self` is `other` or lies inside it.
     pub fn starts_with<U>(&self, other: &Path<R, U>) -> bool {
         self.segments.starts_with(&other.segments)
@@ -560,6 +569,55 @@ impl<R> Edit<R> {
             }
             _ => false,
         }
+    }
+
+    /// The node of the published tree this edit acts on, for deciding
+    /// grants: `room › app › kind › record [› item] › field… › field-edit`.
+    /// The collection field holding an item is not a node of its own.
+    #[must_use]
+    pub fn tree_path(&self, room: &str, app: &str, record: &str) -> tilo_action_policy::TreePath
+    where
+        R: crate::Resource,
+    {
+        use tilo_action_policy::Level;
+        let mut tree = tilo_action_policy::TreePath::room(room)
+            .app(app)
+            .kind(R::KIND)
+            .resource(record);
+        let mut item = false;
+        let mut segments = self.path.iter().peekable();
+        while let Some(segment) = segments.next() {
+            tree = match segment {
+                Segment::Field(_) if !item && matches!(segments.peek(), Some(Segment::Item(_))) => {
+                    tree
+                }
+                Segment::Item(id) if !item => {
+                    item = true;
+                    tree.item(id.as_str())
+                }
+                Segment::Field(key) | Segment::Key(key) => tree.push(Level::Field, key.as_str()),
+                Segment::Item(id) => tree.push(Level::Field, id.as_str()),
+                Segment::Cell { row, column } => tree
+                    .push(Level::Field, row.as_str())
+                    .push(Level::Field, column.as_str()),
+            };
+        }
+        tree.action(crate::FIELD_EDIT)
+    }
+
+    /// Apply to a document held apart from any resource (a form's local
+    /// value): no action, no history, ids minted from the document alone.
+    ///
+    /// # Errors
+    /// As [`Self::apply`].
+    pub fn apply_local(&self, doc: &mut crate::Doc) -> Result<(), crate::ModelError>
+    where
+        R: crate::Fields,
+    {
+        let payload = serde_json::to_vec(self)
+            .map_err(|error| crate::ModelError::invalid(error.to_string()))?;
+        let mut cx = crate::ActionCx::for_write(doc, &payload);
+        self.apply(doc, &mut cx)
     }
 
     /// Apply at its path in `doc`, then run the invariants of every value

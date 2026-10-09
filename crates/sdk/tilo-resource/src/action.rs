@@ -215,26 +215,7 @@ impl<E: Into<Refusal>> Outcome for Result<(), E> {
     }
 }
 
-/// What an action can do, derived by the framework from the code and never
-/// declared by the app. Grants are given by kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActionKind {
-    /// Shows or reads: a view, `read_content`, a view effect. Nothing to undo.
-    Read,
-    /// Changes the document and nothing outside it; undone by construction.
-    Undoable,
-    /// Reaches outside the document: sends, writes a device, calls a server.
-    Outside,
-}
-
-impl ActionKind {
-    /// Whether the host's undo reverts the action.
-    #[must_use]
-    pub const fn reversible(self) -> bool {
-        matches!(self, Self::Undoable)
-    }
-}
+pub use tilo_action_policy::ActionKind;
 
 /// The stored form of a reference to an action: the app, the resource kind
 /// and the action's public id. A Shortcut step, an agent's plan and a
@@ -380,6 +361,15 @@ impl<R, A: Serialize> ActionRef<R, A> {
             params,
             marker: PhantomData,
         }
+    }
+
+    /// The stored form of this reference within the app `app`.
+    #[must_use]
+    pub fn key(&self, app: &str) -> ActionKey
+    where
+        R: Resource,
+    {
+        ActionKey::new(app, R::KIND, self.id)
     }
 
     /// The JSON arguments this input binds to.

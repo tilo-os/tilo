@@ -27,6 +27,7 @@ thiserror.workspace = true
 tilo-automerge.workspace = true
 uuid.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tilo-rt.workspace = true
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }

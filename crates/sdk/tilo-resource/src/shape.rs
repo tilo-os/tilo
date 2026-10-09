@@ -29,6 +29,10 @@ pub enum Shape {
 pub struct FieldShape {
     /// The key the field is stored under (after `#[model(rename)]`).
     pub key: &'static str,
+    /// The record type the field belongs to, in kebab case (`snippet`): with
+    /// the key it names the field in history messages
+    /// (`<app>-<owner>-<key>`).
+    pub owner: &'static str,
     /// The field's Rust name.
     pub name: &'static str,
     /// What the field is, for people: its doc comment's first line, else its

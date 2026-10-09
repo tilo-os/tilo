@@ -381,6 +381,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     }];
     let mut label = None;
     let mut readonly_fields = Vec::new();
+    let mut get_arms = Vec::new();
+    let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
             .ident
@@ -422,8 +424,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         refreshes
             .push(quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;));
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
+        get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
         shapes.push(quote!(#krate::FieldShape {
             key: #key,
+            owner: #owner,
             name: #field_name,
             title: #title,
             shape: <#ty as #krate::Model>::SHAPE,
@@ -582,6 +586,26 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #label_fn
+
+            fn get_at(
+                &self,
+                path: &[#krate::Segment],
+            ) -> ::core::option::Option<&dyn ::core::any::Any>
+            where
+                Self: 'static,
+            {
+                match path.split_first() {
+                    ::core::option::Option::None => ::core::option::Option::Some(self),
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#get_arms)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    ::core::option::Option::Some(_) => ::core::option::Option::None,
+                }
+            }
 
             fn load(
                 doc: &#krate::Doc,

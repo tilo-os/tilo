@@ -481,6 +481,17 @@ impl<T: Model> Model for Collection<T> {
         Ok(())
     }
 
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        match path.split_first() {
+            None => Some(self),
+            Some((Segment::Item(id), rest)) => self.get(id)?.get_at(rest),
+            Some(_) => None,
+        }
+    }
+
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a collection"));

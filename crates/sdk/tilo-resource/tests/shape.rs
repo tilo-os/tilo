@@ -38,6 +38,7 @@ fn a_derived_record_lists_its_stored_fields() {
     const COLUMN: Shape = Shape::Record(&[
         FieldShape {
             key: "name",
+            owner: "column",
             name: "name",
             title: "Name",
             shape: Shape::Value,
@@ -47,6 +48,7 @@ fn a_derived_record_lists_its_stored_fields() {
         },
         FieldShape {
             key: "limit",
+            owner: "column",
             name: "limit",
             title: "Limit",
             shape: Shape::Value,
@@ -57,6 +59,7 @@ fn a_derived_record_lists_its_stored_fields() {
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
         key: "by",
+        owner: "meta",
         name: "by",
         title: "By",
         shape: Shape::Value,
@@ -69,6 +72,7 @@ fn a_derived_record_lists_its_stored_fields() {
         Some(Shape::Record(&[
             FieldShape {
                 key: "title",
+                owner: "board",
                 name: "title",
                 title: "Title",
                 shape: Shape::Value,
@@ -78,6 +82,7 @@ fn a_derived_record_lists_its_stored_fields() {
             },
             FieldShape {
                 key: "cols",
+                owner: "board",
                 name: "columns",
                 title: "Columns",
                 shape: Shape::Collection(&COLUMN),
@@ -87,6 +92,7 @@ fn a_derived_record_lists_its_stored_fields() {
             },
             FieldShape {
                 key: "archived",
+                owner: "board",
                 name: "archived",
                 title: "Archived",
                 shape: META,
@@ -96,6 +102,7 @@ fn a_derived_record_lists_its_stored_fields() {
             },
             FieldShape {
                 key: "filter",
+                owner: "board",
                 name: "filter",
                 title: "Filter",
                 shape: Shape::Value,

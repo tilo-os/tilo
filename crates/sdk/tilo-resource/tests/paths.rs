@@ -424,3 +424,45 @@ fn the_door_stamps_the_time_not_the_caller() {
         serde_json::from_slice(&applied.action.payload).unwrap();
     assert_eq!(action.now_ms, 42);
 }
+
+#[test]
+fn a_path_reads_its_value_and_names_its_tree_node() {
+    let mut library = Replica::<Library>::new();
+    library
+        .apply(Library::NEW_SNIPPET.with("Deploy".into()))
+        .unwrap();
+    let id = first_snippet(&library);
+    let state = library.state().unwrap();
+    let snippet = Library::paths().snippets.item(&id);
+    assert_eq!(
+        snippet.title.get(&state).map(String::as_str),
+        Some("Deploy")
+    );
+    assert_eq!(snippet.favorite.get(&state), Some(&false));
+    assert!(
+        Library::paths()
+            .snippets
+            .item(&Id::from_raw("gone"))
+            .title
+            .get(&state)
+            .is_none()
+    );
+    let tree = snippet
+        .favorite
+        .set(true)
+        .tree_path("room", "app", "record");
+    assert_eq!(
+        tree,
+        tilo_action_policy::TreePath::room("room")
+            .app("app")
+            .kind("test.library")
+            .resource("record")
+            .item(id.as_str())
+            .field("favorite")
+            .action(tilo_resource::FIELD_EDIT)
+    );
+    assert_eq!(
+        Library::STAR.key("app"),
+        tilo_resource::ActionKey::new("app", "test.library", "star")
+    );
+}

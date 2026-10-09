@@ -271,6 +271,15 @@ pub trait Model: Sized {
         None
     }
 
+    /// The value at `path` below this one, if it is there. A value with
+    /// nothing inside it is found only at the empty path.
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        path.is_empty().then_some(self as &dyn std::any::Any)
+    }
+
     /// Read from the value a parent found in its slot.
     ///
     /// # Errors
@@ -829,6 +838,15 @@ impl<T: Model> Model for Option<T> {
     fn label(&self) -> Option<String> {
         self.as_ref().and_then(Model::label)
     }
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        if path.is_empty() {
+            return Some(self);
+        }
+        self.as_ref().and_then(|value| value.get_at(path))
+    }
 
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if matches!(scalar(value), Some(ScalarValue::Null)) {
@@ -897,6 +915,12 @@ impl<T: Model> Model for Box<T> {
     }
     fn label(&self) -> Option<String> {
         (**self).label()
+    }
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        (**self).get_at(path)
     }
 
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
@@ -1050,6 +1074,16 @@ impl<T: Model> Model for BTreeMap<String, T> {
             self.values().try_for_each(Model::check)?;
         }
         Ok(())
+    }
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        match path.split_first() {
+            None => Some(self),
+            Some((Segment::Key(key), rest)) => self.get(key)?.get_at(rest),
+            Some(_) => None,
+        }
     }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {

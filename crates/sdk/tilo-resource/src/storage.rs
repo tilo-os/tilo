@@ -791,6 +791,16 @@ impl<T: Model> Model for Grid<T> {
         }
         Ok(())
     }
+    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
+    where
+        Self: 'static,
+    {
+        match path.split_first() {
+            None => Some(self),
+            Some((Segment::Cell { row, column }, rest)) => self.cell(row, column)?.get_at(rest),
+            Some(_) => None,
+        }
+    }
     fn collect_text(&self, out: &mut Vec<String>) {
         for cells in self.cells.values() {
             for value in cells.values() {
