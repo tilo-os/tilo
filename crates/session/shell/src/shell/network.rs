@@ -2286,6 +2286,17 @@ impl ShellNetwork {
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
     }
 
+    /// Wake the compositor loop from any thread, once [`Self::set_wake`]
+    /// has supplied the loop's wake; a no-op before that.
+    pub(crate) fn loop_waker(&self) -> crate::session_runtime::Wake {
+        let wake = Arc::clone(&self.event_wake);
+        Arc::new(move || {
+            if let Some(wake) = wake.get() {
+                wake();
+            }
+        })
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;

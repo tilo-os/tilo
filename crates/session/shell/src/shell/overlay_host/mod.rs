@@ -287,9 +287,30 @@ pub type ClipboardManagerBridge = std::rc::Rc<
 /// Secret operations stay behind a narrow bridge to the certified personal
 /// fabric. This enum intentionally has no `Debug` implementation so a future
 /// diagnostic cannot accidentally format a passphrase.
+///
+/// Each carries the network's authentication mode as the last scan listed
+/// it, so the bridge never scans again on the compositor thread.
 pub enum WifiSecretAction {
-    Lookup { ssid: String },
-    Share { ssid: String, password: String },
+    Lookup {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+    },
+    Share {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+        password: String,
+    },
+}
+
+/// The authentication mode the last Wi-Fi scan listed for `ssid`.
+fn scanned_wifi_security(
+    networks: &[crate::shell::quick_settings::WifiNetwork],
+    ssid: &str,
+) -> Option<os_actions::WifiSecurity> {
+    networks
+        .iter()
+        .find(|network| network.ssid == ssid)
+        .map(|network| network.security)
 }
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
@@ -9446,6 +9467,7 @@ impl ShellOverlayHost {
                 ssid: n.ssid,
                 signal: n.signal,
                 secure: n.secure,
+                security: n.security,
                 connected: n.connected,
             })
             .collect();
@@ -9470,13 +9492,18 @@ impl ShellOverlayHost {
                     network.connected = network.ssid == ssid;
                 }
                 st.quick_settings.wifi = true;
+                let security = scanned_wifi_security(&st.quick_settings.wifi_networks, &ssid);
                 let share_result = if shared_credential {
                     None
                 } else {
                     password.as_ref().and_then(|password| {
                         self.wifi_secret_bridge.as_ref().map(|bridge| {
+                            let security = security.ok_or_else(|| {
+                                "could not verify the connected Wi-Fi security mode".to_string()
+                            })?;
                             bridge(WifiSecretAction::Share {
                                 ssid: ssid.clone(),
+                                security,
                                 password: password.clone(),
                             })
                         })
@@ -15754,7 +15781,7 @@ impl ShellOverlayHost {
                 (
                     QsField::Volume,
                     crate::shell::media_keys::commit_volume(
-                        &actions,
+                        &crate::shell::media_keys::DispatcherAudio(&actions),
                         bridge,
                         previous,
                         value_pct / 100.0,
@@ -25550,6 +25577,8 @@ impl ShellOverlayHost {
                     let detail = match status.phase {
                         TetheringPhase::Requesting => t("qs-devices-tether-requesting"),
                         TetheringPhase::ConsentRequired => t("qs-devices-tether-consent"),
+                        TetheringPhase::Preparing => t("qs-devices-tether-preparing"),
+                        TetheringPhase::Connecting => t("qs-devices-tether-connecting"),
                         TetheringPhase::Active => match status.direction {
                             TetheringDirection::Requester => t("qs-devices-tether-requester"),
                             TetheringDirection::Provider => t("qs-devices-tether-provider"),
@@ -26177,16 +26206,26 @@ impl ShellOverlayHost {
         else {
             return false;
         };
-        let Some(ssid) = chrome
-            .borrow()
-            .quick_settings
-            .wifi_password
-            .as_ref()
-            .map(|prompt| prompt.ssid.clone())
-        else {
+        let scanned = {
+            let state = chrome.borrow();
+            state
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .and_then(|prompt| {
+                    scanned_wifi_security(&state.quick_settings.wifi_networks, &prompt.ssid)
+                        .map(|security| (prompt.ssid.clone(), security))
+                })
+        };
+        // A network the last scan did not list has no known mode to match a
+        // shared secret against.
+        let Some((ssid, security)) = scanned else {
             return false;
         };
-        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup { ssid: ssid.clone() }) else {
+        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup {
+            ssid: ssid.clone(),
+            security,
+        }) else {
             return false;
         };
         if let Some(prompt) = chrome.borrow_mut().quick_settings.wifi_password.as_mut() {
