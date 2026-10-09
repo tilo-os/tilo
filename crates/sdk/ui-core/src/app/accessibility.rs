@@ -531,8 +531,15 @@ impl App {
                         .legacy_status(node, &self.collaboration.local_author)
                 });
             let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
+            let local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
+                    if let Some(local) = &local_status {
+                        return match local {
+                            crate::undo::LocalUndoStatus::Ready(status) => status.clone(),
+                            crate::undo::LocalUndoStatus::Pending => Default::default(),
+                        };
+                    }
                     if embedded {
                         self.state
                             .undo_status_snapshot(Some(&self.collaboration.local_author))
@@ -651,6 +658,16 @@ impl App {
         self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
             .flatten()
+    }
+
+    #[cfg(feature = "native")]
+    fn focused_ime_requires_deferred_ack(&self) -> bool {
+        self.focused_node
+            .and_then(|node| {
+                self.inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                    .ok()
+            })
+            .unwrap_or(false)
     }
 
     #[cfg(feature = "native")]

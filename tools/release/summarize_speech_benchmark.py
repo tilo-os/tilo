@@ -57,12 +57,14 @@ def score(rows):
 def summarize(path):
     rows = []
     metadata = {}
+    loads = []
     with open(path, encoding="utf-8") as stream:
         for line in stream:
             if line.startswith("SPEECH_BENCHMARK "):
                 rows.append(json.loads(line.split(" ", 1)[1]))
             elif line.startswith("SPEECH_BENCHMARK_LOAD "):
                 metadata = json.loads(line.split(" ", 1)[1])
+                loads.append(metadata)
     expected = {(language, f"short-{index}") for language in
                 ["en", "de", "fr", "es", "ar", "zh"] for index in range(3)}
     observed = [(row["language"], f"short-{row['id'].rsplit('-', 1)[1]}")
@@ -74,6 +76,12 @@ def summarize(path):
         raise ValueError("missing long probes")
     if not metadata or {row["model"] for row in rows} != {metadata["model"]}:
         raise ValueError("missing or inconsistent model metadata")
+    if any(load["model"] != metadata["model"] or load["threads"] != 2
+           or load["memory_limit_bytes"] != 1073741824 for load in loads):
+        raise ValueError("inconsistent bounded decoder qualification")
+    metadata = dict(metadata, observed_primary_probes=len(rows), loads=len(loads),
+                    cold_load_ms={"median": statistics.median(load["load_ms"] for load in loads),
+                                  "max": max(load["load_ms"] for load in loads)})
     return {"load": metadata, "short": {
         language: score([row for row in rows if row["language"] == language
                          and not row["id"].startswith("long-")])

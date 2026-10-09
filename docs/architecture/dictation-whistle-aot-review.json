@@ -1,0 +1,889 @@
+{
+  "schema": 1,
+  "qualification_only": true,
+  "production_activation": false,
+  "runtime": {
+    "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+    "version": "49.0.2",
+    "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+    "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
+    "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+    "native_commands": [
+      [
+        "g++",
+        "-std=c++20",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-isystem",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "-lwasmtime",
+        "-Wl,-rpath,$ORIGIN",
+        "-o",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+      ],
+      [
+        "g++",
+        "-std=c++20",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-fPIC",
+        "-shared",
+        "-isystem",
+        "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+        "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+        "-lwasmtime",
+        "-Wl,-rpath,$ORIGIN",
+        "-o",
+        "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+      ]
+    ],
+    "files": {
+      "whistle_aot_config.hpp": {
+        "bytes": 1310,
+        "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+      },
+      "whistle_aot_factory.cpp": {
+        "bytes": 1763,
+        "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+      },
+      "whistle_aot_review.cpp": {
+        "bytes": 13133,
+        "sha256": "cc9233abc521cdf39fd9a5646183f0cec9d962aa81daa967c3cc67f808352952"
+      },
+      "libwasmtime.so": {
+        "bytes": 17465504,
+        "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+      },
+      "aot-factory": {
+        "bytes": 21240,
+        "sha256": "98e0aaa690ab3fe1e3155a10e2fdba63f90e1a5e6434fc5492290e6b426a1d15"
+      },
+      "aot-bridge.so": {
+        "bytes": 36544,
+        "sha256": "d628553aea35bf059b9e30676c123868193aee8e59b1783f43028690f22abe34"
+      },
+      "aot-review": {
+        "bytes": 9959512,
+        "sha256": "843068b2598d35dd1cd211aec49f777976dff2ea0a3bed148ee77e7f129cac23"
+      },
+      "aot-worker": {
+        "bytes": 9948744,
+        "sha256": "39e5a874ab5bfe9892ef93a596bdf74edaea108969020ba16d8a024bd3f84373"
+      }
+    },
+    "installed": false,
+    "signals_and_spectre_defaults": true,
+    "target": "x86-64-v3",
+    "rust_sources": {
+      "crates/agent/local-model-service/examples/whistle_aot_review.rs": "3b3017be074cede5da9bf9e4c28b9efa4e7415ad5d87faee2393becef8bc8faa",
+      "crates/agent/local-model-service/examples/whistle_aot_worker_review.rs": "9674b5e6474fbde81cd31486030cc1e4629d4cbf7becb35bd3dc7716a9dc1177",
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7",
+      "crates/agent/local-model-service/examples/whistle_aot_review/artifact.rs": "55fbe43cd3ef970637a83049429b9359117d59a34fed6d774366103a7b07c59c"
+    }
+  },
+  "factory": {
+    "source_build": {
+      "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+      "version": "49.0.2",
+      "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+      "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
+      "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+      "native_commands": [
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+        ],
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-fPIC",
+          "-shared",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+        ]
+      ],
+      "files": {
+        "whistle_aot_config.hpp": {
+          "bytes": 1310,
+          "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+        },
+        "whistle_aot_factory.cpp": {
+          "bytes": 1763,
+          "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+        },
+        "whistle_aot_review.cpp": {
+          "bytes": 10849,
+          "sha256": "29d811581731efa98e0494c98569c0db9da89e6fa50ae04383fa6d8a2b6b798d"
+        },
+        "libwasmtime.so": {
+          "bytes": 17465504,
+          "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+        },
+        "aot-factory": {
+          "bytes": 21240,
+          "sha256": "98e0aaa690ab3fe1e3155a10e2fdba63f90e1a5e6434fc5492290e6b426a1d15"
+        },
+        "aot-bridge.so": {
+          "bytes": 27840,
+          "sha256": "f5e9de54d46eb58c4d396cc39430cfdaff198670bc91637bd478973dec2fe5cb"
+        },
+        "aot-review": {
+          "bytes": 9948848,
+          "sha256": "0fe2e9e2eb3499dde308eb4f9d53759a90611c165109076a0027966fcc2ea9e5"
+        }
+      },
+      "installed": false,
+      "signals_and_spectre_defaults": true,
+      "target": "x86-64-v3",
+      "rust_sources": {
+        "crates/agent/local-model-service/examples/whistle_aot_review.rs": "c8433300bbfed3aa898f8442da4464796ed85512bfecf137702af2f53d2fcec6",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+      }
+    },
+    "artifact": {
+      "bytes": 3437656,
+      "sha256": "a74daea810fcccb4053ff8639f7bae9b7010fd9d9e1ad80a0deecc17c2cb3d26"
+    },
+    "compile": {
+      "seconds": 1.16509,
+      "bytes": 3437656,
+      "target": "x86-64-v3",
+      "signal_and_spectre_defaults": true
+    },
+    "review_only_not_catalogue_authority": true
+  },
+  "first_confined_batch": {
+    "exit": 0,
+    "guarded": null,
+    "memory_peak": {
+      "VmPeak": 147092,
+      "VmSize": 147092,
+      "VmHWM": 136672,
+      "VmRSS": 135712,
+      "Threads": 1
+    },
+    "cpu_seconds": 2.74,
+    "sampled_cpu_lower_bound_seconds": 2.74,
+    "wall_seconds": 2.7712266859962256,
+    "stdout": "WHISTLE_AOT_RECOGNITION {\"startup_seconds\":0.330753897,\"batch_seconds\":1.957775873,\"production_confinement\":true,\"raw_result\":{\"text\":\"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.\",\"language\":\"fr\",\"words\":[{\"word\":\"L'accident\",\"start\":2.24,\"end\":2.8,\"probability\":0.971},{\"word\":\"a\",\"start\":2.8,\"end\":3.12,\"probability\":0.987},{\"word\":\"eu\",\"start\":3.12,\"end\":3.28,\"probability\":0.998},{\"word\":\"lieu\",\"start\":3.28,\"end\":3.6,\"probability\":0.999},{\"word\":\"en\",\"start\":3.6,\"end\":3.76,\"probability\":0.98},{\"word\":\"terrain\",\"start\":3.76,\"end\":4.08,\"probability\":0.736},{\"word\":\"montagneux,\",\"start\":4.08,\"end\":4.8,\"probability\":0.924},{\"word\":\"et\",\"start\":5.04,\"end\":5.2,\"probability\":0.594},{\"word\":\"il\",\"start\":5.2,\"end\":5.28,\"probability\":0.847},{\"word\":\"semblerait\",\"start\":5.28,\"end\":5.84,\"probability\":0.965},{\"word\":\"que\",\"start\":5.84,\"end\":5.92,\"probability\":0.999},{\"word\":\"cela\",\"start\":5.92,\"end\":6.24,\"probability\":0.993},{\"word\":\"ait\",\"start\":6.24,\"end\":6.48,\"probability\":0.706},{\"word\":\"été\",\"start\":6.48,\"end\":6.8,\"probability\":1.0},{\"word\":\"causé\",\"start\":6.8,\"end\":7.28,\"probability\":0.992},{\"word\":\"par\",\"start\":7.28,\"end\":7.52,\"probability\":0.985},{\"word\":\"un\",\"start\":7.52,\"end\":7.68,\"probability\":0.989},{\"word\":\"incendie\",\"start\":7.68,\"end\":8.16,\"probability\":0.976},{\"word\":\"malveillant.\",\"start\":8.16,\"end\":8.8,\"probability\":0.986}],\"ttft_ms\":976.3,\"decode_tps\":59.2}}\n",
+    "stderr": "ASR_RESOURCE {\"user\":1.79,\"system\":0.95}\n",
+    "stdout_events": [
+      {
+        "wall_seconds": 2.7614784789984697,
+        "line": "WHISTLE_AOT_RECOGNITION {\"startup_seconds\":0.330753897,\"batch_seconds\":1.957775873,\"production_confinement\":true,\"raw_result\":{\"text\":\"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.\",\"language\":\"fr\",\"words\":[{\"word\":\"L'accident\",\"start\":2.24,\"end\":2.8,\"probability\":0.971},{\"word\":\"a\",\"start\":2.8,\"end\":3.12,\"probability\":0.987},{\"word\":\"eu\",\"start\":3.12,\"end\":3.28,\"probability\":0.998},{\"word\":\"lieu\",\"start\":3.28,\"end\":3.6,\"probability\":0.999},{\"word\":\"en\",\"start\":3.6,\"end\":3.76,\"probability\":0.98},{\"word\":\"terrain\",\"start\":3.76,\"end\":4.08,\"probability\":0.736},{\"word\":\"montagneux,\",\"start\":4.08,\"end\":4.8,\"probability\":0.924},{\"word\":\"et\",\"start\":5.04,\"end\":5.2,\"probability\":0.594},{\"word\":\"il\",\"start\":5.2,\"end\":5.28,\"probability\":0.847},{\"word\":\"semblerait\",\"start\":5.28,\"end\":5.84,\"probability\":0.965},{\"word\":\"que\",\"start\":5.84,\"end\":5.92,\"probability\":0.999},{\"word\":\"cela\",\"start\":5.92,\"end\":6.24,\"probability\":0.993},{\"word\":\"ait\",\"start\":6.24,\"end\":6.48,\"probability\":0.706},{\"word\":\"été\",\"start\":6.48,\"end\":6.8,\"probability\":1.0},{\"word\":\"causé\",\"start\":6.8,\"end\":7.28,\"probability\":0.992},{\"word\":\"par\",\"start\":7.28,\"end\":7.52,\"probability\":0.985},{\"word\":\"un\",\"start\":7.52,\"end\":7.68,\"probability\":0.989},{\"word\":\"incendie\",\"start\":7.68,\"end\":8.16,\"probability\":0.976},{\"word\":\"malveillant.\",\"start\":8.16,\"end\":8.8,\"probability\":0.986}],\"ttft_ms\":976.3,\"decode_tps\":59.2}}"
+      }
+    ],
+    "phase": "recognize",
+    "source_build": {
+      "source_commit": "3c8a3e79aa3188a1a12b3aebbaa097abccceac92",
+      "version": "49.0.2",
+      "runtime_build": "${CARGO_DROP_IN}_IMAGE=${QUALIFIED_CONTAINER_IMAGE} ${CARGO_DROP_IN} --no-fallback --no-fetch +1.97.1 build --locked --release -j 2 -p wasmtime-c-api --no-default-features --features cranelift",
+      "source_lock_sha256": "8d101c4b678ed2a178820a60be3726fcd15de1351b3320ce7f1e59266004521b",
+      "compiler": "g++ (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)",
+      "native_commands": [
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_factory.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-factory"
+        ],
+        [
+          "g++",
+          "-std=c++20",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-fPIC",
+          "-shared",
+          "-isystem",
+          "${BUILD_ROOT}/target/release/build/wasmtime-c-api-impl-54dffe12effb59b7/out/include",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/whistle_aot_review.cpp",
+          "-L${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+          "-lwasmtime",
+          "-Wl,-rpath,$ORIGIN",
+          "-o",
+          "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b/aot-bridge.so"
+        ]
+      ],
+      "files": {
+        "whistle_aot_config.hpp": {
+          "bytes": 1310,
+          "sha256": "0e07e122bc9115ffd445c5ea074461c629e0a785457c859c181a11471399d0f4"
+        },
+        "whistle_aot_factory.cpp": {
+          "bytes": 1763,
+          "sha256": "e97a9d00691abcbb8fc16ffdcc9654bc830545288663e81ed2b48cf91e788884"
+        },
+        "whistle_aot_review.cpp": {
+          "bytes": 10849,
+          "sha256": "29d811581731efa98e0494c98569c0db9da89e6fa50ae04383fa6d8a2b6b798d"
+        },
+        "libwasmtime.so": {
+          "bytes": 17465504,
+          "sha256": "2d232d8bc62ece8ded8179cbb354f17729dadfdf04ff018a96cbbdaf075433dd"
+        },
+        "aot-factory": {
+          "bytes": 21240,
+          "sha256": "98e0aaa690ab3fe1e3155a10e2fdba63f90e1a5e6434fc5492290e6b426a1d15"
+        },
+        "aot-bridge.so": {
+          "bytes": 27840,
+          "sha256": "f5e9de54d46eb58c4d396cc39430cfdaff198670bc91637bd478973dec2fe5cb"
+        },
+        "aot-review": {
+          "bytes": 9948848,
+          "sha256": "0fe2e9e2eb3499dde308eb4f9d53759a90611c165109076a0027966fcc2ea9e5"
+        }
+      },
+      "installed": false,
+      "signals_and_spectre_defaults": true,
+      "target": "x86-64-v3",
+      "rust_sources": {
+        "crates/agent/local-model-service/examples/whistle_aot_review.rs": "c8433300bbfed3aa898f8442da4464796ed85512bfecf137702af2f53d2fcec6",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+        "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+      }
+    },
+    "scope_before": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_after": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_peak_bytes": 172462080
+  },
+  "results": [
+    {
+      "case": "en_us-0",
+      "reference": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 year.",
+      "raw_final": "However, due to the slow communication channels, styles in the west could lag behind by twenty five to thirty years.",
+      "startup_ready_seconds": 0.7321277189912507,
+      "first_nonempty_draft": {
+        "kind": "draft",
+        "sequence": 3,
+        "text": "However,",
+        "wall_seconds": 2.586801782003022
+      },
+      "all_drafts": [
+        {
+          "kind": "draft",
+          "sequence": 3,
+          "text": "However,",
+          "wall_seconds": 2.586801782003022
+        },
+        {
+          "kind": "draft",
+          "sequence": 5,
+          "text": "However, due to the slow communication,",
+          "wall_seconds": 3.3637194510083646
+        },
+        {
+          "kind": "draft",
+          "sequence": 7,
+          "text": "However, due to the slow communication channels,",
+          "wall_seconds": 4.390258765008184
+        },
+        {
+          "kind": "draft",
+          "sequence": 9,
+          "text": "However, due to the slow communication channels, styles",
+          "wall_seconds": 5.601634926002589
+        },
+        {
+          "kind": "draft",
+          "sequence": 11,
+          "text": "However, due to the slow communication channels, styles in the West could",
+          "wall_seconds": 6.666989564007963
+        },
+        {
+          "kind": "draft",
+          "sequence": 13,
+          "text": "However, due to the slow communication channels, styles in the west could lag behind.",
+          "wall_seconds": 7.64305591401353
+        },
+        {
+          "kind": "draft",
+          "sequence": 15,
+          "text": "However, due to the slow communication channels, styles in the West could lag behind by 25.",
+          "wall_seconds": 8.736626308003906
+        },
+        {
+          "kind": "draft",
+          "sequence": 17,
+          "text": "However, due to the slow communication channels, styles in the west could lag behind by 25 to 30 years.",
+          "wall_seconds": 9.996841537009459
+        },
+        {
+          "kind": "draft",
+          "sequence": 19,
+          "text": "However, due to the slow communication channels, styles in the west could lag behind by twenty five to thirty years.",
+          "wall_seconds": 10.92698019600357
+        },
+        {
+          "kind": "draft",
+          "sequence": 21,
+          "text": "However, due to the slow communication channels, styles in the west could lag behind by twenty five to thirty years.",
+          "wall_seconds": 11.855481299004168
+        }
+      ],
+      "final_wall_seconds": 12.764776421012357,
+      "audio_seconds": 10.56,
+      "word_errors": 4,
+      "reference_words": 19,
+      "memory_peak": {
+        "VmPeak": 161108,
+        "VmSize": 161108,
+        "VmHWM": 149364,
+        "VmRSS": 140828,
+        "Threads": 1
+      },
+      "guarded": null,
+      "scope_events_unchanged": true,
+      "fixture_sha256": "b438b60eb4e9fddbcaa303e27070c2458c3daac42f0b08d5d8622c47335d24f7",
+      "fixture_pcm_sha256": "0529d921fe2b0e39200728e68b214e57d76ebd08f39ae06e4caafe642c897388"
+    },
+    {
+      "case": "de_de-0",
+      "reference": "Für die besten Aussichten auf Hongkong sollten Sie die Insel verlassen und zum gegenüberliegenden Ufer von Kowloon fahren.",
+      "raw_final": "Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Corlum Faren.",
+      "startup_ready_seconds": 0.7308056159963598,
+      "first_nonempty_draft": {
+        "kind": "draft",
+        "sequence": 3,
+        "text": "Vielen Dank.",
+        "wall_seconds": 2.6426453669992043
+      },
+      "all_drafts": [
+        {
+          "kind": "draft",
+          "sequence": 3,
+          "text": "Vielen Dank.",
+          "wall_seconds": 2.6426453669992043
+        },
+        {
+          "kind": "draft",
+          "sequence": 5,
+          "text": "Vielen Dank.",
+          "wall_seconds": 3.369204661998083
+        },
+        {
+          "kind": "draft",
+          "sequence": 7,
+          "text": "Vielen Dank.",
+          "wall_seconds": 4.362633584998548
+        },
+        {
+          "kind": "draft",
+          "sequence": 9,
+          "text": "Vielen Dank. Für die beste...",
+          "wall_seconds": 5.473249478993239
+        },
+        {
+          "kind": "draft",
+          "sequence": 11,
+          "text": "Vielen Dank. Für die besten Aussichten.",
+          "wall_seconds": 6.434431389003294
+        },
+        {
+          "kind": "draft",
+          "sequence": 13,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk.",
+          "wall_seconds": 7.5656594969914295
+        },
+        {
+          "kind": "draft",
+          "sequence": 15,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die",
+          "wall_seconds": 8.696900933995494
+        },
+        {
+          "kind": "draft",
+          "sequence": 17,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen.",
+          "wall_seconds": 9.980910256999778
+        },
+        {
+          "kind": "draft",
+          "sequence": 19,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gejährigen.",
+          "wall_seconds": 11.017331804003334
+        },
+        {
+          "kind": "draft",
+          "sequence": 21,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüber liegenden.",
+          "wall_seconds": 12.108707456995035
+        },
+        {
+          "kind": "draft",
+          "sequence": 23,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer.",
+          "wall_seconds": 13.311108943002182
+        },
+        {
+          "kind": "draft",
+          "sequence": 25,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum.",
+          "wall_seconds": 14.614696699994965
+        },
+        {
+          "kind": "draft",
+          "sequence": 27,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+          "wall_seconds": 16.021857279993128
+        },
+        {
+          "kind": "draft",
+          "sequence": 29,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+          "wall_seconds": 17.675540026000817
+        },
+        {
+          "kind": "draft",
+          "sequence": 31,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+          "wall_seconds": 19.21611884899903
+        },
+        {
+          "kind": "draft",
+          "sequence": 33,
+          "text": "Vielen Dank. Für die besten Aussichten auf Franconk sollten sie die Insel verlassen und zum Gegenüberle in den Ufer von Korlum fahren.",
+          "wall_seconds": 20.793182865003473
+        }
+      ],
+      "final_wall_seconds": 22.36683595899376,
+      "audio_seconds": 17.94,
+      "word_errors": 6,
+      "reference_words": 18,
+      "memory_peak": {
+        "VmPeak": 187696,
+        "VmSize": 187696,
+        "VmHWM": 174576,
+        "VmRSS": 167392,
+        "Threads": 1
+      },
+      "guarded": null,
+      "scope_events_unchanged": true,
+      "fixture_sha256": "cc46d12f9faf44a694e709c8bcf04028e686e6b4c1deefe3ac6dbd821a970630",
+      "fixture_pcm_sha256": "fe4d2a3b4113fb327094d0628ff7ed07e40726c1ab20564d01d3a745cba349b0"
+    },
+    {
+      "case": "fr_fr-0",
+      "reference": "L’accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+      "raw_final": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+      "startup_ready_seconds": 0.7311030980054056,
+      "first_nonempty_draft": {
+        "kind": "draft",
+        "sequence": 3,
+        "text": "Merci.",
+        "wall_seconds": 2.6472496799979126
+      },
+      "all_drafts": [
+        {
+          "kind": "draft",
+          "sequence": 3,
+          "text": "Merci.",
+          "wall_seconds": 2.6472496799979126
+        },
+        {
+          "kind": "draft",
+          "sequence": 5,
+          "text": "L'accident a...",
+          "wall_seconds": 3.3628367420024006
+        },
+        {
+          "kind": "draft",
+          "sequence": 7,
+          "text": "L'accident a eu lieu en terrain.",
+          "wall_seconds": 4.386932444002014
+        },
+        {
+          "kind": "draft",
+          "sequence": 9,
+          "text": "L'accident a eu lieu en terrain montagneux.",
+          "wall_seconds": 5.6114353370066965
+        },
+        {
+          "kind": "draft",
+          "sequence": 11,
+          "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.",
+          "wall_seconds": 6.853354545004549
+        },
+        {
+          "kind": "draft",
+          "sequence": 13,
+          "text": "L'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé.",
+          "wall_seconds": 7.829927908998798
+        },
+        {
+          "kind": "draft",
+          "sequence": 15,
+          "text": "L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait été causé par un incendie.",
+          "wall_seconds": 8.98804432900215
+        },
+        {
+          "kind": "draft",
+          "sequence": 17,
+          "text": "L'accident a eu lieu en terrain montagneux, il semblerait que cela ait été causé par un incendie malveillant.",
+          "wall_seconds": 10.22688188799657
+        },
+        {
+          "kind": "draft",
+          "sequence": 19,
+          "text": "L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait été causé par un incendie malveillant.",
+          "wall_seconds": 11.371446321005351
+        }
+      ],
+      "final_wall_seconds": 12.497929194010794,
+      "audio_seconds": 10.2,
+      "word_errors": 0,
+      "reference_words": 20,
+      "memory_peak": {
+        "VmPeak": 160852,
+        "VmSize": 160852,
+        "VmHWM": 148508,
+        "VmRSS": 142840,
+        "Threads": 1
+      },
+      "guarded": null,
+      "scope_events_unchanged": true,
+      "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+      "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e"
+    },
+    {
+      "case": "es_419-0",
+      "reference": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan, dado que ello puede afectar sus planes de viaje.",
+      "raw_final": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello pueda afectar sus planes de viaje.",
+      "startup_ready_seconds": 0.7270682410016889,
+      "first_nonempty_draft": {
+        "kind": "draft",
+        "sequence": 3,
+        "text": "Gracias.",
+        "wall_seconds": 2.627595885001938
+      },
+      "all_drafts": [
+        {
+          "kind": "draft",
+          "sequence": 3,
+          "text": "Gracias.",
+          "wall_seconds": 2.627595885001938
+        },
+        {
+          "kind": "draft",
+          "sequence": 5,
+          "text": "Se recomienda en",
+          "wall_seconds": 3.4038941579929087
+        },
+        {
+          "kind": "draft",
+          "sequence": 7,
+          "text": "Se recomienda enfáticamente a los viajes.",
+          "wall_seconds": 4.492131771999993
+        },
+        {
+          "kind": "draft",
+          "sequence": 9,
+          "text": "Se recomienda enfáticamente a los viajeros que se informan.",
+          "wall_seconds": 5.702253030001884
+        },
+        {
+          "kind": "draft",
+          "sequence": 11,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cuál es el problema.",
+          "wall_seconds": 6.916178535000654
+        },
+        {
+          "kind": "draft",
+          "sequence": 13,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima.",
+          "wall_seconds": 7.894193512998754
+        },
+        {
+          "kind": "draft",
+          "sequence": 15,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo.",
+          "wall_seconds": 8.991793424997013
+        },
+        {
+          "kind": "draft",
+          "sequence": 17,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visita.",
+          "wall_seconds": 10.343890386997373
+        },
+        {
+          "kind": "draft",
+          "sequence": 19,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello pueda.",
+          "wall_seconds": 11.905467438002233
+        },
+        {
+          "kind": "draft",
+          "sequence": 21,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello pueda afectar sus planes de viaje.",
+          "wall_seconds": 13.60642615800316
+        },
+        {
+          "kind": "draft",
+          "sequence": 23,
+          "text": "Se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo del clima extremo en el área que visitan, dado que ello pueda afectar sus planes de viaje.",
+          "wall_seconds": 15.304116547005833
+        }
+      ],
+      "final_wall_seconds": 16.97875553900667,
+      "audio_seconds": 12.84,
+      "word_errors": 2,
+      "reference_words": 29,
+      "memory_peak": {
+        "VmPeak": 167252,
+        "VmSize": 167252,
+        "VmHWM": 154780,
+        "VmRSS": 144276,
+        "Threads": 1
+      },
+      "guarded": null,
+      "scope_events_unchanged": true,
+      "fixture_sha256": "95df54f13e862069293afca618669316d194c1b4c6601eb808b501c86292b527",
+      "fixture_pcm_sha256": "e2b9e95c2670346bb4ef3e8161cd427576fc450c355109b9fb161380efdecbc7"
+    }
+  ],
+  "controls": [
+    {
+      "mode": "silence",
+      "exit": 0,
+      "guarded": null,
+      "memory_peak": {
+        "VmPeak": 139772,
+        "VmSize": 137852,
+        "VmHWM": 111496,
+        "VmRSS": 108228,
+        "Threads": 1
+      },
+      "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-aot-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"draft_policy\": \"incremental\", \"wall_seconds\": 0.7299327380023897}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 3, \"text\": \"\", \"wall_seconds\": 2.0246536109916633}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 5, \"text\": \"\", \"wall_seconds\": 3.0143402190005872}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 6, \"text\": \"\", \"wall_seconds\": 3.016299757990055}\n",
+      "scope_events_unchanged": true
+    },
+    {
+      "mode": "eof",
+      "exit": 1,
+      "guarded": null,
+      "memory_peak": {
+        "VmPeak": 139772,
+        "VmSize": 139772,
+        "VmHWM": 126820,
+        "VmRSS": 126820,
+        "Threads": 1
+      },
+      "stdout": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-aot-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"draft_policy\": \"incremental\", \"wall_seconds\": 0.739824869990116}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 3, \"text\": \"Merci.\", \"wall_seconds\": 2.6444418330065673}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 5, \"text\": \"L'accident a...\", \"wall_seconds\": 3.364549428995815}\n",
+      "scope_events_unchanged": true
+    }
+  ],
+  "memory_trace": {
+    "rx_publications": [
+      "6     mprotect(0x7f7c32ffe000, 2752512, PROT_READ|PROT_EXEC) = 0"
+    ],
+    "rwx_requests": []
+  },
+  "repeat": {
+    "literal_final_equal": true,
+    "first": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-aot-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"draft_policy\": \"incremental\", \"wall_seconds\": 0.7238785700028529}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 3, \"text\": \"Merci.\", \"wall_seconds\": 2.6371257349965163}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 5, \"text\": \"L'accident a...\", \"wall_seconds\": 3.351927399999113}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 7, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.38667562098999}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 9, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.609369357989635}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 11, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.852649697990273}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 13, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.829317923999042}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 15, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.9719122480019}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 17, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.23170346400002}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 19, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.379261843991117}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.504499005997786}\n",
+    "second": "WHISTLE_AOT_WORKER_REPLY {\"kind\": \"ready\", \"sequence\": 1, \"model\": \"whistle-aot-public-review\", \"revision\": \"b358ddadd89b7a713b5aa131f23032d3cca1b251\", \"draft_policy\": \"incremental\", \"wall_seconds\": 0.7311030980054056}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 3, \"text\": \"Merci.\", \"wall_seconds\": 2.6472496799979126}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 5, \"text\": \"L'accident a...\", \"wall_seconds\": 3.3628367420024006}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 7, \"text\": \"L'accident a eu lieu en terrain.\", \"wall_seconds\": 4.386932444002014}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 9, \"text\": \"L'accident a eu lieu en terrain montagneux.\", \"wall_seconds\": 5.6114353370066965}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 11, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que ce soit.\", \"wall_seconds\": 6.853354545004549}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 13, \"text\": \"L'accident a eu lieu en terrain montagneux et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9.\", \"wall_seconds\": 7.829927908998798}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 15, \"text\": \"L'accident a eu lieu en terrain montagneux. Il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie.\", \"wall_seconds\": 8.98804432900215}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 17, \"text\": \"L'accident a eu lieu en terrain montagneux, il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 10.22688188799657}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"draft\", \"sequence\": 19, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 11.371446321005351}\nWHISTLE_AOT_WORKER_REPLY {\"kind\": \"done\", \"sequence\": 20, \"text\": \"L'accident a eu lieu en terrain montagneux, et il semblerait que cela ait \\u00e9t\\u00e9 caus\\u00e9 par un incendie malveillant.\", \"wall_seconds\": 12.497929194010794}\n"
+  },
+  "owned_services": {
+    "tilo-dictation-aot-compile-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-diagnostic-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-recognition-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-trace-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-repeat-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-fr-fr-0-complete-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-fr-fr-0-silence-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-fr-fr-0-eof-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-en-us-0-complete-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-de-de-0-complete-7d6b-20261009": "inactive",
+    "tilo-dictation-aot-worker-es-419-0-complete-7d6b-20261009": "inactive"
+  },
+  "raw_artifacts": {
+    "source-build-receipt.json": {
+      "bytes": 3853,
+      "sha256": "8c513863dac1d4cfc0cb9bbcfab714abe47764acc974073f05141e9b3147fdda"
+    },
+    "aot-receipt.json": {
+      "bytes": 3911,
+      "sha256": "bf071936823107544d4c5e6ada94967d290dfc0aabe944b80b911444e617981c"
+    },
+    "compile-result.json": {
+      "bytes": 4657,
+      "sha256": "775dd0595f4b85735530a285c348c602f6eabd4f4f54b836fcb84e6a67990ca5"
+    },
+    "first-confined-proof/recognize-result.json": {
+      "bytes": 7797,
+      "sha256": "625b0403f6fca2ceb3d7aae511bfb0926b7c9878ffba3ebc0bd2b45a57da5ee3"
+    },
+    "repeat-original-result.json": {
+      "bytes": 10372,
+      "sha256": "0b518e664c7536c49882f8543ef18c8b84dc859108ee22ac1bb9bf2cb3896846"
+    },
+    "repeat-final-result.json": {
+      "bytes": 10371,
+      "sha256": "401623d9d6e57ed61a954c72e4224c25ef330cee4600dde615ed18f26ee3c98c"
+    },
+    "worker-fr_fr-0-complete-trace-result.json": {
+      "bytes": 10367,
+      "sha256": "af3d8ef68e10f724131789c771c4f37449bbf943e1f85e1ec910f11679520510"
+    },
+    "trace-fr_fr-0-complete/native.log": {
+      "bytes": 23601,
+      "sha256": "32d1e895d219c1a2f56c290a413b8431c9fdb3917d78f7480d95c6be76f908a7"
+    },
+    "failed-trace-scope.log": {
+      "bytes": 1169,
+      "sha256": "a136bb84714b1ecc51fbccd9d218c88680b520c4172f2e441c144371c7318919"
+    },
+    "compile-diagnostic.log": {
+      "bytes": 1652,
+      "sha256": "ddb12b6393a363ada21ed0f49b1f56516973ebe1710b0dc71e8631d9fda922d3"
+    },
+    "worker-en_us-0-complete-result.json": {
+      "bytes": 10832,
+      "sha256": "91eb7d9de0e67aa875c204aad98d6322f4633c49a0e2219a62f97304a0754a77"
+    },
+    "worker-de_de-0-complete-result.json": {
+      "bytes": 14124,
+      "sha256": "17a145a3d44a3f9c5fa78d92a3eb8a65c8d00f0858bdb8b7588bc53c591e85ea"
+    },
+    "worker-fr_fr-0-complete-result.json": {
+      "bytes": 10371,
+      "sha256": "401623d9d6e57ed61a954c72e4224c25ef330cee4600dde615ed18f26ee3c98c"
+    },
+    "worker-es_419-0-complete-result.json": {
+      "bytes": 12017,
+      "sha256": "3e3c1f96c277d69807d4102b5e42606eb4f97c76e4921331d9576fd3ed016102"
+    },
+    "worker-fr_fr-0-silence-result.json": {
+      "bytes": 6673,
+      "sha256": "d67bd654f2a0b2f95051552a488945a2bda3be03c7736755cce812fbb8c7f16b"
+    },
+    "worker-fr_fr-0-eof-result.json": {
+      "bytes": 6473,
+      "sha256": "f1892233a099ba5a6546ecfa31f9b6690b709b9b40424ac839d83bce60bcdf25"
+    }
+  },
+  "raw_directory": "${BUILD_ROOT}/target/dictation-whistle-wasmtime-aot-public-20261009-7d6b",
+  "public_fixture_revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+  "not_qualified": [
+    "live microphone",
+    "native/foreign app insertion with this engine",
+    "older physical device",
+    "ARM",
+    "active-inference cancellation",
+    "language/dictionary revocation with this engine",
+    "production immutable runtime/model admission"
+  ],
+  "historical_attempts": [
+    "initial observer helper missing (failed before child)",
+    "absolute DT_NEEDED library path failed; corrected using -L/-l without broadening namespace",
+    "first peer trace not observable; direct-worker trace succeeds",
+    "intermediate rerun stopped before silence child by host pressure admission; original limits retained"
+  ],
+  "licence": "Wasmtime Apache-2.0 WITH LLVM-exception; Whistle runtime/model Apache-2.0; binaries are private uninstalled qualification artifacts",
+  "validation": {
+    "strict_clippy": "passed 0.92 s",
+    "custody_tests": "final source: 3 passed, zero skips, 0.005 s after 0.77 s compile",
+    "shell_tests_compile": "passed 1 min 17 s",
+    "default_off_examples": "both final binaries built, 1.32 s",
+    "native_cpp": "-Wall -Wextra -Werror passed",
+    "python": "Ruff/syntax passed",
+    "staged_checks": "passed: exact staged formatting, 10601 source blobs, repository contracts, parameter limits and unexplained allows",
+    "affected_plan": "inspected after committing; exact selection reported in held PR",
+    "ci": "unreported at candidate publication; consult held PR current-head checks"
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "29e0b8a68f3b56c320ca218727560177c6b01fc4",
+    "original_sha256": "00c360f87236bd126e6d881c559506276ee8a70527b91194cce0d2dfb616ccd8",
+    "original_path": "docs/architecture/dictation-whistle-aot-review.json",
+    "normalized_string_fields": [
+      "$.runtime.runtime_build",
+      "$.runtime.native_commands[0][7]",
+      "$.runtime.native_commands[0][8]",
+      "$.runtime.native_commands[0][9]",
+      "$.runtime.native_commands[0][13]",
+      "$.runtime.native_commands[1][9]",
+      "$.runtime.native_commands[1][10]",
+      "$.runtime.native_commands[1][11]",
+      "$.runtime.native_commands[1][15]",
+      "$.factory.source_build.runtime_build",
+      "$.factory.source_build.native_commands[0][7]",
+      "$.factory.source_build.native_commands[0][8]",
+      "$.factory.source_build.native_commands[0][9]",
+      "$.factory.source_build.native_commands[0][13]",
+      "$.factory.source_build.native_commands[1][9]",
+      "$.factory.source_build.native_commands[1][10]",
+      "$.factory.source_build.native_commands[1][11]",
+      "$.factory.source_build.native_commands[1][15]",
+      "$.first_confined_batch.source_build.runtime_build",
+      "$.first_confined_batch.source_build.native_commands[0][7]",
+      "$.first_confined_batch.source_build.native_commands[0][8]",
+      "$.first_confined_batch.source_build.native_commands[0][9]",
+      "$.first_confined_batch.source_build.native_commands[0][13]",
+      "$.first_confined_batch.source_build.native_commands[1][9]",
+      "$.first_confined_batch.source_build.native_commands[1][10]",
+      "$.first_confined_batch.source_build.native_commands[1][11]",
+      "$.first_confined_batch.source_build.native_commands[1][15]",
+      "$.raw_directory"
+    ]
+  }
+}

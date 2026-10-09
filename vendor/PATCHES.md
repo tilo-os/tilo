@@ -49,10 +49,14 @@ sources; every following commit is a reviewable topic change:
   [toolchain-compatible lint attributes](https://github.com/linebender/vello/pull/1863).
   This keeps diagnostics and compatibility cleanup out of the performance PR
   while retaining the dependency-ordered 0.9 history used by Tilo.
-- `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
+- `codex/winit-dictation-ack-history` contains winit alone, based on crates.io
   `winit` 0.30.13. It retains the registry metadata and updates
   `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
   commits straightforward to apply to an upstream source checkout.
+  It extends `vendor-upstream/winit-0.30.13`: one exact synchronization records
+  already-landed pen, presentation and keyboard source from Tilo's
+  `2fa854fb55` base, followed by the content-free dictation ACK extension.
+  The ACK is a separate reviewable commit, `217d0e69b3f4824391bdab8c5f73ce178cf4946c`.
 
 Run `tools/vendor-history.sh verify` to check the recorded roots and tips. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to create portable Git
@@ -91,6 +95,14 @@ No crates.io crate in the workspace depends on `winit` any more (the shell
 uses `tilo-accesskit-winit`, and Smithay's `backend_winit` is off), so every
 crate sees tilo-winit's types without a `[patch]`. vello had no crates.io
 dependents either, so its `[patch]` entries are gone too.
+
+The winit fork also carries `tilo_text_input_v1`, a content-free, surface-bound
+acknowledgement beside standard Wayland text-input-v3. It publishes only opaque
+field stamps and operation receipts. Dictation text still arrives as the standard
+IME commit; this extension grants no microphone permission or input-method
+ownership. The SDK enables deferred browser fields only during an admitted voice
+session and consumes the original renderer's guarded receipt before acknowledging
+an edit. `vendor/winit/TILO-FORK.md` records the additional event variant and API.
 
 The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
 crates.io release, and only the optional `presentation-feedback` feature
