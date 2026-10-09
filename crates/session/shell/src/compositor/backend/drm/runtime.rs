@@ -2055,10 +2055,7 @@ impl DrmDispatchState {
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
     fn with_presentations_quiesced<T>(gate: Option<&Arc<Mutex<()>>>, f: impl FnOnce() -> T) -> T {
-        let _present_guard = gate.map(|gate| {
-            gate.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
+        let _quiesced = super::quiesce_presentations(gate);
         f()
     }
 
