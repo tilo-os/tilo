@@ -90,7 +90,7 @@ pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
 mod surface;
-#[cfg(all(windows, feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 #[cfg(feature = "native")]
 pub use surface::AppSurface;
@@ -503,7 +503,7 @@ pub use crate::action_locus::ActionUiRoute;
 )]
 pub struct App {
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
-    #[cfg(all(windows, feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     startup_renderer: Option<native_runner::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,

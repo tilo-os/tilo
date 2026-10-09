@@ -1,5 +1,5 @@
 //! Inner ownership during callback-bearing App assembly. No gate is held here.
-#[cfg(all(windows, feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 use super::native_runner;
 use super::{
     AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
@@ -60,7 +60,7 @@ impl Drop for AppAssemblyCustody {
 )]
 #[derive(Default)]
 pub(super) struct AppAssemblyValues {
-    #[cfg(all(windows, feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     pub startup_renderer: Option<Option<native_runner::RendererPreparation>>,
     pub history: Option<Option<Box<crate::history_mode::host::HistoryHost>>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -164,7 +164,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         crate::control_custody::CustodyAttachment::Initial,
     );
     control.finish_initial_installation();
-    #[cfg(all(windows, feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
     {
         assembly.values.startup_renderer = Some(None);
     }
@@ -247,7 +247,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {
-        #[cfg(all(windows, feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
             startup_renderer: Some(startup_renderer),
         history: Some(history),
         #[cfg(any(test, feature = "test-support"))]
@@ -317,7 +317,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     let retirement = assembly.retirement.take();
     let mut app = App {
         retirement,
-        #[cfg(all(windows, feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
         startup_renderer,
         control_domain,
         wake_scope,
