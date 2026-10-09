@@ -12,6 +12,7 @@
 use std::cell::{Cell, RefCell};
 
 use tilo_app::framework::{Effected, Projection};
+use tilo_app::prelude::tilo_actions::Action as _;
 use tilo_app::prelude::*;
 
 thread_local! {
@@ -263,4 +264,142 @@ fn an_entry_that_could_not_go_out_stays_pending_until_the_outside_changed() {
     let first = app.versions().first().unwrap().hash;
     app.past_version(&[first]).unwrap();
     assert_eq!(carried().len(), 1);
+}
+
+thread_local! {
+    /// The invocation each awaited entry ran under, and its pending reply.
+    static AWAITED: RefCell<Vec<(Option<tilo_actions::InvocationId>, String)>> =
+        const { RefCell::new(Vec::new()) };
+    static REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Carries each entry out under the invocation that queued it, answering
+/// when the outside confirms.
+struct AwaitedApp;
+
+impl ResourceApp for AwaitedApp {
+    type Resource = Post;
+    const ID: &'static str = "so.tilo.test-post-awaited";
+    const TITLE: &'static str = "Post";
+
+    fn view(cx: &mut ViewCx<Post>) -> Element {
+        cx.outbox_awaited(
+            Post::paths().outbox,
+            |_, _: &Delivery| true,
+            |_, delivery, cx| {
+                AWAITED.with(|awaited| {
+                    awaited
+                        .borrow_mut()
+                        .push((cx.invocation(), delivery.text.clone()));
+                });
+                REPLIES.with(|replies| replies.borrow_mut().push(cx.reply()));
+                Ok(Effected::Pending)
+            },
+        );
+        Box::new(Column::new())
+    }
+}
+
+fn start(
+    app: &mut TestApp<AwaitedApp>,
+    action: &str,
+    arguments: &serde_json::Value,
+) -> tilo_actions::InvocationId {
+    let instance_id = app.harness().component_instance_id().unwrap();
+    let address = tilo_app::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: tilo_actions::ActionAddress::new("test.post", action),
+    };
+    let (invocation, started) = app
+        .harness()
+        .start_bound_job_for(None, &address, arguments.as_object().unwrap(), true)
+        .unwrap();
+    assert!(
+        started.completed().is_none(),
+        "the entry is still going out"
+    );
+    invocation
+}
+
+fn succeeded(app: &mut TestApp<AwaitedApp>, invocation: tilo_actions::InvocationId) -> bool {
+    app.harness().job_updates(invocation).iter().any(|update| {
+        matches!(update, tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. } if *actual == invocation)
+    })
+}
+
+fn reply(result: Result<tilo_actions::ActionOutput, String>) {
+    REPLIES
+        .with(|replies| replies.borrow_mut().pop().unwrap())
+        .finish(result);
+}
+
+#[test]
+fn an_entry_runs_under_the_invocation_that_queued_it_which_waits_for_it() {
+    AWAITED.with(|awaited| awaited.borrow_mut().clear());
+    REPLIES.with(|replies| replies.borrow_mut().clear());
+    let mut app = TestApp::<AwaitedApp>::new().unwrap();
+    let send = start(
+        &mut app,
+        "send",
+        &serde_json::json!({ "device": "test-device", "text": "hello" }),
+    );
+    assert_eq!(
+        AWAITED.with(|awaited| awaited.borrow().clone()),
+        [(Some(send), "hello".to_owned())]
+    );
+    app.settle();
+    assert!(
+        !succeeded(&mut app, send),
+        "it waits for the entry to settle"
+    );
+    reply(Ok(tilo_actions::ActionOutput {
+        value: Some(serde_json::json!("receipt:hello")),
+        resources: Vec::new(),
+    }));
+    app.settle();
+    assert!(succeeded(&mut app, send));
+    let hello = entry_of(&app, "hello");
+    assert_eq!(
+        app.state().outbox.outcome(&hello),
+        Some(&Settled::Done("receipt:hello".to_owned()))
+    );
+
+    // Undo is an invocation of its own; the recall it queues runs under it,
+    // and a refused recall fails it.
+    let undo = start(&mut app, "undo", &serde_json::json!({}));
+    assert_ne!(undo, send);
+    assert_eq!(
+        AWAITED.with(|awaited| awaited.borrow().last().cloned()),
+        Some((Some(undo), "recall receipt:hello".to_owned()))
+    );
+    reply(Err("the server refused the recall".into()));
+    app.settle();
+    assert!(app.harness().job_updates(undo).iter().any(
+        |update| matches!(update, tilo_actions::InvocationUpdate::Failed { invocation, error }
+            if *invocation == undo && error.message.contains("refused the recall"))
+    ));
+
+    // What a peer queued inherits no invocation.
+    app.merge_peer_edit(|doc| {
+        Post::SEND
+            .with(("test-device".to_owned(), "from a peer".to_owned()))
+            .build(0)
+            .unwrap()
+            .apply(doc)
+            .unwrap();
+    });
+    app.settle();
+    assert_eq!(
+        AWAITED.with(|awaited| awaited.borrow().last().cloned()),
+        Some((None, "from a peer".to_owned()))
+    );
+}
+
+fn entry_of(app: &TestApp<AwaitedApp>, text: &str) -> Id {
+    app.state()
+        .outbox
+        .entries()
+        .find(|(_, entry)| entry.value.text == text)
+        .map(|(id, _)| id.clone())
+        .unwrap()
 }

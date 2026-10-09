@@ -16,7 +16,7 @@ use ui_core::widget::document_effects::AppliedDocument;
 const MAX_CAUSES: usize = 256;
 const MAX_INVOCATIONS: usize = 128;
 
-struct Completion {
+pub(super) struct Completion {
     invocation: InvocationId,
     remaining: usize,
     admitted: usize,
@@ -26,7 +26,7 @@ struct Completion {
 }
 
 impl Completion {
-    fn finished(&mut self, result: Result<ActionOutput, ActionFailure>) {
+    pub(super) fn finished(&mut self, result: Result<ActionOutput, ActionFailure>) {
         let Some(remaining) = self.remaining.checked_sub(1) else {
             self.error.get_or_insert_with(|| {
                 failure("document receipt has no pending consequence".into())
@@ -40,9 +40,9 @@ impl Completion {
     }
 }
 
-type Group = Rc<RefCell<Completion>>;
+pub(super) type Group = Rc<RefCell<Completion>>;
 
-trait CausalDrainer<R: Resource> {
+pub(super) trait CausalDrainer<R: Resource> {
     fn start(
         &mut self,
         before: &R::State,
@@ -216,6 +216,10 @@ impl<R: Resource> CausalEffects<R> {
         });
     }
 
+    pub(super) fn register_drainer(&mut self, alive: Weak<()>, drain: Box<dyn CausalDrainer<R>>) {
+        self.drains.push(RegisteredCausal { alive, drain });
+    }
+
     pub(super) fn registered(&self) -> bool {
         self.drains
             .iter()
@@ -322,5 +326,91 @@ impl<R: Resource> CausalEffects<R> {
                 output: completion.output.clone(),
             },
         })
+    }
+}
+
+/// An outbox whose entries an admitted local invocation queues run at once
+/// under that invocation, which completes once they settled.
+impl<R, T, O> CausalDrainer<R> for super::SharedOutbox<R, T, O>
+where
+    R: Resource<State = R> + tilo_resource::Model + 'static,
+    T: tilo_resource::Model + Clone + 'static,
+    O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+{
+    fn start(
+        &mut self,
+        before: &R::State,
+        after: &R::State,
+        operation: &ResourceOperation<'_>,
+        group: &Group,
+    ) -> Result<(), String> {
+        let mut drain = self.0.borrow_mut();
+        let previous: HashSet<tilo_resource::Id> =
+            drain.owned(before).into_iter().map(|(id, _)| id).collect();
+        let causes: Vec<_> = drain
+            .owned(after)
+            .into_iter()
+            .filter(|(id, _)| !previous.contains(id))
+            .collect();
+        if causes.len().saturating_add(group.borrow().admitted) > MAX_CAUSES
+            || causes.iter().any(|(id, _)| drain.jobs.contains(id))
+        {
+            return Err("document consequences exceed the budget or are already running".into());
+        }
+        let (request, custody) = operation.with_custody();
+        for (id, value) in causes {
+            operation.check()?;
+            {
+                let mut completion = group.borrow_mut();
+                completion.remaining = completion.remaining.saturating_add(1);
+                completion.admitted = completion.admitted.saturating_add(1);
+            }
+            drain
+                .caused
+                .insert(id.clone(), (request.invocation, Rc::clone(group)));
+            if let Err(error) =
+                drain.start_entry(id.clone(), value, Some(request.invocation), custody)
+                && let Some((_, group)) = drain.caused.remove(&id)
+            {
+                group.borrow_mut().finished(Err(failure(error)));
+            }
+        }
+        Ok(())
+    }
+
+    fn poll(&mut self) {
+        let revision = self.0.borrow().revision;
+        super::Drainer::poll(&mut *self.0.borrow_mut(), revision);
+    }
+
+    fn cancel(&mut self, invocation: InvocationId) {
+        let mut drain = self.0.borrow_mut();
+        let ids: Vec<tilo_resource::Id> = drain
+            .caused
+            .iter()
+            .filter(|(_, (caused, _))| *caused == invocation)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            drain.jobs.cancel(&id);
+            if let Some((_, group)) = drain.caused.remove(&id) {
+                group
+                    .borrow_mut()
+                    .finished(Err(failure("document consequence cancelled".into())));
+            }
+        }
+    }
+
+    fn retire(&mut self) {
+        let invocations: HashSet<InvocationId> = self
+            .0
+            .borrow()
+            .caused
+            .values()
+            .map(|(invocation, _)| *invocation)
+            .collect();
+        for invocation in invocations {
+            CausalDrainer::cancel(self, invocation);
+        }
     }
 }
