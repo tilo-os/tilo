@@ -167,6 +167,7 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
 fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> bool {
     match envelope {
         EnvelopeV2::State(state) => state_in_scope(scope, state),
+        EnvelopeV2::UnsignedDelta { workspace_id, .. } => *workspace_id == scope.workspace_id,
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::ActionsReady { room, .. }
         | EnvelopeV2::Unavailable { room, .. }
@@ -259,8 +260,10 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
+    /// [`Self::TiloV2Signed`] whose zero-signature deltas omit the signature.
+    TiloV2Compact,
     /// v2 with device-signed private actions.
     TiloV2Signed,
     TiloV2,
@@ -270,6 +273,7 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloV2Compact => tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             Self::TiloV2Signed => tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
             Self::TiloV2 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             Self::TiloV1 => ALPN,
@@ -277,39 +281,50 @@ impl RelayWireProtocol {
     }
 
     fn is_v2(self) -> bool {
-        matches!(self, Self::TiloV2Signed | Self::TiloV2)
+        self.framing().is_v2()
+    }
+
+    fn signs_actions(self) -> bool {
+        matches!(self, Self::TiloV2Compact | Self::TiloV2Signed)
+    }
+
+    fn framing(self) -> tilo_delivery_protocol::transport_v2::StateFraming {
+        use tilo_delivery_protocol::transport_v2::StateFraming;
+        match self {
+            Self::TiloV2Compact => StateFraming::Compact,
+            Self::TiloV2Signed | Self::TiloV2 => StateFraming::V2,
+            Self::TiloV1 => StateFraming::V1,
+        }
     }
 
     /// The protocol a relay that does not speak this one may still speak.
-    /// Only signing degrades here: an older relay gets unsigned actions,
-    /// which current brokers serve for effect-free reads only.
+    /// Compact state degrades to the full delta envelope, and signing to
+    /// unsigned actions, which current brokers serve for effect-free reads
+    /// only.
     fn fallback(self) -> Option<Self> {
         match self {
+            Self::TiloV2Compact => Some(Self::TiloV2Signed),
             Self::TiloV2Signed => Some(Self::TiloV2),
             Self::TiloV2 | Self::TiloV1 => None,
         }
     }
 }
 
-/// Dial `protocol`, falling back once to the protocol it degrades to when the
-/// relay offers no such ALPN. Every other failure is returned as is.
+/// Dial `protocol`, falling back along [`RelayWireProtocol::fallback`] while
+/// the relay offers no such ALPN. Every other failure is returned as is.
 async fn dial(
     endpoint: &Endpoint,
     relay_addr: EndpointAddr,
-    protocol: RelayWireProtocol,
+    mut protocol: RelayWireProtocol,
 ) -> Result<(iroh::endpoint::Connection, RelayWireProtocol), ClientError> {
-    match endpoint.connect(relay_addr.clone(), protocol.alpn()).await {
-        Ok(conn) => Ok((conn, protocol)),
-        Err(error) => match (classify_connect_error(&error), protocol.fallback()) {
-            (ClientError::UnsupportedProtocol, Some(older)) => {
-                let conn = endpoint
-                    .connect(relay_addr, older.alpn())
-                    .await
-                    .map_err(|error| classify_connect_error(&error))?;
-                Ok((conn, older))
-            }
-            (error, _) => Err(error),
-        },
+    loop {
+        match endpoint.connect(relay_addr.clone(), protocol.alpn()).await {
+            Ok(conn) => return Ok((conn, protocol)),
+            Err(error) => match (classify_connect_error(&error), protocol.fallback()) {
+                (ClientError::UnsupportedProtocol, Some(older)) => protocol = older,
+                (error, _) => return Err(error),
+            },
+        }
     }
 }
 
@@ -750,7 +765,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Signed,
+            RelayWireProtocol::TiloV2Compact,
         )
         .await
     }
@@ -796,7 +811,7 @@ impl RelayClient {
                 revocations,
                 action_key: Some(own_sk.clone()),
             },
-            RelayWireProtocol::TiloV2Signed,
+            RelayWireProtocol::TiloV2Compact,
         )
         .await
     }
@@ -894,7 +909,7 @@ impl RelayClient {
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
         let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
-        let mut reader = SessionReader::new(recv, v2);
+        let mut reader = SessionReader::framed(recv, protocol.framing());
         let pump_connection = conn.clone();
         let pump_scope = interactive_scope.clone();
         let pump = n0_future::task::spawn(async move {
@@ -1007,7 +1022,7 @@ impl RelayClient {
         // Install the verified interactive scope before exposing the client.
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
-        if matches!(protocol, RelayWireProtocol::TiloV2Signed) {
+        if protocol.signs_actions() {
             client.action_key = action_key;
         }
         Ok(client)
@@ -1231,7 +1246,8 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let writing = run_v2_writer(send, states, actions, scope);
+    // Both halves of a session share the protocol the reader was built for.
+    let writing = run_v2_writer(send, states, actions, scope, reader.framing());
     let reading = run_v2_reader(reader, state_sink, action_sink, scope);
     tokio::pin!(writing);
     tokio::pin!(reading);
@@ -1246,6 +1262,7 @@ async fn run_v2_writer<W>(
     states: &mut mpsc::Receiver<Envelope>,
     actions: &mut mpsc::Receiver<EnvelopeV2>,
     scope: Option<&InteractiveWorkspaceScope>,
+    framing: tilo_delivery_protocol::transport_v2::StateFraming,
 ) -> bool
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -1269,7 +1286,8 @@ where
                 {
                     tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
                 }
-                let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode_state(&env, true)
+                let Ok(bytes) =
+                    tilo_delivery_protocol::transport_v2::encode_state_framed(&env, framing)
                 else {
                     return false;
                 };
@@ -1852,6 +1870,22 @@ mod scheduling_tests {
             super::classify_connect_error(&error),
             super::ClientError::UnsupportedProtocol
         ));
+    }
+
+    #[test]
+    fn compact_state_degrades_to_the_full_envelope_before_signing_degrades() {
+        use super::RelayWireProtocol::{TiloV1, TiloV2, TiloV2Compact, TiloV2Signed};
+        use tilo_delivery_protocol::transport_v2::StateFraming;
+        let mut chain = vec![TiloV2Compact];
+        while let Some(older) = chain.last().and_then(|protocol| protocol.fallback()) {
+            chain.push(older);
+        }
+        assert_eq!(chain, [TiloV2Compact, TiloV2Signed, TiloV2]);
+        assert_eq!(TiloV2Compact.framing(), StateFraming::Compact);
+        assert_eq!(TiloV2Signed.framing(), StateFraming::V2);
+        assert_eq!(TiloV1.framing(), StateFraming::V1);
+        assert!(TiloV2Compact.signs_actions() && TiloV2Signed.signs_actions());
+        assert!(!TiloV2.signs_actions());
     }
     use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
     use uuid::Uuid;

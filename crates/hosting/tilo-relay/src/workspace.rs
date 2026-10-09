@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
-use crate::store::{CommitRecord, LogEntry, WorkspaceStore};
+use crate::store::{CommitRecord, WorkspaceStore};
 use crate::transport::Envelope;
 
 /// Membership set for a workspace on this relay. Populated by the
@@ -792,14 +792,6 @@ impl WorkspaceRuntime {
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
-        // 3. Audit log — best-effort; failure does not block routing.
-        let _ = self.store.append_log(&LogEntry {
-            workspace_id: self.store.workspace_id(),
-            received_at_ns: seq,
-            author_device_hex: hex::encode(author),
-            authored_at_ns: seq,
-            delta_len: raw_delta_bytes.len() as u64,
-        });
         // 4. Materialize into the pinned doc so the host holds
         //    authoritative current state (the source for anti-entropy
         //    resync), not just per-peer queues. Runs AFTER fan-out +
