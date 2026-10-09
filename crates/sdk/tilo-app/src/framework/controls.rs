@@ -261,6 +261,19 @@ impl<R: Resource> Actions<R> {
         path: Path<R, V>,
         edit: impl Fn(&Path<R, V>, V) -> Edit<R> + Send + Sync + 'static,
     ) -> Option<ActionBinding<V>> {
+        self.edit_binding_with(path, move |path, value| Ok(edit(path, value)))
+    }
+
+    /// [`Self::edit_binding`] for a control whose input `I` is not the
+    /// field's value: a dropdown of "125%" for a scale of 1.25, a slider's
+    /// position on a log scale. `edit` maps each committed input to the
+    /// field edit, or refuses it, which refuses the input like a value the
+    /// field cannot take.
+    pub fn edit_binding_with<V: 'static, I: 'static>(
+        &self,
+        path: Path<R, V>,
+        edit: impl Fn(&Path<R, V>, I) -> Result<Edit<R>, String> + Send + Sync + 'static,
+    ) -> Option<ActionBinding<I>> {
         let what = format!("the field {path:?}");
         if !R::EDITS {
             unbound::<R>(&what, "it has no field edits");
@@ -278,8 +291,8 @@ impl<R: Resource> Actions<R> {
             }
         };
         let published = self.published.borrow();
-        ActionBinding::fallible(&published, &spec, move |value| {
-            let edit = edit(&path, value);
+        ActionBinding::fallible(&published, &spec, move |input| {
+            let edit = edit(&path, input)?;
             serde_json::to_value(&edit)
                 .map(|edit| {
                     serde_json::Map::from_iter([(tilo_resource::EDIT_PARAM.to_owned(), edit)])

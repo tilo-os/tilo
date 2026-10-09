@@ -190,7 +190,12 @@ impl ResourceSurface<Shelf> for Rows {
                     preview: None,
                 },
             ),
-            LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor"),
+            // A row nesting one of its own: the nested row is bound too.
+            LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor").row(LiveRow::new(
+                "shelf/visitor/guest",
+                "test.shelf.guest",
+                "Guest",
+            )),
         ]
     }
 
@@ -354,6 +359,23 @@ fn rows_bind_the_edits_surfaces_offer_in_surface_order() {
         ("mark-right", "Mark right"),
         ("label", "Label from the right"),
     ];
+    let guest = root
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "shelf/visitor")
+        .and_then(|visitor| visitor.children.first())
+        .map(|guest| {
+            guest
+                .actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.label.as_str()))
+                .collect::<Vec<_>>()
+        });
+    assert_eq!(
+        guest,
+        Some(visitor.clone()),
+        "a nested row is bound as its parent is"
+    );
     assert_eq!(
         rows,
         vec![
