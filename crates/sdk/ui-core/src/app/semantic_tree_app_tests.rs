@@ -171,6 +171,10 @@ struct CounterCard {
     /// submits an edit.
     bump_after_ping: bool,
     follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
+    /// On the next settle, replace the button with a new one, carrying its
+    /// pending activation over, as a surface closing its own dialog does.
+    replace_on_settle: std::rc::Rc<std::cell::Cell<bool>>,
+    replaced: bool,
 }
 
 fn counter_resource(destructive: bool) -> Resource {
@@ -259,6 +263,8 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
         }
     }
 
@@ -289,6 +295,8 @@ impl CounterCard {
             resource_result: None,
             bump_after_ping: false,
             follow_ups: vec![],
+            replace_on_settle: std::rc::Rc::default(),
+            replaced: false,
         }
     }
 
@@ -355,6 +363,17 @@ impl Widget for CounterCard {
         self.button.sync(s, p);
     }
     fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        if self.replace_on_settle.replace(false) {
+            if let Some(invocation) =
+                crate::widget::controls::take_control_invocation(&mut self.button)
+            {
+                self.follow_ups.push((invocation, None));
+            }
+            let resource = counter_resource(self.destructive);
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
+            self.button = Button::new("bump-replacement", "Bump").on_action(binding);
+            self.replaced = true;
+        }
         self.button.settle(edits, p);
         let mut actions = crate::action_host::ActionHost::new();
         for scope in std::mem::take(&mut self.scoped_jobs) {
@@ -417,6 +436,9 @@ impl Widget for CounterCard {
     }
     fn name(&self) -> &'static str {
         "CounterCard"
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.replaced)
     }
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
@@ -2341,3 +2363,29 @@ fn a_needle_finds_an_action_by_its_parameters() {
 #[cfg(all(target_os = "linux", feature = "native"))]
 #[path = "native_pty_wake_tests.rs"]
 mod native_pty_wake_tests;
+
+/// A settle that replaces the focused control and, in the same frame,
+/// dispatches its destructive action: the confirmation that opens finds
+/// where focus returns in the live tree, never through the layout's
+/// pointer to the control that was replaced.
+#[test]
+fn a_control_replaced_while_its_destructive_action_asks_is_not_followed() {
+    let card = CounterCard::with_destructive(true);
+    let replace = std::rc::Rc::clone(&card.replace_on_settle);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let button = app.focusable_order[0];
+    app.set_focused_node(Some(button));
+    activate_bound_button(&mut app);
+    replace.set(true);
+    assert!(app.sync_model(true));
+    assert!(app.action_palette().is_some(), "the host asks to confirm");
+    assert_eq!(counter(&app), 0, "nothing ran unconfirmed");
+    assert!(
+        app.actions.ordinary_palette_return_focus.is_none(),
+        "focus returns to no control: the focused one was replaced, and its \
+         replacement was never focused"
+    );
+}
