@@ -1125,7 +1125,7 @@ mod tests {
     use super::*;
 
     thread_local! {
-        static NAME_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static NAME_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     fn set_modified(path: &Path, modified: SystemTime) {
