@@ -370,6 +370,13 @@ pub enum BackendEvent {
         event: WindowEvent,
         input_time_ns: u64,
     },
+    /// A button edge from a real libinput pointer event, retaining its kernel
+    /// monotonic origin. MouseKeys, touch/tablet emulation and injected control
+    /// events remain ordinary `Input` and do not acquire a physical witness.
+    PhysicalPointerButton {
+        event: WindowEvent,
+        input_time_ns: u64,
+    },
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.

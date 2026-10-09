@@ -471,6 +471,41 @@ mod tests {
     }
 
     #[test]
+    fn physical_pointer_button_keeps_its_origin_across_output_layouts() {
+        use super::super::BackendEvent;
+        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        for outputs in [
+            placements(&[((0, 0), (1920, 1080), (1920, 1080))]),
+            placements(&[
+                ((0, 0), (1472, 920), (2944, 1840)),
+                ((1472, 100), (1280, 800), (1920, 1200)),
+            ]),
+        ] {
+            for state in [ElementState::Pressed, ElementState::Released] {
+                let device_id = DeviceId::dummy();
+                let event = event_to_logical(
+                    &outputs,
+                    BackendEvent::PhysicalPointerButton {
+                        event: WindowEvent::MouseInput {
+                            device_id,
+                            state,
+                            button: MouseButton::Right,
+                        },
+                        input_time_ns: 987_654_321,
+                    },
+                );
+                assert!(matches!(event,
+                    BackendEvent::PhysicalPointerButton {
+                        event: WindowEvent::MouseInput {
+                            device_id: actual_device, state: actual_state, button: MouseButton::Right,
+                        },
+                        input_time_ns: 987_654_321,
+                    } if actual_device == device_id && actual_state == state));
+            }
+        }
+    }
+
+    #[test]
     fn a_point_between_outputs_maps_through_the_nearest() {
         let p = placements(&[
             ((0, 0), (1280, 800), (2560, 1600)),

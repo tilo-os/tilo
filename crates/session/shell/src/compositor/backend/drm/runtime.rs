@@ -3407,13 +3407,7 @@ impl DrmDispatchState {
                 }
             }
             InputEvent::PointerButton { event } => {
-                if let Some(button) = map_mouse_button(event.button()) {
-                    let st = match event.state() {
-                        ButtonState::Pressed => ElementState::Pressed,
-                        ButtonState::Released => ElementState::Released,
-                    };
-                    self.push(BackendEvent::Input(mouse_input_event(st, button)));
-                }
+                self.handle_physical_pointer_button(event.button(), event.state(), event.time());
             }
             InputEvent::PointerAxis { event } => {
                 // The user's scroll speed scales wheel and finger scrolling
@@ -3434,6 +3428,29 @@ impl DrmDispatchState {
             }
             _ => {}
         }
+    }
+
+    /// Preserve libinput's CLOCK_MONOTONIC microseconds on both button edges.
+    /// This entry point is only for libinput pointer buttons; keyboard and
+    /// touch/tablet emulation keep using the unstamped mouse input path.
+    fn handle_physical_pointer_button(&mut self, code: u32, state: ButtonState, time_usec: u64) {
+        let Some(button) = map_mouse_button(code) else {
+            return;
+        };
+        let state = match state {
+            ButtonState::Pressed => ElementState::Pressed,
+            ButtonState::Released => ElementState::Released,
+        };
+        let event = mouse_input_event(state, button);
+        self.push(match time_usec.checked_mul(1000) {
+            Some(input_time_ns) => BackendEvent::PhysicalPointerButton {
+                event,
+                input_time_ns,
+            },
+            // Keep the click functional without inventing a timestamp if the
+            // actual origin cannot be represented in nanoseconds.
+            None => BackendEvent::Input(event),
+        });
     }
 
     /// The touchpad-gesture arms of [`Self::handle_libinput_event`] — split
@@ -7445,6 +7462,55 @@ mod tests {
     }
 
     #[test]
+    fn physical_pointer_button_retains_both_edges_and_actual_origin() {
+        let mut state = DrmDispatchState::default();
+        for (code, expected_button) in [
+            (0x110, MouseButton::Left),
+            (0x111, MouseButton::Right),
+            (0x112, MouseButton::Middle),
+            (0x113, MouseButton::Back),
+            (0x114, MouseButton::Forward),
+        ] {
+            for (edge, expected_state, origin_usec) in [
+                (ButtonState::Pressed, ElementState::Pressed, 123_456_789),
+                (ButtonState::Released, ElementState::Released, 123_457_890),
+                (ButtonState::Pressed, ElementState::Pressed, 0),
+            ] {
+                state.events.clear();
+                state.handle_physical_pointer_button(code, edge, origin_usec);
+                assert!(matches!(state.events.as_slice(), [
+                    BackendEvent::PhysicalPointerButton {
+                        event: WindowEvent::MouseInput { state, button, .. },
+                        input_time_ns,
+                    }
+                ] if *state == expected_state && *button == expected_button
+                    && *input_time_ns == origin_usec * 1000));
+            }
+        }
+        state.events.clear();
+        state.handle_physical_pointer_button(0x117, ButtonState::Pressed, 123_456_789);
+        assert!(
+            state.events.is_empty(),
+            "unsupported buttons remain ignored"
+        );
+    }
+
+    #[test]
+    fn physical_pointer_button_overflow_does_not_invent_a_timestamp() {
+        let mut state = DrmDispatchState::default();
+        for (edge, expected) in [
+            (ButtonState::Pressed, ElementState::Pressed),
+            (ButtonState::Released, ElementState::Released),
+        ] {
+            state.events.clear();
+            state.handle_physical_pointer_button(0x110, edge, u64::MAX);
+            assert!(matches!(state.events.as_slice(), [
+                BackendEvent::Input(WindowEvent::MouseInput { state, button: MouseButton::Left, .. })
+            ] if *state == expected));
+        }
+    }
+
+    #[test]
     fn physical_key_timestamp_survives_translation_but_not_synthetic_repeat() {
         let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
         let a = xkb::Keycode::new(38);
@@ -7621,8 +7687,16 @@ mod tests {
             ..Default::default()
         });
         let kp5 = xkb::Keycode::new(76 + 8);
-        state.handle_keyboard_key(kp5, true, None);
-        state.handle_keyboard_key(kp5, false, None);
+        // Even when the source key has a real kernel origin, MouseKeys
+        // generates pointer edges rather than observing a physical button.
+        state.handle_keyboard_key(kp5, true, Some(123_456_789_000));
+        state.handle_keyboard_key(kp5, false, Some(123_457_890_000));
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::PhysicalPointerButton { .. }))
+        );
         let clicks: Vec<_> = state
             .events
             .iter()
