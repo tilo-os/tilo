@@ -2251,6 +2251,22 @@ settings-notification-prefs-show-badges = { $new ->
     [true] Mitteilungsabzeichen eingeschaltet
    *[false] Mitteilungsabzeichen ausgeschaltet
 }
+settings-notification-prefs-per-app = Mitteilungen einer App geändert
+settings-app-notification-rule-banners = Mitteilungsbanner einer App geändert
+settings-app-notification-rule-sounds = Mitteilungstöne einer App geändert
+settings-app-notification-rule-badges = Kennzeichen einer App geändert
+settings-app-notification-rule-previews = Nachrichtenvorschau einer App geändert
+settings-app-notification-rule-lock-screen = Mitteilungen einer App auf dem Sperrbildschirm geändert
+settings-app-notification-rule-cross-device = Mitteilungen einer App auf anderen Geräten geändert
+settings-app-notification-rule-priority = { $new ->
+    [true] Eine App während des Fokus durchgelassen
+   *[false] Eine App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-priority-contacts = { $new ->
+    [true] Prioritätskontakte einer App während des Fokus durchgelassen
+   *[false] Prioritätskontakte einer App während des Fokus nicht mehr durchgelassen
+}
+settings-app-notification-rule-muted-until = Stummschaltung einer App geändert
 settings-focus-schedule-enabled = { $new ->
     [true] Fokuszeiten eingeschaltet
    *[false] Fokuszeiten ausgeschaltet
@@ -2366,3 +2382,11 @@ settings-locale-number-style = Zahlenformat geändert
 settings-locale-first-day-of-week = Ersten Wochentag geändert
 settings-choose-theme = Design { $theme } gewählt
 settings-set-key-repeat = Tastenwiederholung geändert
+settings-allow-continuity = { $on ->
+    [true] Continuity zwischen Geräten erlaubt
+   *[false] Continuity zwischen Geräten beendet
+}
+settings-allow-capability = { $on ->
+    [true] { $capability } für Continuity erlaubt
+   *[false] { $capability } für Continuity beendet
+}

@@ -64,7 +64,7 @@ pub(crate) struct InstalledNotificationApp {
     name: String,
 }
 
-fn valid_app_id(id: &str) -> bool {
+pub(crate) fn valid_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
         && id
@@ -1111,6 +1111,33 @@ mod tests {
             .is_err()
         );
         assert_eq!(app.settings::<NotificationPrefs>().get(), prefs);
+
+        // An agent sets one app's rule as a typed edit of the section, and
+        // the section refuses a rule for something that is not an app id.
+        let rule = |app_id: &str, value: serde_json::Value| {
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }, { "key": app_id }],
+                "op": "set",
+                "value": value,
+            }})
+        };
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            rule("so.tilo.calendar", serde_json::json!({ "priority": true })),
+        )
+        .unwrap();
+        let calendar = app.settings::<NotificationPrefs>().get().per_app["so.tilo.calendar"];
+        assert!(calendar.priority);
+        assert_eq!(calendar.banners, None);
+        assert!(
+            app.call_on(
+                "settings:settings.notifications",
+                "field-edit",
+                rule("not an id", serde_json::json!({ "priority": true })),
+            )
+            .is_err()
+        );
     }
 
     /// Every app is a live row offering the flip of what applies to it now,

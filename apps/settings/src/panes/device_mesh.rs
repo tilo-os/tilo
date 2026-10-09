@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tilo_clock::unix_now;
 use ui::time::{Duration, Instant, SystemTime};
 
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
@@ -262,16 +261,6 @@ pub enum DeviceMeshEffect {
         workspace: u64,
         on: bool,
     },
-    /// Allow continuing activities between the person's devices.
-    #[effect(idempotent)]
-    SetContinuity { on: bool },
-    /// Allow one kind of continuity: clipboard, notifications, media…
-    #[effect(idempotent)]
-    SetContinuityFacet {
-        #[param("The kind, by its key")]
-        facet: String,
-        on: bool,
-    },
     /// Look for a new home server nearby, then approve the one found.
     #[effect(label = "Pair home server")]
     PairHomeServer,
@@ -444,7 +433,6 @@ pub struct DeviceMeshModel {
     /// holding them.
     continuity: ContinuityPrivacy,
     continuity_settings: Followed<ContinuityPrivacy>,
-    continuity_status: Option<String>,
     /// The name typed for each home server, by node id.
     peer_names: HashMap<String, Arc<Mutex<String>>>,
     roaming_provenance_path: Option<PathBuf>,
@@ -837,7 +825,6 @@ impl DeviceMeshModel {
             personal_device_error,
             continuity,
             continuity_settings,
-            continuity_status: None,
             peer_names: HashMap::new(),
             roaming_provenance_path,
             roaming_provenance_stamp,
@@ -873,19 +860,6 @@ impl DeviceMeshModel {
         pane
     }
 
-    fn save_continuity(&mut self) {
-        let continuity = self.continuity.clone();
-        self.continuity_status = match self
-            .continuity_settings
-            .settings()
-            .update(|stored| *stored = continuity)
-        {
-            Ok(_) => None,
-            Err(error) => Some(format!("Continuity choices were not saved: {error}")),
-        };
-        self.continuity_settings.refresh();
-    }
-
     fn common_replication(&self) -> ReplicationIntent {
         self.config
             .workspaces
@@ -896,10 +870,6 @@ impl DeviceMeshModel {
     }
 
     /// Carry out `effect`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per effect, each a short configuration change"
-    )]
     fn apply(&mut self, effect: &DeviceMeshEffect) -> Result<(), String> {
         let configured = match effect {
             DeviceMeshEffect::SetDeviceRole { role } => {
@@ -960,22 +930,6 @@ impl DeviceMeshModel {
                     self.config.remove_workspace(id);
                 }
                 true
-            }
-            DeviceMeshEffect::SetContinuity { on } => {
-                self.continuity.enabled = *on;
-                self.continuity.record(None, *on, unix_now());
-                self.save_continuity();
-                false
-            }
-            DeviceMeshEffect::SetContinuityFacet { facet, on } => {
-                let capability = Capability::ALL
-                    .into_iter()
-                    .find(|capability| capability.key() == facet)
-                    .ok_or_else(|| "unsupported Continuity capability".to_string())?;
-                self.continuity.set_allowed(capability, *on);
-                self.continuity.record(Some(capability), *on, unix_now());
-                self.save_continuity();
-                false
             }
             DeviceMeshEffect::PairHomeServer => {
                 self.approve_enrollment(PairingTarget::HomePeer);
@@ -1384,10 +1338,10 @@ impl DeviceMeshModel {
                 )
             },
         );
-        let continuity_toggle = self.cx.bind(
+        let continuity_toggle = self.cx.bind_verb(
             Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
                 .with_id(CONTINUITY_ENABLED_KEY),
-            effect(DeviceMeshEffect::SET_CONTINUITY),
+            ContinuityPrivacy::ALLOW_CONTINUITY,
         );
         let allow = t("mesh-allow-continuity");
         let allow_desc = t("mesh-allow-continuity-desc");
@@ -1413,19 +1367,15 @@ impl DeviceMeshModel {
                 t_args("mesh-facet-off", &[("desc", desc.into())])
             };
             let facet = capability.key().to_owned();
-            let toggle = self.cx.bind(
+            let toggle = self.cx.bind_verb(
                 Toggle::from_state(&ui::LocalState::new(self.continuity.allowed(capability)))
                     .with_id(&key),
-                effect(DeviceMeshEffect::SET_CONTINUITY_FACET)
-                    .map(move |on: bool| (facet.clone(), on)),
+                ContinuityPrivacy::ALLOW_CAPABILITY.map(move |on: bool| (facet.clone(), on)),
             );
             let cap_label = capability.label();
             privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
         privacy_rows.push(caption(&t("mesh-privacy-stay")));
-        if let Some(status) = &self.continuity_status {
-            privacy_rows.push(caption(status));
-        }
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
@@ -2184,17 +2134,33 @@ mod tests {
 
         // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
         {
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            pane.apply(&DeviceMeshEffect::SetContinuity { on: true })
-                .unwrap();
-            pane.apply(&DeviceMeshEffect::SetContinuityFacet {
-                facet: "clipboard".into(),
-                on: true,
-            })
+            use crate::host::testing::{CONTINUITY, invoke_section};
+            let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-continuity",
+                serde_json::json!({ "on": true }),
+            )
             .unwrap();
+            invoke_section(
+                &mut app,
+                CONTINUITY,
+                "allow-capability",
+                serde_json::json!({ "capability": "clipboard", "on": true }),
+            )
+            .unwrap();
+            assert!(
+                invoke_section(
+                    &mut app,
+                    CONTINUITY,
+                    "allow-capability",
+                    serde_json::json!({ "capability": "telepathy", "on": true }),
+                )
+                .is_err()
+            );
 
-            let saved = pane.cx.settings::<ContinuityPrivacy>().get();
+            let saved = app.settings::<ContinuityPrivacy>().get();
             assert!(saved.enabled);
             assert!(saved.effective(Capability::Clipboard));
             assert_eq!(saved.audit.len(), 2);

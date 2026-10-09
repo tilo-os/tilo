@@ -448,6 +448,7 @@ pub(crate) mod testing {
     pub(crate) const POWER: &str = "settings.power";
     pub(crate) const INPUT: &str = "settings.input";
     pub(crate) const TEXT_ASSISTANCE: &str = "settings.text-assistance";
+    pub(crate) const CONTINUITY: &str = "settings.continuity";
 
     /// Set the field `field` of the section `kind` to `value` through the
     /// door, as an agent does.

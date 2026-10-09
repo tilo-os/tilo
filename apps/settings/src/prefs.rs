@@ -999,7 +999,6 @@ pub struct NotificationPrefs {
     /// Rules keyed by the launcher's verified package id. The compositor
     /// deliberately never indexes this map with an app-supplied display name.
     #[serde(default)]
-    #[model(readonly)]
     pub per_app: std::collections::BTreeMap<
         String,
         settings_store::notification_policy::AppNotificationRule,
@@ -2138,7 +2137,17 @@ impl NotificationPrefs {
             f64::from(self.focus.weekdays),
             0.0..=127.0,
             "the focus days",
-        )
+        )?;
+        match self
+            .per_app
+            .keys()
+            .find(|app| !crate::panes::notifications::valid_app_id(app))
+        {
+            Some(app) => Err(ui::tilo_resource::Refusal::new(format!(
+                "`{app}` is not an app id"
+            ))),
+            None => Ok(()),
+        }
     }
 }
 

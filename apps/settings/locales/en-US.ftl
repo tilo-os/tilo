@@ -2251,6 +2251,22 @@ settings-notification-prefs-show-badges = { $new ->
     [true] Turned on notification badges
    *[false] Turned off notification badges
 }
+settings-notification-prefs-per-app = Changed how an app notifies
+settings-app-notification-rule-banners = Changed an app's notification banners
+settings-app-notification-rule-sounds = Changed an app's notification sounds
+settings-app-notification-rule-badges = Changed an app's notification badges
+settings-app-notification-rule-previews = Changed an app's message previews
+settings-app-notification-rule-lock-screen = Changed an app's notifications on the lock screen
+settings-app-notification-rule-cross-device = Changed an app's notifications on other devices
+settings-app-notification-rule-priority = { $new ->
+    [true] Let an app through during focus
+   *[false] Stopped letting an app through during focus
+}
+settings-app-notification-rule-priority-contacts = { $new ->
+    [true] Let an app's priority contacts through during focus
+   *[false] Stopped letting an app's priority contacts through during focus
+}
+settings-app-notification-rule-muted-until = Changed how long an app is muted
 settings-focus-schedule-enabled = { $new ->
     [true] Turned on the focus schedule
    *[false] Turned off the focus schedule
@@ -2366,3 +2382,11 @@ settings-locale-number-style = Changed the number format
 settings-locale-first-day-of-week = Changed the first day of the week
 settings-choose-theme = Chose the theme { $theme }
 settings-set-key-repeat = Changed the key repeat
+settings-allow-continuity = { $on ->
+    [true] Allowed Continuity between devices
+   *[false] Stopped Continuity between devices
+}
+settings-allow-capability = { $on ->
+    [true] Allowed { $capability } for Continuity
+   *[false] Stopped { $capability } for Continuity
+}

@@ -841,7 +841,6 @@ type = "bool"
 [[resources.fields]]
 owner = "notification-prefs"
 path = "per_app"
-readonly = true
 stored = "value"
 title = "Rules keyed by the launcher's verified package id. The compositor"
 type = """
@@ -1077,7 +1076,6 @@ type = "FirstDayOfWeek"
 [[resources]]
 kind = "settings.continuity"
 label = "Continuity"
-verbs = []
 version = 1
 
 [[resources.fields]]
@@ -1167,6 +1165,42 @@ readonly = true
 stored = "value"
 title = "Audit"
 type = "Vec<AuditEntry>"
+
+[[resources.verbs]]
+description = "Allow continuing activities between the person's devices, or stop; the audit trail notes when."
+id = "allow-continuity"
+kind = "undoable"
+label = "Allow Continuity"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+
+[resources.verbs.params.schema]
+description = "On"
+type = "boolean"
+
+[[resources.verbs]]
+description = "Allow one kind of Continuity (clipboard, notifications, media…), or stop; the audit trail notes when."
+id = "allow-capability"
+kind = "undoable"
+label = "Allow a kind of Continuity"
+
+[[resources.verbs.params]]
+name = "capability"
+required = true
+
+[resources.verbs.params.schema]
+description = "The kind, by its key: clipboard, notifications, wifi_settings, media, display_input, file_transfer, realtime_sessions, typed_gamepad or app_continuations"
+type = "string"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+
+[resources.verbs.params.schema]
+description = "On"
+type = "boolean"
 
 [[resources]]
 kind = "settings.desktop-controls"
