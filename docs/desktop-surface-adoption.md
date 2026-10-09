@@ -167,3 +167,15 @@ capability-gate tests retain their assertions at release. Follow-label elision
 at 125% text, status-entry controls, broader viewport/paging and installed-device
 acceptance remain open; protected landing and exact merged-main postchecks are
 independent integration gates.
+
+## People status draft lifecycle follow-up
+
+Closing People now ends its status edit lifecycle before hidden input, hidden
+paint or reopen can resurrect the discarded draft. Completed Activity/Invite/
+Join/dismiss actions cancel the edit without publishing it. Existing shared
+EditCore-backed selection, IME, navigation, explicit Enter submission and
+two-step Escape behavior remain intact. [Qualification](evidence/people-status-lifecycle/README.md)
+records four production baseline failures, native journeys and two inspected
+light/dark125 screenshot pairs. The portable component and broader existing
+render suites are unchanged. Status field/control rendering, text scaling,
+viewport/paging and installed-device acceptance remain open.
