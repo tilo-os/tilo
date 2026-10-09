@@ -2103,6 +2103,16 @@ mod component_adapter {
                     crate::widget::controls::has_pending_control_invocation(root)
                 })
         }
+        fn has_action_control_bindings(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(|root| crate::widget::controls::has_action_control_bindings(root))
+        }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
