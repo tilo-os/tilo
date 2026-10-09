@@ -3858,12 +3858,14 @@ pub(super) fn actions(
                         "expected_budget",
                         ParamType::Object,
                         "Exact observed budget, or null when absent",
-                    ),
+                    )
+                    .nullable(),
                     ActionParam::optional(
                         "budget",
                         ParamType::Object,
                         "Owner policy: turn_ms up to 900000, total_ms up to7200000, turn <= total; null restores defaults",
-                    ),
+                    )
+                    .nullable(),
                 ],
                 false,
             );
@@ -4205,6 +4207,74 @@ mod coordination_tests {
         ] {
             request.argument = Some(format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, input));
             assert!(command(&request).is_err());
+        }
+    }
+
+    #[test]
+    fn published_budget_contract_accepts_explicit_absence_but_not_non_objects() {
+        let task = WorkspaceTask {
+            id: "task:one".into(),
+            title: "Review RTL".into(),
+            created_by: "owner".into(),
+            assigned_agent: Some("scribe".into()),
+            route: WorkspaceTaskRoute::Model,
+            status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
+            resource: None,
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        };
+        let snapshot = WorkspaceTaskSnapshot {
+            tasks: vec![task],
+            controls: [(
+                "task:one".into(),
+                tilo_desktop_model::WorkspaceTaskControl::default(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let published = actions(&snapshot, "Workspace")
+            .into_iter()
+            .find(|action| {
+                action.resource == "desktop:task:one" && action.action == "set-execution-budget"
+            })
+            .expect("eligible task publishes its budget action");
+        let explicit_absence = serde_json::json!({
+            "expected_run_epoch": 0,
+            "expected_budget": null,
+            "budget": null,
+        });
+        let supplied = explicit_absence
+            .as_object()
+            .expect("test arguments are an object");
+        let bound = tilo_actions::ActionArgs::bind_json(&published.params, supplied)
+            .expect("the published typed contract accepts its documented null values");
+        assert_eq!(serde_json::Value::Object(bound.to_json()), explicit_absence);
+
+        let mut request = envelope(&explicit_absence);
+        request.resource = "desktop:task:one".into();
+        request.action = "set-execution-budget".into();
+        assert!(matches!(
+            command(&request).unwrap(),
+            Some(WorkspaceTaskCommand::SetExecutionBudget {
+                expected_run_epoch: 0,
+                expected_budget: None,
+                budget: None,
+                ..
+            })
+        ));
+
+        for malformed in [
+            serde_json::json!({"expected_run_epoch": 0, "expected_budget": "none"}),
+            serde_json::json!({"expected_run_epoch": 0, "budget": []}),
+        ] {
+            assert!(
+                tilo_actions::ActionArgs::bind_json(
+                    &published.params,
+                    malformed.as_object().expect("test arguments are an object"),
+                )
+                .is_err()
+            );
         }
     }
 
