@@ -82,22 +82,12 @@ pub fn dispatch_in<W: Widget + ?Sized>(
     modifiers: Modifiers,
     event: &WindowEvent,
 ) -> bool {
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .doc(doc)
+        .layout(taffy, node)
+        .send(host, event)
+        .handled
 }
 
 /// [`dispatch_in`] against a fresh document.

@@ -17,8 +17,6 @@
 //! effects, while closing the pane is an explicit view operation.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(test)]
-use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
 
 use ui::theme::Theme;
@@ -664,34 +662,19 @@ mod tests {
             let center = rect.center();
 
             let device = winit::event::DeviceId::dummy();
-            let mods = winit::event::Modifiers::default();
-            let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                pane.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            };
-            dispatch(
+            let mut at = ui::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(&taffy, node);
+            at.send(
                 &mut pane,
-                WindowEvent::CursorMoved {
+                &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (center.x, center.y).into(),
                 },
             );
-            dispatch(
+            at.send(
                 &mut pane,
-                WindowEvent::MouseInput {
+                &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,

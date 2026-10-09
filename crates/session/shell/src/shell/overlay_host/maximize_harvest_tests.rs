@@ -84,7 +84,7 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use vello::kurbo::Point;
         use winit::dpi::PhysicalPosition;
-        use winit::event::{Modifiers, WindowEvent};
+        use winit::event::WindowEvent;
         let (tree, strip_id, group_id) = one_group_tree(false);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
@@ -135,27 +135,13 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
             },
         );
         g.apply_layout(&taffy, group_node, Point::ZERO);
-        let mut state = automerge::AutoCommit::new();
-        let root_id = automerge::ROOT;
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
         let moved = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(9000.0, 9000.0),
         };
-        g.handle_event(
-            &moved,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root_id,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: group_node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .layout(&taffy, group_node)
+            .send(g, &moved);
         assert!(g.maximized, "drain must flip maximized true");
 
         // Pre-harvest: persisted state still un-maximized.

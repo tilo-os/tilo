@@ -50,10 +50,9 @@ fn link_centre(app: &mut PdfApp, page: usize, want: impl Fn(&LinkTarget) -> bool
 
 /// Press and release at `p` through the widget's real event entry point.
 fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
-    use ui::Widget as _;
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    let mods = winit::event::Modifiers::default();
+    let mut at_root = ui::testing::Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root);
     let device_id = winit::event::DeviceId::dummy();
     for ev in [
         WindowEvent::CursorMoved {
@@ -71,21 +70,7 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
             button: MouseButton::Left,
         },
     ] {
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            &ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        at_root.send(app, &ev);
     }
 }
 

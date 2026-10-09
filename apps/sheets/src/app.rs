@@ -5976,25 +5976,11 @@ pub(crate) mod tests {
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> bool {
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .send(app, ev)
+            .handled
     }
 
     /// A cell edit takes an input-method composition: shown at the caret,
