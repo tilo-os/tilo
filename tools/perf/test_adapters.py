@@ -146,5 +146,45 @@ class WorkspaceSwitch(unittest.TestCase):
         self.assertEqual(nightly, produced)
 
 
+IDLE_GATE = ROOT / "crates/session/shell/tests/idle_wakeups.rs"
+
+
+def idle_log(total: float, shell: float) -> str:
+    # The shape of a --nocapture run: the table on stderr, the line on stdout.
+    return "\n".join([
+        "running 1 test",
+        "idle wakeups over 10.0 s: 3.40/s across 1 processes",
+        f"IDLE-WAKEUPS total_per_s={total:.3f} shell_per_s={shell:.3f} loop_ticks_per_s=0.000 "
+        "cpu_percent=0.400 window_ms=10012 threads_started=0",
+        "test idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget ... ok",
+    ])
+
+
+class IdleWakeups(unittest.TestCase):
+    def test_each_run_is_one_sample(self):
+        records = {item.kpi: item for item in adapters.idle_wakeups(
+            [idle_log(3.4, 2.1), idle_log(4.0, 2.5), idle_log(3.6, 2.2)], ENV)}
+        total = records["wakeups.headless_two_apps"]
+        self.assertEqual((total.unit, total.n, total.p50, total.max), ("per_s", 3, 3.6, 4.0))
+        self.assertEqual(records["wakeups.headless_two_apps.shell"].max, 2.5)
+        self.assertEqual(records["wakeups.frame_loop_ticks.headless_two_apps"].max, 0.0)
+        self.assertEqual(total.meta, {"runs": "3", "window_ms": "10012"})
+
+    def test_a_run_without_its_line_fails(self):
+        with self.assertRaisesRegex(ValueError, "IDLE-WAKEUPS"):
+            adapters.idle_wakeups([idle_log(3.4, 2.1), "running 1 test\ntest ... FAILED"], ENV)
+
+    def test_the_fields_are_the_gates(self):
+        """The gate prints every field the adapter reads."""
+        source = IDLE_GATE.read_text()
+        printed = set(re.findall(r"\b([a-z_]+)=\{", source[source.index('"IDLE-WAKEUPS'):]))
+        self.assertLessEqual({*adapters.IDLE_WAKEUPS_KPIS, "window_ms"}, printed)
+
+    def test_every_idle_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        nightly = {kpi for kpi in budgets.kpis if kpi.startswith("wakeups.")}
+        self.assertEqual(nightly, set(adapters.IDLE_WAKEUPS_KPIS.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
