@@ -3214,3 +3214,176 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     assert!(pump(&mut h, &left_button_released(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
+
+fn people_status_fixture() -> Harness {
+    let mut h = roster_follow_fixture();
+    h.host.local_status = Some("Reviewing draft".into());
+    h.host.local_status_origin = ui::StatusOrigin::Manual;
+    paint(&mut h);
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    let mut release = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(pump(&mut h, &release, mods));
+    assert!(h.host.status_editing);
+    h
+}
+
+#[test]
+fn people_status_dismissal_cancels_the_hidden_editor_before_reopen() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert_eq!(h.host.status_draft, "Reviewing draftx");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(100.0, 300.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    capture_people_completed(&mut h, "status-reopened");
+    assert!(
+        !h.host.status_editing,
+        "dismissed draft cannot reopen as an active editor"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_releases_keyboard_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    let mods = Modifiers::default();
+    assert!(
+        !pump(&mut h, &key_press(Key::Character("x".into())), mods),
+        "closed People releases the next key"
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim the next key"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_releases_ime_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    assert!(
+        !pump(
+            &mut h,
+            &WindowEvent::Ime(winit::event::Ime::Commit("hidden text".into())),
+            Modifiers::default(),
+        ),
+        "closed People releases the IME commit",
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim an IME commit"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_status_external_close_cancels_the_editor_at_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    paint(&mut h);
+    assert!(
+        !h.host.status_editing,
+        "a hidden paint must end the edit lifecycle"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+}
+
+#[test]
+fn people_status_visible_shared_editing_submits_once_and_escape_discards() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    assert!(pump(&mut h, &key_press(Key::Character("a".into())), ctrl));
+    assert!(pump(
+        &mut h,
+        &WindowEvent::Ime(winit::event::Ime::Commit("  Editing café  ".into())),
+        mods,
+    ));
+    assert_eq!(h.host.status_draft, "  Editing café  ");
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    assert_eq!(h.host.status_selection.cursor, 0);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::End)), mods));
+    assert_eq!(h.host.status_selection.cursor, h.host.status_draft.len());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(!h.host.status_editing);
+    assert_eq!(
+        h.chrome.borrow_mut().take_presence_requests(),
+        vec![
+            crate::shell::chrome_state::PresenceRequest::SetManualStatus(Some(
+                "Editing café".into()
+            ))
+        ],
+        "one explicit submit queues one normalized status request",
+    );
+    let mut repeat = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &repeat, mods));
+    assert!(!h.host.status_editing);
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
+    assert!(
+        h.chrome.borrow().overlays.collaborators,
+        "first Escape leaves the editor"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(
+        !h.chrome.borrow().overlays.collaborators,
+        "second Escape dismisses People"
+    );
+}
+
+#[test]
+fn people_status_activity_transition_discards_only_the_unpublished_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(h.host.status_editing, "press is still cancellable");
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    assert!(!h.host.status_editing);
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(
+        crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+            .is_some()
+    );
+}
