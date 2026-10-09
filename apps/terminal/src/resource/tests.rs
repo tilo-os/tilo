@@ -219,9 +219,10 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
 
     // A reviewed command may not smuggle control characters.
     assert!(
-        app.effect_confirmed(&TerminalEffect::Run {
-            command: "printf first\nprintf second".into(),
-        })
+        app.call(
+            "run",
+            serde_json::json!({"command": "printf first\nprintf second"})
+        )
         .is_err()
     );
 

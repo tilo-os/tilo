@@ -18,7 +18,8 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Doc, Effect, Fields, Model, ModelError, Refusal, Resource, resource,
+    self, ActionCx, Atom, Bytes, Collection, Doc, Effect, Fields, Id, JsonSchema, Model,
+    ModelError, Outbox, Refusal, Resource, resource,
 };
 use ui::widget::Element;
 
@@ -57,7 +58,149 @@ pub struct Terminal {
     /// process that takes the session.
     #[model(readonly)]
     pub pane: Option<Atom>,
+    /// Runs
+    ///
+    /// The commands the session ran, one item each, written when it ends.
+    #[model(readonly)]
+    pub runs: Collection<Run>,
+    /// Commands asked to run
+    ///
+    /// The command lines `run` queued for the device that runs the session;
+    /// only verbs queue them, and the terminal running it settles each with
+    /// the run it became.
+    pub requests: Outbox<RunRequest, RunAnswer>,
 }
+
+/// What a part of a run's output is.
+#[derive(
+    Model,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ItemKind {
+    #[default]
+    #[model(rename = "error")]
+    Error,
+    #[model(rename = "warning")]
+    Warning,
+    #[model(rename = "location")]
+    Location,
+    #[model(rename = "url")]
+    Url,
+    #[model(rename = "test-passed")]
+    TestPassed,
+    #[model(rename = "test-failed")]
+    TestFailed,
+    #[model(rename = "test-ignored")]
+    TestIgnored,
+    #[model(rename = "change")]
+    Change,
+}
+
+/// One thing a parser found in a run's output: a diagnostic, a location, a
+/// link, a test, a changed file.
+#[derive(
+    Model, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
+pub struct RunItem {
+    /// What it is.
+    pub kind: ItemKind,
+    /// What the output says about it.
+    pub text: String,
+    /// The file it is in, or the URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    /// A diagnostic's code, a test's name, a change's status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// One command the session ran (docs/app-model/ush.md, "A run").
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Run {
+    /// Command
+    #[model(label)]
+    pub command: Atom,
+    /// Working directory
+    pub cwd: Atom,
+    /// Where it ran: the session's encoded target.
+    pub environment: Option<Atom>,
+    /// Who ran it: the person at the keyboard, or whoever asked with `run`.
+    pub actor: Atom,
+    /// The person an agent ran it for.
+    pub for_person: Option<Atom>,
+    /// Started, in milliseconds since the Unix epoch.
+    pub started_ms: i64,
+    /// Ended, in milliseconds since the Unix epoch.
+    pub ended_ms: i64,
+    /// Exit status
+    pub exit: i32,
+    /// Everything it printed, escape sequences included.
+    pub output: Bytes,
+    /// It printed more than the output keeps.
+    pub truncated: bool,
+    /// The tool whose parser read it.
+    pub tool: Atom,
+    /// What its parsers found.
+    pub items: Vec<RunItem>,
+}
+
+/// A command line `run` asked the session to run.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct RunRequest {
+    /// Command
+    pub command: Atom,
+    /// Who asked.
+    pub requested_by: Atom,
+    /// The person they asked for.
+    pub for_person: Option<Atom>,
+    /// The pane of the process asked to run it: only that process does, so
+    /// a request outlives no restart to run unseen in a later one.
+    pub pane: Atom,
+}
+
+/// How a requested run went: the run it became.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RunAnswer {
+    pub run: Option<Id>,
+    pub exit: Option<i32>,
+}
+
+/// What a finished run recorded, as the Terminal that ran it hands it in.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct Finished {
+    pub command: String,
+    pub cwd: String,
+    pub started_ms: i64,
+    pub ended_ms: i64,
+    pub exit: i32,
+    /// The content hash of the raw output (lower-case hex), when it printed
+    /// anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub output_len: u64,
+    pub truncated: bool,
+    pub tool: String,
+    pub items: Vec<RunItem>,
+    /// The request it carried out, if `run` asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Id>,
+}
+
+/// The longest command line `run` takes.
+pub const MAX_COMMAND_BYTES: usize = 4 * 1024;
 
 impl Terminal {
     /// Where the session runs, once a session recorded it.
@@ -112,8 +255,107 @@ impl Terminal {
     }
 }
 
-#[resource(kind = "terminal.session", label = "Terminal")]
+#[resource(kind = "terminal.session", label = "Terminal", params = session)]
 impl Terminal {
+    /// Run a command line in the session.
+    ///
+    /// Types it into the session's shell, on the device that runs the
+    /// session, and answers with the run once it ends.
+    #[action]
+    pub fn run(
+        &mut self,
+        cx: &mut ActionCx,
+        requests: &mut Outbox<RunRequest, RunAnswer>,
+        #[param("The command line, as typed at the prompt")] command: String,
+    ) -> Result<(), Refusal> {
+        self.queue(cx, requests, &command)
+    }
+
+    /// Run a run's command line again.
+    #[action(item = runs)]
+    pub fn rerun(
+        &mut self,
+        cx: &mut ActionCx,
+        requests: &mut Outbox<RunRequest, RunAnswer>,
+        runs: &Id,
+    ) -> Result<(), Refusal> {
+        let command = self.runs.get(runs).ok_or("no such run")?.command.0.clone();
+        self.queue(cx, requests, &command)
+    }
+
+    /// Run one test of a run again, the way its tool runs one test.
+    #[action(item = runs)]
+    pub fn rerun_test(
+        &mut self,
+        cx: &mut ActionCx,
+        requests: &mut Outbox<RunRequest, RunAnswer>,
+        runs: &Id,
+        #[param("The test's name, as the run reported it")] test: String,
+    ) -> Result<(), Refusal> {
+        let run = self.runs.get(runs).ok_or("no such run")?;
+        if !run
+            .items
+            .iter()
+            .any(|item| item.code.as_deref() == Some(test.as_str()))
+        {
+            return Err(Refusal::new("the run reported no such test"));
+        }
+        let command = crate::parse::rerun_test(&run.command.0, &test)
+            .ok_or("this run's tool cannot run one test")?;
+        self.queue(cx, requests, &command)
+    }
+
+    /// Record a run that ended.
+    #[action(external)]
+    pub fn record_run(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The run, as the session marked it", flatten)] run: Finished,
+    ) -> Result<(), Refusal> {
+        let output = match &run.output {
+            Some(hash) => Bytes::Blob {
+                hash: content_hash(hash).ok_or("the output is not a content hash")?,
+                len: run.output_len,
+            },
+            None => Bytes::Empty,
+        };
+        let asked = run
+            .request
+            .as_ref()
+            .and_then(|request| self.requests.get(request))
+            .map(|entry| entry.value.clone());
+        let (actor, for_person) = match asked {
+            Some(asked) => (asked.requested_by, asked.for_person),
+            None => (Atom(cx.author().unwrap_or_default().to_owned()), None),
+        };
+        let mut items = run.items;
+        items.truncate(crate::parse::MAX_ITEMS);
+        // A run asked for is the item of its request's id, which the
+        // request's answer names.
+        let id = match run.request {
+            Some(request) if self.runs.get(&request).is_none() => request,
+            _ => cx.id(),
+        };
+        self.runs.push(
+            id,
+            Run {
+                command: Atom(run.command),
+                cwd: Atom(run.cwd),
+                environment: self.target.clone(),
+                actor,
+                for_person,
+                started_ms: run.started_ms,
+                ended_ms: run.ended_ms,
+                exit: run.exit,
+                output,
+                truncated: run.truncated,
+                tool: Atom(run.tool),
+                items,
+            },
+        );
+        Ok(())
+    }
+
     /// Record where the session runs.
     #[action(external)]
     pub fn record_target(
@@ -154,6 +396,48 @@ impl Terminal {
         self.pane = Some(Atom(pane));
         Ok(())
     }
+}
+
+impl Terminal {
+    /// Queue `command` for the process that runs the session.
+    fn queue(
+        &self,
+        cx: &mut ActionCx,
+        requests: &mut Outbox<RunRequest, RunAnswer>,
+        command: &str,
+    ) -> Result<(), Refusal> {
+        let command = command.trim();
+        if command.is_empty() || command.len() > MAX_COMMAND_BYTES {
+            return Err(Refusal::new("a command line of 1 to 4096 bytes"));
+        }
+        if command.chars().any(char::is_control) {
+            return Err(Refusal::new("one command line, without control characters"));
+        }
+        let pane = self
+            .pane
+            .clone()
+            .ok_or("the session is not running anywhere yet")?;
+        let request = RunRequest {
+            command: Atom(command.to_owned()),
+            requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
+            for_person: None,
+            pane,
+        };
+        requests.push(cx.id(), request);
+        Ok(())
+    }
+}
+
+/// The 32 bytes a lower-case hex content hash names.
+fn content_hash(hex: &str) -> Option<[u8; 32]> {
+    if !tilo_content::valid_hash(hex) {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (byte, pair) in out.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Keep explicit reads bounded even when retained output contains very long
@@ -208,14 +492,6 @@ pub enum TerminalEffect {
     Send {
         #[param("Text to send")]
         text: String,
-    },
-    /// Run command
-    ///
-    /// Runs one reviewed command in this live process.
-    #[effect(destructive)]
-    Run {
-        #[param("Command to run")]
-        command: String,
     },
     /// Interrupt process
     #[effect(destructive)]
@@ -356,10 +632,21 @@ impl ResourceApp for TerminalShell {
             TerminalWidget::spawn_headless()
         }
         .expect("terminal surface requires an emulator");
-        let widget = match cx.content() {
+        let mut widget = match cx.content() {
             Some(content) => widget.with_content(content),
             None => widget,
         };
+        let queue = crate::runs::RunQueue::default();
+        widget.run_through(queue.clone());
+        let owner = queue.clone();
+        cx.outbox_awaited(
+            Terminal::paths().requests,
+            move |_, request: &RunRequest| owner.runs(&request.pane.0),
+            move |id, request, cx: &mut EffectCx<Terminal>| {
+                queue.ask(id.clone(), request.command.0, cx.reply());
+                Ok(Effected::Pending)
+            },
+        );
         cx.surface(crate::TerminalView::new(widget))
     }
 

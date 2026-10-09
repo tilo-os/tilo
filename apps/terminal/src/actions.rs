@@ -191,28 +191,11 @@ mod tests {
         }
     }
 
-    /// A reviewed command presses Enter exactly once, and reviewed input may
-    /// not smuggle control sequences or reach the PTY when refused.
+    /// Reviewed input may not smuggle control sequences or reach the PTY
+    /// when refused.
     #[test]
-    fn reviewed_input_is_bounded_and_presses_enter_exactly_once() {
+    fn reviewed_input_is_bounded() {
         let (mut widget, writes) = build_test_widget();
-        widget
-            .perform(TerminalEffect::Run {
-                command: "printf resource-run".into(),
-            })
-            .expect("run command");
-        assert_eq!(drain_writes(&writes), b"printf resource-run\r".to_vec());
-
-        for command in ["  ", "printf first\nprintf second", "printf x\x1b[200~"] {
-            assert!(
-                widget
-                    .perform(TerminalEffect::Run {
-                        command: command.into()
-                    })
-                    .is_err(),
-                "unsafe command must be refused: {command:?}"
-            );
-        }
         for text in [
             String::new(),
             "x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1),
@@ -298,14 +281,7 @@ mod tests {
             .into_iter()
             .map(|status| format!("{status:?}"))
             .collect();
-        for id in [
-            "send",
-            "run",
-            "interrupt",
-            "clear",
-            "paste",
-            "paste-primary",
-        ] {
+        for id in ["send", "interrupt", "clear", "paste", "paste-primary"] {
             assert!(
                 unavailable
                     .iter()
