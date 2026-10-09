@@ -2312,7 +2312,7 @@ impl CanvasSurface {
     /// The model and edge filter share the framework's progress, permission
     /// checks and attributed completion for buttons and semantic callers.
     fn area_job(
-        &mut self,
+        &self,
         select: crate::selection::Select,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
