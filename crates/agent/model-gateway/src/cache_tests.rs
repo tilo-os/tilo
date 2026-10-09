@@ -196,6 +196,64 @@ fn caller_breakpoints_count_against_the_limit_and_are_never_duplicated() {
     );
 }
 
+/// The agent's first user turn on Anthropic: the catalogue in a text block of
+/// its own, closed by the agent's breakpoint so it is cached across tasks,
+/// then the memory and the request.
+fn catalogue_first_turn() -> Value {
+    json!([
+        {"type": "text", "text": "Operations published right now: …", "cache_control": {"type": EPHEMERAL}},
+        {"type": "text", "text": "The request: post hello"}
+    ])
+}
+
+#[test]
+fn the_agents_catalogue_breakpoint_leaves_the_tail_and_the_tools_theirs() {
+    // Turn one: the first user message is also the last. The catalogue keeps
+    // its one marker as it came, and the tail's goes on the request after it:
+    // system + catalogue + tail + tools is the whole budget.
+    let mut body = loop_turn();
+    body["messages"] = json!([{"role": "user", "content": catalogue_first_turn()}]);
+    let first = sent(&anthropic(), body);
+    assert_eq!(markers(&first), MAX_CACHE_BREAKPOINTS);
+    let content = &first["messages"][0]["content"];
+    assert_eq!(content[0], catalogue_first_turn()[0]);
+    assert_eq!(content[1]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(first["system"][0]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(first["tools"][1]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(sent(&anthropic(), first.clone()), first);
+
+    // A later turn: the tail moves to the newest tool results, the catalogue
+    // keeps its own, and the first turn's request is not marked.
+    let mut body = loop_turn();
+    body["messages"][0]["content"] = catalogue_first_turn();
+    let later = sent(&anthropic(), body);
+    assert_eq!(markers(&later), MAX_CACHE_BREAKPOINTS);
+    assert_eq!(later["messages"][0]["content"], catalogue_first_turn());
+    assert!(
+        later["messages"][2]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
+    assert_eq!(
+        later["messages"][2]["content"][1]["cache_control"]["type"],
+        EPHEMERAL
+    );
+    assert_eq!(later["system"][0]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(later["tools"][1]["cache_control"]["type"], EPHEMERAL);
+
+    // A first turn that is only the marked catalogue: that marker already
+    // ends the conversation, so nothing is stacked on it and the slot it
+    // would have taken stays free.
+    let catalogue_only = json!([catalogue_first_turn()[0].clone()]);
+    let mut body = loop_turn();
+    body["messages"] = json!([{"role": "user", "content": catalogue_only.clone()}]);
+    let alone = sent(&anthropic(), body);
+    assert_eq!(alone["messages"][0]["content"], catalogue_only);
+    assert_eq!(alone["system"][0]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(alone["tools"][1]["cache_control"]["type"], EPHEMERAL);
+    assert_eq!(markers(&alone), 3);
+}
+
 #[test]
 fn automatic_caching_keeps_the_tail_and_a_longer_ttl_keeps_everything() {
     // Top-level `cache_control` places the tail breakpoint itself and takes
