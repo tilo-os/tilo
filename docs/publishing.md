@@ -260,7 +260,10 @@ constraint of the design, and may change before Tilo leaves alpha.
 4. **The registry hosts the bytes.** `publish` uploads each package, signed by
    your key, and the entry points at
    `https://apps.tilo.so/artifacts/<blake3>.tapp`. An upload stays private
-   until review approves the entry that names it.
+   until review approves the entry that names it. The registry then also
+   serves a compressed copy at `<url>.zst`, which clients download and
+   decompress before checking it against your signed hash; your signature
+   covers only the package.
 5. **One key per publisher.** The same Ed25519 key signs packages and registry
    requests, kept in your secret store or, in CI, in
    `$TILO_PUBLISHER_KEY`. The App Publisher app manages keys on Tilo OS.

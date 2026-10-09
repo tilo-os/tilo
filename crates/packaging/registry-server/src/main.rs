@@ -90,6 +90,12 @@ enum Cmd {
         /// The full .tapp to host.
         file: PathBuf,
     },
+    /// Write the compressed twin (`<blake3>.zst`, `<blake3>.tapp.zst`) of
+    /// every stored payload object and imported package that lacks one, and
+    /// print what was written. Objects stored from now on get theirs when
+    /// they are stored; run this once for those stored before. Safe to rerun
+    /// and to run while `serve` runs.
+    CompressPayloads,
     /// Bootstrap a fresh data-dir with a `handshake.toml`.
     /// Idempotent — writing over an existing file is not the
     /// intended flow; use `--overwrite` explicitly.
@@ -370,6 +376,11 @@ async fn serve_cli() -> anyhow::Result<()> {
             cors_origins,
         } => cmd_serve(storage, bind, port, cors_origins).await,
         Cmd::ImportArtifact { file } => cmd_import_artifact(&storage, &file),
+        Cmd::CompressPayloads => {
+            let report = storage.compress_stored_objects()?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         Cmd::Init {
             owner_pubkey,
             name,
@@ -1090,6 +1101,7 @@ fn compact_after_prune(
         "staged_artifacts": pruned.staged_artifacts,
         "thin_packages": pruned.thin_packages,
         "payload_blobs": pruned.payload_blobs,
+        "payload_twins": pruned.payload_twins,
         "bytes": pruned.bytes,
         "compacted_staged_artifacts": compacted,
     }))
