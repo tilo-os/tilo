@@ -1749,11 +1749,13 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
     client.roundtrip();
     let payload = "https://example.com/native-paste";
     compositor.chrome_copy(payload, false);
-    client.roundtrip();
-    assert_eq!(
-        clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-        Some(payload),
-        "the actual native reader lost a selection published by the compositor"
+    // Each read is bounded by the UI's short read budget; a loaded runner can
+    // need several before the compositor serves the selection.
+    wait_for_clipboard_before(
+        &mut client,
+        || clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload),
+        "the actual native reader lost a selection published by the compositor",
+        tilo_test_env::hang_deadline(),
     );
     assert_eq!(
         clipboard

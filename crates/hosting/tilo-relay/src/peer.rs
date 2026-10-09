@@ -512,7 +512,7 @@ where
 async fn run_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
-    mut write: W,
+    write: W,
     ctx: PeerContext,
     protocol: SessionProtocol,
     closed: impl std::future::Future,
@@ -544,6 +544,9 @@ where
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let lag = Arc::new(Lag::default());
+    // Everything this session is sent passes here, so its egress and the
+    // relay's are what the stream accepted, not an estimate.
+    let mut write = crate::metrics::EgressWrite::new(write, &metrics, peer.device_public_key);
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
@@ -869,8 +872,11 @@ where
                     && let Some(frame) = deferred_frame.take()
                 {
                     authorize_state_frame(&frame, &peer, &session).await?;
+                    // Presence and host-authored deltas are fan-out; the
+                    // rest of this lane answers or addresses one device.
+                    let live = matches!(frame, Envelope::Delta { .. } | Envelope::Presence { .. });
                     write
-                        .write_all(&encode_for_session(&frame, &session)?)
+                        .write_all(&encode_charged(&frame, &session, live)?)
                         .await?;
                     trace_native_publication("written", &frame, Some(&peer.device_public_key));
                     private_burst = 0;
@@ -917,6 +923,11 @@ where
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
+    tracing::debug!(
+        device = %hex::encode(&peer.device_public_key[..4]),
+        bytes_sent = write.bytes_sent(),
+        "peer session egress"
+    );
     if crate::persistence::correlated_diagnostics() {
         tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
     }
@@ -1321,7 +1332,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         let source = StateSource::new(peer, session);
                         authorize_replay(&ws, &source, &ticket.authority).await?;
                         write
-                            .write_all(&encode_for_session(frame, session)?)
+                            .write_all(&encode_charged(frame, session, false)?)
                             .await?;
                         trace_native_publication(
                             "replay_written",
@@ -1459,13 +1470,13 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             }
         }
         write
-            .write_all(&encode_for_session(&reply, session)?)
+            .write_all(&encode_charged(&reply, session, false)?)
             .await?;
         if let Envelope::Ready { workspace_id, .. } = &reply
             && let Some(position) = resume_record(session, *workspace_id, [])
         {
             write
-                .write_all(&encode_for_session(&position, session)?)
+                .write_all(&encode_charged(&position, session, false)?)
                 .await?;
         }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
@@ -5088,6 +5099,23 @@ fn encode_for_session(
     tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, session.framing)
 }
 
+/// [`encode_for_session`] for a frame about to be written, charged to its
+/// room's egress. `live` marks live fan-out (a delta or presence forwarded as
+/// it arrived), as opposed to replay, replies and positions.
+fn encode_charged(
+    envelope: &Envelope,
+    session: &SessionCtx<'_>,
+    live: bool,
+) -> Result<Vec<u8>, postcard::Error> {
+    let frame = encode_for_session(envelope, session)?;
+    if let Some(room) = envelope.workspace_id() {
+        session
+            .metrics
+            .add_room_egress(room, u64::try_from(frame.len()).unwrap_or(u64::MAX), live);
+    }
+    Ok(frame)
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
@@ -5151,12 +5179,12 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
     }
     write
-        .write_all(&encode_for_session(&delivery.envelope, session)?)
+        .write_all(&encode_charged(&delivery.envelope, session, true)?)
         .await?;
     trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
     if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
         write
-            .write_all(&encode_for_session(&position, session)?)
+            .write_all(&encode_charged(&position, session, false)?)
             .await?;
     }
     if let Some(path) = &delivery.cleanup {

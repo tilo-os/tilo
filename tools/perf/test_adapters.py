@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -61,7 +62,7 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 7, reports)
+        self.assertEqual(len(reports), 10, reports)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
@@ -108,6 +109,36 @@ class TappSizes(unittest.TestCase):
     def test_an_empty_index_fails(self):
         with self.assertRaises(ValueError):
             adapters.tapp_sizes({"entries": []}, ENV)
+
+
+class RuntimeSizes(unittest.TestCase):
+    MEASURED = {"sequence": 809, "runtimes": {
+        "x86_64": {"version": "0.1.9", "runtime": "tilo-runtime/x", "bytes": 241_944_696,
+                   "relocation_bytes": 10_115_280, "relocated_bytes": 7_663_616, "symbol_relocations": 62_255},
+        "aarch64": {"version": "0.1.9", "runtime": "tilo-runtime/a", "bytes": 223_411_008,
+                    "relocation_bytes": 10_089_504, "relocated_bytes": 7_643_136, "symbol_relocations": 62_286}}}
+
+    def test_each_metric_of_each_architecture_is_one_record(self):
+        records = {item.kpi: item for item in adapters.runtime_sizes(self.MEASURED, ENV)}
+        self.assertEqual(len(records), 8)
+        size = records["footprint.runtime.bytes.x86_64"]
+        self.assertEqual((size.n, size.p50, size.unit), (1, 241_944_696, "bytes"))
+        self.assertEqual(size.meta["registry_sequence"], "809")
+        self.assertEqual(size.meta["runtime"], "tilo-runtime/x")
+        self.assertEqual(records["footprint.runtime.symbol_relocations.aarch64"].unit, "count")
+
+    def test_every_runtime_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(HERE / "kpi-budgets.toml")
+        for item in adapters.runtime_sizes(self.MEASURED, ENV):
+            self.assertIn(item.kpi, budgets.kpis)
+            self.assertEqual(budgets.kpis[item.kpi]["unit"], item.unit)
+
+    def test_nothing_measured_and_a_missing_metric_fail(self):
+        with self.assertRaises(ValueError):
+            adapters.runtime_sizes({"runtimes": {}}, ENV)
+        partial = {"runtimes": {"x86_64": {"bytes": 1}}}
+        with self.assertRaises(KeyError):
+            adapters.runtime_sizes(partial, ENV)
 
 
 SWITCH_SOURCE = ROOT / "crates/session/shell/src/compositor/switch_latency.rs"
@@ -200,6 +231,72 @@ class IdleWakeups(unittest.TestCase):
         budgets = compare.load_budgets(compare.BUDGETS)
         nightly = {kpi for kpi in budgets.kpis if kpi.startswith("wakeups.")}
         self.assertEqual(nightly, set(adapters.IDLE_WAKEUPS_KPIS.values()))
+
+
+LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
+
+
+def load_report(collaborators: int = 100, minutes: int = 2) -> dict:
+    """A `hosting-load.json` as the bench writes it."""
+    per_minute = {"hosting.relay.cpu_s_per_collab_hour": ("s", 36.0),
+                  "hosting.relay.rss_mib_per_collab": ("MiB", 1.0),
+                  "hosting.relay.egress_bytes_per_collab_hour": ("bytes", 10e6),
+                  "hosting.relay.frame_bytes_per_collab_hour": ("bytes", 8e6)}
+    kpis = {kpi: {"unit": unit, "samples": [value] * minutes} for kpi, (unit, value) in per_minute.items()}
+    kpis["hosting.relay.fanout_ms"] = {"unit": "ms", "samples": [4.0, 6.0, 30.0]}
+    return {"collaborators": collaborators, "rooms": collaborators // 4, "room_size": 4, "window_s": 60,
+            "windows": minutes, "relay_idle_rss_mib": 20.0, "edits": 6000, "presence": 36000,
+            "undelivered_edits": 0, "kpis": kpis}
+
+
+class HostingLoad(unittest.TestCase):
+    prices = tomllib.loads(adapters.PRICES.read_text())
+
+    def test_measurements_become_records_named_by_scale(self):
+        records = {item.kpi: item for item in adapters.hosting_load(load_report(), self.prices, ENV)}
+        cpu = records["hosting.relay.cpu_s_per_collab_hour.n100"]
+        self.assertEqual((cpu.unit, cpu.n, cpu.p50), ("s", 2, 36.0))
+        fanout = records["hosting.relay.fanout_ms.n100"]
+        self.assertEqual((fanout.n, fanout.p50, fanout.max), (3, 6.0, 30.0))
+        self.assertEqual(cpu.meta["prices_checked"], self.prices["checked"])
+
+    def test_the_price_sheet_prices_each_minute(self):
+        records = {item.kpi: item for item in adapters.hosting_load(load_report(), self.prices, ENV)}
+        # 36 CPU-s per collaborator-hour: 2 vCPU x 3600 s x 0.7 / 36 = 140 collaborators per VM,
+        # well before memory binds; AWS bills the 10 MB of egress, Hetzner's 20 TB covers it.
+        aws = records["hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+        self.assertAlmostEqual(aws.p50, 15.5 / 730 / 140 + 0.01 * 0.09)
+        self.assertEqual((aws.unit, aws.meta["collaborators_per_vm"], aws.meta["binding"]), ("usd", "140", "cpu"))
+        hetzner = records["hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+        self.assertAlmostEqual(hetzner.p50, 5.0 / 730 / 140)
+        month = records["hosting.relay.cost_usd_per_user_month.hetzner-cx22.n100"]
+        self.assertAlmostEqual(month.p50, hetzner.p50 * 88)
+
+    def test_memory_binds_when_it_runs_out_first(self):
+        usd, capacity, binding = adapters.collab_hour_usd(
+            self.prices["provider"]["aws-t4g-small"], self.prices, cpu_s=1.0, rss_mib=10.0,
+            egress_bytes=0.0, idle_rss_mib=33.6)
+        self.assertEqual(binding, "memory")
+        self.assertAlmostEqual(capacity, (2 * 1024 * 0.7 - 33.6) / 10)
+        self.assertAlmostEqual(usd, 15.5 / 730 / capacity)
+
+    def test_a_report_missing_a_kpi_fails(self):
+        report = load_report()
+        del report["kpis"]["hosting.relay.fanout_ms"]
+        with self.assertRaisesRegex(ValueError, "reported"):
+            adapters.hosting_load(report, self.prices, ENV)
+
+    def test_the_kpis_are_the_benchs(self):
+        """The adapter reads the KPI ids and units the Rust bench writes."""
+        written = dict(re.findall(r'"(hosting\.relay\.[a-z_]+)": kpi\("(\w+)"', LOAD_BENCH.read_text()))
+        self.assertEqual(written, adapters.HOSTING_KPIS)
+
+    def test_every_hosting_budget_is_produced_nightly(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("hosting.")}
+        produced = {item.kpi for item in adapters.hosting_load(load_report(), self.prices, ENV)}
+        self.assertTrue(budgeted, "the hosting group has budgets")
+        self.assertLessEqual(budgeted, produced)
 
 
 if __name__ == "__main__":

@@ -138,7 +138,11 @@ containerfile="$repo/os/Containerfile"
 # The first-login Flatpak unit and cooperative Bash editor are both retained.
 # The Windows egress reaper gains two path units (tilo-windows-vm-egress-reaper
 # .path and tilo-windows-vm-egress-lease.path); they are the intentional delta.
-expected_contract=19700494590fb6cb61b1dacc20966e4f5bef91234851e0428627a692c42ac89d
+# The user-identity component carries the board-successor verifier, hardware
+# profile and pinned Cosign. Its staged-trust and verified-update helpers move
+# from direct rootfs COPY to that component at the same installed paths and
+# executable mode; the component installer tests cover their staged sources.
+expected_contract=01e3f452f1160b9a99aeb6135d8e0ca32fea63ab2fbaa0463f8ebf805f574489
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
