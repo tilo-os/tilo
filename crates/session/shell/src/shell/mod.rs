@@ -601,17 +601,6 @@ pub fn build_tilo_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
-/// Lets the caller expose the peer-sync palette commands (`/invite`,
-/// `/connect`) for a network-enabled session. [`build_tilo_root`] keeps
-/// the zero-arg shape so call-sites that don't care don't have to thread it.
-pub fn build_tilo_root_with_options(
-    tree: &WorkspaceTree,
-    enable_peer_sync: bool,
-) -> Box<dyn Widget> {
-    let (host, _chrome) = build_tilo_overlay_host_with_options(tree, enable_peer_sync);
-    Box::new(host) as Box<dyn Widget>
-}
-
 /// Also returns the shared chrome handle, so integration tests can observe
 /// overlay toggles without drilling through the widget tree.
 pub fn build_tilo_root_with_chrome(

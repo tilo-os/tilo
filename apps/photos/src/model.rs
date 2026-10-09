@@ -338,35 +338,6 @@ impl LibraryPhoto {
         parts.join(". ")
     }
 
-    /// A short provenance line for a gallery card. The details
-    /// sheet retains every field and its labels; a shelf should let a person
-    /// distinguish photographs before it starts truncating at "People:".
-    #[must_use]
-    pub fn metadata_card_summary(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(folder) = &self.folder {
-            parts.push(folder.clone());
-        }
-        if let Some(person) = self.people.first() {
-            parts.push(person.clone());
-        }
-        if let Some(tag) = self.tags.first() {
-            parts.push(tag.clone());
-        }
-        if let Some(captured_at) = &self.captured_at {
-            parts.push(captured_at.clone());
-        }
-        if let Some(location) = &self.location {
-            parts.push(location.display_name());
-        }
-        if let Some(analysis) = &self.analysis
-            && !analysis.description.is_empty()
-        {
-            parts.push(analysis.description.clone());
-        }
-        parts.join(", ")
-    }
-
     /// Strip a content-addressed photograph's machine-local source location
     /// before it enters the shared library. The display name and content hash
     /// are sufficient for every collaborator; an absolute import path is not.

@@ -41,11 +41,6 @@ pub fn account_resource_id(id: AccountId) -> String {
     format!("totp.account:{id}")
 }
 
-/// The account a resource id names.
-pub fn account_of_resource(resource: &str) -> Option<AccountId> {
-    resource.strip_prefix("totp.account:")?.parse().ok()
-}
-
 /// Every collaborative operation the vault exports on its account store.
 ///
 /// Determinism contract: ids are minted at *authoring* time and carried in the

@@ -60,10 +60,6 @@ impl ConfirmationEvidence {
             ) if supplied == phrase
         )
     }
-
-    pub fn is_confirmed(&self) -> bool {
-        !matches!(self, Self::None)
-    }
 }
 
 /// Why an answer did not become an instruction.
