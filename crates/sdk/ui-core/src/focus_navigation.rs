@@ -122,9 +122,10 @@ pub(crate) fn mapped_order(
     fn trap(
         node: NodeId,
         taffy: &TaffyTree<()>,
-        inspect: &impl Fn(NodeId) -> (bool, bool, bool),
+        inspect: &mut impl FnMut(NodeId) -> (bool, bool, bool),
     ) -> Option<NodeId> {
-        if inspect(node).2 {
+        let (_, traps, hidden) = inspect(node);
+        if hidden {
             return None;
         }
         for child in taffy.children(node).unwrap_or_default() {
@@ -132,13 +133,17 @@ pub(crate) fn mapped_order(
                 return Some(found);
             }
         }
-        inspect(node).1.then_some(node)
+        traps.then_some(node)
     }
-    let trapped = trap(root, taffy, &inspect);
+    // Trap discovery and order collection describe one immutable composition.
+    // Inspect a node once even when both walks reach it.
+    let mut inspected = std::collections::HashMap::new();
+    let mut inspect_once = |node| *inspected.entry(node).or_insert_with(|| inspect(node));
+    let trapped = trap(root, taffy, &mut inspect_once);
     let mut pending = vec![trapped.unwrap_or(root)];
     let mut order = Vec::new();
     while let Some(node) = pending.pop() {
-        let (focusable, _, hidden) = inspect(node);
+        let (focusable, _, hidden) = inspect_once(node);
         if hidden {
             continue;
         }

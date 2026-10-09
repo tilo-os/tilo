@@ -9029,6 +9029,46 @@ mod tests {
             "trap closure reuses the same History snapshot"
         );
     }
+
+    #[test]
+    fn history_focus_order_rechecks_input_capture_between_calls() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(3, &state);
+        let frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        let live_rows = |order: Vec<NodeId>| {
+            order
+                .into_iter()
+                .filter_map(|node| {
+                    frame
+                        .inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                        .flatten()
+                        .filter(|id| id.starts_with("row-"))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(live_rows(frame.focus_order()), ["row-0", "row-1", "row-2"]);
+        crate::history_mode::capability::visit_framework_history(
+            frame.root.as_ref(),
+            &mut |history, _| {
+                assert!(history.request_open());
+            },
+        );
+        visits.set(0);
+        let captured = frame.focus_order();
+        assert_eq!(visits.get(), 1);
+        assert!(!captured.is_empty(), "History controls stay focusable");
+        assert!(
+            live_rows(captured).is_empty(),
+            "fresh capture denies live rows"
+        );
+    }
     use automerge::transaction::Transactable;
 
     /// A widget that asks for frames as configured, over its children.
