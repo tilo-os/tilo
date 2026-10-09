@@ -112,6 +112,19 @@ pub fn incoming(frame: &[u8], account: &str) -> Result<Incoming, Error> {
         return Err(Error::WrongAccount);
     }
     let envelope = received.get("envelope").ok_or(Error::InvalidFrame)?;
+    if [
+        "editMessage",
+        "storyMessage",
+        "syncMessage",
+        "callMessage",
+        "receiptMessage",
+        "typingMessage",
+    ]
+    .iter()
+    .any(|field| envelope.get(field).is_some_and(|value| !value.is_null()))
+    {
+        return Err(Error::Unsupported);
+    }
     let sender = envelope
         .get("sourceUuid")
         .and_then(Value::as_str)
@@ -288,6 +301,30 @@ mod tests {
             "envelope":{"sourceUuid":ACI,"dataMessage":{"timestamp":42,"message":"hello",
                 "attachments":[],"contacts":[],"mentions":[],"viewOnce":false,"expiresInSeconds":0,
                 "isExpirationUpdate":false,"isEndSession":false,"isProfileKeyUpdate":false,"hasProfileKey":true}}}})
+    }
+
+    #[test]
+    fn plain_text_never_flattens_another_envelope_kind() {
+        for kind in [
+            "editMessage",
+            "storyMessage",
+            "syncMessage",
+            "callMessage",
+            "receiptMessage",
+            "typingMessage",
+        ] {
+            for value in [json!({}), json!([]), json!(false), json!("unexpected")] {
+                let mut event = notification("account-a");
+                event["params"]["envelope"][kind] = value;
+                assert!(matches!(
+                    incoming(&serde_json::to_vec(&event).unwrap(), "account-a"),
+                    Err(Error::Unsupported)
+                ));
+            }
+            let mut event = notification("account-a");
+            event["params"]["envelope"][kind] = Value::Null;
+            assert!(incoming(&serde_json::to_vec(&event).unwrap(), "account-a").is_ok());
+        }
     }
 
     #[test]

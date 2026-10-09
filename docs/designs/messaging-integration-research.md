@@ -15,6 +15,32 @@ The inventory and feasibility sections below preserve the initial research. Thei
 base-specific findings are historical; they do not override the subsequent
 accepted product direction or imply that live accounts are configured.
 
+## Pinned Signal compatibility acceptance
+
+signal-cli 0.14.8 `listAccounts` returns only `{number}` rows. Enrollment and
+sender/receiver activation must separately query `listIdentities` with both
+`account` and `number` set to the explicitly selected owned account. That local
+query yields the canonical `uuid`, number and verified identity key; the number
+must appear exactly once in `listAccounts`. No `trust` or public `getUserStatus`
+lookup establishes account ownership. The original credential authority is
+rechecked around pairing completion and again at protected acceptance.
+
+Sources: [ListAccountsCommand](https://github.com/AsamK/signal-cli/blob/v0.14.8/src/main/java/org/asamk/signal/commands/ListAccountsCommand.java),
+[ListIdentitiesCommand](https://github.com/AsamK/signal-cli/blob/v0.14.8/src/main/java/org/asamk/signal/commands/ListIdentitiesCommand.java),
+[ManagerImpl](https://github.com/AsamK/signal-cli/blob/v0.14.8/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java),
+[SignalAccount local self identity initialization](https://github.com/AsamK/signal-cli/blob/v0.14.8/lib/src/main/java/org/asamk/signal/manager/storage/SignalAccount.java).
+
+Only direct plain text is projected. Sync, edit, story, call, receipt and typing
+payloads are not flattened into a concurrent `dataMessage`; supported receipts
+retain their separate journal-correlated path. Media, groups, disappearing text
+and linked-device sent-history synchronization need their own semantics.
+An interrupted unpublished enrollment offers an explicit return to account
+selection, clears its private projection and retires the old owned attempt.
+Starting again still requires confirmation and fresh protected review. Published
+accounts, pending reviews and uncertain message sends cannot use this reset.
+These are source and nonsecret fixture acceptance limits; accepted-runtime and
+real-account qualification remain outstanding under the publication restriction.
+
 ## Verified repository building blocks
 
 The inspected base is `aad1bd2997` on main, in an isolated task worktree. The root

@@ -240,7 +240,8 @@ fn answer(
             confirm_account(sources, state, person, &choice)?;
         }
 
-        MessagesEffect::OpenAccountSetup
+        MessagesEffect::ResetFirstEnrollment
+        | MessagesEffect::OpenAccountSetup
         | MessagesEffect::SelectSetupAccount { .. }
         | MessagesEffect::BeginFirstEnrollment { .. }
         | MessagesEffect::CompleteFirstEnrollment { .. }

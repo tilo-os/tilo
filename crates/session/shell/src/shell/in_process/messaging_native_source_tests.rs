@@ -158,7 +158,21 @@ fn probe(reader: &mut BufReader<UnixStream>, peer: &mut UnixStream) {
     reader.read_line(&mut line).unwrap();
     let request: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(request["method"], "listAccounts");
-    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"aci":OWN_ACI,"number":"+15555550101"}]})).unwrap();
+    writeln!(
+        peer,
+        "{}",
+        serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":[{"number":"+15555550101"}]})
+    )
+    .unwrap();
+    let mut own_line = String::new();
+    reader.read_line(&mut own_line).unwrap();
+    let own_probe: serde_json::Value = serde_json::from_str(&own_line).unwrap();
+    assert_eq!(own_probe["method"], "listIdentities");
+    assert_eq!(
+        own_probe["params"]["number"],
+        own_probe["params"]["account"]
+    );
+    writeln!(peer, "{}", serde_json::json!({"jsonrpc":"2.0","id":own_probe["id"],"result":serde_json::json!([{"uuid":OWN_ACI,"number":"+15555550101","trustLevel":"TRUSTED_VERIFIED","fingerprint":format!("05 {}", vec!["aa"; 32].join(" "))}])})).unwrap();
 }
 fn source(
     rig: &Rig,
