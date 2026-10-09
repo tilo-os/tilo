@@ -9,6 +9,18 @@ fn texts(found: &[&crate::Emoji]) -> Vec<&'static str> {
 }
 
 #[test]
+fn embedded_catalogue_preserves_complete_source_text() {
+    assert_eq!(
+        crate::bundled_text(crate::ENGLISH, &crate::ENGLISH_TEXT),
+        include_str!("../data/en.txt")
+    );
+    assert_eq!(
+        crate::bundled_text(crate::STRUCTURE, &crate::STRUCTURE_TEXT),
+        include_str!("../data/emoji.txt")
+    );
+}
+
+#[test]
 fn loads_every_group_in_unicode_order() {
     let cat = cat();
     let ids: Vec<_> = cat.groups().iter().map(crate::Group::id).collect();

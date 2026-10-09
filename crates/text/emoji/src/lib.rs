@@ -51,13 +51,25 @@ pub use recents::Recents;
 
 /// English names and keywords: the default catalogue and every other
 /// locale's fallback for an emoji or group it does not name.
-const ENGLISH: &str = include_str!("../data/en.txt");
+const ENGLISH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/en.txt.deflate"));
 
 /// Every other locale's names and keywords, as `(tag, deflated data)`,
 /// deflated by build.rs from `data/<tag>.txt`.
 const TRANSLATIONS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/translations.rs"));
 
-const STRUCTURE: &str = include_str!("../data/emoji.txt");
+const STRUCTURE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/emoji.txt.deflate"));
+static ENGLISH_TEXT: OnceLock<String> = OnceLock::new();
+static STRUCTURE_TEXT: OnceLock<String> = OnceLock::new();
+
+fn bundled_text(packed: &[u8], cell: &'static OnceLock<String>) -> &'static str {
+    cell.get_or_init(|| {
+        let text = miniz_oxide::inflate::decompress_to_vec(packed)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        assert!(text.is_some(), "invalid embedded emoji catalogue");
+        text.unwrap_or_default()
+    })
+}
 
 /// The Fitzpatrick skin tone modifiers, lightest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -296,7 +308,14 @@ impl Catalogue {
     /// The English catalogue.
     #[must_use]
     pub fn english() -> &'static Self {
-        ENGLISH_CATALOGUE.get_or_init(|| data::build("en", STRUCTURE, ENGLISH, None))
+        ENGLISH_CATALOGUE.get_or_init(|| {
+            data::build(
+                "en",
+                bundled_text(STRUCTURE, &STRUCTURE_TEXT),
+                bundled_text(ENGLISH, &ENGLISH_TEXT),
+                None,
+            )
+        })
     }
 
     /// The catalogue for a BCP 47 or POSIX tag ("de-DE", "de_AT.UTF-8" →
@@ -345,7 +364,12 @@ impl Catalogue {
                     .and_then(|bytes| String::from_utf8(bytes).ok())
                     .unwrap_or_default()
             });
-            data::build(locale, STRUCTURE, text, Some(ENGLISH))
+            data::build(
+                locale,
+                bundled_text(STRUCTURE, &STRUCTURE_TEXT),
+                text,
+                Some(bundled_text(ENGLISH, &ENGLISH_TEXT)),
+            )
         })
     }
 
