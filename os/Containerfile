@@ -2682,9 +2682,11 @@ ARG KERNEL_RPMS_REF
 # The Lenovo profile needs the Adreno SQE firmware from Fedora's qcom-firmware
 # RPM. Keep it in the frozen ARM package set, but install it only in that image.
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
+# Hash only this profile's firmware. Later board imports must not rebuild the
+# generic kernel/initramfs when the runner seed publishes the same rootfs.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
-    --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
+    --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},target=/run/tilo-hardware-firmware \
     --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
     --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
     --mount=type=bind,source=os/scripts/verify-board-initramfs.py,target=/run/verify-board-initramfs.py \
@@ -2760,7 +2762,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
-        --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
+        --firmware-dir "/run/tilo-hardware-firmware" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
     # The initramfs recipe and its checks, shared with the dev image's board
     # layer.
