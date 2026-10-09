@@ -19365,14 +19365,13 @@ version = "0.1.0"
 dependencies = [
  "comemo",
  "runtime-dylib",
- "serde",
  "serde_json",
  "taffy",
  "tempfile",
- "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-history",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
@@ -19381,7 +19380,6 @@ dependencies = [
  "typst-layout",
  "typst-pdf",
  "typst-render",
- "uuid",
  "workspace-hack",
 ]
 
