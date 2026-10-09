@@ -92,17 +92,6 @@
 //! confirmation, so a destructive typed edit is confirmed exactly as a
 //! declared destructive action is.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
 

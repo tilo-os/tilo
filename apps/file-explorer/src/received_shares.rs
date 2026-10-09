@@ -153,7 +153,8 @@ fn connected_service_stream() -> Result<local_socket::Stream, String> {
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;

@@ -283,7 +283,8 @@ impl ui::history_mode::HistoryPreview for FilePreview {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use fs_protocol::files::CheckedHistoryOperationV1;

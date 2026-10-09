@@ -5,17 +5,6 @@
 //! action door under its own identity. The desktop session and the per-user
 //! runtime both launch from this one answer.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::PathBuf;
 
 use package_store::{Catalog, CatalogError, InstalledPackage};

@@ -1979,7 +1979,8 @@ mod scheduling_tests {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod session_carrier_tests {
     use super::*;
     use crate::session_carrier::{SessionCarrier, SessionChannels};

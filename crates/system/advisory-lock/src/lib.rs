@@ -42,15 +42,6 @@
 //! variants return [`TryLockError::WouldBlock`] at once. There is deliberately
 //! no retry or timeout: a caller that cannot wait uses a `try` variant and
 //! reports the busy owner.
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "test assertions exercise real filesystem behavior"
-    )
-)]
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};

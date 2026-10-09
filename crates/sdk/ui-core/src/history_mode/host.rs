@@ -1679,6 +1679,7 @@ pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
         .with_icon(crate::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "refresh_heads_tests.rs"]
 mod refresh_heads_tests;

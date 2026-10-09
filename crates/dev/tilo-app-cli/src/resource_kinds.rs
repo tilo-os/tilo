@@ -234,7 +234,8 @@ mod tests {
             mod tests {
                 impl Resource for Page { const KIND: &'static str = "test.page"; }
             }
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
             mod native_tests {
                 impl Resource for Fixture { const KIND: &'static str = "test.native"; }
             }
