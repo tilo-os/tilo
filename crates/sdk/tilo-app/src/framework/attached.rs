@@ -404,7 +404,10 @@ impl AttachedView {
                     steps,
                 );
                 if recorded.is_some() {
-                    tilo_resource::history::commit_stamped(doc);
+                    tilo_resource::history::commit_stamped_with_message(
+                        doc,
+                        Some(tilo_actions::FrameworkChange::Run.change_message()),
+                    );
                 }
                 recorded.is_some()
             })

@@ -123,6 +123,8 @@ pub fn claim_node(
             resource.action("field-edit")
         }
         ClaimedAction::Framework(FrameworkChange::Transfer) => resource.action("move"),
+        // A run marker only names steps already decided one by one.
+        ClaimedAction::Framework(FrameworkChange::Run) => resource.action("checkpoint"),
         // A group is decided member by member; its own node is the record.
         ClaimedAction::Group(_) => resource,
     }

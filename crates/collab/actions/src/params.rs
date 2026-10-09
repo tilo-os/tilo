@@ -274,6 +274,23 @@ impl ActionParam {
         self
     }
 
+    /// [`Self::as_place`], its items being those of the collection `field`
+    /// (a document's paragraphs, `blocks`): the item resources published as
+    /// `<resource>/<field>/<item>`.
+    #[must_use]
+    pub fn as_place_in(mut self, field: &str) -> Self {
+        let mut schema = place_schema();
+        if let Some(object) = schema.as_object_mut() {
+            object.insert(
+                PLACE_ANNOTATION.into(),
+                serde_json::Value::String(field.into()),
+            );
+        }
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(schema));
+        self
+    }
+
     /// Whether this parameter is a place inside the resource
     /// ([`Self::as_place`]).
     #[must_use]
@@ -283,8 +300,18 @@ impl ActionParam {
                 .schema
                 .as_ref()
                 .and_then(|schema| schema.get(PLACE_ANNOTATION))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+                .is_some_and(|place| place.as_bool() == Some(true) || place.is_string())
+    }
+
+    /// The collection whose items this place parameter names, when it says
+    /// ([`Self::as_place_in`]).
+    #[must_use]
+    pub fn place_field(&self) -> Option<&str> {
+        self.schema
+            .as_ref()?
+            .get(PLACE_ANNOTATION)?
+            .as_str()
+            .filter(|field| !field.is_empty())
     }
 
     #[must_use]

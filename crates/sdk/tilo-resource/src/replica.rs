@@ -62,7 +62,11 @@ impl<R: Resource> Replica<R> {
     pub fn new() -> Self {
         let mut doc = Doc::new();
         R::initialize(&mut doc).expect("resource initializer");
-        doc.commit();
+        // What a brand-new record starts with names itself as its genesis.
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+        );
         Self::from_doc(doc)
     }
 

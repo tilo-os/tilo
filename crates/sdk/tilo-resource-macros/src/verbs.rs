@@ -228,6 +228,8 @@ struct ParamOptions {
     flatten: bool,
     /// A place inside the record (`#[param(place)] at: Option<Place>`).
     place: bool,
+    /// The collection whose items the place names (`place = "field"`).
+    place_in: Option<String>,
 }
 
 impl ParamOptions {
@@ -272,14 +274,17 @@ impl syn::parse::Parse for ParamOptions {
                 continue;
             }
             input.parse::<Token![=]>()?;
-            if key == "name" {
+            if key == "place" {
+                options.place = true;
+                options.place_in = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "name" {
                 options.name = Some(input.parse::<syn::LitStr>()?.value());
             } else if key == "example" {
                 options.example = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `content`, `place` or `flatten`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `place = \"field\"`, `content`, `place` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -300,6 +305,8 @@ struct Param {
     example: Option<Expr>,
     /// What part the parameter plays beyond carrying a value.
     role: Role,
+    /// The collection a place parameter's items come from, when named.
+    place_in: Option<String>,
 }
 
 /// What part a verb's parameter plays.
@@ -417,6 +424,7 @@ fn item_param(ident: &syn::Ident) -> Param {
         description: format!("The {} it acts on", humanize(&name)),
         example: None,
         role: Role::Plain,
+        place_in: None,
     }
 }
 
@@ -499,6 +507,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     description: param_options.description.unwrap_or_else(|| humanize(&name)),
                     example: param_options.example,
                     role,
+                    place_in: param_options.place_in,
                 });
             }
         }
@@ -1079,7 +1088,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             } else {
                 quote!(required_owned)
             };
-            let place = (param.role == Role::Place).then(|| quote!(.as_place()));
+            let place = match (&param.place_in, param.role == Role::Place) {
+                (Some(field), _) => Some(quote!(.as_place_in(#field))),
+                (None, true) => Some(quote!(.as_place())),
+                (None, false) => None,
+            };
             quote! {
                 ::std::vec![#krate::__private::ActionParam::#constructor(#name, #param_ty, #description)
                     .with_schema(#krate::__private::param_schema(

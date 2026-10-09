@@ -160,6 +160,9 @@ impl<R, P: Serialize> ActionRef<R, P> {
 /// One derived resource. See the module docs.
 pub struct Derived<R> {
     id: String,
+    /// The field of the record it is an item of (`blocks`), published as
+    /// `<record kind>/<field>/<id>`; `None` for `<record kind>/derived/<id>`.
+    field: Option<String>,
     label: String,
     kind: Option<String>,
     actions: Vec<Bound<R>>,
@@ -174,6 +177,7 @@ impl<R> Derived<R> {
         let label = label.into();
         Self {
             id: label.clone(),
+            field: None,
             label,
             kind: None,
             actions: Vec::new(),
@@ -218,6 +222,15 @@ impl<R> Derived<R> {
     #[must_use]
     pub fn identified(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
+        self
+    }
+
+    /// Publish it as an item of the record's `field` (a document's
+    /// paragraphs, `blocks`), as `<record kind>/<field>/<id>`: what a place
+    /// parameter naming that field takes (`place = "blocks"`).
+    #[must_use]
+    pub fn in_field(mut self, field: impl Into<String>) -> Self {
+        self.field = Some(field.into());
         self
     }
 
@@ -282,7 +295,11 @@ impl<R: Resource> Derived<R> {
     /// The child resource this is published as.
     #[must_use]
     pub fn publish(&self) -> tilo_actions::Resource {
-        self.publish_under(&format!("{}/derived", R::KIND))
+        self.publish_under(&format!(
+            "{}/{}",
+            R::KIND,
+            self.field.as_deref().unwrap_or("derived")
+        ))
     }
 
     /// The published resource `id` among `derived` and their children.

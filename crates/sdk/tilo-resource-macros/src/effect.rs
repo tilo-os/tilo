@@ -13,11 +13,13 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 /// takes are a fixed list (any expression yielding strings, such as a
 /// constant table). `place,` marks a place inside the resource
 /// (`at: Option<Place>`): the effect acts there instead of at the invoker's
-/// caret.
+/// caret; `place = "field"` names the collection whose items it takes.
 #[derive(Default)]
 struct Param {
     secret: bool,
     place: bool,
+    /// The collection whose items the place names (`place = "blocks"`).
+    place_in: Option<String>,
     /// A documented struct whose fields are the effect's arguments
     /// (`#[param(flatten)]`, the effect's only field).
     flatten: bool,
@@ -55,10 +57,18 @@ impl syn::parse::Parse for Param {
             input.parse::<syn::Token![,]>()?;
         }
         let key: syn::Ident = input.parse()?;
-        if key != "choices" {
-            return Err(syn::Error::new(key.span(), "expected `choices = ...`"));
-        }
         input.parse::<syn::Token![=]>()?;
+        if key == "place" {
+            param.place = true;
+            param.place_in = Some(input.parse::<syn::LitStr>()?.value());
+            return Ok(param);
+        }
+        if key != "choices" {
+            return Err(syn::Error::new(
+                key.span(),
+                "expected `choices = ...` or `place = \"field\"`",
+            ));
+        }
         param.choices = Some(input.parse()?);
         Ok(param)
     }
@@ -337,10 +347,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,
             };
-            let declared = if described.place {
-                quote!(#declared.as_place())
-            } else {
-                declared
+            let declared = match (&described.place_in, described.place) {
+                (Some(field), _) => quote!(#declared.as_place_in(#field)),
+                (None, true) => quote!(#declared.as_place()),
+                (None, false) => declared,
             };
             quote!(::std::vec![#declared])
         });

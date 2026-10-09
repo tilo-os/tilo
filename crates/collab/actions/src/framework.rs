@@ -25,6 +25,10 @@ pub enum FrameworkChange {
     Structure,
     /// The record leaving its room for another, or arriving in one.
     Transfer,
+    /// A marker recording one instruction that changed several records as
+    /// one run in the record's history. It carries no content and is
+    /// decided as a checkpoint.
+    Run,
     /// A window's direct edit of the record that names no finer action
     /// (widget input outside a bound action). It is decided as an edit of
     /// the whole record.
@@ -40,6 +44,7 @@ impl FrameworkChange {
             Self::Migrate => "migrate",
             Self::Structure => "structure",
             Self::Transfer => "transfer",
+            Self::Run => "run",
             Self::Native => "native",
         };
         format!("{FRAMEWORK_MESSAGE_PREFIX}{name}")
@@ -53,6 +58,7 @@ impl FrameworkChange {
             "migrate" => Self::Migrate,
             "structure" => Self::Structure,
             "transfer" => Self::Transfer,
+            "run" => Self::Run,
             "native" => Self::Native,
             _ => return None,
         })
@@ -70,6 +76,7 @@ mod tests {
             FrameworkChange::Migrate,
             FrameworkChange::Structure,
             FrameworkChange::Transfer,
+            FrameworkChange::Run,
             FrameworkChange::Native,
         ] {
             assert_eq!(

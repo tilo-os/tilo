@@ -890,20 +890,6 @@ impl<R: Resource> Dispatcher<R> {
             R::KIND,
             self.resource_label.get(),
         );
-        self.apply_now_with(edits, action, context)
-    }
-
-    /// [`apply_now`](Self::apply_now) with the history context the surface
-    /// already has (its app, a purpose, a work group).
-    ///
-    /// # Errors
-    /// As [`apply_now`](Self::apply_now).
-    pub fn apply_now_with(
-        &self,
-        edits: &mut Edits<'_>,
-        action: &R::Action,
-        context: ActionContext,
-    ) -> Result<(), ActionError> {
         self.apply_now_as(edits, action, context, false)
     }
 
@@ -954,14 +940,18 @@ impl<R: Resource> Dispatcher<R> {
             return Ok(());
         }
         // History names the resource and who edited it even when the
-        // surface's context does not.
+        // surface's context does not: whoever the edit is applied for (an
+        // agent at its own caret, a collaborator a scenario stages), else
+        // this window's person.
         let mut named = ActionContext::for_resource(
             self.resource_id.as_ref(),
             R::KIND,
             self.resource_label.get(),
         );
-        if let Some(me) = &self.me {
-            named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
+        if let Some(invoker) = ui_core::invocation_scope::current_invoker()
+            .or_else(|| self.me.as_ref().map(|me| ActionInvoker::actor(me.as_ref())))
+        {
+            named = named.with_invoker(invoker);
         }
         let mut context = context.enriched_by(&named);
         // Content from outside is nobody's step: it neither continues the
