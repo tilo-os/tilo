@@ -5012,12 +5012,7 @@ impl Widget for TopBarChrome {
             tracing::warn!("topbar: layout lookup failed for node {node:?}");
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(at) = self.placement {
             self.rect = Rect::new(at.x0, at.y0, at.x1, at.y0 + self.rect.height());
         }
