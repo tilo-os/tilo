@@ -613,18 +613,21 @@ and `gpu_dispatch_timestamps`. Dispatch timestamps require GPU timestamps.
 Use the ordinary `tilo-control actions invoke` argument JSON; no environment
 names or output paths are accepted.
 
-The setting is ephemeral to this desktop session. It sets or removes only the
-four existing diagnostic variables for subsequently launched children.
-Presentation also controls the compositor's existing physical input delivery
-observer immediately. Existing applications and the compositor's initialized
-GPU renderer retain their configuration; reopen the application to collect
-its new timing stream. Inspect returns the current fixed options and their
-scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
+Configure atomically saves the four validated options in private owner state
+before updating the live launch configuration. Subsequent application launches
+receive those options. Presentation controls the compositor's physical input
+delivery observer immediately; `gpu_stages` also controls its live phase export.
+Existing applications and the compositor's initialized GPU renderer retain
+their configuration; reopen an application to collect its new timing stream.
+Inspect returns the current fixed options and their scope. The desktop loads
+the saved options before constructing its GPU renderer on the next normal
+managed session refresh; configure itself does not restart the session. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
-For compositor whole-submission GPU timing, enable `gpu_timestamps` through the
-existing greeter's next-sign-in diagnostics before the compositor creates its
-device. Active-session configure does not renegotiate renderer features. Actual
+For compositor whole-submission GPU timing, enable `gpu_timestamps` through
+configure before the next normal managed session refresh constructs the
+compositor device. The greeter's next-sign-in diagnostics remain another startup
+route. Active-session configure does not renegotiate renderer features. Actual
 `FRAME-GPU-SUBMISSION` rows report complete, incomplete, unsupported, disabled or missing
 coverage, with exact presenter serial/revision and renderer/recording identities.
 The nested output interval includes the actual appended scanout blit; never add it
@@ -632,8 +635,9 @@ to the containing recording envelope. Encoder queries require actual adapter/dev
 support. These device-clock intervals exclude pre-execution queue/relay delay and
 query readback copies; CPU fence wait and physical KMS outcome remain separate.
 Frames with a separate backdrop-blur queue submission report incomplete envelope
-coverage. A desktop-only restart preserves the login wrapper environment; configure
-the existing greeter before a normal PAM sign-in to initialize timestamp features.
+coverage. GPU timestamp options are startup-only: changing them requires a new
+GPU renderer construction. The saved configuration is consumed by a normal
+managed session refresh; a fresh PAM sign-in or machine reboot is not required.
 
 ### Reviewing a Tilo package in Store
 
