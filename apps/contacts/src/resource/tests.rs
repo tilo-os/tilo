@@ -4,7 +4,7 @@
 use super::*;
 use crate::model::{Address, GroupEntry, MAX_CONTACT_FIELD_BYTES};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Replica;
+use ui::tilo_resource::{Effect as _, Replica};
 
 fn book_of(contacts: &[Contact]) -> Replica<Contacts> {
     let mut book = Replica::<Contacts>::new();
