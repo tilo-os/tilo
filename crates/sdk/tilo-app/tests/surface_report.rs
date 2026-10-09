@@ -17,7 +17,7 @@ impl Counter {
     /// Count one more.
     #[action]
     pub fn bump(&mut self) {
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
     }
 }
 

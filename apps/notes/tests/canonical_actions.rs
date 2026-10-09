@@ -786,7 +786,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
-        let before = f.records.read(&checkout.id, |doc| content(doc)).unwrap();
+        let before = f.records.read(&checkout.id, content).unwrap();
         let mut a = driver(&f, 11, &checkout);
         invoke(
             &mut a,
@@ -1442,7 +1442,7 @@ fn assert_open_tag_view(
 fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
-    let before = f.records.read(&checkout.id, |doc| content(doc)).unwrap();
+    let before = f.records.read(&checkout.id, content).unwrap();
     let bodies = f
         .records
         .read(&checkout.id, |doc| {
