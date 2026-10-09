@@ -1211,7 +1211,7 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 pub fn run<A: ResourceApp>() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
-        let code = match serde_json::to_string_pretty(&surface_report::<A>()) {
+        let code = match serde_json::to_string_pretty(&super::testing::surface_report::<A>()) {
             Ok(report) => {
                 println!("{report}");
                 0
@@ -1237,27 +1237,10 @@ pub fn run<A: ResourceApp>() {
     crate::launch::run_or_exit(&launch_spec::<A>());
 }
 
-/// The flag that makes an app's binary print its [`surface_report`]
+/// The flag that makes an app's binary print its
+/// [`surface_report`](super::testing::surface_report)
 /// instead of running: what `tilo-app surface` and `tilo-app check` read.
 pub const SURFACE_FLAG: &str = "--surface";
-
-/// What `A` publishes and how its view binds to it, as `tilo-app surface`
-/// commits it and `tilo-app check` compares it: the resource's
-/// [`Surface`](tilo_resource::Surface), and every control its view, built
-/// headless on an empty record, binds to something the resource does not
-/// publish.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
-    let collecting = super::controls::collect_unbound();
-    let built = super::testing::TestApp::<A>::new().map(drop);
-    let unbound = collecting.finish();
-    serde_json::json!({
-        "resources": [<A::Resource as Resource>::surface()],
-        "unbound": unbound,
-        "view": built.err().map(|error| error.to_string()),
-    })
-}
 
 /// Run the first of `A`'s [helpers](ResourceApp::helpers) that `args` is
 /// for, answering the exit code the process ends with; `None` when the

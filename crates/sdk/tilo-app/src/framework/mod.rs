@@ -343,8 +343,6 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-#[cfg(not(target_arch = "wasm32"))]
-pub use app::surface_report;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::AttachedView;
 pub use controls::{ActionControl, Actions};

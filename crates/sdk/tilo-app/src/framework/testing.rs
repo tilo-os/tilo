@@ -1575,3 +1575,20 @@ fn split_command_line(
     }
     (arguments, named)
 }
+
+/// What `A` publishes and how its view binds to it, as `tilo-app surface`
+/// commits it and `tilo-app check` compares it: the resource's
+/// [`Surface`](tilo_resource::Surface), and every control its view, built
+/// headless on an empty record, binds to something the resource does not
+/// publish.
+#[must_use]
+pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
+    let collecting = super::controls::collect_unbound();
+    let built = TestApp::<A>::new().map(drop);
+    let unbound = collecting.finish();
+    serde_json::json!({
+        "resources": [<A::Resource as Resource>::surface()],
+        "unbound": unbound,
+        "view": built.err().map(|error| error.to_string()),
+    })
+}
