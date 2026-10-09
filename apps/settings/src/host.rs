@@ -12,9 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::{
-    ActionControl, Actions, Dispatcher, EffectAnswer, Effected, RecordOperations, Refused, RunMode,
-};
+use ui::framework::{ActionControl, Actions, Dispatcher, EffectAnswer, Effected, Refused, RunMode};
 use ui::storage::{AppStorage, Settings as StoredSettings, SettingsRevision, SettingsSchema};
 use ui::tilo_resource::{Binds, Effect};
 
@@ -26,8 +24,8 @@ use crate::resource::Settings;
 struct Door {
     actions: Actions<Settings>,
     dispatcher: Dispatcher<Settings>,
-    /// The published field edits of each settings section, by its type, and
-    /// what its live rows may offer of it, by `RecordOperations<T>`.
+    /// The published field edits of each settings section, by its type,
+    /// which its live rows offer too ([`Actions::operation`]).
     sections: Rc<HashMap<TypeId, Box<dyn Any>>>,
 }
 
@@ -63,9 +61,6 @@ fn held<T: Section>(
     let section = cx.settings::<T>();
     if let Some(actions) = cx.record_actions(&section) {
         sections.insert(TypeId::of::<T>(), Box::new(actions));
-    }
-    if let Some(operations) = cx.record_operations(&section) {
-        sections.insert(TypeId::of::<RecordOperations<T>>(), Box::new(operations));
     }
 }
 
@@ -226,12 +221,7 @@ impl PaneCx {
         &self,
         decl: &ui::tilo_resource::ActionDecl<T>,
     ) -> Option<ui::tilo_actions::ActionSpec> {
-        self.door
-            .as_ref()?
-            .sections
-            .get(&TypeId::of::<RecordOperations<T>>())?
-            .downcast_ref::<RecordOperations<T>>()?
-            .operation(decl)
+        self.section::<T>()?.operation(decl)
     }
 
     fn section<T: Section>(&self) -> Option<&Actions<T>> {
