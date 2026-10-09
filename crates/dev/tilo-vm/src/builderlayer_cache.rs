@@ -396,6 +396,43 @@ type = "gui"
     }
 
     #[test]
+    fn cached_binary_replay_preserves_exact_archive_and_verified_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let tree = tree(root.path());
+        let mut packed = packed();
+        packed.binary = true;
+        let cache = Cache::new(target.path(), &"5".repeat(64)).unwrap();
+        let archive = bytes(cache.save(&packed, &tree).unwrap());
+        let content = tilo_vm_protocol::layer_hash::tree_hash(&tree).unwrap();
+        for offered in [Vec::new(), vec![content]] {
+            let mut output = Vec::new();
+            crate::builderlayer::emit_cached_to(
+                &packed,
+                cache.load(&packed).unwrap().unwrap(),
+                &offered,
+                &mut output,
+            )
+            .unwrap();
+            let mut stream = crate::builderlayer::Stream::new(output.as_slice());
+            let header = stream.header(&mut Vec::new()).unwrap();
+            assert!(header.binary);
+            assert_eq!(header.reused, !offered.is_empty());
+            let mut payload = Vec::new();
+            stream.read_to_end(&mut payload).unwrap();
+            assert_eq!(
+                payload,
+                if offered.is_empty() {
+                    archive.clone()
+                } else {
+                    Vec::new()
+                }
+            );
+            stream.finish(&mut Vec::new()).unwrap();
+        }
+    }
+
+    #[test]
     fn cached_archive_replay_preserves_verified_content_reuse_and_legacy_delivery() {
         let root = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();

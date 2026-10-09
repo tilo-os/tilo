@@ -216,6 +216,7 @@ mod tests {
         };
         let packed = Packed {
             component: "shell".into(),
+            binary: false,
             target: Some("aarch64-unknown-linux-gnu".into()),
             source_digest: Some("verified inventory".into()),
             toolchain: Some("actual compiler".into()),

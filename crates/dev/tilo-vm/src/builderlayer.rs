@@ -138,7 +138,15 @@ pub(crate) fn pack_userspace(inventory: &Path) -> Result<(), CliError> {
                 known: manifest.components.keys().cloned().collect(),
             })?;
         let extra = build::dev_features(&metadata, &component.packages);
-        pack_component(&root, component, &extra, Some(inventory), &metadata, &[])?;
+        pack_component(
+            &root,
+            component,
+            &extra,
+            Some(inventory),
+            &metadata,
+            &[],
+            false,
+        )?;
     }
     Ok(())
 }
@@ -224,6 +232,45 @@ pub(crate) fn emit_cached_to(
     let header = serde_json::to_string(&packed)
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
     writeln!(out, "{BEGIN}{header}").map_err(CliError::io("write cached layer header"))?;
+    if packed.binary {
+        let mut encoder = tilo_vm_protocol::binary::Encoder::new(out);
+        if !packed.reused {
+            let mut hash = Sha256::new();
+            let mut bytes = 0_u64;
+            let mut buffer = vec![0_u8; 64 << 10];
+            loop {
+                let count = artifact
+                    .file
+                    .read(&mut buffer)
+                    .map_err(CliError::io("read cached binary component"))?;
+                if count == 0 {
+                    break;
+                }
+                bytes = bytes
+                    .checked_add(count as u64)
+                    .filter(|n| *n <= artifact.bytes)
+                    .ok_or_else(|| {
+                        CliError::InvalidInput("cached component changed during replay".into())
+                    })?;
+                let chunk = buffer.get(..count).ok_or_else(|| {
+                    CliError::InvalidInput("cached component read exceeded its buffer".into())
+                })?;
+                hash.update(chunk);
+                encoder
+                    .write_all(chunk)
+                    .map_err(CliError::io("stream cached binary component"))?;
+            }
+            if bytes != artifact.bytes || hex::encode(hash.finalize()) != artifact.hash {
+                return Err(CliError::InvalidInput(
+                    "cached component changed during replay".into(),
+                ));
+            }
+        }
+        encoder
+            .finish()
+            .map_err(CliError::io("finish cached binary component"))?;
+        return Ok(());
+    }
     let mut lines = Lines::new(out);
     if !packed.reused {
         std::io::copy(&mut artifact.file, &mut lines)
@@ -285,7 +332,9 @@ pub(crate) fn pack_with_source(
         .with_profile(Some(profile));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let metadata = cargo_metadata(&cargo);
-    pack_component(&root, &component, extra, inventory, &metadata, cached)
+    pack_component(
+        &root, &component, extra, inventory, &metadata, cached, binary,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -297,6 +346,7 @@ fn prepare_cache(
     inventory: Option<&Path>,
     digest: Option<&str>,
     cached: &[String],
+    binary: bool,
 ) -> Result<Option<(crate::builderlayer_cache::Cache, String, bool)>, CliError> {
     if component.name != "apps+runtime" {
         return Ok(None);
@@ -315,12 +365,18 @@ fn prepare_cache(
         .ok_or_else(|| CliError::InvalidInput("compiled SDK has no native ELF identity".into()))?;
     let expected = Packed {
         component: component.name.clone(),
+        binary,
         target: facts.target,
         toolchain: facts.toolchain,
         source_digest: Some(digest.into()),
         ..Packed::default()
     };
-    let cache = crate::builderlayer_cache::Cache::new(Path::new(target), &key)?;
+    let cache_key = if binary {
+        hex::encode(Sha256::digest(format!("binary:{key}").as_bytes()))
+    } else {
+        key.clone()
+    };
+    let cache = crate::builderlayer_cache::Cache::new(Path::new(target), &cache_key)?;
     let replayed = if let Some(artifact) = cache.load(&expected)? {
         if runtime_input_key(root, component, extra, target, digest, true)? != key {
             return Err(CliError::InvalidInput(
@@ -350,6 +406,7 @@ fn pack_component(
     inventory: Option<&Path>,
     metadata: &serde_json::Value,
     cached: &[String],
+    binary: bool,
 ) -> Result<(), CliError> {
     let source_digest = inventory
         .map(|path| crate::source_inputs::verify(root, path))
@@ -373,6 +430,7 @@ fn pack_component(
         inventory,
         source_digest.as_deref(),
         cached,
+        binary,
     )?;
     #[cfg(target_os = "linux")]
     if cache.as_ref().is_some_and(|(_, _, replayed)| *replayed) {
@@ -612,6 +670,7 @@ impl<R: BufRead> Stream<R> {
         self.hasher = Sha256::new();
         self.bytes = 0;
         self.done = false;
+        self.binary = None;
         Ok(())
     }
 
@@ -671,7 +730,11 @@ impl<R: BufRead> Stream<R> {
 impl<R: BufRead> Read for Stream<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if let Some(binary) = &mut self.binary {
-            return binary.read(&mut self.input, buf);
+            let count = binary.read(&mut self.input, buf)?;
+            if count == 0 && !buf.is_empty() && binary.at_boundary() {
+                self.done = true;
+            }
+            return Ok(count);
         }
         if buf.is_empty() {
             return Ok(0);
@@ -807,6 +870,36 @@ mod batch_tests;
 #[cfg(test)]
 mod binary_tests {
     use super::*;
+    #[test]
+    fn binary_layer_can_finish_and_advance_to_a_legacy_member() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/probe"), b"exact archive").unwrap();
+        let mut framed = Vec::new();
+        for binary in [true, false] {
+            write_layer(
+                dir.path(),
+                Packed {
+                    binary,
+                    ..Packed::default()
+                },
+                &[],
+                &mut framed,
+            )
+            .unwrap();
+        }
+        let mut stream = Stream::new(framed.as_slice());
+        let mut first = Vec::new();
+        assert!(stream.header(&mut Vec::new()).unwrap().binary);
+        stream.read_to_end(&mut first).unwrap();
+        assert!(!first.is_empty());
+        stream.next_layer().unwrap();
+        assert!(!stream.header(&mut Vec::new()).unwrap().binary);
+        let mut second = Vec::new();
+        stream.read_to_end(&mut second).unwrap();
+        assert_eq!(first, second);
+        stream.finish(&mut Vec::new()).unwrap();
+    }
     #[test]
     fn binary_builder_footer_is_checked_before_eof() {
         let dir = tempfile::tempdir().unwrap();
