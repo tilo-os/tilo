@@ -738,8 +738,8 @@ fn signed_by(
     .unwrap()
 }
 
-fn rejected(code: &str) -> Answer {
-    Ok(ActionMessage::Rejected { code: code.into() })
+fn rejected(code: &str) -> ActionMessage {
+    ActionMessage::Rejected { code: code.into() }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -785,7 +785,7 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         for message in [invoke(&unsigned), ActionMessage::Cancel { invocation: unsigned.invocation }] {
             let effect = directed(room, 53, message);
             older.write(EnvelopeV2::Directed(effect.clone())).await;
-            assert_eq!(older.answer(effect.request_id).await, rejected("action_signature_required"));
+            assert_eq!(older.answer(effect.request_id).await, Ok(rejected("action_signature_required")));
         }
         assert!(fixture.invocation_rx.try_recv().is_err(), "an unsigned effect never dispatches");
 
@@ -808,7 +808,7 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         assert!(fixture.invocation_rx.try_recv().is_ok(), "the signed effect dispatched");
         // The same signed frame delivered again is refused.
         current.write(EnvelopeV2::SignedDirected(frame)).await;
-        assert_eq!(current.answer(effect.request_id).await, rejected("action_replayed"));
+        assert_eq!(current.answer(effect.request_id).await, Ok(rejected("action_replayed")));
         // So is a frame signed outside the freshness window, either way.
         let window = i64::try_from(tilo_delivery_protocol::peer_actions::ACTION_SIGNATURE_TOLERANCE_NS).unwrap();
         for skew in [window.saturating_mul(-2), window.saturating_mul(2)] {
@@ -816,7 +816,7 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
             late.invocation = tilo_actions::InvocationId::new();
             let stale = directed(room, 52, invoke(&late));
             current.write(EnvelopeV2::SignedDirected(signed_by(&stale, 52, now_ns().saturating_add_signed(skew)))).await;
-            assert_eq!(current.answer(stale.request_id).await, rejected("action_stale"));
+            assert_eq!(current.answer(stale.request_id).await, Ok(rejected("action_stale")));
         }
         assert!(fixture.invocation_rx.try_recv().is_err(), "refused frames never dispatch");
 
