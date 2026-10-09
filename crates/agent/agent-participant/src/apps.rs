@@ -1,30 +1,39 @@
-//! Apps as an agent uses them: each record a replica of its resource,
-//! edited through the resource's own door, with nothing rendered.
+//! Apps as an agent uses them: each record held in the app's own view,
+//! attached and never drawn, acted on through that view.
 //!
-//! [`Replica`] holds one record of any app of the catalogue as a framework
-//! [`Participant`] of the app's resource kind ([`ui::framework::hosted_kinds`]):
-//! what the agent may do is exactly what the resource publishes — its
-//! declared and bound document operations — checked against the agent's
-//! permissions, applied under its own actor and attributed to it, exactly as
-//! a person's window applies them. Views and effects are the app's own to
-//! run where it is open.
+//! [`Replica`] mounts the app's real component over one record, as a window
+//! does, on a host without a screen: the record's view is live, and every
+//! operation goes through the same door a person's click takes, checked
+//! against the participant's permissions and attributed to it. Nothing is
+//! performed out of sight of a view; what the participant did is where its
+//! presence shows ([`Replica::presence`]). The person's devices draw the
+//! same record from synced state when someone looks.
 //!
 //! Durable state moves as Automerge changes: [`Replica::take_mutation`]
 //! returns this participant's own changes since the last call (never ones it
 //! received), and [`Replica::apply`] merges another participant's.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use collab_types::DocumentMutation;
-use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
 use tilo_browser_peer::transport::presence_anchors;
 use tilo_relay_protocol::live::LiveAnchor;
-use ui::application::ApplicationDefinition;
+use ui::application::{
+    ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
+    RestoreInput,
+};
+use ui::application_view::InstanceViewStore;
 use ui::collaboration::PresencePayload;
-use ui::framework::{Participant, ResourceSelection};
-use ui::permissions::{Actor, PermissionContext, Principal, Role};
-use ui::portable_storage::PortableStorage;
-use ui::record::{RecordCheckout, RecordId, RecordOwners};
-use ui::tilo_resource::ResourceKind;
+use ui::framework::ResourceSelection;
+use ui::headless::FrameHarness;
+use ui::permissions::{Actor, PermissionContext, Principal, Role, UserId};
+use ui::portable_storage::{PortableStorage, StorageKey};
+use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::state::DocumentFrontier;
+use ui::tilo_resource::{Place, ResourceKind};
 
 /// The apps an agent can open, by app id.
 #[derive(Clone)]
@@ -127,15 +136,46 @@ impl std::fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-/// One record of one app, held as a replica of its resource.
+/// The component instance a replica mounts.
+const INSTANCE: u64 = 1;
+
+/// Where the mounted view lays out. Never drawn; it only gives the view a
+/// size, as a window would.
+const VIEWPORT: (u32, u32) = (1280, 720);
+
+/// The actions a mounted view applied, as its transport replicates them:
+/// where the last one landed is where the participant's presence shows.
+#[derive(Clone, Default)]
+struct Landed(Rc<RefCell<Vec<ActionEnvelope>>>);
+
+impl ActionTransport for Landed {
+    fn replicate(&mut self, env: &ActionEnvelope) {
+        self.0.borrow_mut().push(env.clone());
+    }
+}
+
+/// One record of one app, held in the app's own view.
 pub struct Replica {
     app_id: &'static str,
-    record: RecordId,
-    participant: Participant,
+    kind: ResourceKind,
+    checkout: RecordCheckout,
+    /// The app's view of the record: mounted, laid out, never drawn.
+    frame: Box<FrameHarness>,
+    /// The record store the view reads and writes.
+    records: RecordStore,
+    permissions: Rc<RefCell<PermissionContext>>,
+    /// Who the participant is: the invoker its operations are admitted for.
+    me: String,
+    landed: Landed,
+    /// Where its last operation left it.
+    place: Option<Place>,
+    /// Everything taken or merged so far: what lies past it is this
+    /// participant's own.
+    frontier: DocumentFrontier,
     /// The whole document is still to be sent: the record is new here.
     fresh: bool,
-    /// This participant's changes not taken yet.
-    pending: Vec<Vec<u8>>,
+    /// This participant's changes set aside, untaken, while a peer's merged.
+    unsent: Vec<Vec<u8>>,
 }
 
 impl Replica {
@@ -148,7 +188,8 @@ impl Replica {
     /// # Errors
     ///
     /// Returns why the app is unknown, the record could not be created, or
-    /// its changes do not hold a record of the app's kind.
+    /// its changes do not hold a record of the app's kind, or the app's view
+    /// would not open over it.
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
@@ -172,19 +213,19 @@ impl Replica {
         } else {
             Actor::person(Some(Role::Owner), participant)
         };
-        let permissions = PermissionContext::from_capabilities(actor, Vec::new());
-        let (record, bytes, fresh) = match seed {
+        let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
+            actor,
+            Vec::new(),
+        )));
+        let (checkout, bytes, fresh) = match seed {
             Seed::New => {
                 let checkout = if definition.keeps_room_record() {
                     RecordCheckout::package_primary(definition.record_kind.clone())
                 } else {
                     RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
                 };
-                (
-                    checkout.id.clone(),
-                    genesis(definition, room, &checkout, kind, participant)?,
-                    true,
-                )
+                let bytes = genesis(definition, room, &checkout, kind, participant)?;
+                (checkout, bytes, true)
             }
             Seed::Existing { record, changes } => {
                 if definition.keeps_room_record() != record.is_package_primary() {
@@ -197,17 +238,41 @@ impl Replica {
                     tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
                         .map_err(|error| AppError::Merge(error.to_string()))?;
                 }
-                (record, doc.save(), false)
+                let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+                (checkout, doc.save(), false)
             }
         };
-        let participant = Participant::from_snapshot(kind, &bytes, participant, permissions)
-            .map_err(|error| AppError::Merge(error.to_string()))?;
+        {
+            let doc = ui::tilo_resource::Doc::load(&bytes)
+                .map_err(|error| AppError::Merge(error.to_string()))?;
+            kind.read(&doc)
+                .map_err(|error| AppError::Merge(error.to_string()))?;
+        }
+        let (frame, records, landed) = mount(
+            definition,
+            room,
+            &checkout,
+            bytes,
+            participant,
+            permissions.clone(),
+        )?;
+        let mut frontier = DocumentFrontier::default();
+        if let Some(heads) = records.with(&checkout.id, automerge::AutoCommit::get_heads) {
+            frontier.advance(heads);
+        }
         Ok(Self {
             app_id: definition.app_id,
-            record,
-            participant,
+            kind,
+            checkout,
+            frame,
+            records,
+            permissions,
+            me: participant.to_owned(),
+            landed,
+            place: None,
+            frontier,
             fresh,
-            pending: Vec::new(),
+            unsent: Vec::new(),
         })
     }
 
@@ -220,36 +285,36 @@ impl Replica {
     /// The record's id, as its durable route names it.
     #[must_use]
     pub fn record(&self) -> &str {
-        self.record.as_str()
+        self.checkout.id.as_str()
     }
 
     /// Collaboration route of this record. A package-primary storage key is
     /// internal custody; its existing room-level route has an empty record id.
     #[must_use]
     pub fn wire_record(&self) -> &str {
-        if self.record.is_package_primary() {
+        if self.checkout.id.is_package_primary() {
             ""
         } else {
-            self.record.as_str()
+            self.checkout.id.as_str()
         }
     }
 
     /// The record's id.
     #[must_use]
     pub const fn record_id(&self) -> &RecordId {
-        &self.record
+        &self.checkout.id
     }
 
-    /// Where the agent's last operation left it, as the live plane's
+    /// Where the participant's last operation left it, as the live plane's
     /// selection anchors every collaborator's window resolves against the
     /// record's own items: the paragraph it wrote and the caret at its end,
     /// the item it acted on. `None` before any operation, or for one that
     /// lands nowhere in particular.
     #[must_use]
     pub fn presence(&self) -> Option<(LiveAnchor, LiveAnchor)> {
-        let place = self.participant.place()?.clone();
+        let place = self.place.clone()?;
         let (key, payload) =
-            ResourceSelection::from(place).presence_of(self.participant.kind().kind(), self.app_id);
+            ResourceSelection::from(place).presence_of(self.kind.kind(), self.app_id);
         let (start, end) = match payload {
             PresencePayload::Caret { pos } => (pos, pos),
             PresencePayload::Selection { start, end } => (start, end),
@@ -258,11 +323,14 @@ impl Replica {
         presence_anchors(&key, start, end)
     }
 
-    /// Every document operation the participant may perform now, as inert
-    /// descriptors.
+    /// Every document operation the participant may perform through the
+    /// view now, as inert descriptors.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        self.participant.operations()
+        tilo_actions::door::survey(&self.resources())
+            .into_iter()
+            .filter(|descriptor| descriptor.kind == tilo_actions::OperationKind::Document)
+            .collect()
     }
 
     /// Discover one existing resource's local view metadata under the caller's
@@ -274,21 +342,25 @@ impl Replica {
         kind: &str,
         permissions: &PermissionContext,
     ) -> Vec<ActionDescriptor> {
-        discover_views(
-            *self.participant.kind(),
-            self.app_id,
-            self.participant.doc(),
-            &tilo_actions::remote::ViewResourceQuery {
-                id: id.to_owned(),
-                kind: kind.to_owned(),
-            },
-            permissions,
-        )
+        self.read(|doc| {
+            discover_views(
+                self.kind,
+                self.app_id,
+                doc,
+                &tilo_actions::remote::ViewResourceQuery {
+                    id: id.to_owned(),
+                    kind: kind.to_owned(),
+                },
+                permissions,
+            )
+        })
+        .unwrap_or_default()
     }
 
-    /// Perform one published operation through the resource's own door:
-    /// permission, confirmation and strict argument binding exactly as for
-    /// a person. The change it made is taken with [`Self::take_mutation`].
+    /// Perform one published operation through the view, the door a
+    /// person's click takes: permission, confirmation and strict argument
+    /// binding exactly as for a person. The change it made is taken with
+    /// [`Self::take_mutation`].
     ///
     /// # Errors
     ///
@@ -299,42 +371,82 @@ impl Replica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
-        let changes = if confirm {
-            self.participant.invoke_confirmed(address, arguments)?
-        } else {
-            self.participant.invoke(address, arguments)?
-        };
-        if let Some(changes) = changes {
-            self.pending.push(changes);
+        if !self.survey().iter().any(|entry| &entry.address == address) {
+            return Err(DoorError::Unknown(address.clone()));
         }
-        Ok(ActionOutput::default())
+        self.landed.0.borrow_mut().clear();
+        let (_, started) = self.frame.start_bound_job_for(
+            Some(self.invoker()),
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: INSTANCE,
+                address: address.clone(),
+            },
+            arguments,
+            confirm,
+        )?;
+        self.frame.relayout();
+        let landed = self.landed.0.borrow().last().cloned();
+        self.place = landed
+            .and_then(|envelope| self.read(|doc| self.kind.lands(doc, &envelope.action)))
+            .flatten()
+            .or_else(|| {
+                (address.resource != self.kind.kind())
+                    .then(|| Place::Item(address.resource.clone()))
+            });
+        Ok(started.completed().unwrap_or_default())
+    }
+
+    /// Who the view admits this participant's operations for.
+    fn invoker(&self) -> tilo_actions::ActionInvoker {
+        tilo_actions::ActionInvoker::actor(self.me.clone())
     }
 
     /// Read the record's document.
     pub fn read<R>(&self, read: impl FnOnce(&automerge::AutoCommit) -> R) -> Option<R> {
-        Some(read(self.participant.doc()))
+        self.records.read(&self.checkout.id, read)
     }
 
-    /// The tree the record publishes to this participant now.
+    /// The tree the record's view publishes to this participant now.
     #[must_use]
     pub fn resources(&self) -> Vec<tilo_actions::Resource> {
-        self.participant.resources()
+        let permissions = self.permissions.borrow();
+        self.frame
+            .resources()
+            .into_iter()
+            .filter_map(|resource| permissions.permitted_resource(self.app_id, resource))
+            .collect()
     }
 
     /// This participant's changes since the last call, or `None`. The first
     /// call on a new record returns the whole document as a snapshot.
     pub fn take_mutation(&mut self) -> Option<DocumentMutation> {
         if std::mem::take(&mut self.fresh) {
-            self.pending.clear();
-            return Some(DocumentMutation::Snapshot(self.participant.save()));
+            self.unsent.clear();
+            let (bytes, heads) = self.records.replication_snapshot(&self.checkout.id).ok()?;
+            self.frontier.advance(heads);
+            return Some(DocumentMutation::Snapshot(bytes));
         }
-        let own: Vec<u8> = std::mem::take(&mut self.pending).concat();
+        self.set_aside_own();
+        let own: Vec<u8> = std::mem::take(&mut self.unsent).concat();
         (!own.is_empty()).then_some(DocumentMutation::Incremental(own))
     }
 
-    /// Merge another participant's durable change. Changes that build on
-    /// nothing this replica holds belong to another record and are left
-    /// alone; one already merged changes nothing.
+    /// Move this participant's changes past the frontier into `unsent`.
+    fn set_aside_own(&mut self) {
+        if let Ok((delta, heads)) = self
+            .records
+            .replication_delta(&self.checkout.id, &mut self.frontier)
+        {
+            self.frontier.advance(heads);
+            if !delta.is_empty() {
+                self.unsent.push(delta);
+            }
+        }
+    }
+
+    /// Merge another participant's durable change into the view's record.
+    /// Changes that build on nothing this record holds belong to another
+    /// record and are left alone; one already merged changes nothing.
     ///
     /// # Errors
     ///
@@ -343,16 +455,112 @@ impl Replica {
     pub fn apply(&mut self, mutation: &DocumentMutation) -> Result<(), AppError> {
         match mutation {
             DocumentMutation::Snapshot(bytes) => {
-                if !self.participant.merge_snapshot(bytes) {
+                let holds = ui::tilo_resource::Doc::load(bytes)
+                    .is_ok_and(|incoming| self.kind.holds(&incoming));
+                if !holds {
                     return Err(AppError::Merge("the document is not this record".into()));
                 }
             }
             DocumentMutation::Incremental(bytes) => {
-                self.participant.merge_changes(bytes);
+                let mut incoming = automerge::AutoCommit::new();
+                if tilo_automerge::ApplyIncoming::load_incoming(&mut incoming, bytes).is_err() {
+                    return Ok(());
+                }
+                let missing = incoming.get_missing_deps(&[]);
+                let known = self
+                    .records
+                    .with(&self.checkout.id, |doc| {
+                        missing
+                            .iter()
+                            .all(|hash| doc.get_change_by_hash(hash).is_some())
+                    })
+                    .unwrap_or(false);
+                if !known {
+                    return Ok(());
+                }
             }
         }
+        // What this participant did and has not taken stays its own.
+        if !self.fresh {
+            self.set_aside_own();
+        }
+        let (_, observed) = self
+            .records
+            .merge_replica(&self.checkout, mutation.clone())
+            .map_err(AppError::Merge)?;
+        self.frontier.observe(observed);
+        self.frame.relayout();
         Ok(())
     }
+}
+
+/// Mount `definition`'s view over the record `bytes` hold, as `participant`
+/// with `permissions`: the window a host without a screen opens.
+fn mount(
+    definition: &'static ApplicationDefinition,
+    room: &str,
+    checkout: &RecordCheckout,
+    bytes: Vec<u8>,
+    participant: &str,
+    permissions: Rc<RefCell<PermissionContext>>,
+) -> Result<(Box<FrameHarness>, RecordStore, Landed), AppError> {
+    let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
+    let cache = PortableStorage::new("agent-views", DEVICE).map_err(|e| launch(&e))?;
+    let key = if checkout.id.is_package_primary() {
+        StorageKey::Primary {
+            package: definition.app_id.into(),
+            workspace: room.to_owned(),
+        }
+    } else {
+        StorageKey::Record {
+            package: definition.app_id.into(),
+            workspace: room.to_owned(),
+            record: checkout.id.as_str().into(),
+        }
+    };
+    cache
+        .hydrate(key, bytes, Some(participant.as_bytes().to_vec()))
+        .map_err(|e| launch(&e))?;
+    let records = RecordOwners::portable(cache.clone())
+        .open(definition.app_id, room)
+        .map_err(|e| launch(&e))?;
+    let views = Rc::new(InstanceViewStore::portable(cache, room).map_err(|e| launch(&e))?);
+    let target = LaunchTarget::Record {
+        checkout: checkout.clone(),
+        reveal: None,
+    };
+    let context = HostContext::prepare(
+        definition,
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: DEVICE.into(),
+            instance_id: INSTANCE,
+            permissions,
+            author: UserId(participant.to_owned()),
+            action_context: tilo_actions::ActionContext::default()
+                .with_invoker(tilo_actions::ActionInvoker::actor(participant)),
+        },
+        &target,
+    )
+    .map_err(|e| launch(&e))?;
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .map_err(|e| launch(&e))?;
+    let mut frame = FrameHarness::from_component(
+        component,
+        VIEWPORT,
+        ComponentRunnerInputs {
+            theme: ui::Theme::default(),
+            text_renderer: ui::TextRenderer::new(),
+        },
+    )
+    .map_err(|e| launch(&e))?;
+    let landed = Landed::default();
+    frame
+        .set_action_transport(Box::new(landed.clone()))
+        .map_err(|e| launch(&e))?;
+    Ok((Box::new(frame), records, landed))
 }
 
 /// Device name a record created here is seeded on.

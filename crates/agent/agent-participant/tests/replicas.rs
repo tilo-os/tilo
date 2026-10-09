@@ -144,32 +144,36 @@ fn an_agent_mount_and_a_person_mount_converge() {
 }
 
 /// The record's identity alone, as a participant holds it before the
-/// creator's content arrives.
+/// creator's content arrives: the shortest prefix of the creator's history
+/// that names the record and its schema.
 fn identity_only(page: &Replica) -> Vec<u8> {
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _};
-    let (identity, version) = page
+    use automerge::{ROOT, ReadDoc as _};
+    let changes = page
         .read(|doc| {
-            let (_, record) = doc.get(ROOT, "tilo:record").unwrap().unwrap();
-            let fields: Vec<(String, String)> = ["home", "id", "kind", "room"]
-                .iter()
-                .map(|key| {
-                    let (value, _) = doc.get(&record, *key).unwrap().unwrap();
-                    ((*key).to_owned(), value.into_string().unwrap())
-                })
-                .collect();
-            let (version, _) = doc.get(ROOT, "tilo:schema_version").unwrap().unwrap();
-            (fields, version.as_i64().unwrap())
+            doc.clone()
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>()
         })
         .unwrap();
-    let mut doc = automerge::AutoCommit::new();
-    let record = doc.put_object(ROOT, "tilo:record", ObjType::Map).unwrap();
-    for (key, value) in identity {
-        doc.put(&record, key, value).unwrap();
-    }
-    doc.put_object(&record, "refs", ObjType::List).unwrap();
-    doc.put(ROOT, "tilo:schema_version", version).unwrap();
-    doc.save()
+    let mut prefix = automerge::AutoCommit::new();
+    changes
+        .into_iter()
+        .find_map(|change| {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut prefix, &change).unwrap();
+            let named = prefix
+                .get(ROOT, "tilo:record")
+                .unwrap()
+                .is_some_and(|(_, record)| {
+                    ["home", "id", "kind", "room"]
+                        .iter()
+                        .all(|key| prefix.get(&record, *key).unwrap().is_some())
+                });
+            (named && prefix.get(ROOT, "tilo:schema_version").unwrap().is_some())
+                .then(|| prefix.save())
+        })
+        .expect("the creator's history names the record")
 }
 
 fn joined(

@@ -132,24 +132,29 @@ impl Rooms {
         if governed.peer().document(app, "").is_some() {
             return Ok(false);
         }
-        let mut source = Replica::open(
-            catalogue,
-            app,
-            room,
-            &hex::encode(governor.user_public_key),
-            false,
-            Seed::New,
-        )
-        .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if source.record() != "@tilo:package-primary" {
-            return Err(CollaborationError::new(
-                "factory primary route differs from its declaration",
-            ));
-        }
-        let Some(collab_types::DocumentMutation::Snapshot(genesis)) = source.take_mutation() else {
-            return Err(CollaborationError::new(
-                "factory did not produce a genesis snapshot",
-            ));
+        // The app's view holds the record only while its genesis is taken.
+        let genesis = {
+            let mut source = Replica::open(
+                catalogue,
+                app,
+                room,
+                &hex::encode(governor.user_public_key),
+                false,
+                Seed::New,
+            )
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+            if source.record() != "@tilo:package-primary" {
+                return Err(CollaborationError::new(
+                    "factory primary route differs from its declaration",
+                ));
+            }
+            let Some(collab_types::DocumentMutation::Snapshot(genesis)) = source.take_mutation()
+            else {
+                return Err(CollaborationError::new(
+                    "factory did not produce a genesis snapshot",
+                ));
+            };
+            genesis
         };
         if genesis.is_empty() || genesis.len() > 64 * 1024 {
             return Err(CollaborationError::new(
