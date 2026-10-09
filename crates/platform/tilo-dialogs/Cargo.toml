@@ -20,6 +20,7 @@ test-support = []
 # Outcomes are delivered from the app runtime or a host callback and wake the
 # event loop that asked; reading and writing picked files runs as background
 # work.
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tracing.workspace = true
 # Parses returned file URIs. `portal::to_local_path` is the file-access rule

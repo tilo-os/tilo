@@ -1,0 +1,20 @@
+[package]
+name = "tilo-platform-caps"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The shared shape of a platform crate's per-target capability table: availability, the unsupported error, and this target's column."
+
+[lib]
+name = "tilo_platform_caps"
+path = "src/lib.rs"
+
+# A std-only leaf under every platform crate.
+[dependencies]
+
+[lints]
+workspace = true
