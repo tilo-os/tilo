@@ -1706,16 +1706,22 @@ async fn audit_subscriber_access(
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
-        let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
-        watched &= workspace.membership_is_current();
-        if !current_session(&workspace, peer, session.outbound) {
+        let (current, decision) = {
+            let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
+            watched &= workspace.membership_is_current();
+            (
+                current_session(&workspace, peer, session.outbound),
+                session.decide(&workspace, peer, RoomOperation::Subscribe),
+            )
+        };
+        if !current {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
             ));
         }
         // A live subscription was enrolled when it subscribed: a device the
         // room would only enrol now is no longer a member.
-        match session.decide(&workspace, peer, RoomOperation::Subscribe) {
+        match decision {
             Decision::Admit => {}
             Decision::AdmitAndEnrol | Decision::Deny(room_access::DenyReason::NotAMember) => {
                 return Err(PeerError::Protocol(
