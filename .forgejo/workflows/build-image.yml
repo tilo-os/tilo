@@ -4005,7 +4005,8 @@ jobs:
   promote-integration:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.signed-development-board != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
-    runs-on: runner
+    # Manifest-only promotion must not wait behind native compilation.
+    runs-on: runner-quality
     timeout-minutes: 60
     steps:
       - name: Install OCI index tooling
