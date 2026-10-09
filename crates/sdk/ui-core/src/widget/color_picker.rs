@@ -1385,6 +1385,7 @@ fn parse_hex(s: &str) -> Option<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::theme::Theme;
     use automerge::AutoCommit;
 
@@ -1402,28 +1403,6 @@ mod tests {
     use crate::synthetic_input::mouse_press;
 
     use crate::synthetic_input::mouse_release;
-
-    fn dispatch(p: &mut ColorPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     #[test]
     fn picker_surfaces_edit_hue_saturation_value_and_rgb() {

@@ -6566,27 +6566,15 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
             ElementState::Pressed,
         );
         for _ in 0..2 {
-            let mut handled = false;
-            let mut focus = None;
-            app.dispatch_node(node, |widget, doc, path| {
-                let mut tree = taffy::TaffyTree::new();
-                let leaf =
-                    crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
-                widget.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(doc),
-                        path,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: leaf,
-                        taffy: &tree,
-                    },
-                );
-            })
-            .unwrap();
+            let handled = app
+                .dispatch_node(node, |widget, doc, path| {
+                    crate::testing::Dispatch::new()
+                        .doc(doc)
+                        .path(path)
+                        .send(widget, &event)
+                        .handled
+                })
+                .unwrap();
             assert!(handled);
         }
         return serde_json::json!({"value":"Prompted value"});

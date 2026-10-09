@@ -455,6 +455,7 @@ impl crate::undo::UndoControl for UndoButton {
 mod tests {
     use super::*;
     use crate::a11y::Action;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
     use automerge::ROOT;
 
@@ -479,12 +480,6 @@ mod tests {
     /// Hover, press, release over the control's centre — the real pointer
     /// path, not a shortcut into `activate`.
     fn click(b: &mut UndoButton) {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
         let device = winit::event::DeviceId::dummy();
         let centre = b.rect.center();
         for ev in [
@@ -503,19 +498,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            b.handle_event(
-                &ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch(b, &ev);
         }
     }
 

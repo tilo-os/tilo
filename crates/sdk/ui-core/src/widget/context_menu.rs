@@ -1958,6 +1958,7 @@ mod tests {
     use super::*;
     use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
     use std::sync::Arc;
 
@@ -2155,28 +2156,6 @@ mod tests {
             delta: MouseScrollDelta::LineDelta(0.0, y),
             phase: TouchPhase::Moved,
         }
-    }
-    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        m.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2665,7 +2644,6 @@ mod bounded_tests {
 #[cfg(test)]
 mod nested_and_anchored_tests {
     use super::*;
-    use automerge::AutoCommit;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2679,28 +2657,7 @@ mod nested_and_anchored_tests {
     }
     use crate::synthetic_input::mouse_press;
     use crate::synthetic_input::named_key;
-    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        m.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);

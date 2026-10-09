@@ -1589,14 +1589,14 @@ impl HistoryScrubber {
 mod tests {
     use super::*;
     use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use crate::testing::dispatch;
     use crate::time::Duration;
     use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
-    use collab_types::ArtifactKind;
+    use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1763,28 +1763,6 @@ mod tests {
         scrubber_with_no_entries_is_a_no_op();
         drag_saturates_at_endpoints();
     }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 }
 
 // =====================================================================
@@ -1794,14 +1772,14 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::Duration;
     use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
-    use collab_types::ArtifactKind;
+    use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -2127,28 +2105,6 @@ mod version_tests {
             None,
             ElementState::Pressed,
         ))
-    }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     #[test]

@@ -1006,6 +1006,7 @@ impl crate::widget::controls::ActionControls for Slider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::{AutoCommit, ReadDoc};
 
     #[test]
@@ -1147,33 +1148,6 @@ mod tests {
     use crate::synthetic_input::mouse_press;
 
     use crate::synthetic_input::mouse_release;
-
-    /// Drive an event through the slider with default scaffolding.
-    fn dispatch(s: &mut Slider, event: &WindowEvent) {
-        dispatch_with(s, event, winit::event::Modifiers::default());
-    }
-
-    fn dispatch_with(s: &mut Slider, event: &WindowEvent, modifiers: winit::event::Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     #[test]
     fn slider_pointer_input_hovers_drags_and_jumps() {
@@ -1459,13 +1433,13 @@ mod tests {
         // Case `shift_drags_the_value_a_tenth_as_fast`.
         {
             let mut slider = slider_at(0.0, 0.0, 210.0, 30.0);
-            let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            let mut shift = Dispatch::new().modifiers(winit::keyboard::ModifiersState::SHIFT);
             dispatch(&mut slider, &cursor_moved(105.0, 15.0));
             dispatch(&mut slider, &mouse_press());
             let start = slider.value;
-            dispatch_with(&mut slider, &cursor_moved(105.0, 15.0), shift);
+            shift.send(&mut slider, &cursor_moved(105.0, 15.0));
             let half_track = SliderFace::new(slider.rect, 0.0).track_rect().width() / 2.0;
-            dispatch_with(&mut slider, &cursor_moved(105.0 + half_track, 15.0), shift);
+            shift.send(&mut slider, &cursor_moved(105.0 + half_track, 15.0));
             assert!(
                 (slider.value - start - 0.05).abs() < 1e-6,
                 "{start} -> {}",

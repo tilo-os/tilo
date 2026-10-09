@@ -46,6 +46,8 @@ managed-tree-test = []
 # Kernel-authenticated custody of the executing native service peer.
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
+# Supervisors sleep on a child's pidfd and a wake descriptor instead of polling.
+bounded-command = { path = "../../system/bounded-command" }
 blake3.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true

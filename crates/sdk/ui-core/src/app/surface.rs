@@ -797,6 +797,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::TaffyTreeExt;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -1234,27 +1235,16 @@ mod tests {
         );
         assert!(!scene.encoding().is_empty(), "the app paints in the host");
 
-        let mut doc = automerge::AutoCommit::new();
         let modifiers = winit::event::Modifiers::default();
-        let mut send = |embedded: &mut super::super::EmbeddedApp,
-                        event: WindowEvent,
-                        modifiers: &winit::event::Modifiers| {
-            let mut handled = false;
-            let mut focus = None;
-            embedded.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 2.0,
-                    modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            handled
+        let send = |embedded: &mut super::super::EmbeddedApp,
+                    event: WindowEvent,
+                    modifiers: &winit::event::Modifiers| {
+            Dispatch::new()
+                .scale_factor(2.0)
+                .modifiers(*modifiers)
+                .layout(&taffy, node)
+                .send(embedded, &event)
+                .handled
         };
         let device = winit::event::DeviceId::dummy();
         send(
@@ -1335,25 +1325,16 @@ mod tests {
             embedded.app().focused_control().is_some(),
             "focus entering the app lands on its first control"
         );
-        let mut doc = automerge::AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        embedded.handle_event(
-            &crate::synthetic_input::key_input(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                ElementState::Pressed,
-            ),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = Dispatch::new()
+            .layout(&taffy, node)
+            .send(
+                &mut embedded,
+                &crate::synthetic_input::key_input(
+                    &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                    ElementState::Pressed,
+                ),
+            )
+            .handled;
         assert!(
             !handled && embedded.app().focused_control().is_none(),
             "Tab from the app's last control leaves it for the host"

@@ -451,25 +451,9 @@ mod tests {
             let (tree, node) = laid_out(&mut link);
 
             let device = winit::event::DeviceId::dummy();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                link.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                sender.send(link, &ev);
             };
 
             dispatch(

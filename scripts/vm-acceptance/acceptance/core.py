@@ -8,6 +8,8 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .vm import VmError
+
 # Who fixes what: each area's failures are routed to its owner.
 AREAS = {
     "provenance": "Integrator / local install",
@@ -85,9 +87,36 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+    leave_unlocked(ctx, chk, res)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_LOCKED = "left the session locked"
+
+
+def leave_unlocked(ctx, chk: Check, res: Result) -> None:
+    """Every check runs in the one session the run shares, so none may hand the next a locked
+    one: while locked the compositor refuses every action and snapshot (on purpose), and every
+    later check would report `session_locked` instead of its subject. A check that ends with
+    the session locked fails, however it ended, and the harness restarts the slot's session
+    (a fresh compositor starts unlocked; nothing goes around the lock itself)."""
+    try:
+        locked = ctx.state()["chrome"].get("session_locked")
+    except (VmError, KeyError, TypeError):
+        return  # no state to read: the next check that needs one reports why
+    if not locked:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_LOCKED}, and restarting the slot session failed: "
+                                       f"{exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_LOCKED}; the harness restarted the slot session")
 
 
 def _join(a: str, b: str) -> str:

@@ -873,12 +873,11 @@ fn draw_merged_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::{Duration, SystemTime};
-    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use winit::event::Modifiers;
 
     fn alt(label: &str, author: &str) -> Alternative {
         Alternative {
@@ -1007,28 +1006,6 @@ mod tests {
 
     use crate::synthetic_input::named_key;
 
-    fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
-
     #[test]
     fn picker_buttons_and_dismissal_fire_the_matching_outcome() {
         fn picker_pick_button_fires_with_correct_index() {
@@ -1142,38 +1119,11 @@ mod tests {
 
             let banner_chip = banner.review_chip_rect().unwrap();
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            banner.handle_event(
+            dispatch(
+                &mut banner,
                 &cursor_moved(banner_chip.center().x, banner_chip.center().y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            banner.handle_event(
-                &mouse_press(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            dispatch(&mut banner, &mouse_press());
             assert!(*review_fired.borrow(), "banner [Review] must fire");
 
             // 2. Host opens the picker and the user picks alternative 0.

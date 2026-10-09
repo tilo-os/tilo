@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
 use automerge::ObjType;
@@ -1013,25 +1014,8 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         ti.set_focus(true); // even if somehow focused, the input is inert
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
 
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
         let event = char_key("x");
-        ti.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = dispatch(&mut ti, &event);
         assert!(!handled, "disabled input must not consume the keypress");
         assert_eq!(ti.value(), "", "disabled input must not insert text");
         assert!(ti.take_dirty().is_none(), "no edit should be recorded");
@@ -1040,20 +1024,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let mut on = TextInput::local();
         on.set_focus(true);
         on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut handled = false;
-        on.handle_event(
-            &char_key("x"),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = dispatch(&mut on, &char_key("x"));
         assert!(handled);
         assert_eq!(on.value(), "x");
     }
@@ -1065,47 +1036,20 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
 
         let mut ti = TextInput::local().disabled(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
 
         let moved = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(20.0, 20.0),
         };
-        ti.handle_event(
-            &moved,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let moved = Dispatch::new().send(&mut ti, &moved);
         let press = WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        ti.handle_event(
-            &press,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let press = Dispatch::new().send(&mut ti, &press);
+        let handled = moved.handled | press.handled;
+        let focus_target = press.focus_target.or(moved.focus_target);
 
         assert!(!handled, "disabled input must not consume the click");
         assert!(
@@ -1148,46 +1092,17 @@ use crate::synthetic_input::char_key;
 #[cfg(test)]
 fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
     use winit::dpi::PhysicalPosition;
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.leaf_node(Style::default());
+    let mut sender = Dispatch::new().doc(doc);
     let moved = WindowEvent::CursorMoved {
         device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     };
-    ti.handle_event(
-        &moved,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
     let press = WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Right,
     };
-    ti.handle_event(
-        &press,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
 #[test]
@@ -1271,49 +1186,19 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
         ti.set_focus(true);
-        let mut doc = AutoCommit::new();
         ti.open_context_menu([10.0, 18.0]);
         assert!(ti.context_menu.is_open());
 
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
         let moved = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(280.0, 38.0),
         };
-        ti.handle_event(
-            &moved,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
         let press = WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        ti.handle_event(
-            &press,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = dispatch(&mut ti, &moved) | dispatch(&mut ti, &press);
         assert!(handled, "click consumed while menu open");
         assert!(
             !ti.context_menu.is_open(),
@@ -2172,24 +2057,11 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
             mods(false, false),
         );
 
-        let mut handled = false;
-        let mut focus_target = None;
-        let (taffy, node) = test_node();
-        for event in [mouse_press(), mouse_release()] {
-            ti.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods(false, false),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-        }
+        let mut sender = Dispatch::new().doc(&mut doc);
+        let press = sender.send(&mut ti, &mouse_press());
+        let release = sender.send(&mut ti, &mouse_release());
+        let handled = press.handled | release.handled;
+        let focus_target = release.focus_target.or(press.focus_target);
         assert!(handled);
         assert!(ti.is_revealed(), "a click reveals");
         assert_eq!(focus_target, None, "the click does not move focus");
@@ -2419,25 +2291,8 @@ fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
     })
 }
 
-/// Uses a throwaway taffy node — the input embeds no children.
 fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-    let mut handled = false;
-    let mut focus_target = None;
-    let (taffy, node) = test_node();
-    ti.handle_event(
-        ev,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &m,
-            state: crate::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    Dispatch::new().modifiers(m).doc(doc).send(ti, ev).handled
 }
 
 #[test]
@@ -3921,22 +3776,8 @@ fn attributed_single_line_preedit_preserves_utf8_marks_and_commit_route() {
         line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
         line.set_focus(true);
         line.set_cursor_pos(2);
-        let mut doc = AutoCommit::new();
-        let (taffy, node) = test_node();
-        let mut send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
-            line.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut false,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+        let send = |line: &mut crate::widget::RichTextLine, event: WindowEvent| {
+            dispatch(line, &event);
         };
         send(
             &mut line,
