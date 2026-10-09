@@ -245,6 +245,14 @@ for the five-test run (19.52 seconds), but this is not reported as a successful
 execution of the required check command. No local compilation fallback or shared
 build-data deletion was used.
 
+After the assigned resource owner restored headroom, the bounded required check
+was retried against the existing artifacts and passed in 1 minute 8 seconds.
+The task did not run shared garbage collection or a fresh full build. A bounded
+two-second disk observer recorded aggregate free space from 114700836864 bytes
+at the start to a sampled minimum of 104898965504 and 108880007168 at completion.
+The sampled peak aggregate growth was 9801871360 bytes; this measures the shared
+volume and is not attributed to this compile. The observer stopped explicitly.
+
 The adjacent [JSON ledger](dictation-whistle-aot-review.json) records source-built
 runtime/compiler/artifact digests, exact Rust/bridge source hashes, raw receipt
 hashes, measured public replies, fixture custody and cleanup. First-batch and
