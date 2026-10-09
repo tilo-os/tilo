@@ -21,6 +21,7 @@ fn install_catalog() {
     locales::install();
 }
 
+use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -30,14 +31,10 @@ pub struct Code {
     pub payload: String,
 }
 
+/// The payload is edited at its path (`Code::paths().payload`); clearing it
+/// is a verb, so the palette and agents offer it by name.
 #[resource(kind = "example.qr-code", label = "QR code")]
 impl Code {
-    /// Set the text or URL to encode.
-    #[action]
-    pub fn set_payload(&mut self, #[param("Text or URL to encode")] payload: String) {
-        self.payload = payload;
-    }
-
     /// Clear the payload.
     #[action]
     pub fn clear(&mut self) {
@@ -73,20 +70,23 @@ impl ResourceApp for App {
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Code>> {
         match name {
-            Some("encoded") => vec![Code::SET_PAYLOAD.with("https://tilo.dev")],
+            Some("encoded") => Invoke::edit(&Code::paths().payload.replace("https://tilo.dev"))
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         }
     }
 
     fn view(cx: &mut ViewCx<Code>) -> Element {
         install_catalog();
+        let p = cx.paths();
         let input = cx
-            .input_with(|code| code.payload.clone(), Code::SET_PAYLOAD)
+            .input(p.payload.clone())
             .with_id("qr-input")
-            .with_placeholder("qr-input-placeholder");
-        let payload = cx.value(|code| code.payload.clone());
+            .with_placeholder(keys::QR_INPUT_PLACEHOLDER);
+        let payload = cx.value_at(&p.payload);
         let output = ModelView::from_state(&payload, |payload| code_view(payload));
-        let clear = cx.button("qr-clear", Code::CLEAR.invoke());
+        let clear = cx.button(keys::QR_CLEAR_BUTTON, Code::CLEAR.invoke());
         Box::new(ui::column![
             Text::new("qr-title").with_role(TextRole::Title),
             labeled_field("qr-input-label", input),

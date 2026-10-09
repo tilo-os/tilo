@@ -1,0 +1,37 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "example.counter"
+label = "Counter"
+version = 1
+
+[[resources.fields]]
+owner = "counter"
+path = "count"
+stored = "value"
+title = "Count"
+type = "i64"
+
+[[resources.verbs]]
+description = "Add an amount to the count."
+id = "add"
+kind = "undoable"
+label = "Add an amount to the count"
+
+[[resources.verbs.params]]
+name = "amount"
+required = true
+
+[resources.verbs.params.schema]
+description = "Amount to add; negative subtracts"
+type = "integer"
+
+[[resources.verbs]]
+description = "Reset the count to zero. `destructive` makes every surface, from the button to an agent, confirm before it runs."
+destructive = true
+id = "reset"
+kind = "undoable"
+label = "Reset the count to zero. `destructive` makes every surface, from the"
+params = []

@@ -15,7 +15,9 @@ pub fn install() {
 /// One constant per message of locales/en-US.ftl, for labels and placeholders.
 pub mod keys {
     use ui::i18n::LabelKey;
-    pub const QR_CLEAR: LabelKey = LabelKey::new("qr-clear");
+    pub const QR_CLEAR_BUTTON: LabelKey = LabelKey::new("qr-clear-button");
+    pub const QR_CODE_CLEAR: LabelKey = LabelKey::new("qr-code-clear");
+    pub const QR_CODE_CODE_PAYLOAD: LabelKey = LabelKey::new("qr-code-code-payload");
     pub const QR_EMPTY_MESSAGE: LabelKey = LabelKey::new("qr-empty-message");
     pub const QR_EMPTY_TITLE: LabelKey = LabelKey::new("qr-empty-title");
     pub const QR_INPUT_LABEL: LabelKey = LabelKey::new("qr-input-label");

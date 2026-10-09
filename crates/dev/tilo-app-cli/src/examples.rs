@@ -54,9 +54,9 @@ pub const ALL: &[Example] = &[
     Example {
         name: "counter",
         concept: "resources and actions",
-        summary: "A number changed only through validated actions, with undo, a confirmed reset and a viewer role.",
+        summary: "A number set at its path and changed by verbs, all checked by the model, with undo, a confirmed reset and a viewer role.",
         web: true,
-        files: example_files_with_common!("counter"),
+        files: example_files_with_common!("counter", "surface.toml"),
     },
     Example {
         name: "bound-controls",
@@ -127,7 +127,7 @@ pub const ALL: &[Example] = &[
         concept: "generated visuals",
         summary: "A QR code drawn from resource text, described for screen readers, empty until there is a payload.",
         web: true,
-        files: example_files_with_common!("qr-code"),
+        files: example_files_with_common!("qr-code", "surface.toml"),
     },
 ];
 
