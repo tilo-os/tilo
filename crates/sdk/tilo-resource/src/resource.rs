@@ -175,21 +175,6 @@ pub trait Resource: Sized + 'static {
         None
     }
 
-    /// Publish the bounded audited mutation door. Default resources retain
-    /// their existing catalogue. Enabling this also requires a closed
-    /// [`allows_low_mutation`](Self::allows_low_mutation) whitelist.
-    const AUDITED_LOW_MUTATIONS: bool = false;
-
-    /// Opt in an audited state-only mutation to the bounded low-risk door.
-    /// Default-deny: a default `Action::risk()` is insufficient authority.
-    /// Implementations must use a closed whitelist excluding I/O, commands,
-    /// capability grants and destructive mutations. The target also requires
-    /// actual `RiskLevel::Low` and checks the action's current permission.
-    fn allows_low_mutation(action: &Self::Action) -> bool {
-        let _ = action;
-        false
-    }
-
     /// The least any of the resource's actions is ([`kind_of`](Self::kind_of),
     /// [`field_of`](Self::field_of)): what the generic [`APPLY`] and group
     /// actions are offered under, each invocation then decided by what its
@@ -1278,15 +1263,7 @@ pub(crate) fn group_param<R: Resource>() -> ActionParam {
             ));
         }
         members.push(object(vec![
-            (
-                "action",
-                if R::AUDITED_LOW_MUTATIONS {
-                    string_enum(&[APPLY, crate::APPLY_LOW])
-                } else {
-                    constant(APPLY)
-                },
-                true,
-            ),
+            ("action", constant(APPLY), true),
             ("args", object(vec![(APPLY_PARAM, action, true)]), true),
         ]));
         Some(array(one_of(members)))
@@ -1550,11 +1527,6 @@ pub(crate) fn publish_parts<R: Resource>(
     if R::EDITS {
         resource = resource.with_action(field_edit_spec::<R>());
     }
-    if R::AUDITED_LOW_MUTATIONS {
-        resource = resource
-            .with_action(crate::low_mutation::apply_spec::<R>())
-            .with_action(crate::low_mutation::group_spec::<R>());
-    }
     resource.with_children(children)
 }
 
@@ -1570,9 +1542,6 @@ pub fn build_action<R: Resource>(
 ) -> Result<R::Action, String> {
     if id == crate::GROUP {
         return Err("a group is several actions; build it with `group::build_group`".into());
-    }
-    if id == crate::APPLY_LOW {
-        return crate::low_mutation::build_action::<R>(arguments);
     }
     if id == APPLY {
         let value = arguments
