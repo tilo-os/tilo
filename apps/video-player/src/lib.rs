@@ -37,7 +37,8 @@ mod preferences;
 pub mod resource;
 pub mod shared;
 pub use app::{PlayerApp, source_for_argument, source_for_path};
-pub use resource::{VideoPlayer, VideoPlayerShell};
+pub use resource::VideoPlayerShell;
+pub use shared::Library;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
