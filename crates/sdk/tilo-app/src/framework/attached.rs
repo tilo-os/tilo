@@ -290,9 +290,15 @@ impl AttachedView {
             return Err(DoorError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();
+        // History names the app the view is of, as its window does, within
+        // whatever task the participant carries out.
+        let ambient = self.context.clone().unwrap_or_default().enriched_by(
+            &tilo_actions::ActionContext::default()
+                .with_app(self.definition.app_id, self.definition.title),
+        );
         let (_, started) = self.frame.start_bound_job_within(
             Some(invoker),
-            self.context.as_ref(),
+            Some(&ambient),
             &ui_core::bound_dispatch::BoundActionAddress {
                 instance_id: INSTANCE,
                 address: address.clone(),

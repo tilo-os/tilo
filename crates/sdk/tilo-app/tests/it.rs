@@ -57,8 +57,6 @@ pub mod model_contract;
 pub mod other_records;
 #[path = "outbox.rs"]
 pub mod outbox;
-#[path = "participant.rs"]
-pub mod participant;
 #[path = "person_records.rs"]
 pub mod person_records;
 #[path = "private_windows.rs"]

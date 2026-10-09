@@ -280,10 +280,10 @@
 //!   a document action a content widget publishes through its own
 //!   `PublishesResources` is dropped (a debug build stops at it).
 //! * **A participant without a window** — an agent, a service, a script —
-//!   holds a replica of a record and edits it through the same door as a
-//!   person: a [`Participant`] of the record's kind (each app's kind is
-//!   [`resource_kind`]), checked against its permissions, attributed to it
-//!   and recorded in history with the task it belongs to.
+//!   acts through the app's own view mounted over the record and never
+//!   drawn ([`AttachedView`]): the same door as a person, checked against
+//!   its permissions, attributed to it (an agent acting for its person) and
+//!   recorded in history with the task it belongs to.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
 //!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
 //!   in three parts. What the resource does not hold is the scenario's
@@ -318,7 +318,6 @@ pub mod history;
 mod kinds;
 mod launch;
 mod live;
-mod participant;
 mod people;
 mod person;
 mod preview;
@@ -358,7 +357,6 @@ pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
-pub use participant::Participant;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;

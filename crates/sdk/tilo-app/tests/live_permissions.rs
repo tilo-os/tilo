@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use tilo_app::widget::TaffyTreeExt;
 
-use tilo_app::framework::{Participant, resource_kind};
 use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy};
 use tilo_app::prelude::*;
 
@@ -343,8 +342,9 @@ fn a_commenters_typed_edit_needs_what_its_value_needs() {
     assert_eq!(app.state().remarks.len(), 1);
     assert!(app.state().lines.is_empty());
 
-    // Through a participant without a window, by the same rule.
-    let snapshot = app.read_document(|doc| doc.clone().save());
+    // Through the app's view for an agent without a window, by the same
+    // rule.
+    let definition = tilo_app::framework::definition::<MemoApp>();
     let commenting = PermissionContext::agent_granted(
         "scribe",
         &TreePath::root()
@@ -353,13 +353,25 @@ fn a_commenters_typed_edit_needs_what_its_value_needs() {
             .field(policy::roles::COMMENTS_FIELD),
         KindSet::READ_UNDOABLE,
     );
-    let mut participant =
-        Participant::from_snapshot(resource_kind::<MemoApp>(), &snapshot, "scribe", commenting)
-            .unwrap();
-    participant
-        .apply_typed::<Memo>(&remark)
-        .expect("the participant remarks");
-    assert!(participant.apply_typed::<Memo>(&line).is_err());
-    assert_eq!(participant.state::<Memo>().unwrap().remarks.len(), 2);
-    assert!(participant.state::<Memo>().unwrap().lines.is_empty());
+    let mut view = tilo_app::framework::AttachedView::open(
+        definition,
+        "test-workspace",
+        tilo_app::record::RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+        app.read_document(|doc| doc.clone().save()),
+        "scribe",
+        commenting,
+        false,
+    )
+    .unwrap();
+    view.invoke_typed(&Invoke::<Memo>::apply(&remark).unwrap(), false)
+        .expect("the agent remarks");
+    assert!(
+        view.invoke_typed(&Invoke::<Memo>::apply(&line).unwrap(), false)
+            .is_err()
+    );
+    let memo = view
+        .read(|doc| <Memo as tilo_resource::Resource>::read(doc).unwrap())
+        .unwrap();
+    assert_eq!(memo.remarks.len(), 2);
+    assert!(memo.lines.is_empty());
 }

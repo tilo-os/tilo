@@ -810,9 +810,9 @@ is the same one a page runs.
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
 - **Opening an app.** `open(app, record)` holds the record, from the
-  durable changes the host replayed, as a `ui::framework::Participant` of
-  the app's resource kind (`Replica`), as an agent principal holding the
-  editor role. Without a record it creates one (the resource's genesis)
+  durable changes the host replayed, in the app's own view mounted over it
+  and never drawn (`ui::framework::AttachedView`, the participant's
+  `Replica`), as an agent principal holding the editor role. Without a record it creates one (the resource's genesis)
   and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
