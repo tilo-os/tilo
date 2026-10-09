@@ -202,6 +202,12 @@ pub enum Command {
         /// instead of being resolved against this machine's catalogue.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        /// Hold the answer until the invocation settles — succeeds, fails or
+        /// is cancelled — for at most this many milliseconds (capped at 30
+        /// s), and answer its latest receipt then. Absent, the answer is the
+        /// admission receipt. Ignored with `device`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
     },
     /// Read the latest broker lifecycle state for an invocation receipt id.
     ActionsStatus { invocation_id: u64 },
@@ -778,11 +784,13 @@ pub fn dispatch_command<S: ControlState>(
             ),
             Vec::new(),
         ),
+        // How long the answer waits is the transport's: it holds the reply.
         Command::ActionsInvoke {
             provider,
             id,
             args,
             device,
+            wait_ms: _,
         } => match device {
             Some(device) => plan_enrolled_device_action(device, provider, id, args),
             None => actions_invoke(state, provider, id, args),
@@ -2679,6 +2687,7 @@ mod tests {
             id: id.to_string(),
             args: args.as_object().cloned().unwrap_or_default(),
             device: None,
+            wait_ms: None,
         }
     }
 
@@ -2745,6 +2754,7 @@ mod tests {
                         id: "app.files/open".into(),
                         args: serde_json::Map::new(),
                         device: Some(device.clone()),
+                        wait_ms: None,
                     },
                     &ActionState,
                 );
@@ -2768,6 +2778,7 @@ mod tests {
                         id: "not-an-address".into(),
                         args: serde_json::Map::new(),
                         device: Some("33".repeat(32)),
+                        wait_ms: None,
                     },
                     &ActionState,
                 );
@@ -2870,8 +2881,16 @@ mod tests {
                         id: "i".to_string(),
                         args: serde_json::Map::new(),
                         device: None,
+                        wait_ms: None,
                     }
                 );
+                let Command::ActionsInvoke { wait_ms, .. } = parse_command(
+                    r#"{"op":"actions_invoke","provider":"p","id":"i","wait_ms":5000}"#,
+                )
+                .expect("actions_invoke should parse with a wait") else {
+                    panic!("expected ActionsInvoke");
+                };
+                assert_eq!(wait_ms, Some(5000));
 
                 let with_args = parse_command(
                     r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,

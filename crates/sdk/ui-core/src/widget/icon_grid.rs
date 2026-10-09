@@ -295,9 +295,7 @@ impl Widget for IconGrid {
                 2.0 * f64::from(tokens.spacing.s3),
             );
         }
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn measure(
@@ -325,13 +323,7 @@ impl Widget for IconGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Actual allocated width — measure may have run against a
         // different available width.
         self.columns = self.columns_for_width(self.rect.width());

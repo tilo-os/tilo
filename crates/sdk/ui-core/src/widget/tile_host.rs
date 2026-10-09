@@ -2163,13 +2163,7 @@ impl Widget for TileHost {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -3352,9 +3346,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4172,9 +4164,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -4225,9 +4215,7 @@ mod tests {
             self.0
                 .borrow_mut()
                 .push(super::super::panic_scope::current());
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(

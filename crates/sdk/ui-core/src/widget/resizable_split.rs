@@ -435,9 +435,7 @@ impl Widget for SplitHandle {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(self.layout_style());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(self.layout_style(), node_map, self)
     }
 
     fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
@@ -1148,15 +1146,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: self.width.map_or(taffy::Dimension::auto(), length),
                     height: taffy::Dimension::auto(),
                 },
                 ..Style::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn update(
@@ -1169,13 +1166,7 @@ mod tests {
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let l = taffy.layout(node).copied().unwrap_or_default();
-            self.rect = Rect::new(
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-            );
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

@@ -19,6 +19,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
 };
@@ -395,15 +396,14 @@ impl Widget for FunnelChart {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
@@ -648,18 +648,6 @@ impl Widget for FunnelChart {
     }
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 

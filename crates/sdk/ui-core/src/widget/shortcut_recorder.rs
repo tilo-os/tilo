@@ -204,7 +204,7 @@ impl Widget for ShortcutRecorder {
         self.reset_edge = crate::widget::ControlSize::Small.height(theme);
         self.gap = f64::from(theme.tokens.spacing.s2);
         self.layout_theme = Some(theme.clone());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(self.content_width())),
                 height: Dimension::length(crate::num::f32_of_f64(self.height)),
@@ -212,9 +212,8 @@ impl Widget for ShortcutRecorder {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn adjust_layout_with_measure(

@@ -1034,7 +1034,7 @@ impl Widget for Autocomplete {
     ) -> NodeId {
         // The field's own band: its control size, grown with its line.
         let height = px(self.input.band_in(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(height),
@@ -1042,19 +1042,13 @@ impl Widget for Autocomplete {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.apply_layout_external(crate::widget::placed(&l, origin));
     }
 
     fn draw(

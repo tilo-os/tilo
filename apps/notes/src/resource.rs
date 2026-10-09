@@ -4,6 +4,8 @@
 
 use std::rc::Rc;
 
+use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
+
 use tilo_actions::ActionSpec;
 use tilo_document::RichText;
 use ui::application::OpenFile;
@@ -13,7 +15,7 @@ use ui::framework::{
 };
 use ui::headless::FrameHarness;
 use ui::permissions::UserId;
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Delta, Doc, Invoke, ModelError, Resource, SearchEntry};
 // `Resource` is in scope for both `Notebook` and nested `RichText`.
 use crate::actions::{NOTES_ACTION_TYPE, NotesAction};
 use crate::app::NotesApp;
@@ -39,13 +41,9 @@ impl Resource for Notebook {
     }
 
     fn read(doc: &Doc) -> Result<Workspace, ModelError> {
-        let mut workspace = Workspace::default();
-        workspace.data.pages = NotesDoc::list_pages(doc);
-        workspace.data.tags = NotesDoc::list_tags(doc);
-        workspace.data.tag_assignments = NotesDoc::list_tag_assignments(doc)
-            .into_iter()
-            .map(|(page, tag)| crate::model::TagAssignment { page, tag })
-            .collect();
+        let mut workspace = crate::notebook::project_without_asset_rehash(doc, None)
+            .map_err(ModelError::invalid)?;
+        workspace.canonical_projection_heads = committed_projection_heads(doc);
         workspace.bodies = {
             #[cfg(test)]
             let _profile = crate::cpu_profile::Phase::start("projection_bodies");
@@ -57,6 +55,51 @@ impl Resource for Notebook {
             Rc::new(crate::actions::read_body_states(doc, workspace.pages()))
         };
         Ok(workspace)
+    }
+
+    fn refresh(state: &mut Workspace, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        let Some(updates) = changed_page_bodies(state, doc, delta)? else {
+            *state = Self::read(doc)?;
+            return Ok(());
+        };
+        let refreshed_pages = updates.iter().map(|update| update.page).collect();
+        let before = state.canonical_projection_heads.clone();
+        {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("projection_bodies");
+            let bodies = std::sync::Arc::make_mut(&mut state.bodies);
+            for update in &updates {
+                bodies.insert(update.page, update.blocks.clone());
+            }
+        }
+        {
+            #[cfg(test)]
+            let _profile = crate::cpu_profile::Phase::start("projection_rich_states");
+            let bodies = Rc::make_mut(&mut state.body_states);
+            for update in updates {
+                bodies.insert(update.page, update.rich);
+            }
+        }
+        let after = committed_projection_heads(doc);
+        state.body_projection_refresh =
+            before
+                .zip(after.clone())
+                .map(|(before, after)| crate::model::BodyProjectionRefresh {
+                    before,
+                    after,
+                    pages: refreshed_pages,
+                });
+        state.canonical_projection_heads = after;
+        Ok(())
+    }
+
+    fn publication_cache_epoch(_state: &Workspace) -> Option<String> {
+        // Daily-note actions must change at local midnight even when nobody
+        // edited the notebook. All other canonical publication inputs are state.
+        Some(crate::actions::today_title())
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
@@ -133,6 +176,69 @@ impl Resource for Notebook {
     fn search(state: &Workspace) -> Vec<SearchEntry> {
         crate::search::entries(state)
     }
+}
+
+fn committed_projection_heads(doc: &Doc) -> Option<Vec<automerge::ChangeHash>> {
+    (doc.pending_ops() == 0).then(|| doc.base_heads())
+}
+
+struct PageBodyRefresh {
+    page: PageId,
+    blocks: Vec<crate::actions::StoredBlock>,
+    rich: tilo_document::RichTextState,
+}
+
+/// Body edits preserve the already validated page tree. Structural changes,
+/// unknown deltas and edits outside those bodies take the full schema reader.
+fn changed_page_bodies(
+    state: &Workspace,
+    doc: &Doc,
+    delta: &Delta,
+) -> Result<Option<Vec<PageBodyRefresh>>, ModelError> {
+    let root = delta.under(&ROOT);
+    if root.is_all()
+        || root.key("pages") != ui::tilo_resource::delta::Touch::Below
+        || root.keys().any(|key| key != "pages")
+    {
+        return Ok(None);
+    }
+    let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(ROOT, "pages") else {
+        return Ok(None);
+    };
+    let changed = delta.under(&pages);
+    if changed.is_all() || changed.is_empty() {
+        return Ok(None);
+    }
+    let mut updates = Vec::new();
+    for key in changed.keys() {
+        if changed.key(key) == ui::tilo_resource::delta::Touch::Written {
+            return Ok(None);
+        }
+        let Ok(page) = key.parse::<PageId>() else {
+            return Ok(None);
+        };
+        if state.get(page).is_none() {
+            return Ok(None);
+        }
+        let Ok(Some((Value::Object(ObjType::Map), object))) = doc.get(&pages, key) else {
+            return Ok(None);
+        };
+        let fields = delta.under(&object);
+        if fields.is_all()
+            || fields.key("body") == ui::tilo_resource::delta::Touch::Untouched
+            || fields.keys().any(|field| field != "body")
+        {
+            return Ok(None);
+        }
+        let body = crate::notebook::validated_page_body(doc, page).map_err(ModelError::invalid)?;
+        let rich = RichText::read_under(doc, &body)?;
+        updates.push(PageBodyRefresh {
+            page,
+            blocks: NotesDoc::page_stored_blocks(doc, page),
+            rich,
+        });
+    }
+    Ok(Some(updates))
 }
 
 /// A block's kind as a reader names it.
@@ -273,3 +379,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
         self.stage_scenario(scenario);
     }
 }
+
+#[cfg(test)]
+#[path = "resource/refresh_tests.rs"]
+mod refresh_tests;

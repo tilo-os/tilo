@@ -69,6 +69,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
+  "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
@@ -379,13 +380,14 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-inputs = ["scripts/vm-acceptance/"]
+inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
   "scripts/vm-acceptance/test_app_cohort.py",
   "scripts/vm-acceptance/test_store_chooser.py",

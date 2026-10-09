@@ -58,8 +58,9 @@ struct Cli {
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     #[arg(long)]
     endpoint: Option<PathBuf>,
-    /// Pause between edits, in milliseconds, so the caret can be watched.
-    #[arg(long, default_value_t = 250)]
+    /// Pause after each action and edit, in milliseconds, so the caret can be
+    /// watched. A demo affordance: by default the agent acts at full speed.
+    #[arg(long, default_value_t = tilo_agent::session::DEFAULT_PACE_MS)]
     pace_ms: u64,
     /// Exit after the first instruction has been carried out.
     #[arg(long)]
@@ -179,4 +180,31 @@ fn device_content() -> tilo_content::ContentStore {
         return device;
     }
     tilo_content::ContentStore::memory()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pace is a demo affordance: an agent started without `--pace-ms`
+    /// (as every launcher starts it) never pauses after an action.
+    #[test]
+    fn an_agent_started_without_a_pace_acts_at_full_speed() {
+        let cli = Cli::try_parse_from([
+            "tilo-agent",
+            "--workspace",
+            "00000000-0000-0000-0000-000000000001",
+        ])
+        .unwrap();
+        assert_eq!(Duration::from_millis(cli.pace_ms), Duration::ZERO);
+        let demo = Cli::try_parse_from([
+            "tilo-agent",
+            "--workspace",
+            "00000000-0000-0000-0000-000000000001",
+            "--pace-ms",
+            "600",
+        ])
+        .unwrap();
+        assert_eq!(demo.pace_ms, 600, "demos still choose a visible pace");
+    }
 }

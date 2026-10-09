@@ -11,6 +11,7 @@
 
 pub mod action_api;
 pub mod files_index;
+pub mod invocation_wake;
 pub mod providers;
 pub mod visibility;
 
@@ -174,7 +175,8 @@ pub type InvokeFn = dyn Fn(
 pub const RESOLVE_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// A non-blocking admission poll. `None` means the broker has not answered
-/// yet; the compositor keeps the ticket and polls again next frame.
+/// yet; the compositor keeps the ticket and polls it again when
+/// [`invocation_wake`] wakes it, or when something else does.
 pub type PendingInvocation = Rc<dyn Fn() -> Result<Option<ActionReceipt>, ActionError>>;
 pub enum InvocationDisposition {
     Accepted(ActionReceipt),

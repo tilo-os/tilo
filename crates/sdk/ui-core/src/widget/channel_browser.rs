@@ -1034,26 +1034,20 @@ impl Widget for ChannelBrowser {
             + (rows * ROW_HEIGHT).min(10.0 * ROW_HEIGHT)
             + FOOTER_HEIGHT
             + SPACE_HEADER_HEIGHT;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(640.0),
                 height: Dimension::length(px(height)),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::placed(&l, origin);
         if prev != self.rect {
             self.dirty = true;
         }

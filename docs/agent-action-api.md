@@ -175,6 +175,30 @@ are deliberately indistinguishable, so probing cannot map what you may not see:
         "message":"no visible action addressed by (actions, nope) in the current catalogue"}}
 ```
 
+An application action answers once it is admitted: its receipt carries the
+broker job (`broker_invocation_id`) and usually the state `accepted`, and
+`actions_status` follows the job from there. `wait_ms` holds the answer instead
+until the job settles — succeeds, fails or is cancelled — or the wait runs out
+(capped at 30 s), and answers with the job's latest receipt either way. The
+desktop is woken by the job itself, not polled, so the answer leaves as soon as
+it settles:
+
+```json
+{"op":"actions_invoke","provider":"app-actions","id":"…","wait_ms":5000}
+```
+
+```bash
+tilo-control actions invoke app-actions "$ID" --wait        # 5 s; --wait=MS for another bound
+```
+
+`--wait` exits 1 when the action failed or was cancelled, and names the job to
+follow with `actions status` when it is still running. Without `wait_ms` the
+answer is the admission receipt, as before; with `device` it is ignored.
+
+A client making many calls can keep one connection: `tilo-control actions
+session` reads one wire request per stdin line and writes one answer per stdout
+line, in order, over a single connection.
+
 ## Reading a terminal session
 
 For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared
@@ -202,7 +226,9 @@ screen.
 
 Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer
-valid now fails loudly instead of running something else.
+valid now fails loudly instead of running something else. The request runs from
+that one resolution: nothing else runs between resolving the address and
+invoking it.
 
 ## Why enumeration carries no invoke handle
 
@@ -554,3 +580,26 @@ its new timing stream. Inspect returns the current fixed options and their
 scope. Agent-scoped, sandboxed, other-account and locked-session calls cannot
 configure this owner-only surface. No application content or typed keys are
 recorded by these timing options.
+
+## Cloud account mounts
+
+Settings publishes `sync-now` and either `pause-sync` or `resume-sync` on each
+`settings.account:<id>` row while the cloud account service lists that account
+as mounted at `~/Remote/<label>`; an account that is not mounted offers none of
+them. They are device-only jobs: the effect answers once the service has
+accepted the request, and the account's health still arrives through the
+account status store. `sync-now` cuts a failure back-off short and runs a pass
+(an account whose mount could not start is tried again); a pause stops
+background sync and uploads until resumed, survives restarts, and leaves
+on-demand reads working while edits queue.
+
+Settings reaches the mounts through the service's account socket,
+`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock` (`runtime_fs::cloud`, mode
+0600), whose directory its sandbox is granted. That socket lists, syncs,
+pauses and resumes mounts and refuses everything else. File requests (a
+file's provider revisions, restoring one of them, and a share link, each
+refused unless the provider's capabilities include it) are served only on the
+file socket, `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`, in a directory
+of its own that no grant of the account socket reaches. No credential crosses
+either socket. Files does not yet publish these file requests as entry
+actions, and no sandbox is granted the file socket yet.

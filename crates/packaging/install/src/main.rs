@@ -1147,7 +1147,14 @@ fn stage_runtime_bundle(
     let mut sink = BlobDir(blobs);
     let tapp = tilo_app_package::tapp::read(candidate.reader()?, &mut sink)
         .map_err(|error| Error::Parse(error.to_string()))?;
-    let missing = tapp.missing();
+    // Most of a runtime build's files are in the runtime already installed:
+    // copy those, each verified against the hash the signed package names,
+    // and fetch only the rest.
+    let (missing, reused) = install::runtime_blobs::LocalRuntimeBlobs::installed()
+        .copy_into(&tapp.missing(), &sink.0)?;
+    if reused > 0 {
+        println!("  reused   : {reused} bytes already on this device");
+    }
     if !missing.is_empty() {
         let fetcher = payload.ok_or_else(|| {
             Error::Policy(format!(

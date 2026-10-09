@@ -1,0 +1,111 @@
+# Explicit diagnostic only; never replaces the required PR/main gates.
+name: CI / bounded native wasm qualification
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Native host; checks always produce wasm32 output.'
+        type: choice
+        default: runner-large-arm64
+        options: [runner-large-arm64, runner]
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  # Match the test profile below. Cargo keeps dev/test artifacts in the same
+  # target tree, but a different debuginfo setting gives them different
+  # fingerprints and recompiles the dependency graph for the all-target pass.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  # Cache availability changes speed, never correctness or mergeability.
+  # Deny warnings through per-target flags. Cargo joins these with the
+  # target rustflags in .cargo/config.toml (x86-64-v3, frame pointers,
+  # hardening); RUSTFLAGS would replace them, giving these builds different
+  # codegen, and different pixels, from nightly and local builds.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+  WGPU_BACKEND: vulkan
+  # Every runner may expose a different physical adapter. Goldens are rendered
+  # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
+  # adapter and fail instead of silently selecting runner hardware.
+  WGPU_ADAPTER_NAME: llvmpipe
+
+
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - name: Checkout public-trust context fixture
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve the CI builder before starting job containers
+        id: resolve
+        env:
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+        run: python3 tools/ci/resolve_builder.py
+      - name: Verify named public-trust contexts with Docker BuildKit
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: bash os/tests/named_public_trust_context.sh docker
+
+
+  wasm:
+    needs: [builder]
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify native wasm-check runner architecture
+        env:
+          EXPECTED_ARCH: ${{ github.event.inputs.runner == 'runner' && 'x86_64' || 'aarch64' }}
+        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      # A no-op on builders built from the current recipe.
+      - name: Ensure the wasm32 Rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Check browser crates for wasm32
+        env:
+          PACKAGES: -p tilo-web-desktop -p tilo-browser-runtime -p registry-web-bindgen -p tilo-browser-compute
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "check wasm32" -- \
+            bash scripts/ci-run.sh "Check (browser crates, wasm32)" -- \
+            cargo check --locked $PACKAGES --target wasm32-unknown-unknown
+
+      # The step above checks each crate with its default features. The
+      # browser builds the web core with `dylink` and its app collection, and
+      # the Cloud frontend with `cloud,static-apps`; check those as built.
+      - name: Check the browser's wasm32 builds
+        run: bash tools/ci/check-wasm.sh
+
+      # `tilo-app build --platform web` for every selected web-capable
+      # example, against one web core.
+      - name: Build web-capable examples for the web
+        env:
+          WEB_EXAMPLES: example-counter
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "web examples" -- \
+            bash scripts/ci-run.sh "tilo-app build --platform web (examples)" -- \
+            bash tools/ci/build-web-examples.sh $WEB_EXAMPLES
+

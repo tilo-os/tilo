@@ -1054,8 +1054,10 @@ impl AudioBackend {
             // probe lets us confirm real buffers flow.
             let (sink, governed_output) =
                 if matches!(output, AudioOutput::System) && media::audio_output::is_governed() {
-                    let (bin, bridge) =
-                        media::audio_output::gst::sink_bin("tilo_audiosink", "tilo_governed_gain")?;
+                    let (bin, bridge) = media::audio_output::gst::host_clocked_sink_bin(
+                        "tilo_audiosink",
+                        "tilo_governed_gain",
+                    )?;
                     let sink = bin.by_name("tilo_audiosink");
                     playbin.set_property("audio-sink", &bin);
                     (sink, Some(bridge))

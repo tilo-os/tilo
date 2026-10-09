@@ -92,7 +92,8 @@ struct CapBinding {
     identity: IdentityKey,
     /// Who the mount acts as, for subject matching.
     actor: Actor,
-    /// The capabilities, verbatim — grants, restrictions and expiries.
+    /// The complete capabilities with Files mount paths projected into this
+    /// namespace — grants, restrictions, subjects and expiries stay intact.
     caps: Vec<CapOverride>,
     /// The instant capability expiry is evaluated at. `None` reads the
     /// system clock every check, so an [`collab_types::Expiry::AtUnix`]
@@ -151,6 +152,29 @@ impl CapBinding {
     }
 }
 
+/// The normal Permissions surface and application sandbox name Files here.
+/// A signed workspace authority binds this mount's policy to its namespace UUID.
+const WORKSPACE_FILES_PATH: &str = "/var/workspace";
+
+/// Project only the path coordinate; never rewrite the signed policy or grant.
+/// Ancestor restrictions must map too, so a ceiling on `/var` still restricts
+/// the Files subtree rather than disappearing at the mount boundary.
+fn namespace_capabilities(caps: &[CapOverride]) -> Vec<CapOverride> {
+    caps.iter()
+        .cloned()
+        .map(|mut cap| {
+            if let Scope::FsPath(path) = &mut cap.scope {
+                if path_covers(path, WORKSPACE_FILES_PATH) {
+                    *path = "/".into();
+                } else if let Some(relative) = path.strip_prefix("/var/workspace/") {
+                    *path = format!("/{relative}");
+                }
+            }
+            cap
+        })
+        .collect()
+}
+
 /// The actor a **remote** identity is evaluated as: its own person
 /// principal and nothing else. The principals a mount proves for itself
 /// (rooms, app identity, bearer tokens) are statements about this
@@ -182,6 +206,11 @@ pub struct WorkspaceAcl {
 
 impl WorkspaceAcl {
     /// Bind `identity`'s capabilities to this ACL.
+    ///
+    /// Paths beneath the normal `/var/workspace` projection are evaluated
+    /// relative to this namespace root. Ancestor scopes map to the root too;
+    /// existing namespace-relative scopes remain supported. The caller's signed
+    /// list is never modified, and no host filesystem path is opened here.
     ///
     /// `caps` is the workspace's whole capability list, unfiltered:
     /// capabilities that don't cover the actor, aren't
@@ -234,7 +263,7 @@ impl WorkspaceAcl {
         self.bindings.push(CapBinding {
             identity,
             actor,
-            caps: caps.to_vec(),
+            caps: namespace_capabilities(caps),
             fixed_now: now,
         });
         self
@@ -564,9 +593,87 @@ impl From<&AclHandle> for AclHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collab_types::Subject;
 
     const ALICE: IdentityKey = [1u8; 32];
     const BOB: IdentityKey = [2u8; 32];
+
+    #[test]
+    fn normal_files_mount_scope_preserves_policy_and_deny_bias() {
+        let grant = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/var/workspace".into()),
+            Verb::Write,
+        );
+        let mut restriction = grant.clone();
+        restriction.scope = Scope::FsPath("/var/workspace/private".into());
+        restriction.effect = Effect::Restrict;
+        restriction.verb = Verb::Read;
+        let caps = vec![grant, restriction];
+        let original = caps.clone();
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
+        for path in ["/", "/notes.md", "/private/notes.md"] {
+            for (verb, access) in [(Verb::Read, Access::Read), (Verb::Write, Access::Write)] {
+                let mounted = format!("/var/workspace{}", if path == "/" { "" } else { path });
+                let expected = decide_capability(
+                    &peer_actor(&ALICE),
+                    &ResourceRef::FsPath(mounted),
+                    verb,
+                    &caps,
+                    Some(0),
+                ) == CapDecision::Allow;
+                assert_eq!(acl.permits(&ALICE, path, access), expected);
+                assert_eq!(acl.permits_peer(&ALICE, path, access), expected);
+            }
+        }
+        assert_eq!(caps, original, "signed policy is not rewritten");
+        assert!(!acl.permits_peer(&BOB, "/", Access::Read));
+        for outside in ["/", "/etc/passwd", "/var/workspace-other/notes.md"] {
+            assert_ne!(
+                decide_capability(
+                    &peer_actor(&ALICE),
+                    &ResourceRef::FsPath(outside.into()),
+                    Verb::Read,
+                    &caps,
+                    Some(0),
+                ),
+                CapDecision::Allow,
+                "no host-root permission was granted"
+            );
+        }
+        let mut ancestor = caps[1].clone();
+        ancestor.scope = Scope::FsPath("/var".into());
+        let restricted =
+            WorkspaceAcl::from_capabilities(ALICE, &[caps[0].clone(), ancestor], &[], Some(0));
+        assert!(restricted.permits(&ALICE, "/notes.md", Access::Read));
+        assert!(!restricted.permits(&ALICE, "/notes.md", Access::Write));
+    }
+
+    #[test]
+    fn normal_files_subtree_visibility_expiry_and_revocation_remain_scoped() {
+        let grant = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/var/workspace/team/documents".into()),
+            Verb::Read,
+        )
+        .with_expiry(20);
+        let acl =
+            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
+        assert!(!acl.permits(&ALICE, "/", Access::Read));
+        assert!(acl.visible(&ALICE, "/team"));
+        assert!(acl.permits_peer(&ALICE, "/team/documents/a.txt", Access::Read));
+        assert!(!acl.permits_peer(&ALICE, "/team/documents-secret/a.txt", Access::Read));
+        assert!(!acl.visible(&ALICE, "/other"));
+        assert!(acl.reads_anything(&ALICE));
+        assert!(!acl.reads_anything(&BOB));
+        let expired =
+            WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(21));
+        assert!(!expired.visible(&ALICE, "/team"));
+        assert!(!expired.reads_anything(&ALICE));
+        let handle = AclHandle::new(acl);
+        handle.replace(WorkspaceAcl::from_capabilities(ALICE, &[], &[], Some(10)));
+        assert!(!handle.permits(&ALICE, "/team/documents/a.txt", Access::Read));
+    }
 
     #[test]
     #[allow(

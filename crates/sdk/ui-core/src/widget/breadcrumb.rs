@@ -283,7 +283,7 @@ impl Widget for Breadcrumb {
         // In a row it shrinks to what its neighbours leave and stretches to
         // the row's height; in a column it spans the column.
         let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -294,9 +294,8 @@ impl Widget for Breadcrumb {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

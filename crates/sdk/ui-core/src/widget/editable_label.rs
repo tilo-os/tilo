@@ -349,7 +349,7 @@ impl Widget for EditableLabel {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.adopt_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::length(self.band()),
@@ -361,9 +361,8 @@ impl Widget for EditableLabel {
                 height: Dimension::auto(),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

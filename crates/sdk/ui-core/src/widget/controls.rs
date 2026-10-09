@@ -75,6 +75,16 @@ pub trait ActionControls: Widget {
         default_bindings(self)
     }
 
+    /// Action-emitter bindings in the same order and exposure as the full
+    /// inventory. Custom private inventories keep their authoritative default;
+    /// wrappers can avoid allocating semantic-only accessibility snapshots.
+    fn action_control_bindings(&self) -> Vec<ControlBindingMetadata> {
+        self.control_action_bindings()
+            .into_iter()
+            .filter(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+            .collect()
+    }
+
     /// Whether this exposed subtree contains controls consuming action
     /// availability. An override must match whether `control_action_bindings`
     /// contains an `Action`, including the same modal child exposure,
@@ -232,6 +242,18 @@ pub fn on_control_invocation_result(
         return;
     }
     result_to_children(widget, address, result);
+}
+
+/// The action-emitter portion of the current exposed inventory. Ordinary
+/// widgets contribute only semantic bindings, so visit their children without
+/// materializing accessibility. Capability overrides retain private custody.
+pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
+    if let Some(controls) = capability::<dyn ActionControls>(widget) {
+        return controls.action_control_bindings();
+    }
+    let mut bindings = Vec::new();
+    widget.for_each_child(&mut |child| bindings.extend(action_control_bindings(child)));
+    bindings
 }
 
 /// The control inventory of `widget`'s subtree.

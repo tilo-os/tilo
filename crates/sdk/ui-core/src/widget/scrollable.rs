@@ -1529,12 +1529,7 @@ impl Widget for Scrollable {
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::placed(&l, origin);
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
         // Clamp a seeded or restored offset against the solved content
@@ -2002,6 +1997,13 @@ impl Widget for Scrollable {
 }
 
 impl crate::widget::controls::ActionControls for Scrollable {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn has_action_control_bindings(&self) -> bool {
         let mut found = false;
         self.for_each_child(&mut |child| {
@@ -2078,15 +2080,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: Dimension::length(200.0),
                     height: Dimension::length(500.0),
                 },
                 ..Default::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

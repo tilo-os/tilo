@@ -217,13 +217,12 @@ fn exported(
         resource_label: "Inbox".into(),
         action_label: label.into(),
         description: None,
-        operation_kind: OperationKind::Document.as_str().to_string(),
-        params_json: serde_json::to_string(&params).expect("params JSON"),
-        contract_json: serde_json::to_string(&ActionContract {
+        operation_kind: OperationKind::Document,
+        params: params.to_vec(),
+        contract: ActionContract {
             result,
             ..ActionContract::default()
-        })
-        .expect("contract JSON"),
+        },
         view: None,
         input: ExportedInput::None,
     }
@@ -284,11 +283,10 @@ impl FixtureApp {
                     ResultSpec::None,
                 ),
                 ExportedAction {
-                    contract_json: serde_json::to_string(&ActionContract {
+                    contract: ActionContract {
                         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..ActionContract::default()
-                    })
-                    .expect("contract JSON"),
+                    },
                     ..exported("archive", "Archive inbox", &[], ResultSpec::None)
                 },
                 ExportedAction {
