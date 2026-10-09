@@ -3560,7 +3560,14 @@ fn run_shovel(
         // `PrimaryReady` barrier are the first commands the shovel serves.
         report_init(&state, &init_tx, InitStatus::Ready);
 
-        drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx).await;
+        Box::pin(drive_shovel(
+            client,
+            identity,
+            outbound_rx,
+            media_rx,
+            inbound_tx,
+        ))
+        .await;
     });
     // However the shovel ended, the owner must look again: an unanswered
     // primary-route barrier now reads as a stopped worker.

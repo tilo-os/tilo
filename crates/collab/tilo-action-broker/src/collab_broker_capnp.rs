@@ -2546,7 +2546,7 @@ impl ActionDirectoryRequestQueue {
         let request = runtime_collab::ActionDirectoryResolutionRequest::FreshBinding {
             resource,
             action,
-            expected,
+            expected: Box::new(expected),
         };
         validate_directory_resolution_request(&cluster_id, &request)
             .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
@@ -2741,7 +2741,12 @@ fn validate_directory_resolution_request(
             resource,
             action,
             expected,
-        } => ("", resource.as_str(), action.as_str(), Some(expected)),
+        } => (
+            "",
+            resource.as_str(),
+            action.as_str(),
+            Some(expected.as_ref()),
+        ),
     };
     validate_directory_target_input(cluster_id, revision, resource, action, None, None)?;
     if let Some(expected) = expected {
@@ -4730,7 +4735,12 @@ impl CapnpBrokerState {
                 resource,
                 action,
                 expected,
-            } => ("", resource.as_str(), action.as_str(), Some(expected)),
+            } => (
+                "",
+                resource.as_str(),
+                action.as_str(),
+                Some(expected.as_ref()),
+            ),
         };
         let registered = directories
             .registered(peer_id, cluster_id)
@@ -15213,9 +15223,10 @@ pub mod tests {
                         out.set_revision(&state.revision);
                     }
                 }
-                DirectoryResolveMode::Found => out.set_not_found(()),
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
-                DirectoryResolveMode::NotFound => out.set_not_found(()),
+                DirectoryResolveMode::Found | DirectoryResolveMode::NotFound => {
+                    out.set_not_found(());
+                }
             }
             Promise::ok(())
         }

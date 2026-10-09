@@ -2646,7 +2646,7 @@ pub enum ActionDirectoryResolutionRequest {
     FreshBinding {
         resource: String,
         action: String,
-        expected: FreshActionBinding,
+        expected: Box<FreshActionBinding>,
     },
 }
 
@@ -2667,6 +2667,12 @@ fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
 }
 
 #[cfg(feature = "client")]
+/// Encode one complete exported action into its Cap'n Proto representation.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the descriptor carries an invalid
+/// semantic identity.
 pub fn encode_exported_action(
     mut row: collab_capnp::exported_action::Builder<'_>,
     action: &ExportedAction,
@@ -2746,6 +2752,12 @@ pub fn encode_fresh_action_binding(
 }
 
 #[cfg(feature = "client")]
+/// Decode one complete exported action from its Cap'n Proto representation.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when required data is absent, malformed, or
+/// exceeds the bounded semantic-identity vocabulary.
 pub fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {

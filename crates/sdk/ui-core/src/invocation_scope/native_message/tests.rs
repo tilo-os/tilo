@@ -57,10 +57,10 @@ impl invocation_stream::Server for SourceStream {
         let mut out = results.get();
         out.set_id(7);
         out.set_invocation_uuid(&[7; 16]);
-        out.set_resource(&format!("chat.person:{AGENT}"));
+        out.set_resource(format!("chat.person:{AGENT}"));
         out.set_action("message");
         out.set_actor("person");
-        out.set_argument(&format!(
+        out.set_argument(format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::json!({tilo_actions::PROMPTED_PARAM: TEXT})

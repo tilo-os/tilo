@@ -252,7 +252,7 @@ impl NativeMessageCapture {
     /// document. Fresh resolution deliberately chooses the current callback,
     /// so its encoded destination must still match the immutable broker source.
     pub(crate) fn validate_encoded(
-        document: &mut AutoCommit,
+        document: &AutoCommit,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
         ACTIVE.with_borrow(|active| {
@@ -263,7 +263,7 @@ impl NativeMessageCapture {
 
     fn validate_fresh_message(
         &self,
-        document: &mut AutoCommit,
+        document: &AutoCommit,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
         let Some(binding) = &self.source.spec.fresh_binding else {

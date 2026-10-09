@@ -72,6 +72,73 @@ fn report_job_binding_refusal(outcome: &'static str) {
     );
 }
 
+enum DirectoryResolutionMode {
+    Revision(String),
+    Fresh(Box<FreshActionBinding>),
+}
+
+struct ValidatedDirectoryInvocation {
+    mode: DirectoryResolutionMode,
+    argument: Option<String>,
+}
+
+fn validate_directory_invocation(
+    root: &ActionDirectoryRoot,
+    request: &InvokeRequest,
+) -> Result<ValidatedDirectoryInvocation, ActionHostError> {
+    if request.revision.is_some() && request.fresh_binding.is_some() {
+        return Err(ActionHostError::InvalidRequest {
+            reason: "fresh and revision-bound directory modes cannot be mixed".into(),
+        });
+    }
+    let mode = if let Some(revision) = request
+        .revision
+        .clone()
+        .filter(|revision| !revision.is_empty())
+    {
+        DirectoryResolutionMode::Revision(revision)
+    } else if let Some(binding) = request.fresh_binding.clone() {
+        let descriptor = &binding.descriptor;
+        let identity = descriptor.semantic_identity.as_ref();
+        if descriptor.address != request.target.address
+            || identity.is_none_or(|identity| {
+                !identity.is_valid() || identity.kind != descriptor.resource_kind
+            })
+        {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "the fresh directory binding does not name the exact semantic target"
+                    .into(),
+            });
+        }
+        DirectoryResolutionMode::Fresh(Box::new(binding))
+    } else {
+        return Err(ActionHostError::InvalidRequest {
+            reason: "a directory action needs exactly one pinned revision or fresh binding".into(),
+        });
+    };
+    let argument = request.argument.to_slot();
+    if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
+        return Err(ActionHostError::InvalidRequest { reason });
+    }
+    let revision = match &mode {
+        DirectoryResolutionMode::Revision(revision) => revision.as_str(),
+        DirectoryResolutionMode::Fresh(_) => "",
+    };
+    let address = &request.target.address;
+    validate_directory_target_input(
+        &root.cluster_id,
+        revision,
+        &address.resource,
+        &address.action,
+        argument.as_deref(),
+        None,
+    )
+    .map_err(|_| ActionHostError::InvalidRequest {
+        reason: "the directory target or argument is malformed".into(),
+    })?;
+    Ok(ValidatedDirectoryInvocation { mode, argument })
+}
+
 struct LaunchDestination {
     workspace: Workspace,
     app_id: String,
@@ -1584,62 +1651,17 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the invocation ledger is unavailable".into(),
-        };
-        if request.revision.is_some() && request.fresh_binding.is_some() {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "fresh and revision-bound directory modes cannot be mixed".into(),
-            }));
-        }
-        let revision = request
-            .revision
-            .clone()
-            .filter(|revision| !revision.is_empty());
-        let fresh_binding = request.fresh_binding.clone();
-        if revision.is_some() == fresh_binding.is_some() {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "a directory action needs exactly one pinned revision or fresh binding"
-                    .into(),
-            }));
-        }
-        let argument = request.argument.to_slot();
+        let ValidatedDirectoryInvocation { mode, argument } =
+            match validate_directory_invocation(&root, request) {
+                Ok(validated) => validated,
+                Err(error) => return Pending::ready(Err(error)),
+            };
         let address = &request.target.address;
-        if fresh_binding.as_ref().is_some_and(|binding| {
-            binding.descriptor.address != *address
-                || binding
-                    .descriptor
-                    .semantic_identity
-                    .as_ref()
-                    .is_none_or(|identity| {
-                        !identity.is_valid() || identity.kind != binding.descriptor.resource_kind
-                    })
-        }) {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "the fresh directory binding does not name the exact semantic target"
-                    .into(),
-            }));
-        }
-        if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
-            return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
-        }
-        if validate_directory_target_input(
-            &root.cluster_id,
-            revision.as_deref().unwrap_or_default(),
-            &address.resource,
-            &address.action,
-            argument.as_deref(),
-            None,
-        )
-        .is_err()
-        {
-            return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "the directory target or argument is malformed".into(),
-            }));
-        }
         let reservation = match self.remote_invocations.lock() {
             Ok(mut ledger) => ledger.reserve(caller, request),
-            Err(_) => Err(unavailable()),
+            Err(_) => Err(ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            }),
         };
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
@@ -1654,24 +1676,23 @@ impl CapnpBrokerState {
         }
         let actor = self.caller_actor(caller, &root.cluster_id);
         let queue = self.action_directory_request_queue();
-        let resolved = if let Some(revision) = revision {
-            queue.try_resolve_pending(
+        let resolved = match mode {
+            DirectoryResolutionMode::Revision(revision) => queue.try_resolve_pending(
                 actor,
                 &root.cluster_id,
                 root.peer_id,
                 revision,
                 &address.resource,
                 &address.action,
-            )
-        } else {
-            queue.try_resolve_fresh_pending(
+            ),
+            DirectoryResolutionMode::Fresh(binding) => queue.try_resolve_fresh_pending(
                 actor,
                 &root.cluster_id,
                 root.peer_id,
                 &address.resource,
                 &address.action,
-                runtime_fresh_binding(fresh_binding.as_ref().expect("checked fresh mode")),
-            )
+                runtime_fresh_binding(&binding),
+            ),
         };
         let resolved = match resolved {
             Ok(resolved) => resolved,
@@ -1764,12 +1785,11 @@ impl CapnpBrokerState {
             }
             _ => return Err(ActionHostError::UnknownAction),
         };
-        if let Some(expected) = &request.fresh_binding {
-            if resolved.revision.is_empty()
-                || directory_fresh_binding(&row).as_ref() != Some(expected)
-            {
-                return Err(ActionHostError::UnknownAction);
-            }
+        if let Some(expected) = &request.fresh_binding
+            && (resolved.revision.is_empty()
+                || directory_fresh_binding(&row).as_ref() != Some(expected))
+        {
+            return Err(ActionHostError::UnknownAction);
         }
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
@@ -2961,8 +2981,9 @@ fn directory_page(
             };
             match reply.resolution {
                 runtime_collab::ActionDirectoryResolution::Found(row) => {
-                    let revision = resolution_revision
-                        .or((!reply.revision.is_empty()).then_some(reply.revision.as_str()));
+                    let revision = resolution_revision.or_else(|| {
+                        (!reply.revision.is_empty()).then_some(reply.revision.as_str())
+                    });
                     let Some(revision) = revision else {
                         return Err(ActionHostError::Unavailable {
                             reason: "directory resolution lost its requested revision".into(),
@@ -3037,41 +3058,69 @@ mod workspace_task_provider_tests {
         }
     }
 
+    fn task_provider_fixture() -> (
+        Arc<FanoutState>,
+        Arc<CapnpBrokerState>,
+        String,
+        tilo_actions::remote::Caller,
+    ) {
+        let user = [73; 32];
+        let mut workspace = Workspace::new(WorkspaceId(73), "Task provider");
+        workspace.owner = Some(hex::encode(user));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let service: Arc<dyn WorkspaceTasks> = Arc::new(ReadOnlyTasks(WorkspaceTaskSnapshot {
+            room: room.clone(),
+            generation: 7,
+            tasks: Vec::new(),
+            controls: std::collections::BTreeMap::new(),
+        }));
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            HostServices {
+                workspace_tasks: Some(service),
+                ..Default::default()
+            },
+        );
+        state.refresh_workspace_task_services().unwrap();
+        let provider = tilo_actions::remote::workspace_provider(&room);
+        let caller = tilo_actions::remote::Caller::authenticated(user, [74; 32])
+            .in_room(room)
+            .in_new_execution();
+        (fanout, state, provider, caller)
+    }
+
+    fn task_request(provider: String) -> tilo_actions::remote::InvokeRequest {
+        tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider,
+                address: tilo_actions::ActionAddress::new("desktop:tasks", "read-current-tasks"),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                "agent".into(),
+                serde_json::json!("scribe"),
+            )])),
+            context: None,
+            confirmation: None,
+            revision: None,
+            fresh_binding: None,
+            on_behalf_of: None,
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn workspace_provider_routes_the_sdk_task_target_to_the_exact_owner_service() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let user = [73; 32];
-                let mut workspace = Workspace::new(WorkspaceId(73), "Task provider");
-                workspace.owner = Some(hex::encode(user));
-                let room = workspace.room.to_string();
-                let mut tree = WorkspaceTree::default();
-                tree.workspaces.push(workspace);
-                let service: Arc<dyn WorkspaceTasks> =
-                    Arc::new(ReadOnlyTasks(WorkspaceTaskSnapshot {
-                        room: room.clone(),
-                        generation: 7,
-                        tasks: Vec::new(),
-                        controls: std::collections::BTreeMap::new(),
-                    }));
-                let fanout = Arc::new(FanoutState::new());
-                let (state, _bridge) = CapnpBrokerState::new_configured(
-                    &fanout,
-                    Arc::new(Mutex::new(BrokerChannels::default())),
-                    PeerPublisher::disabled(),
-                    Some(tree.shared().authority()),
-                    None,
-                    None,
-                    HostServices {
-                        workspace_tasks: Some(service),
-                        ..Default::default()
-                    },
-                );
-                state.refresh_workspace_task_services().unwrap();
-                let provider = tilo_actions::remote::workspace_provider(&room);
-                let caller = tilo_actions::remote::Caller::authenticated(user, [74; 32])
-                    .in_room(room.clone())
-                    .in_new_execution();
+                let (_fanout, state, provider, caller) = task_provider_fixture();
                 let row = state
                     .eager_catalogue(&caller, true)
                     .0
@@ -3085,24 +3134,7 @@ mod workspace_task_provider_tests {
                     })
                     .expect("the Task Center row uses the SDK's stable workspace provider");
                 assert_eq!(row.app_id, "so.tilo.desktop");
-                let request = tilo_actions::remote::InvokeRequest {
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::RemoteActionTarget {
-                        provider,
-                        address: tilo_actions::ActionAddress::new(
-                            "desktop:tasks",
-                            "read-current-tasks",
-                        ),
-                    },
-                    argument: tilo_actions::remote::InvokeArgument::Json(
-                        serde_json::Map::from_iter([("agent".into(), serde_json::json!("scribe"))]),
-                    ),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    fresh_binding: None,
-                    on_behalf_of: None,
-                };
+                let request = task_request(provider);
                 let mut unsupported_fresh = request.clone();
                 unsupported_fresh.invocation = tilo_actions::InvocationId::new();
                 unsupported_fresh.fresh_binding = Some(FreshActionBinding {

@@ -946,8 +946,7 @@ fn fresh_current_binding_checked_before_actual_handler() {
         spec.contract = action.contract.clone();
         spec.fresh_binding = Some(binding);
         match case {
-            0 => {}
-            6 => {}
+            0 | 6 => {}
             1 => spec
                 .fresh_binding
                 .as_mut()
