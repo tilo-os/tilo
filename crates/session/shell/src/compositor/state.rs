@@ -4130,6 +4130,45 @@ impl State {
         });
     }
 
+    /// Take hold of the buffer the commit just applied on `surface` when the
+    /// frame it published is drawn from that buffer itself. Left in the
+    /// surface state, Smithay would give it back the moment the next commit
+    /// applies, while a queued frame can still draw it; held here, it goes
+    /// back once the last frame that drew it finished
+    /// ([`crate::shell::gpu_frames`]). Runs last in the commit handler, after
+    /// everything that reads the applied buffer.
+    fn hold_drawn_buffer(surface: &WlSurface, surface_id: u64) {
+        let store = crate::compositor::foreign::store();
+        let Some(frame) = store.take_unheld_frame(surface_id) else {
+            return;
+        };
+        let buffer = wl_compositor::with_states(surface, |states| {
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
+            let current = attrs.current();
+            match current.buffer.take() {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
+                other => {
+                    current.buffer = other;
+                    None
+                }
+            }
+        });
+        match buffer {
+            Some(buffer) => crate::compositor::foreign::hold_buffer(buffer, &frame),
+            None => {
+                // Never draw from a buffer the client may reuse.
+                tracing::warn!(
+                    target: "shell::compositor::foreign",
+                    surface_id,
+                    "a client frame's buffer was not current when its commit applied; not drawing it"
+                );
+                store.withdraw_unheld_frame(surface_id, &frame);
+            }
+        }
+    }
+
     /// Start the capture of commit `token` on `surface_id` when its buffer's
     /// implicit fence signals. The loop watches the fence, so no thread waits
     /// on a client's GPU and a slow client holds up only its own commits.
@@ -4158,6 +4197,7 @@ impl State {
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
+        crate::compositor::foreign::give_back_released_buffers();
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
         let changed =
             crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
@@ -4486,6 +4526,7 @@ impl CompositorHandler for State {
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         self.capture_committed_foreign_pixels(surface, surface_id);
         if !is_shared {
+            Self::hold_drawn_buffer(surface, surface_id);
             return;
         }
         // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
@@ -4560,6 +4601,7 @@ impl CompositorHandler for State {
         // encoder the same tick — without this the encoder waits for the
         // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
+        Self::hold_drawn_buffer(surface, surface_id);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
