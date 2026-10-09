@@ -2369,6 +2369,7 @@ nearby-error-outside-grant = Nearby Send source is outside this Files grant
 nearby-error-one-item = Nearby Send requires one regular file or folder
 nearby-error-queue-full = nearby transfer queue is full
 nearby-error-quota-full = nearby transfer quota is full
+nearby-error-disk-full = not enough free disk space for this transfer
 nearby-error-too-many = too many nearby transfers
 nearby-error-not-regular = source is not a regular file
 nearby-error-folder-too-many = folder contains too many entries

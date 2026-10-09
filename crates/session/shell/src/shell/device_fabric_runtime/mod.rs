@@ -27,7 +27,7 @@ use rand_core::Rng;
 use serde_json::{Map, Value};
 use tilo_clock::unix_now_ms;
 
-use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
+use crate::network::actor::{PersonalNearbyTransferFrame, PersonalTransferStatus};
 use crate::notifications::{
     ContinuityNotificationCommand, ContinuityOutboundEvent, NotificationBridge,
 };
@@ -67,6 +67,7 @@ const BLUETOOTH_HANDOFF_HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_BLUETOOTH_HANDOFF_HISTORY: usize = 32;
 const MAX_GAMEPAD_FORWARDINGS: usize = 8;
 const MAX_PENDING_NEARBY_CONSENTS: usize = 64;
+const MAX_MEDIA_AUTHORIZATIONS: usize = 64;
 const NEARBY_CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 const DEVICE_HEALTH_SAMPLE_TTL: Duration = Duration::from_secs(10);
 
@@ -222,13 +223,17 @@ struct NearbyDropState {
             crate::shell::personal_continuity::DeviceId,
             u64,
             u64,
-            PersonalMediaTransferStatus,
+            PersonalTransferStatus,
         ),
     >,
     last_offer: BTreeMap<[u8; 16], Instant>,
     incoming: BTreeMap<[u8; 16], PendingNearbyConsent>,
     destinations: BTreeMap<[u8; 16], crate::shell::nearby_transfer::SecureNearbyDestination>,
     history: VecDeque<NearbyTransferHistory>,
+    /// Exact sender/transfer pairs a queued `ResumeMedia` authorised. Only
+    /// these media-handoff offers are accepted, without a Files consent, and
+    /// only into the private media cache.
+    media_authorized: BTreeSet<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
 }
 
 struct NearbyTransferHistory {
@@ -276,6 +281,21 @@ impl NearbyDropState {
         self.history.push_front(entry);
         self.history.truncate(32);
     }
+
+    /// Authorise the media-handoff object a `ResumeMedia` names. Bounded:
+    /// the oldest authorisation gives way, and its offer is then refused.
+    fn authorize_media(
+        &mut self,
+        source: crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) {
+        while self.media_authorized.len() >= MAX_MEDIA_AUTHORIZATIONS {
+            if self.media_authorized.pop_first().is_none() {
+                break;
+            }
+        }
+        self.media_authorized.insert((source, transfer_id));
+    }
 }
 
 fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
@@ -307,12 +327,34 @@ fn with_nearby_transfer_store<T>(
             root,
             unix_now_ms(),
         )?);
+        remove_legacy_media_cache();
     }
     operation(
         guard
             .as_mut()
             .ok_or_else(|| "nearby transfer store is unavailable".to_string())?,
     )
+}
+
+/// Run `operation` only against a store this session already opened, and
+/// only when no staging worker holds it: the frame loop never waits for a
+/// large copy. Callers either retry on a later frame or leave cleanup to the
+/// pass that drops unreferenced media-handoff state.
+fn with_open_nearby_transfer_store<T>(
+    operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> T,
+) -> Option<T> {
+    nearby_store_cell()
+        .try_lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().map(operation))
+}
+
+/// The retired media-handoff lane kept its own cache. Its objects were only
+/// ever session-local player inputs, so nothing there is still referenced.
+fn remove_legacy_media_cache() {
+    if let Some(legacy) = tilo_paths::cache_dir().map(|root| root.join("tilo/personal-media")) {
+        let _ = std::fs::remove_dir_all(legacy);
+    }
 }
 
 fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
@@ -360,6 +402,8 @@ struct NearbyStagingResult {
     target: crate::shell::personal_continuity::DeviceId,
     name: String,
     result: Result<(), String>,
+    /// The media handoff this object carries, when it is not a Nearby send.
+    media_request: Option<[u8; 16]>,
 }
 
 #[derive(Default)]
@@ -470,9 +514,13 @@ pub(crate) fn record_nearby_transfer_progress(
     transfer_id: [u8; 16],
     sent_bytes: u64,
     total_bytes: u64,
-    status: PersonalMediaTransferStatus,
+    status: PersonalTransferStatus,
 ) {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+    // The one transfer lane serves Nearby sends and media handoffs alike.
+    let policy = ContinuityPolicySnapshot::load();
+    if !policy.permits(ContinuityCapability::FileTransfer)
+        && !policy.permits(ContinuityCapability::Media)
+    {
         return;
     }
     if let Ok(mut state) = nearby_drop_state().lock() {
@@ -481,7 +529,7 @@ pub(crate) fn record_nearby_transfer_progress(
             .insert(transfer_id, (target, sent_bytes, total_bytes, status));
         if matches!(
             status,
-            PersonalMediaTransferStatus::Failed | PersonalMediaTransferStatus::Cancelled
+            PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled
         ) {
             state.large_offers.remove(&transfer_id);
         }
@@ -497,9 +545,6 @@ pub(crate) fn handle_nearby_transfer_frame(
     source: &crate::shell::personal_continuity::DeviceId,
     frame: PersonalNearbyTransferFrame,
 ) {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
-        return;
-    }
     let (transfer_id, request_id) = match &frame {
         PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -516,23 +561,36 @@ pub(crate) fn handle_nearby_transfer_frame(
             request_id,
         } => (*transfer_id, *request_id),
     };
-    let authorized = with_nearby_transfer_store(|store| {
-        Ok(store.inbox().iter().any(|entry| {
-            entry.id == transfer_id
-                && entry.source == source.as_str()
-                && entry.request_id == request_id
-        }))
+    // Bytes land only in an inbox entry admitted for this exact sender and
+    // request, and only while the continuity switch for its kind is on.
+    let kind = with_nearby_transfer_store(|store| {
+        Ok(store
+            .inbox()
+            .iter()
+            .find(|entry| {
+                entry.id == transfer_id
+                    && entry.source == source.as_str()
+                    && entry.request_id == request_id
+            })
+            .map(|entry| entry.kind))
     })
-    .unwrap_or(false);
-    if !authorized {
+    .ok()
+    .flatten()
+    .filter(|kind| ContinuityPolicySnapshot::load().permits(kind.capability()));
+    let Some(kind) = kind else {
         return;
-    }
+    };
     match frame {
         PersonalNearbyTransferFrame::Chunk { offset, bytes, .. } => {
-            if bytes.len() <= crate::network::actor::PERSONAL_MEDIA_CHUNK_BYTES {
+            if bytes.len() <= crate::network::actor::PERSONAL_TRANSFER_CHUNK_BYTES {
                 let _ =
                     with_nearby_transfer_store(|store| store.append(transfer_id, offset, &bytes));
             }
+        }
+        PersonalNearbyTransferFrame::Finish { content_hash, .. }
+            if kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff =>
+        {
+            finish_media_handoff(network, source, (transfer_id, request_id), content_hash);
         }
         PersonalNearbyTransferFrame::Finish { content_hash, .. } => {
             let history = try_inbox_entries()
@@ -601,6 +659,80 @@ pub(crate) fn handle_nearby_transfer_frame(
     }
 }
 
+/// Resolve a handoff's verified object, or say what the handoff should do
+/// instead: wait while its bytes are still arriving under a live
+/// authorisation, or give up once a refused, failed or revoked receive
+/// leaves nothing to wait for.
+fn cached_media_handoff(
+    source: &crate::shell::personal_continuity::DeviceId,
+    transfer_id: [u8; 16],
+) -> Result<PathBuf, IncomingMediaLaunch> {
+    // A staging worker holding the store only delays the lookup.
+    let Ok(mut store) = nearby_store_cell().try_lock() else {
+        return Err(IncomingMediaLaunch::Waiting);
+    };
+    let cached = store
+        .as_mut()
+        .and_then(|store| store.cached_media(source.as_str(), transfer_id));
+    drop(store);
+    if let Some(path) = cached {
+        return Ok(path);
+    }
+    let arriving = nearby_drop_state().lock().is_ok_and(|state| {
+        state
+            .media_authorized
+            .contains(&(source.clone(), transfer_id))
+    });
+    Err(if arriving {
+        IncomingMediaLaunch::Waiting
+    } else {
+        IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable)
+    })
+}
+
+/// Verify a completed media-handoff object into the private media cache.
+/// The handoff's authorisation is spent here, so a repeated offer of the
+/// same object is refused rather than received twice.
+fn finish_media_handoff(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    (transfer_id, request_id): ([u8; 16], [u8; 16]),
+    content_hash: [u8; 32],
+) {
+    let authorized = nearby_drop_state().lock().is_ok_and(|mut state| {
+        state
+            .media_authorized
+            .remove(&(source.clone(), transfer_id))
+    });
+    let cached = authorized
+        .then(|| {
+            with_nearby_transfer_store(|store| {
+                let offered = store
+                    .inbox()
+                    .iter()
+                    .find(|entry| entry.id == transfer_id)
+                    .map(|entry| entry.content_hash);
+                if offered != Some(content_hash) {
+                    return Err("media handoff finish does not match its offer".to_string());
+                }
+                store.finish_to_cache(transfer_id)
+            })
+            .ok()
+        })
+        .flatten();
+    if cached.is_none() {
+        let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+    }
+    let _ = network.send_personal_fabric_action(
+        source,
+        PersonalFabricAction::NearbyTransferResult {
+            request_id,
+            transfer_id,
+            accepted: cached.is_some(),
+        },
+    );
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingIncomingMedia {
     received: Instant,
@@ -654,10 +786,46 @@ struct MediaHandoffStatus {
     personal_transfer_id: Option<[u8; 16]>,
 }
 
+/// Stop the local-file transfer behind one media handoff: its stream, its
+/// offer at the destination, and its staged copy. A copy still being staged
+/// is dropped when staging finishes and finds no pending handoff.
 fn cancel_status_personal_transfer(network: &ShellNetwork, status: &MediaHandoffStatus) {
-    if let Some(transfer_id) = status.personal_transfer_id {
-        let _ = network.cancel_personal_media_transfer(&status.target, transfer_id);
+    let Some(transfer_id) = status.personal_transfer_id else {
+        return;
+    };
+    let _ = network.cancel_nearby_transfer_stream(&status.target, transfer_id);
+    let offered = nearby_drop_state().lock().ok().and_then(|mut state| {
+        state.progress.remove(&transfer_id);
+        state.last_offer.remove(&transfer_id);
+        state
+            .large_offers
+            .remove(&transfer_id)
+            .filter(|(target, _, _)| target == &status.target)
+    });
+    if let Some((target, request_id, _)) = offered {
+        let _ = network.send_personal_fabric_action(
+            &target,
+            PersonalFabricAction::NearbyTransferCancel {
+                request_id,
+                transfer_id,
+            },
+        );
     }
+    let _ = with_open_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+}
+
+/// Whether a still-pending media handoff carries this staged object to `target`.
+fn media_transfer_pending(
+    transfer_id: [u8; 16],
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> bool {
+    media_handoff_statuses().lock().is_ok_and(|statuses| {
+        statuses.values().any(|status| {
+            status.personal_transfer_id == Some(transfer_id)
+                && &status.target == target
+                && status.phase == MediaHandoffPhase::Pending
+        })
+    })
 }
 
 fn media_handoff_statuses() -> &'static Mutex<BTreeMap<[u8; 16], MediaHandoffStatus>> {
@@ -1641,11 +1809,7 @@ impl DeviceFabricRuntime {
         );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
-        if policy.permits(ContinuityCapability::FileTransfer) {
-            resume_nearby_transfers(network);
-        } else {
-            discard_nearby_staging_results();
-        }
+        resume_nearby_transfers(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
@@ -1912,12 +2076,9 @@ impl DeviceFabricRuntime {
                 route,
                 received_monotonic_us,
             } = received;
-            if !network.personal_route_is_current(&route) {
-                network.revoke_queued_personal_action_authority(&envelope);
-                continue;
-            }
-            if !policy.permits_action(&envelope.action) {
-                network.revoke_queued_personal_action_authority(&envelope);
+            if !network.personal_route_is_current(&route)
+                || !policy.permits_action(&envelope.action)
+            {
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
@@ -1985,14 +2146,24 @@ impl DeviceFabricRuntime {
                         has_video,
                         route,
                     };
-                    match self.try_launch_incoming_media(network, &request) {
-                        IncomingMediaLaunch::Waiting
-                            if matches!(
-                                &request.locator,
-                                MediaSourceLocator::PersonalTransfer { .. }
-                            ) && self.waiting_incoming_media.len()
-                                < MAX_PENDING_INCOMING_MEDIA =>
+                    // A local file arrives as a media-handoff transfer. This
+                    // handoff, not a Files consent, admits exactly the object
+                    // its locator names, and only while it can wait for it.
+                    let admits_transfer =
+                        if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } =
+                            &request.locator
                         {
+                            let room =
+                                self.waiting_incoming_media.len() < MAX_PENDING_INCOMING_MEDIA;
+                            if room && let Ok(mut state) = nearby_drop_state().lock() {
+                                state.authorize_media(request.source.clone(), *transfer_id);
+                            }
+                            room
+                        } else {
+                            false
+                        };
+                    match self.try_launch_incoming_media(network, &request) {
+                        IncomingMediaLaunch::Waiting if admits_transfer => {
                             self.waiting_incoming_media
                                 .insert(request.request_id, request);
                         }
@@ -2714,12 +2885,10 @@ impl DeviceFabricRuntime {
         }
         let verified_path = match &request.locator {
             MediaSourceLocator::PersonalTransfer { transfer_id, .. } => {
-                let Some(path) =
-                    network.completed_personal_media_transfer(&request.source, *transfer_id)
-                else {
-                    return IncomingMediaLaunch::Waiting;
-                };
-                Some(path)
+                match cached_media_handoff(&request.source, *transfer_id) {
+                    Ok(path) => Some(path),
+                    Err(launch) => return launch,
+                }
             }
             _ => None,
         };
@@ -2789,7 +2958,7 @@ impl DeviceFabricRuntime {
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
     ) {
-        Self::discard_incoming_media_transfer(network, request);
+        Self::discard_incoming_media_transfer(request);
         let _ = network.send_personal_fabric_action_on_route(
             &request.route,
             PersonalFabricAction::MediaRejected {
@@ -2800,9 +2969,19 @@ impl DeviceFabricRuntime {
         );
     }
 
-    fn discard_incoming_media_transfer(network: &ShellNetwork, request: &PendingIncomingMedia) {
+    /// Revoke the exact sender/transfer authorisation behind one handoff and
+    /// any bytes it brought. A verified object stays while a player lease or
+    /// another binding still references it.
+    fn discard_incoming_media_transfer(request: &PendingIncomingMedia) {
         if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } = &request.locator {
-            network.discard_personal_media_transfer(&request.source, *transfer_id);
+            if let Ok(mut state) = nearby_drop_state().lock() {
+                state
+                    .media_authorized
+                    .remove(&(request.source.clone(), *transfer_id));
+            }
+            let _ = with_open_nearby_transfer_store(|store| {
+                store.release_media(request.source.as_str(), *transfer_id)
+            });
         }
     }
 
@@ -2829,7 +3008,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
-            Self::discard_incoming_media_transfer(network, &pending);
+            Self::discard_incoming_media_transfer(&pending);
             if network
                 .send_personal_fabric_action_on_route(
                     &pending.route,
@@ -2847,7 +3026,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&accepted.request_id) else {
                 continue;
             };
-            Self::discard_incoming_media_transfer(network, &pending);
+            Self::discard_incoming_media_transfer(&pending);
             let delivery = network.send_personal_fabric_action_on_route(
                 &pending.route,
                 PersonalFabricAction::MediaAccepted {
@@ -2898,7 +3077,7 @@ impl DeviceFabricRuntime {
     ) {
         for request in requests {
             let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
-            Self::discard_incoming_media_transfer(network, &request);
+            Self::discard_incoming_media_transfer(&request);
             if let Some(failure) = failure {
                 Self::reject_incoming_media(network, &request, failure);
             }
@@ -2990,20 +3169,14 @@ fn expire_nearby_consents(network: &ShellNetwork) {
     }
 }
 
-fn resume_nearby_transfers(network: &ShellNetwork) {
-    expire_nearby_consents(network);
-    if let Ok(receiver) = nearby_staging_queue().1.lock() {
-        while let Ok(staged) = receiver.try_recv() {
-            if staged.result.is_err()
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                state.events.push_back(NearbyDropEvent::Failed {
-                    file_name: staged.name,
-                    peer: staged.target,
-                });
-            }
-        }
+/// Drive the outgoing side of the one transfer lane: settle finished staging,
+/// then offer every staged object the continuity policy still allows. A
+/// media-handoff object lives exactly as long as its pending handoff.
+fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    if policy.permits(ContinuityCapability::FileTransfer) {
+        expire_nearby_consents(network);
     }
+    settle_nearby_staging(network, policy);
     let entries = try_outbox_entries();
     if let Ok(mut state) = nearby_drop_state().lock() {
         state
@@ -3011,10 +3184,19 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
             .retain(|transfer_id, _| entries.iter().any(|entry| entry.id == *transfer_id));
     }
     for entry in entries {
+        if !policy.permits(entry.kind.capability()) {
+            continue;
+        }
         let Ok(target) = crate::shell::personal_continuity::DeviceId::new(entry.target.clone())
         else {
             continue;
         };
+        if entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
+            && !media_transfer_pending(entry.id, &target)
+        {
+            let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(entry.id));
+            continue;
+        }
         let should_offer = nearby_drop_state().lock().is_ok_and(|state| {
             !state.large_offers.contains_key(&entry.id)
                 && state
@@ -3046,15 +3228,70 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
     }
 }
 
-fn discard_nearby_staging_results() {
-    if let Ok(receiver) = nearby_staging_queue().1.lock() {
-        while let Ok(staged) = receiver.try_recv() {
-            if staged.result.is_ok() {
-                let _ =
-                    with_nearby_transfer_store(|store| store.cancel_outgoing(staged.transfer_id));
+/// Collect finished staging. A Nearby send whose switch is now off is
+/// dropped; a media handoff that failed to stage fails its handoff, and one
+/// that is no longer pending loses its staged copy.
+fn settle_nearby_staging(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let staged = nearby_staging_queue().1.lock().map_or_else(
+        |_| Vec::new(),
+        |receiver| receiver.try_iter().collect::<Vec<_>>(),
+    );
+    for staged in staged {
+        match staged.media_request {
+            Some(request_id) => {
+                let pending = policy.permits(ContinuityCapability::Media)
+                    && media_transfer_pending(staged.transfer_id, &staged.target);
+                if staged.result.is_ok() && !pending {
+                    let _ = with_nearby_transfer_store(|store| {
+                        store.cancel_outgoing(staged.transfer_id)
+                    });
+                }
+                if staged.result.is_err() && pending {
+                    fail_media_handoff(network, request_id, MediaHandoffFailure::OpenFailed);
+                }
+            }
+            None if !policy.permits(ContinuityCapability::FileTransfer) => {
+                if staged.result.is_ok() {
+                    let _ = with_nearby_transfer_store(|store| {
+                        store.cancel_outgoing(staged.transfer_id)
+                    });
+                }
+            }
+            None => {
+                if staged.result.is_err()
+                    && let Ok(mut state) = nearby_drop_state().lock()
+                {
+                    state.events.push_back(NearbyDropEvent::Failed {
+                        file_name: staged.name,
+                        peer: staged.target,
+                    });
+                }
             }
         }
     }
+}
+
+/// End one still-pending outbound media handoff on the source's own failure,
+/// telling the destination it was withdrawn.
+fn fail_media_handoff(network: &ShellNetwork, request_id: [u8; 16], failure: MediaHandoffFailure) {
+    let status = media_handoff_statuses()
+        .lock()
+        .ok()
+        .and_then(|statuses| statuses.get(&request_id).cloned())
+        .filter(|status| status.phase == MediaHandoffPhase::Pending);
+    let Some(status) = status else {
+        return;
+    };
+    let _ = media::handoff::cancel_outbound_handoff(request_id, &status.session_id);
+    cancel_status_personal_transfer(network, &status);
+    finish_media_handoff_status(request_id, MediaHandoffPhase::Failed(failure));
+    let _ = network.send_personal_fabric_action_on_route(
+        &status.route,
+        PersonalFabricAction::MediaCancelled {
+            request_id,
+            session_id: status.session_id,
+        },
+    );
 }
 
 fn prune_spatial_state(
@@ -3248,6 +3485,25 @@ fn handle_nearby_drop_action(
         PersonalFabricAction::NearbyTransferOffer {
             transfer_id,
             name,
+            kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+            total_bytes,
+            content_hash,
+        } => accept_media_handoff_offer(
+            network,
+            &source,
+            crate::shell::nearby_transfer::IncomingManifest {
+                id: transfer_id,
+                source: source.as_str().to_string(),
+                request_id: envelope_request_id,
+                name,
+                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                total_bytes,
+                content_hash,
+            },
+        ),
+        PersonalFabricAction::NearbyTransferOffer {
+            transfer_id,
+            name,
             kind,
             total_bytes,
             content_hash,
@@ -3303,6 +3559,9 @@ fn handle_nearby_drop_action(
             let Ok((entry, path, local_prefix)) = manifest else {
                 return;
             };
+            if !transfer_kind_permitted(entry.kind) {
+                return;
+            }
             if local_prefix != prefix_hash {
                 let _ = network.send_personal_fabric_action(
                     &source,
@@ -3330,14 +3589,8 @@ fn handle_nearby_drop_action(
             request_id,
             transfer_id,
         } => {
-            let valid = with_nearby_transfer_store(|store| {
-                Ok(store.inbox().iter().any(|entry| {
-                    entry.id == transfer_id
-                        && entry.source == source.as_str()
-                        && entry.request_id == request_id
-                }))
-            })
-            .unwrap_or(false);
+            let valid = incoming_transfer_kind(&source, request_id, transfer_id)
+                .is_some_and(transfer_kind_permitted);
             if valid
                 && let Ok(prefix_hash) =
                     with_nearby_transfer_store(|store| store.restart_incoming(transfer_id))
@@ -3364,32 +3617,37 @@ fn handle_nearby_drop_action(
             {
                 state.incoming.remove(&transfer_id);
             }
-            let incoming = with_nearby_transfer_store(|store| {
-                Ok(store.inbox().iter().any(|entry| {
-                    entry.id == transfer_id
-                        && entry.source == source.as_str()
-                        && entry.request_id == request_id
-                }))
-            })
-            .unwrap_or(false);
-            if incoming {
+            if incoming_transfer_kind(&source, request_id, transfer_id)
+                .is_some_and(transfer_kind_permitted)
+            {
                 let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
                 if let Ok(mut state) = nearby_drop_state().lock() {
                     state.destinations.remove(&transfer_id);
+                    state
+                        .media_authorized
+                        .remove(&(source.clone(), transfer_id));
                 }
             }
-            let outgoing = nearby_drop_state().lock().ok().and_then(|mut state| {
-                let pending = state
-                    .large_offers
-                    .get(&transfer_id)
-                    .cloned()
-                    .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                if pending.is_some() {
-                    state.large_offers.remove(&transfer_id);
-                }
-                pending
-            });
+            let outgoing = transfer_kind_permitted(
+                outgoing_transfer_kind(transfer_id)
+                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File),
+            )
+            .then(|| {
+                nearby_drop_state().lock().ok().and_then(|mut state| {
+                    let pending = state
+                        .large_offers
+                        .get(&transfer_id)
+                        .cloned()
+                        .filter(|(target, offer, _)| target == &source && offer == &request_id);
+                    if pending.is_some() {
+                        state.large_offers.remove(&transfer_id);
+                    }
+                    pending
+                })
+            })
+            .flatten();
             if outgoing.is_some() {
+                let _ = network.cancel_nearby_transfer_stream(&source, transfer_id);
                 let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
             }
         }
@@ -3398,13 +3656,22 @@ fn handle_nearby_drop_action(
             transfer_id,
             accepted,
         } => {
+            let kind = outgoing_transfer_kind(transfer_id)
+                .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+            if !transfer_kind_permitted(kind) {
+                return;
+            }
+            let media = kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff;
             let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
                 let pending = state
                     .large_offers
                     .get(&transfer_id)
                     .cloned()
                     .filter(|(target, offer, _)| target == &source && offer == &request_id);
-                if accepted && pending.is_some() {
+                // A refused media offer is offered again while its handoff
+                // is pending: the destination may not have seen the
+                // `ResumeMedia` that authorises it yet.
+                if (accepted || media) && pending.is_some() {
                     state.large_offers.remove(&transfer_id);
                 }
                 pending
@@ -3413,7 +3680,9 @@ fn handle_nearby_drop_action(
                 if accepted {
                     let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
                 }
-                if let Ok(mut state) = nearby_drop_state().lock() {
+                // A media handoff reports through its own status, never as
+                // a Nearby send.
+                if !media && let Ok(mut state) = nearby_drop_state().lock() {
                     state.events.push_back(if accepted {
                         NearbyDropEvent::Sent { file_name, peer }
                     } else {
@@ -3424,6 +3693,95 @@ fn handle_nearby_drop_action(
         }
         _ => {}
     }
+}
+
+/// Whether the continuity switch that governs `kind` is on right now.
+fn transfer_kind_permitted(kind: crate::shell::nearby_transfer::TransferKind) -> bool {
+    ContinuityPolicySnapshot::load().permits(kind.capability())
+}
+
+/// The kind of the receive this exact sender and request own, if any.
+fn incoming_transfer_kind(
+    source: &crate::shell::personal_continuity::DeviceId,
+    request_id: [u8; 16],
+    transfer_id: [u8; 16],
+) -> Option<crate::shell::nearby_transfer::TransferKind> {
+    with_nearby_transfer_store(|store| {
+        Ok(store
+            .inbox()
+            .iter()
+            .find(|entry| {
+                entry.id == transfer_id
+                    && entry.source == source.as_str()
+                    && entry.request_id == request_id
+            })
+            .map(|entry| entry.kind))
+    })
+    .ok()
+    .flatten()
+}
+
+/// The kind of one staged outgoing object, if it is still staged.
+fn outgoing_transfer_kind(
+    transfer_id: [u8; 16],
+) -> Option<crate::shell::nearby_transfer::TransferKind> {
+    with_nearby_transfer_store(|store| {
+        Ok(store
+            .outbox()
+            .iter()
+            .find(|entry| entry.id == transfer_id)
+            .map(|entry| entry.kind))
+    })
+    .ok()
+    .flatten()
+}
+
+/// Accept a media-handoff offer that a waiting `ResumeMedia` authorised, into
+/// the private media cache, resuming from any verified prefix. Every other
+/// media-handoff offer is refused; none ever reaches the Files consent queue.
+fn accept_media_handoff_offer(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    manifest: crate::shell::nearby_transfer::IncomingManifest,
+) {
+    let transfer_id = manifest.id;
+    let request_id = manifest.request_id;
+    let authorized = nearby_drop_state().lock().is_ok_and(|state| {
+        state
+            .media_authorized
+            .contains(&(source.clone(), transfer_id))
+    });
+    let checkpoint = authorized
+        .then(|| {
+            let accepted = with_nearby_transfer_store(|store| {
+                store.accept_incoming_offer(manifest, unix_now_ms())
+            });
+            if accepted.is_err()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                // The receive cannot proceed, so the waiting handoff fails
+                // now instead of waiting out its timeout.
+                state
+                    .media_authorized
+                    .remove(&(source.clone(), transfer_id));
+            }
+            accepted.ok()
+        })
+        .flatten();
+    let action = match checkpoint {
+        Some((committed_offset, prefix_hash)) => PersonalFabricAction::NearbyTransferReady {
+            request_id,
+            transfer_id,
+            committed_offset,
+            prefix_hash,
+        },
+        None => PersonalFabricAction::NearbyTransferResult {
+            request_id,
+            transfer_id,
+            accepted: false,
+        },
+    };
+    let _ = network.send_personal_fabric_action(source, action);
 }
 
 fn handle_device_health_action(
@@ -4630,11 +4988,11 @@ pub fn request_media_handoff(
             (MediaSourceLocator::AppResource { uri: uri.clone() }, None)
         }
         media::handoff::HandoffSource::LocalFile { path } => {
-            let transfer = network.prepare_personal_media_transfer(target, path)?;
+            let transfer = PreparedMediaTransfer::prepare(path)?;
             (
                 MediaSourceLocator::PersonalTransfer {
                     transfer_id: transfer.transfer_id,
-                    file_name: transfer.file_name.clone(),
+                    file_name: transfer.name.clone(),
                 },
                 Some(transfer),
             )
@@ -4653,20 +5011,16 @@ pub fn request_media_handoff(
     let route = network
         .current_personal_route(target)
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-route"))?;
+    // A staging slot is taken before the destination learns of the handoff,
+    // so a busy source refuses up front instead of withdrawing it.
+    let permit = local_transfer
+        .as_ref()
+        .map(|_| NearbyStagingPermit::acquire("shell:media-handoff"))
+        .transpose()?;
     let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
     let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
-    if let Some(transfer) = local_transfer
-        && let Err(error) = network.start_personal_media_transfer(transfer)
-    {
-        let _ = network.send_personal_fabric_action_on_route(
-            &route,
-            PersonalFabricAction::MediaCancelled {
-                request_id,
-                session_id: report.session.id,
-            },
-        );
-        return Err(error);
-    }
+    // Recorded before staging starts: staging that finishes with no pending
+    // handoff drops its copy.
     record_media_handoff_status(MediaHandoffStatus {
         request_id,
         session_id: report.session.id.clone(),
@@ -4678,7 +5032,110 @@ pub fn request_media_handoff(
         personal_transfer_id,
     });
     media::handoff::remember_outbound_handoff(request_id, report);
+    if let Some((transfer, permit)) = local_transfer.zip(permit)
+        && let Err(error) = transfer.stage(target, request_id, permit)
+    {
+        fail_media_handoff(network, request_id, MediaHandoffFailure::OpenFailed);
+        return Err(error);
+    }
     Ok(request_id)
+}
+
+/// The local file behind one media handoff, checked before the destination
+/// is told about it. The file is staged into the transfer spool off the frame
+/// thread and then offered as a [`TransferKind::MediaHandoff`] object, so the
+/// handoff resumes from the destination's verified prefix after a drop.
+///
+/// [`TransferKind::MediaHandoff`]: crate::shell::nearby_transfer::TransferKind::MediaHandoff
+struct PreparedMediaTransfer {
+    transfer_id: [u8; 16],
+    name: String,
+    source: PathBuf,
+}
+
+impl PreparedMediaTransfer {
+    fn prepare(path: &Path) -> Result<Self, String> {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("media file cannot be inspected: {error}"))?;
+        if !metadata.file_type().is_file()
+            || metadata.len() == 0
+            || metadata.len() > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+        {
+            return Err("media source is not a supported regular file".into());
+        }
+        let name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(portable_media_name)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let mut transfer_id = [0_u8; 16];
+        while transfer_id == [0; 16] {
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
+        }
+        Ok(Self {
+            transfer_id,
+            name,
+            source: path.to_path_buf(),
+        })
+    }
+
+    fn stage(
+        self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        request_id: [u8; 16],
+        permit: NearbyStagingPermit,
+    ) -> Result<(), String> {
+        let sender = nearby_staging_queue().0.clone();
+        let target = target.clone();
+        std::thread::Builder::new()
+            .name("tilo-media-stage".into())
+            .spawn(move || {
+                let _permit = permit;
+                let result = with_nearby_transfer_store(|store| {
+                    store
+                        .stage_media_with_id(
+                            &self.source,
+                            self.name.clone(),
+                            target.as_str().to_string(),
+                            unix_now_ms(),
+                            self.transfer_id,
+                        )
+                        .map(|_| ())
+                });
+                let _ = sender.send(NearbyStagingResult {
+                    transfer_id: self.transfer_id,
+                    target,
+                    name: self.name,
+                    result,
+                    media_request: Some(request_id),
+                });
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "device-fabric-error-transfer-start",
+                    &[("error", error.to_string().into())],
+                )
+            })
+    }
+}
+
+/// A display name the transfer lane accepts: separators and controls become
+/// `_`, and the name is cut to at most 255 bytes on a character boundary.
+fn portable_media_name(name: &str) -> Option<String> {
+    let mut sanitized = String::new();
+    for character in name.chars() {
+        let character = if character.is_control() || matches!(character, '/' | '\\') {
+            '_'
+        } else {
+            character
+        };
+        if sanitized.len().saturating_add(character.len_utf8()) > 255 {
+            break;
+        }
+        sanitized.push(character);
+    }
+    super::device_fabric::valid_nearby_file_name(&sanitized).then_some(sanitized)
 }
 
 pub(crate) fn media_handoff_status_views(network: &ShellNetwork) -> Vec<MediaHandoffStatusView> {
@@ -5031,6 +5488,7 @@ pub fn request_nearby_drop(
                     target: worker_target,
                     name,
                     result,
+                    media_request: None,
                 });
             })
             .map_err(|error| {
@@ -5154,6 +5612,7 @@ pub fn request_nearby_drop_secure(
                     target: worker_target,
                     name,
                     result,
+                    media_request: None,
                 });
             })
             .map_err(|error| {
@@ -5225,6 +5684,7 @@ pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> 
         .cloned()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-transfer-inactive"))?;
     let (target, request_id, _) = pending;
+    let _ = network.cancel_nearby_transfer_stream(&target, transfer_id);
     network.send_personal_fabric_action(
         &target,
         PersonalFabricAction::NearbyTransferCancel {
@@ -5283,10 +5743,14 @@ pub fn decide_nearby_transfer_at(
         let destination = destination
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
         let resumed = with_nearby_transfer_store(|store| {
+            // A media handoff is never delivered to a Files destination.
             let entry = store
                 .inbox()
                 .iter()
-                .find(|entry| entry.id == transfer_id)
+                .find(|entry| {
+                    entry.id == transfer_id
+                        && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+                })
                 .cloned()
                 .ok_or_else(|| {
                     crate::shell::i18n::t("device-fabric-error-transfer-unrecoverable")
@@ -5456,9 +5920,10 @@ pub fn decide_nearby_transfer_at(
 /// Returns an error when the transfer no longer exists in the durable outbox.
 pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
-    let exists = try_outbox_entries()
-        .iter()
-        .any(|entry| entry.id == transfer_id);
+    let exists = try_outbox_entries().iter().any(|entry| {
+        entry.id == transfer_id
+            && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+    });
     if !exists {
         return Err(crate::shell::i18n::t(
             "device-fabric-error-transfer-no-retry",
@@ -5469,7 +5934,7 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
         state.progress.remove(&transfer_id);
         state.last_offer.remove(&transfer_id);
     }
-    resume_nearby_transfers(network);
+    resume_nearby_transfers(network, ContinuityPolicySnapshot::load());
     Ok(())
 }
 
@@ -5552,7 +6017,14 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             }),
     );
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
-    for entry in try_inbox_entries() {
+    // A media handoff's object reports through the handoff, not Files.
+    let nearby_send = |kind: crate::shell::nearby_transfer::TransferKind| {
+        kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+    };
+    for entry in try_inbox_entries()
+        .into_iter()
+        .filter(|entry| nearby_send(entry.kind))
+    {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -5574,7 +6046,7 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
         });
     }
     let outbox = try_outbox_entries();
-    for entry in outbox {
+    for entry in outbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
         }
@@ -5589,15 +6061,13 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
             ),
             |(_, sent, total, status)| {
                 let phase = match status {
-                    PersonalMediaTransferStatus::Started
-                    | PersonalMediaTransferStatus::Progress => {
+                    PersonalTransferStatus::Started | PersonalTransferStatus::Progress => {
                         runtime_collab::NearbyTransferPhase::Transferring
                     }
-                    PersonalMediaTransferStatus::Completed => {
+                    PersonalTransferStatus::Completed => {
                         runtime_collab::NearbyTransferPhase::Completed
                     }
-                    PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled => {
+                    PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled => {
                         runtime_collab::NearbyTransferPhase::Failed
                     }
                 };
@@ -5618,29 +6088,13 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRun
     statuses
 }
 
-fn fabric_transfer_views(
-    network: &ShellNetwork,
-) -> Vec<crate::shell::overlay_host::FabricTransferView> {
-    use crate::network::actor::PersonalMediaTransferStatus;
+/// Outgoing streams on the one transfer lane, Nearby sends and media
+/// handoffs alike.
+fn fabric_transfer_views() -> Vec<crate::shell::overlay_host::FabricTransferView> {
+    use crate::network::actor::PersonalTransferStatus;
     use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
 
-    let media =
-        network
-            .outgoing_personal_media_transfers()
-            .into_iter()
-            .map(|transfer| FabricTransferView {
-                target: transfer.target,
-                sent_bytes: transfer.sent_bytes,
-                total_bytes: transfer.total_bytes,
-                status: match transfer.status {
-                    PersonalMediaTransferStatus::Started
-                    | PersonalMediaTransferStatus::Progress => FabricTransferStatus::Sending,
-                    PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                    PersonalMediaTransferStatus::Failed
-                    | PersonalMediaTransferStatus::Cancelled => FabricTransferStatus::Failed,
-                },
-            });
-    let nearby = nearby_drop_state().lock().map_or_else(
+    nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
             state
@@ -5653,13 +6107,11 @@ fn fabric_transfer_views(
                         sent_bytes,
                         total_bytes,
                         status: match status {
-                            PersonalMediaTransferStatus::Started
-                            | PersonalMediaTransferStatus::Progress => {
+                            PersonalTransferStatus::Started | PersonalTransferStatus::Progress => {
                                 FabricTransferStatus::Sending
                             }
-                            PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
-                            PersonalMediaTransferStatus::Failed
-                            | PersonalMediaTransferStatus::Cancelled => {
+                            PersonalTransferStatus::Completed => FabricTransferStatus::Sent,
+                            PersonalTransferStatus::Failed | PersonalTransferStatus::Cancelled => {
                                 FabricTransferStatus::Failed
                             }
                         },
@@ -5667,8 +6119,7 @@ fn fabric_transfer_views(
                 )
                 .collect::<Vec<_>>()
         },
-    );
-    media.chain(nearby).collect()
+    )
 }
 
 fn bluetooth_authorization_views(
@@ -5955,8 +6406,10 @@ pub fn device_fabric_view(
             .then_with(|| left.label.cmp(&right.label))
     });
 
-    let transfers = if policy.permits(ContinuityCapability::FileTransfer) {
-        fabric_transfer_views(network)
+    let transfers = if policy.permits(ContinuityCapability::FileTransfer)
+        || policy.permits(ContinuityCapability::Media)
+    {
+        fabric_transfer_views()
     } else {
         Vec::new()
     };
@@ -7764,12 +8217,23 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
     if let Ok(mut admission) = nearby_staging_admission().lock() {
         admission.invalidate();
     }
+    // Media handoffs share the lane but answer to the Media switch.
+    let media_outgoing = with_nearby_transfer_store(|store| {
+        Ok(store
+            .outbox()
+            .iter()
+            .filter(|entry| entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff)
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>())
+    })
+    .unwrap_or_default();
     let active = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
             state
                 .large_offers
                 .iter()
+                .filter(|(transfer_id, _)| !media_outgoing.contains(*transfer_id))
                 .map(|(transfer_id, (target, request_id, _))| {
                     (*transfer_id, target.clone(), *request_id)
                 })
@@ -7777,6 +8241,7 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         },
     );
     for (transfer_id, target, request_id) in &active {
+        let _ = network.cancel_nearby_transfer_stream(target, *transfer_id);
         let _ = network.send_personal_fabric_action(
             target,
             PersonalFabricAction::NearbyTransferCancel {
@@ -7812,6 +8277,7 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         let incoming = store
             .inbox()
             .iter()
+            .filter(|entry| entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff)
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
         for transfer_id in incoming {
@@ -7824,9 +8290,15 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
     });
     if let Ok(mut state) = nearby_drop_state().lock() {
         state.pending.clear();
-        state.large_offers.clear();
-        state.progress.clear();
-        state.last_offer.clear();
+        state
+            .large_offers
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
+        state
+            .progress
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
+        state
+            .last_offer
+            .retain(|transfer_id, _| media_outgoing.contains(transfer_id));
         state.incoming.clear();
         state.destinations.clear();
         state.history.clear();
@@ -8703,6 +9175,75 @@ mod tests {
         master_kill_switch_removes_runtime_advertised_capabilities();
     }
 
+    #[test]
+    fn media_handoff_offer_is_admitted_only_by_its_exact_waiting_handoff() {
+        fn unsolicited_media_offer_never_reaches_consent_or_storage() {
+            let (network, _commands) = crate::shell::network::shell_network_for_test(
+                crate::shell::state::WorkspaceTree::default().shared(),
+                0x004d_4f46_4645,
+            );
+            let source = DeviceId::new("unsolicited-media-source").unwrap();
+            let transfer_id = [0x7d; 16];
+            handle_nearby_drop_action(
+                &network,
+                [0x7e; 16],
+                source.clone(),
+                PersonalFabricAction::NearbyTransferOffer {
+                    transfer_id,
+                    name: "unsolicited.mp4".into(),
+                    kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                    total_bytes: 4,
+                    content_hash: *blake3::hash(b"evil").as_bytes(),
+                },
+            );
+            let state = nearby_drop_state().lock().unwrap();
+            assert!(
+                !state.incoming.contains_key(&transfer_id),
+                "a media handoff never asks Files for consent"
+            );
+            assert!(!state.media_authorized.contains(&(source, transfer_id)));
+            drop(state);
+            assert!(
+                with_open_nearby_transfer_store(|store| {
+                    store.inbox().iter().any(|entry| entry.id == transfer_id)
+                })
+                .is_none_or(|stored| !stored),
+                "an enrolled device alone cannot allocate transfer storage"
+            );
+        }
+
+        fn media_authorisation_is_exact_and_bounded() {
+            let source = DeviceId::new("media-source").unwrap();
+            let sibling = DeviceId::new("sibling-source").unwrap();
+            let mut state = NearbyDropState::default();
+            state.authorize_media(source.clone(), [1; 16]);
+            assert!(state.media_authorized.contains(&(source.clone(), [1; 16])));
+            assert!(!state.media_authorized.contains(&(sibling, [1; 16])));
+            assert!(!state.media_authorized.contains(&(source.clone(), [2; 16])));
+            for index in 0..u8::try_from(MAX_MEDIA_AUTHORIZATIONS).unwrap() {
+                state.authorize_media(source.clone(), [index.wrapping_add(10); 16]);
+            }
+            assert_eq!(state.media_authorized.len(), MAX_MEDIA_AUTHORIZATIONS);
+        }
+
+        fn media_names_stay_portable_on_the_transfer_lane() {
+            assert_eq!(
+                portable_media_name("live/at\\home\u{7}.flac").as_deref(),
+                Some("live_at_home_.flac")
+            );
+            let long = "é".repeat(200);
+            let bounded = portable_media_name(&long).unwrap();
+            assert!(bounded.len() <= 255);
+            assert!(long.starts_with(&bounded));
+            assert_eq!(portable_media_name(".."), None);
+            assert_eq!(portable_media_name(""), None);
+        }
+
+        unsolicited_media_offer_never_reaches_consent_or_storage();
+        media_authorisation_is_exact_and_bounded();
+        media_names_stay_portable_on_the_transfer_lane();
+    }
+
     fn pending_media(
         request_id: [u8; 16],
         source: DeviceId,
@@ -8748,17 +9289,31 @@ mod tests {
                 target: target.clone(),
                 phase: MediaHandoffPhase::Pending,
                 updated: Instant::now(),
-                route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target),
+                route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target.clone()),
                 personal_transfer_id: Some(transfer_id),
             };
+            nearby_drop_state()
+                .lock()
+                .unwrap()
+                .large_offers
+                .insert(transfer_id, (target, [0xC4; 16], "film.mkv".into()));
             cancel_status_personal_transfer(&network, &status);
             assert!(matches!(
                 commands.try_recv(),
-                Ok(crate::network::actor::NetCmd::CancelPersonalMedia {
+                Ok(crate::network::actor::NetCmd::CancelNearbyTransfer {
                     target: cancelled_target,
                     transfer_id: cancelled_id,
                 }) if cancelled_target == endpoint && cancelled_id == transfer_id
             ));
+            assert!(
+                !nearby_drop_state()
+                    .lock()
+                    .unwrap()
+                    .large_offers
+                    .contains_key(&transfer_id),
+                "the destination's offer is withdrawn with the handoff"
+            );
+            while commands.try_recv().is_ok() {}
 
             let streaming = MediaHandoffStatus {
                 personal_transfer_id: None,

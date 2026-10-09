@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    InboundChannelGovernance, NeighbourMsg, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id,
+};
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
     pub(crate) fn prepare_native_application(
