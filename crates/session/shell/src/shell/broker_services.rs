@@ -17,10 +17,11 @@ mod resource_views;
 pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
-    ContinuationServices, HostServices, LaunchContent, LaunchScope, LaunchableApplication,
-    LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, ShortcutLibraryRequest, ShortcutLibraryServices, WorkspaceAuthority,
-    WorkspaceControlServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
+    ContinuationServices, HostServices, LaunchContent, LaunchPlace, LaunchScope,
+    LaunchableApplication, LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, ShortcutLibraryRequest,
+    ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
+    WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
@@ -548,6 +549,16 @@ impl NativeLauncher {
         })
     }
 
+    /// Note where `app`'s window lands when it arrives: at `place` in
+    /// `workspace`, decided now against the desk as it stands.
+    fn place(&self, app: &str, workspace: &tilo_desktop_model::Workspace, place: &LaunchPlace) {
+        let Some(tree) = &self.0 else { return };
+        let placement = super::placement::placement_at(&tree.read(), workspace.room, place);
+        if let Some(placement) = placement {
+            super::launcher::set_pending_placement(app, placement);
+        }
+    }
+
     /// Record `person` granting `app` authorship of `workspace`'s space and
     /// add the grant to the launch's copy, unless the app already holds it.
     /// The tree checks `person`'s own authority; a refusal launches a viewer.
@@ -628,7 +639,12 @@ impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
-    fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
             return launch_host_application(
                 desktop_id,
@@ -643,6 +659,7 @@ impl LauncherServices for NativeLauncher {
         if let Some(opened) = self.open_through_governor(app, workspace) {
             return opened;
         }
+        self.place(app, workspace, place);
         // Opening an app yourself makes it an author. A launch that only
         // forwards the workspace's existing grants opens a viewer, and
         // typing into it does nothing.
@@ -765,6 +782,7 @@ impl LauncherServices for NativeLauncher {
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<(), String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
             return launch_host_application(desktop_id, workspace, content);
@@ -779,6 +797,7 @@ impl LauncherServices for NativeLauncher {
             self.grant_authorship(person, app, &mut workspace);
         }
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
+        self.place(app, &workspace, place);
         super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -2099,6 +2118,7 @@ mod tests {
                 caller: None,
                 author: None,
             },
+            &LaunchPlace::Focus,
         );
         assert_eq!(
             refused,

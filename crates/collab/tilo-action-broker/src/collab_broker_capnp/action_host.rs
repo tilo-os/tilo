@@ -32,6 +32,7 @@ use super::{
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
+use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -1290,8 +1291,9 @@ impl CapnpBrokerState {
                 }
                 let state = Arc::clone(self);
                 let app = app_id.clone();
+                let place = self.launch_place(caller, &room, None);
                 tokio::task::spawn_blocking(move || {
-                    state.launch_retained(&app, &current.workspace)
+                    state.launch_retained(&app, &current.workspace, &place)
                 })
                 .await
                 .unwrap_or_else(|error| Err(error.to_string()))
@@ -1381,17 +1383,49 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Start `app_id` in `workspace` through the host's launcher, or the one
-    /// a test installed in its place.
-    fn launch_retained(&self, app_id: &str, workspace: &Workspace) -> Result<(), String> {
+    /// Start `app_id` in `workspace` at `place` through the host's
+    /// launcher, or the one a test installed in its place.
+    fn launch_retained(
+        &self,
+        app_id: &str,
+        workspace: &Workspace,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
         if let Some(launcher) = self.launchable.launcher() {
-            return launcher(app_id, workspace);
+            return launcher(app_id, workspace, place);
         }
         self.services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())?
-            .launch(app_id, workspace)
+            .launch(app_id, workspace, place)
+    }
+
+    /// Where a view `caller`'s action needs opens in `room`: beside the
+    /// asking app's own view; where a person is looking, for the person's
+    /// own invocation; else beside the view the actor last worked in, so an
+    /// agent or a Shortcut keeps working next to where it already is.
+    fn launch_place(
+        &self,
+        caller: &Caller,
+        room: &str,
+        launch: Option<&LaunchScope>,
+    ) -> LaunchPlace {
+        if let Some(scope) = launch {
+            return LaunchPlace::Beside {
+                app_id: scope.app_id.clone(),
+            };
+        }
+        match caller.principal() {
+            CallerPrincipal::Person(_) => LaunchPlace::Focus,
+            CallerPrincipal::App(app_id) => LaunchPlace::Beside {
+                app_id: app_id.clone(),
+            },
+            CallerPrincipal::Agent(_) => self
+                .launchable
+                .view_of(room, &BrokerActor::for_caller(caller).id)
+                .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),
+        }
     }
 
     /// The live connection of `app_id` in `room` that publishes `address`
@@ -1712,7 +1746,7 @@ impl CapnpBrokerState {
                 .parse::<u64>()
                 .map_err(|_| ActionHostError::UnknownAction)?
         };
-        let (offered, room) = self
+        let offered = self
             .published_surfaces()
             .into_iter()
             .find(|surface| surface.peer_id == peer_id && surface.live)
@@ -1739,9 +1773,10 @@ impl CapnpBrokerState {
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some((action, surface.route.cluster_id))
+                .then_some((action, surface.route.cluster_id, surface.app_id))
             })
             .ok_or(ActionHostError::UnknownAction)?;
+        let (offered, room, app_id) = offered;
         let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
             peer_id,
@@ -1765,7 +1800,10 @@ impl CapnpBrokerState {
             },
             origin.cloned(),
         )
-        .map(|job| job.id)
+        .map(|job| {
+            self.launchable.note_view(&room, &actor.id, &app_id);
+            job.id
+        })
         .map_err(refusal)
     }
 
@@ -1803,9 +1841,7 @@ impl CapnpBrokerState {
             };
             return self
                 .launch_application(
-                    &workspace,
-                    &policy,
-                    now,
+                    (&workspace, &policy, now),
                     actor,
                     app_id,
                     crate::services::LaunchContent {
@@ -1813,6 +1849,7 @@ impl CapnpBrokerState {
                         caller: launch,
                         author,
                     },
+                    &self.launch_place(caller, room, launch),
                 )
                 .map_err(refusal);
         }
@@ -2345,12 +2382,11 @@ impl CapnpBrokerState {
     /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub fn launch_application(
         &self,
-        workspace: &Workspace,
-        policy: &Actor,
-        now: u64,
+        (workspace, policy, now): (&Workspace, &Actor, u64),
         actor: &BrokerActor,
         app_id: &str,
         content: crate::services::LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<u64, String> {
         if workspace.decide_at(
             policy,
@@ -2375,7 +2411,7 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match launcher.launch_content(app_id, workspace, content) {
+        let update = match launcher.launch_content(app_id, workspace, content, place) {
             Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
@@ -2725,7 +2761,12 @@ mod app_close_tests {
                 unconfined: false,
             }]
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {

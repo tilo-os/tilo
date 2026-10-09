@@ -94,7 +94,12 @@ impl crate::services::LauncherServices for ObservedLauncher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         Vec::new()
     }
-    fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: &crate::services::LaunchPlace,
+    ) -> Result<(), String> {
         Err("unobserved launches are not a readiness receipt".into())
     }
     fn begin_launch(

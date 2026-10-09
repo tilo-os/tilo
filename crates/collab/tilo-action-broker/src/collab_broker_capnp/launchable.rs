@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
+use crate::services::LaunchPlace;
 
 /// Prefix of the provider token naming a retained launchable surface.
 const LAUNCHABLE_PROVIDER: &str = "launch";
@@ -56,8 +57,45 @@ type SurfaceKey = (String, String, String);
 
 /// Starts `app_id` in a workspace in place of the host's launcher. Tests
 /// stand in for launching the installed app with one.
-pub(super) type AppLauncher =
-    Arc<dyn Fn(&str, &tilo_desktop_model::Workspace) -> Result<(), String> + Send + Sync>;
+pub(super) type AppLauncher = Arc<
+    dyn Fn(&str, &tilo_desktop_model::Workspace, &LaunchPlace) -> Result<(), String> + Send + Sync,
+>;
+
+/// How many actors' views [`ActorViews`] remembers.
+const REMEMBERED_ACTORS: usize = 1024;
+
+/// The view each actor last worked in, per workspace: the app whose action
+/// it last ran there. A view another of its actions needs opens beside it.
+#[derive(Default)]
+struct ActorViews {
+    /// `(room, actor)` → (app, when it was noted).
+    views: HashMap<(String, String), (String, u64)>,
+    clock: u64,
+}
+
+impl ActorViews {
+    fn note(&mut self, room: &str, actor: &str, app_id: &str) {
+        self.clock = self.clock.wrapping_add(1);
+        let key = (room.to_owned(), actor.to_owned());
+        if !self.views.contains_key(&key) && self.views.len() >= REMEMBERED_ACTORS {
+            let oldest = self
+                .views
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                self.views.remove(&oldest);
+            }
+        }
+        self.views.insert(key, (app_id.to_owned(), self.clock));
+    }
+
+    fn of(&self, room: &str, actor: &str) -> Option<&str> {
+        self.views
+            .get(&(room.to_owned(), actor.to_owned()))
+            .map(|(app, _)| app.as_str())
+    }
+}
 
 /// The provider token a catalogue issues for a retained surface's actions.
 pub fn launchable_provider(surface: &PublishedSurface) -> String {
@@ -176,6 +214,7 @@ pub(super) struct LaunchableCatalogue {
     store: Mutex<Option<CatalogueStore>>,
     launcher: Mutex<Option<AppLauncher>>,
     delivery_timeout: Mutex<Duration>,
+    views: Mutex<ActorViews>,
 }
 
 impl LaunchableCatalogue {
@@ -185,7 +224,26 @@ impl LaunchableCatalogue {
             store: Mutex::new(None),
             launcher: Mutex::new(None),
             delivery_timeout: Mutex::new(DELIVERY_TIMEOUT),
+            views: Mutex::new(ActorViews::default()),
         }
+    }
+
+    /// `actor` just ran an action of `app_id` in `room`: that view is
+    /// where it works now.
+    pub(super) fn note_view(&self, room: &str, actor: &str, app_id: &str) {
+        self.views
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .note(room, actor, app_id);
+    }
+
+    /// The app whose view `actor` last worked in, in `room`.
+    pub(super) fn view_of(&self, room: &str, actor: &str) -> Option<String> {
+        self.views
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .of(room, actor)
+            .map(str::to_owned)
     }
 
     /// Load the catalogue saved at `path` and keep saving changes there. A
@@ -427,13 +485,28 @@ mod tests {
         state: &Arc<CapnpBrokerState>,
         peer_id: u64,
     ) -> (Streams, Arc<Mutex<Vec<String>>>) {
+        let (streams, launches, _) = app_comes_up_placed(state, peer_id);
+        (streams, launches)
+    }
+
+    /// Where each launch was placed.
+    type Places = Arc<Mutex<Vec<LaunchPlace>>>;
+
+    /// [`app_comes_up_as`], also recording where each launch was placed.
+    fn app_comes_up_placed(
+        state: &Arc<CapnpBrokerState>,
+        peer_id: u64,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
         let (streams, stream) = std::sync::mpsc::channel();
         let launches = Arc::new(Mutex::new(Vec::new()));
+        let places = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&launches);
+        let noted = Arc::clone(&places);
         let weak: Weak<CapnpBrokerState> = Arc::downgrade(state);
         state.launchable.replace_launcher_for_test(
-            Arc::new(move |app_id, workspace| {
+            Arc::new(move |app_id, workspace, place| {
                 recorded.lock().expect("launches").push(app_id.to_string());
+                noted.lock().expect("places").push(place.clone());
                 let state = weak.upgrade().ok_or("the broker is gone")?;
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 state
@@ -450,7 +523,7 @@ mod tests {
             }),
             Duration::from_secs(5),
         );
-        (stream, launches)
+        (stream, launches, places)
     }
 
     /// The provider the catalogue offers `action` under, for `caller`.
@@ -531,6 +604,68 @@ mod tests {
             offered_provider(&state, &owner, "new-window").as_deref(),
             Some("8"),
             "once the app is live its action is offered on its own connection"
+        );
+    }
+
+    /// A person's own invocation opens the view where they are looking; an
+    /// agent's opens beside the view it already works in, on whichever strip
+    /// holds that, so neither loses their place.
+    #[test]
+    fn a_launched_view_opens_where_its_actor_is() {
+        use collab_types::{CapOverride, Scope, Subject, Verb};
+        const NOTES: &str = "so.tilo.notes";
+        let mut workspace = workspace();
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Write,
+        ));
+        for app in [APP, NOTES] {
+            workspace.grant_capability(CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::App(app.into()),
+                Verb::Write,
+            ));
+        }
+        let (state, room) = broker(&workspace);
+        state.launchable.retain(&surface(7, &room));
+        let mut notes = surface(5, &room);
+        notes.app_id = NOTES.into();
+        notes.route = CrdtRoute::app(NOTES, &room);
+        notes.actions = vec![action("write", tilo_actions::ConfirmationPolicy::None)];
+        state.surfaces.lock().expect("surfaces").insert(5, notes);
+        let mut notes_stream = state.capture_invocations_for_test(5);
+        let (streams, launches, places) = app_comes_up_placed(&state, 8);
+
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
+        assert_eq!(
+            notes_stream.try_recv().expect("delivered").actor,
+            "agent:scribe"
+        );
+        let provider = offered_provider(&state, &agent, "new-window")
+            .expect("the closed app's action is offered to the agent");
+        invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert_eq!(
+            *places.lock().expect("places"),
+            [LaunchPlace::Beside {
+                app_id: NOTES.into()
+            }],
+            "the agent's view opens beside the one it works in"
+        );
+        let mut stream = streams.try_recv().expect("the app came up");
+        assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
+
+        state.surfaces.lock().expect("surfaces").remove(&8);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let provider = offered_provider(&state, &owner, "new-window")
+            .expect("offered again once the app closed");
+        invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(
+            places.lock().expect("places").last(),
+            Some(&LaunchPlace::Focus),
+            "a person's own invocation opens where they are"
         );
     }
 
@@ -668,7 +803,7 @@ mod tests {
         state.launchable.retain(&surface(7, &room));
         state
             .launchable
-            .replace_launcher_for_test(Arc::new(|_, _| Ok(())), Duration::from_millis(200));
+            .replace_launcher_for_test(Arc::new(|_, _, _| Ok(())), Duration::from_millis(200));
         let owner = Caller::local_person("owner").in_room(&room);
         let provider = offered_provider(&state, &owner, "new-window").expect("offered");
 
@@ -687,7 +822,7 @@ mod tests {
         let launches = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&launches);
         state.launchable.replace_launcher_for_test(
-            Arc::new(move |app_id, _| {
+            Arc::new(move |app_id, _, _| {
                 recorded.lock().expect("launches").push(app_id.to_string());
                 Ok(())
             }),

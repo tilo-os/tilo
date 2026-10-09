@@ -172,6 +172,18 @@ pub trait DocumentImports: Send + Sync {
     ) -> DesktopCommandFuture;
 }
 
+/// Where the view of a launched app opens: next to where the actor that
+/// needs it already is, so the person and every actor keep their place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchPlace {
+    /// Where the person on this device is looking: their own invocation,
+    /// from the palette, a chord or a click.
+    Focus,
+    /// Beside the view of `app_id` the actor works in, on whichever strip
+    /// holds it, which need not be the one the person is looking at.
+    Beside { app_id: String },
+}
+
 #[derive(Clone)]
 pub struct LaunchableApplication {
     pub package_id: String,
@@ -327,12 +339,12 @@ pub struct AuthenticatedApplicationLaunch {
 
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
-    /// Launches `app` into `workspace`.
+    /// Launches `app` into `workspace`, its view opening at `place`.
     ///
     /// # Errors
     ///
     /// Returns a message when the host cannot launch the application.
-    fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    fn launch(&self, app: &str, workspace: &Workspace, place: &LaunchPlace) -> Result<(), String>;
     /// Launch an exact installed package, or an ordinary host application,
     /// and observe its real startup in the authenticated workspace.
     ///
@@ -368,10 +380,10 @@ pub trait LauncherServices: Send + Sync {
         }
         self.begin_launch(app, package_root, workspace, author)
     }
-    /// Launch `app` into `workspace`, opening the content-addressed bytes
-    /// `content` names read-only, read through the calling application's own
-    /// scope. An empty hash is a plain launch. A host that cannot stage
-    /// content refuses one.
+    /// Launch `app` into `workspace` at `place`, opening the
+    /// content-addressed bytes `content` names read-only, read through the
+    /// calling application's own scope. An empty hash is a plain launch. A
+    /// host that cannot stage content refuses one.
     ///
     /// # Errors
     ///
@@ -381,9 +393,10 @@ pub trait LauncherServices: Send + Sync {
         app: &str,
         workspace: &Workspace,
         content: LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<(), String> {
         if content.hash.is_empty() {
-            self.launch(app, workspace)
+            self.launch(app, workspace, place)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }

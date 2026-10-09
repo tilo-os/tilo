@@ -235,7 +235,13 @@ impl LauncherServices for Apps {
             .collect()
     }
 
-    fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+    /// A standalone runtime draws no desk, so there is no place to open at.
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        _: &tilo_action_broker::services::LaunchPlace,
+    ) -> Result<(), String> {
         let launch = self.start(app, &workspace.room.to_string())?;
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()

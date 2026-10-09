@@ -12306,7 +12306,12 @@ pub mod tests {
             fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                 Vec::new()
             }
-            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            fn launch(
+                &self,
+                _: &str,
+                _: &tilo_desktop_model::Workspace,
+                _: &crate::services::LaunchPlace,
+            ) -> Result<(), String> {
                 Err("this broker launches nothing".into())
             }
             fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -12423,7 +12428,12 @@ pub mod tests {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             Vec::new()
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Err("this broker launches nothing".into())
         }
         fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
@@ -15739,7 +15749,12 @@ pub mod tests {
                     unconfined: false,
                 }]
             }
-            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            fn launch(
+                &self,
+                _: &str,
+                _: &tilo_desktop_model::Workspace,
+                _: &crate::services::LaunchPlace,
+            ) -> Result<(), String> {
                 unreachable!("catalogue projection never launches")
             }
             fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -17101,7 +17116,12 @@ pub mod tests {
                 fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
                     Vec::new()
                 }
-                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                fn launch(
+                    &self,
+                    _: &str,
+                    _: &tilo_desktop_model::Workspace,
+                    _: &crate::services::LaunchPlace,
+                ) -> Result<(), String> {
                     Err("this host launches nothing".into())
                 }
                 fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
