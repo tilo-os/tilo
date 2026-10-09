@@ -928,11 +928,10 @@ impl Session {
     }
 
     /// Whether `action` is written as a paragraph with a live preview (in
-    /// parts only past one step's bound): its own descriptor declares an
-    /// incremental Text parameter ([`crate::live::INCREMENTAL_TEXT_TAG`])
-    /// whose value is longer than [`crate::live::CHUNK_MIN_TEXT`], and the
-    /// declared continuation action is published on the same resource with
-    /// that Text parameter. Only enrolled tasks chunk. Returns the parameter,
+    /// parts only past one step's bound): it writes text in parts
+    /// ([`crate::live::continuation`]) longer than
+    /// [`crate::live::CHUNK_MIN_TEXT`], and its continuation is published on
+    /// the same resource with that Text parameter. Only enrolled tasks chunk. Returns the parameter,
     /// its text, and the continuation step.
     fn chunkable(
         &self,
@@ -951,13 +950,13 @@ impl Session {
         Some((param, text.to_owned(), next))
     }
 
-    /// The incremental Text parameter `offer` declares
-    /// ([`crate::live::INCREMENTAL_TEXT_TAG`]) and its continuation step, when
+    /// The Text parameter `offer` writes in parts
+    /// ([`crate::live::continuation`]) and its continuation step, when
     /// that continuation is published on the same resource with the same
     /// Text parameter.
     fn continuation_of(&self, offer: &surface::Offer) -> Option<(String, TaskAction)> {
         let peer = offer.broker_peer_id?;
-        let (param, next) = crate::live::incremental_text(&offer.descriptor.contract.tags)?;
+        let (param, next) = crate::live::continuation(&offer.descriptor)?;
         let text_param = |offer: &surface::Offer| {
             offer.descriptor.params.iter().any(|candidate| {
                 candidate.name == param && candidate.ty == tilo_actions::ParamType::Text
@@ -973,9 +972,9 @@ impl Session {
                 && text_param(candidate)
         })?;
         let mut sample = serde_json::Map::new();
-        sample.insert(param.to_owned(), serde_json::Value::String("…".into()));
+        sample.insert(param.clone(), serde_json::Value::String("…".into()));
         let next = task_action_from_offer(&continuation, sample).ok()?;
-        Some((param.to_owned(), next))
+        Some((param, next))
     }
 
     /// Write one incremental text that is already complete. It is one step
@@ -1545,7 +1544,11 @@ impl Session {
             actor: tilo_actions::InteractionActor {
                 id: self.cfg.agent_id.clone(),
                 kind: tilo_actions::ActorKind::Agent,
-                for_person: None,
+                // The agent acts for whoever asked.
+                for_person: self
+                    .active_run
+                    .as_ref()
+                    .and_then(|run| run.issued_by.clone()),
             },
             phase,
             action: tilo_actions::InteractionAction {
@@ -2801,6 +2804,11 @@ impl Session {
             .clone()
             .unwrap_or_else(|| "Open document".into());
         let group = self.task_context().and_then(|context| context.group);
+        // The agent acts for whoever asked.
+        let for_person = self
+            .active_run
+            .as_ref()
+            .and_then(|run| run.issued_by.clone());
         let semantic = |phase, sequence| tilo_actions::SemanticInteraction {
             version: tilo_actions::INTERACTION_VERSION,
             invocation,
@@ -2808,11 +2816,11 @@ impl Session {
             actor: tilo_actions::InteractionActor {
                 id: agent_id.clone(),
                 kind: tilo_actions::ActorKind::Agent,
-                for_person: None,
+                for_person: for_person.clone(),
             },
             phase,
             action: tilo_actions::InteractionAction {
-                id: "word-processor.edit".into(),
+                id: ui::tilo_resource::FIELD_EDIT.into(),
                 label: describe(action),
                 app: Some(tilo_actions::ActionApp {
                     id: app_id.clone(),

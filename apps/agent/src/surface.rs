@@ -869,6 +869,16 @@ fn spelled(word: &str) -> String {
     }
 }
 
+/// Every word of `text`, lowercased and in the spelling apps name their
+/// choices in, noise and all.
+fn words_of(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(spelled)
+        .collect()
+}
+
 fn keywords(rest: &str) -> Vec<String> {
     rest.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -1063,6 +1073,26 @@ pub fn from_verbs<'a>(
             .collect();
         if !denser.is_empty() {
             best = denser;
+        }
+    }
+    if best.len() > 1 {
+        // Words too small to decide anything alone still tell two labels
+        // apart once they tie: "zoom in" is Zoom in, not Zoom out.
+        let said: std::collections::HashSet<String> = words_of(rest).into_iter().collect();
+        let echoed = |offer: &Offer| {
+            words_of(&offer.descriptor.action_label)
+                .iter()
+                .filter(|word| said.contains(*word))
+                .count()
+        };
+        let most = best.iter().map(|offer| echoed(offer)).max().unwrap_or(0);
+        let closer: Vec<&Offer> = best
+            .iter()
+            .copied()
+            .filter(|offer| echoed(offer) == most)
+            .collect();
+        if !closer.is_empty() {
+            best = closer;
         }
     }
     if best.len() > 1 {
@@ -1519,6 +1549,33 @@ mod tests {
                 Err(NoMatch::Ambiguous(labels)) => assert_eq!(labels.len(), 2, "{labels:?}"),
                 other => panic!("a genuine ambiguity must still be refused: {other:?}"),
             }
+
+            // A small word the instruction said still tells two labels apart
+            // once they tie: "zoom in" is Zoom in, never Zoom out.
+            let zooms = vec![
+                offer(
+                    "word-processor",
+                    "word-processor.document",
+                    "zoom-in",
+                    "Zoom in",
+                    tilo_actions::InputSpec::None,
+                ),
+                offer(
+                    "word-processor",
+                    "word-processor.document",
+                    "zoom-out",
+                    "Zoom out",
+                    tilo_actions::InputSpec::None,
+                ),
+            ];
+            let (chosen, _) = from_verbs("zoom in", &zooms).expect("zoom in names one operation");
+            assert_eq!(chosen.address().action, "zoom-in");
+            let (chosen, _) = from_verbs("zoom out please", &zooms).expect("so does zoom out");
+            assert_eq!(chosen.address().action, "zoom-out");
+            assert!(
+                matches!(from_verbs("zoom", &zooms), Err(NoMatch::Ambiguous(_))),
+                "zoom alone is still a question"
+            );
 
             // Nor is it dropped when the split would leave nothing: two tied
             // operations that both *want* a value are still ambiguous when the

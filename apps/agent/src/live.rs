@@ -498,22 +498,32 @@ impl PlanStream {
     }
 }
 
-/// Contract tag prefix by which an app declares that a Text parameter may be
-/// delivered in parts: `tilo.incremental-text:<param>:<next>` means the first
-/// part goes through the declaring action and each later part through action
-/// `<next>` on the same resource with `<param>` set to that part (Writer's
-/// `INCREMENTAL_TEXT_TAG`). The agent keys chunking on this and nothing else.
-pub const INCREMENTAL_TEXT_TAG: &str = "tilo.incremental-text:";
-
-/// The `(param, next action)` a contract's tags declare, if any.
-pub fn incremental_text(tags: &[String]) -> Option<(&str, &str)> {
-    tags.iter().find_map(|tag| {
-        let (param, next) = tag.strip_prefix(INCREMENTAL_TEXT_TAG)?.split_once(':')?;
-        (!param.is_empty() && !next.is_empty() && !next.contains(':')).then_some((param, next))
-    })
+/// Text the agent may write in parts: the parameter that carries it and the
+/// action each later part goes through, on the same resource, when
+/// `descriptor` is one of the word processor's writing operations — adding
+/// a paragraph, or typing at the caret. Named by the word processor's typed
+/// references: each later part is typed at the caret the part before it
+/// left (an added paragraph lands the agent's caret at its end).
+#[must_use]
+pub fn continuation(descriptor: &tilo_actions::ActionDescriptor) -> Option<(String, String)> {
+    use ui::tilo_resource::{Effect as _, Resource as _};
+    use word_processor::effects::WordProcessorEffect;
+    use word_processor::framework::Document;
+    if descriptor.resource_kind != Document::KIND {
+        return None;
+    }
+    let typing = WordProcessorEffect::TypeText {
+        text: String::new(),
+    };
+    let param = typing.arguments().keys().next()?.clone();
+    // Whether the operation takes that parameter is the descriptor's to
+    // say; the caller checks it on both ends.
+    let writes = descriptor.address.action == typing.id()
+        || descriptor.address.action == Document::APPEND_PARAGRAPH.id;
+    writes.then(|| (param, typing.id().to_owned()))
 }
 
-/// A declared incremental text longer than this is written with a live
+/// Text in parts ([`continuation`]) longer than this is written with a live
 /// preview of the text still to land.
 pub const CHUNK_MIN_TEXT: usize = 60;
 /// The largest chunk target the adaptive doubling of streamed chunks reaches.
@@ -716,25 +726,44 @@ mod tests {
     }
 
     #[test]
-    fn incremental_text_is_read_only_from_the_declared_tag() {
-        let tags = |list: &[&str]| list.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            incremental_text(&tags(&[
-                "other",
-                "tilo.incremental-text:text:continue-paragraph"
-            ])),
-            Some(("text", "continue-paragraph"))
-        );
-        for bad in [
-            "tilo.incremental-text:",
-            "tilo.incremental-text:text",
-            "tilo.incremental-text::next",
-            "tilo.incremental-text:text:",
-            "tilo.incremental-text:a:b:c",
-            "incremental-text:text:next",
-        ] {
-            assert_eq!(incremental_text(&tags(&[bad])), None, "{bad}");
+    fn the_word_processors_writing_continues_by_typing_at_the_caret() {
+        use ui::tilo_resource::{Effect as _, Resource as _};
+        use word_processor::effects::WordProcessorEffect;
+        use word_processor::framework::Document;
+        let descriptor = |kind: &str, action: &str| tilo_actions::ActionDescriptor {
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(kind, action),
+            resource_kind: kind.into(),
+            resource_label: "Brief".into(),
+            action_label: action.into(),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        };
+        let typing = WordProcessorEffect::TypeText {
+            text: String::new(),
         }
+        .id();
+        let expected = Some(("text".to_owned(), typing.to_owned()));
+        assert_eq!(
+            continuation(&descriptor(Document::KIND, Document::APPEND_PARAGRAPH.id)),
+            expected,
+            "a paragraph is added, then typed on"
+        );
+        assert_eq!(continuation(&descriptor(Document::KIND, typing)), expected);
+        assert_eq!(
+            continuation(&descriptor(Document::KIND, Document::INSERT_TABLE.id)),
+            None
+        );
+        assert_eq!(
+            continuation(&descriptor("notes.note", Document::APPEND_PARAGRAPH.id)),
+            None,
+            "only the word processor's own writing"
+        );
     }
 
     #[test]

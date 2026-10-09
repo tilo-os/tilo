@@ -2197,7 +2197,8 @@ mod tests {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
-            resource_kind: "word_processor.document".into(),
+            resource_kind:
+                <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND.into(),
             resource_label: "Brief".into(),
             action_label: label.into(),
             description: None,
@@ -2335,21 +2336,7 @@ mod tests {
                             tilo_actions::OperationKind::Document,
                             vec![text("text")],
                             Availability::Available,
-                            vec![format!(
-                                "{}text:continue-paragraph",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
-                        ),
-                        descriptor(
-                            "continue-paragraph",
-                            "Continue last paragraph",
-                            tilo_actions::OperationKind::Document,
-                            vec![text("text")],
-                            Availability::Available,
-                            vec![format!(
-                                "{}text:continue-paragraph",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
+                            vec![],
                         ),
                         descriptor(
                             "type-text",
@@ -2357,10 +2344,7 @@ mod tests {
                             tilo_actions::OperationKind::Document,
                             vec![text("text")],
                             Availability::Available,
-                            vec![format!(
-                                "{}text:type-text",
-                                crate::live::INCREMENTAL_TEXT_TAG
-                            )],
+                            vec![],
                         ),
                         descriptor(
                             "erase-text",
@@ -2527,12 +2511,6 @@ mod tests {
                 "append-paragraph" => {
                     self.blocks
                         .push((format!("p{}", self.blocks.len() + 1), text("text")));
-                    (serde_json::json!({"succeeded": {}}), false)
-                }
-                "continue-paragraph" => {
-                    if let Some(last) = self.blocks.last_mut() {
-                        last.1.push_str(&text("text"));
-                    }
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "erase-text" => {
@@ -3472,7 +3450,7 @@ mod tests {
     }
 
     /// One turn does the whole job: the paragraph is written as ordered
-    /// chunk steps (declared by the operation's own tag), its text previewed
+    /// chunk steps (the word processor's writing, `live::continuation`), its text previewed
     /// while it streams, and the reply finishes the task — no second turn.
     #[test]
     fn a_single_turn_writes_streams_and_finishes() {

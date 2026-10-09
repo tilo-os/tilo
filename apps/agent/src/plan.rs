@@ -84,11 +84,18 @@ impl Instruction {
     /// not part of the choice a model makes: a document can ask the agent
     /// for something, but nothing written in a document can make the agent
     /// answer to a different name.
+    ///
+    /// The name is matched without regard to case; what follows it is kept
+    /// as written, so a quoted value reaches the document as it was typed.
     pub fn addressed(text: &str, name: &str) -> Option<String> {
         let t = text.trim();
         let prefix = format!("{}:", name.to_lowercase());
-        let lower = t.to_lowercase();
-        let rest = lower.strip_prefix(&prefix)?;
+        let length = prefix.chars().count();
+        let head: String = t.chars().take(length).collect();
+        if head.to_lowercase() != prefix {
+            return None;
+        }
+        let rest: String = t.chars().skip(length).collect();
         Some(rest.trim().to_string())
     }
 
@@ -562,6 +569,11 @@ mod tests {
             assert_eq!(
                 Instruction::addressed("SCRIBE: give this a title", "Scribe"),
                 Some("give this a title".to_string())
+            );
+            assert_eq!(
+                Instruction::addressed("SCRIBE: add a paragraph \"Next Steps\"", "Scribe"),
+                Some("add a paragraph \"Next Steps\"".to_string()),
+                "what is quoted keeps its case"
             );
             let blocks = vec![
                 para("h", "Shopping"),
