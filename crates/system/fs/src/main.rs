@@ -1754,9 +1754,7 @@ async fn serve(
     // The serving owner is the authority publisher. A capability file may
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
-    if remote_ticket.is_none()
-        && let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref())
-    {
+    if let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref()) {
         let principals = acl_args
             .principals
             .iter()
@@ -1765,6 +1763,7 @@ async fn serve(
         let bootstrap = acl_args
             .acl
             .as_ref()
+            .filter(|_| remote_ticket.is_none())
             .zip(share_issuer.as_ref())
             .map(|(path, signer)| -> Result<_> {
                 let capabilities = serde_json::from_slice(&std::fs::read(path)?)
