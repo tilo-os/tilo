@@ -219,6 +219,7 @@ pub fn import_into(store: &mut Store, parsed: &[OpmlFeed]) -> usize {
             folder: folder_id,
             order,
             kind: FeedKind::Rss,
+            certificate_pin: None,
         });
         added += 1;
     }

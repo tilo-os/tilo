@@ -51,6 +51,7 @@ run 'Application resource/action contract' \
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Sealed images share one UKI pipeline' python3 tools/policy/check_uki_pipeline.py
 run 'Image builders copy what they compile, and only that' \
   python3 tools/policy/check_image_builder_inputs.py
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
