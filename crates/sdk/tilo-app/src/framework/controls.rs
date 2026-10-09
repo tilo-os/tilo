@@ -165,6 +165,9 @@ impl<R: Resource> Actions<R> {
     /// The binding of one fully specified invocation, or why there is none.
     fn try_invocation(&self, invoke: Invoke<R>) -> Result<ActionBinding<()>, (ActionKey, String)> {
         let key = self.key(invoke.id);
+        if let Some(refusal) = invoke.refusal() {
+            return Err((key, refusal.to_owned()));
+        }
         let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
         let published = self.published.borrow();
         ActionBinding::static_json(&published, &spec, invoke.arguments)
@@ -228,13 +231,13 @@ impl<R: Resource> Actions<R> {
             }
         };
         let published = self.published.borrow();
-        ActionBinding::new(&published, &spec, move |value| {
+        ActionBinding::fallible(&published, &spec, move |value| {
             let edit = edit(&path, value);
             serde_json::to_value(&edit)
                 .map(|edit| {
                     serde_json::Map::from_iter([(tilo_resource::EDIT_PARAM.to_owned(), edit)])
                 })
-                .unwrap_or_default()
+                .map_err(|error| error.to_string())
         })
         .map_err(|error| unbound::<R>(&what, &error.to_string()))
         .ok()

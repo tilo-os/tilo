@@ -3,8 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_resource::{Delta, Demand, Doc, ModelError, Reader, Resource, Tracker};
-use ui_core::automerge::transaction::Transactable as _;
+use tilo_resource::{Delta, Demand, Doc, ModelError, Reader, Resource};
 
 /// A shared handle to the current state of one resource.
 ///
@@ -21,22 +20,19 @@ pub struct Live<R: Resource> {
     changes: Rc<RefCell<Changes>>,
 }
 
-/// What changed since bound controls last followed the state.
+/// What changed since bound controls last followed the state: `None` when
+/// nothing did.
 #[derive(Default)]
 struct Changes {
-    /// Follows the same document as the reader, for the delta of each sync.
-    tracker: Tracker,
-    /// The change not yet followed: `None` when nothing changed, the delta of
-    /// one sync, or everything after several.
     pending: Option<Delta>,
 }
 
 impl Changes {
     fn note(&mut self, delta: Delta) {
-        self.pending = Some(match self.pending.take() {
-            None => delta,
-            Some(_) => Delta::everything(),
-        });
+        match &mut self.pending {
+            Some(pending) => pending.merge(delta),
+            None => self.pending = Some(delta),
+        }
     }
 }
 
@@ -76,6 +72,12 @@ impl<R: Resource> Live<R> {
     /// Read the current state.
     pub fn with<T>(&self, read: impl FnOnce(&R::State) -> T) -> T {
         read(self.inner.borrow().state())
+    }
+
+    /// Why the document stopped reading as the resource, if it did: the
+    /// state is then the last one that read, and views show this instead.
+    pub fn unreadable(&self) -> Option<tilo_resource::Unreadable> {
+        self.inner.borrow().unreadable().cloned()
     }
 
     /// Increases whenever the state changes.
@@ -133,17 +135,8 @@ impl<R: Resource> Live<R> {
         let _profile = super::profiling::Scope::start("framework.live_sync");
         let mut reader = self.inner.borrow_mut();
         let moved = reader.sync(doc)?;
-        let mut changes = self.changes.borrow_mut();
-        let delta = if doc.pending_ops() > 0 {
-            Delta::everything()
-        } else {
-            let state = reader.state();
-            changes
-                .tracker
-                .committed_delta_located(doc, &|obj| R::locate(state, obj))
-        };
         if moved {
-            changes.note(delta);
+            self.changes.borrow_mut().note(reader.last_delta().clone());
         }
         Ok(moved)
     }

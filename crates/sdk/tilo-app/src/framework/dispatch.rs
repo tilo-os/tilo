@@ -31,7 +31,10 @@ pub trait Submit<R: Resource> {
 
 impl<R: Resource> Submit<R> for Invoke<R> {
     fn into_invoke(self) -> Result<Invoke<R>, String> {
-        Ok(self)
+        match self.refusal() {
+            Some(refusal) => Err(refusal.to_owned()),
+            None => Ok(self),
+        }
     }
 }
 
@@ -108,6 +111,9 @@ pub struct Dispatcher<R: Resource> {
     /// [`Resource::permission`], or for a child its parent's action's.
     permission_of: PermissionOf<R>,
     refused: LocalState<Option<Refused>>,
+    /// Why the record does not read as the resource, while it does not:
+    /// nothing is submitted against a state nobody can see.
+    unreadable: Rc<RefCell<Option<String>>>,
     host: Rc<RefCell<ui_core::action_host::ActionHost>>,
     /// Applies one immediate action: the resource's own, or for a child
     /// resource its parent's action carrying it.
@@ -169,6 +175,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             permission_states: Rc::clone(&self.permission_states),
             permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
+            unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
             serial: Rc::clone(&self.serial),
@@ -234,6 +241,7 @@ impl<R: Resource> Dispatcher<R> {
             permission_states: Rc::default(),
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
+            unreadable: Rc::default(),
             host: Rc::default(),
             submit_now: Rc::new(|host, edits, action, context| {
                 edits.apply(host, R::ACTION_TYPE, action, context)
@@ -411,6 +419,17 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Record that the door refused `action`, submitted here.
+    /// Say why the record does not read as the resource (`None` once it
+    /// does again); until then every submission is refused with it.
+    pub(crate) fn set_unreadable(&self, reason: Option<String>) {
+        *self.unreadable.borrow_mut() = reason;
+    }
+
+    /// Why nothing can be submitted now, when the record is unreadable.
+    fn unreadable(&self) -> Option<String> {
+        self.unreadable.borrow().clone()
+    }
+
     pub(crate) fn refuse(&self, action: &str, reason: String) {
         self.refused.set(Some(Refused {
             action: action.to_owned(),
@@ -455,6 +474,16 @@ impl<R: Resource> Dispatcher<R> {
     /// or an effect ([`Invoke::effect`]), which reaches its handler as
     /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if let Some(refusal) = invoke.refusal() {
+            self.refuse(invoke.id, refusal.to_owned());
+            return;
+        }
+        if let Some(reason) = self.unreadable()
+            && !invoke.is_effect()
+        {
+            self.refuse(invoke.id, reason);
+            return;
+        }
         if let Some(custody) = &self.custody
             && let Err(error) = custody.check()
         {
@@ -617,6 +646,9 @@ impl<R: Resource> Dispatcher<R> {
                 "caller-scoped effects submit document changes through queued actions".into(),
             ));
         }
+        if let Some(reason) = self.unreadable() {
+            return Err(ActionError::Refused(reason));
+        }
         if !self.may_apply(action) {
             return Err(ActionError::Refused(Self::not_allowed((self
                 .permission_of)(
@@ -699,6 +731,7 @@ impl<R: Resource> Dispatcher<R> {
                 parent_permission(&wrap_for_permission(action.clone()))
             }),
             refused: self.refused.clone(),
+            unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
             // parent's action carrying it.

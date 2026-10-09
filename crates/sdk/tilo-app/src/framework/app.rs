@@ -468,6 +468,9 @@ pub(crate) fn apply_seed<A: ResourceApp>(
     let now_ms = tilo_resource::origin_now_ms();
     let mut actions = Vec::new();
     for invoke in seed {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(refusal.to_owned());
+        }
         if invoke.is_group() {
             actions.extend(
                 tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, now_ms)?
@@ -502,6 +505,9 @@ fn write_genesis<A: ResourceApp>(
     genesis: &[Invoke<A::Resource>],
 ) -> Result<(), String> {
     for invoke in genesis {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(refusal.to_owned());
+        }
         let actions = if invoke.is_group() {
             tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, 0)?.actions
         } else {
@@ -512,6 +518,39 @@ fn write_genesis<A: ResourceApp>(
         }
     }
     Ok(())
+}
+
+/// The record's reader, once an older document is brought up to the app's
+/// storage version; or why it does not read, which the window shows instead
+/// of the view.
+fn open_reader<A: ResourceApp>(
+    context: &HostContext,
+) -> Result<Result<Reader<A::Resource>, String>, LaunchError> {
+    let migrated = context.migrate_record(|doc| {
+        tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
+    });
+    let read = context
+        .read_record(|doc| {
+            Reader::<A::Resource>::read(doc)
+                .map_err(|error| tilo_resource::Unreadable::of::<A::Resource>(doc, &error).reason)
+        })
+        .map_err(LaunchError::Record)?;
+    Ok(migrated.and(read))
+}
+
+/// The window of a record that does not read as the resource.
+fn unopened<A: ResourceApp>(context: HostContext, reason: String) -> AppComponent {
+    let mut component = AppComponent::new(
+        context,
+        Box::new(super::root::Unopened::<A::Resource>::new(
+            A::TITLE,
+            icon::<A>(),
+            reason,
+        )),
+        action_registry::<A>(),
+    );
+    component.set_behaviour(A::BEHAVIOUR);
+    component
 }
 
 #[allow(
@@ -589,10 +628,10 @@ fn create<A: ResourceApp>(
                 .map(|source| (source, super::preview::file_history_witness::<A>())),
         );
     let permissions = context.live_permissions();
-    let reader = context
-        .read_record(Reader::<A::Resource>::read)
-        .map_err(LaunchError::Record)?
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let reader = match open_reader::<A>(&context)? {
+        Ok(reader) => reader,
+        Err(reason) => return Ok(unopened::<A>(context, reason)),
+    };
     let me = context.author().0.clone();
     let root = build_root::<A>(
         reader,

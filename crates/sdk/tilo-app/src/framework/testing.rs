@@ -697,6 +697,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         resource: &str,
         invoke: Invoke<C>,
     ) -> Result<(), tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,
@@ -778,6 +781,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         invoke: Invoke<A::Resource>,
     ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,
@@ -1169,6 +1175,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         invoke: Invoke<A::Resource>,
         confirmed: bool,
     ) -> Result<(), tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(tilo_actions::DoorError::Failed(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         let address = BoundActionAddress {
             instance_id: self.instance,

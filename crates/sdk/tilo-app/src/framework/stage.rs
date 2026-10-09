@@ -133,6 +133,9 @@ pub fn stage<A: ResourceApp>(
     // request from a person or an agent: they are applied as confirmed, so a
     // scenario that replaces a whole project stages without a prompt.
     for invoke in A::scenario(scenario) {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(LaunchError::Operation(refusal.to_owned()));
+        }
         let address = BoundActionAddress {
             instance_id: root,
             address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, invoke.id),

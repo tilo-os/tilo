@@ -498,3 +498,6 @@ device-display-request-pending = Eine Anfrage zur Bildschirmposition steht berei
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = Dies kann nicht geöffnet werden

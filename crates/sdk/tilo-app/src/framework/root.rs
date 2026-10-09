@@ -74,6 +74,11 @@ pub(crate) struct ResourceRoot<R: Resource> {
     effects: Effects<R>,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
+    /// What is shown instead of the view while the record does not read as
+    /// the resource, and why.
+    unreadable: Option<(String, Element)>,
+    /// The view was swapped for the unreadable state or back since layout.
+    swapped: bool,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -227,6 +232,8 @@ impl<R: Resource> ResourceRoot<R> {
             bindings: cx.bindings,
             effects: cx.effects,
             content,
+            unreadable: None,
+            swapped: false,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
             publication_tree: std::cell::RefCell::new(None),
@@ -505,6 +512,9 @@ impl<R: Resource> ResourceRoot<R> {
         if self.effects.has_causal_drains() {
             mark_document_jobs(&mut resource);
         }
+        if let Some(unreadable) = self.live.unreadable() {
+            withhold_document_actions(&mut resource, &unreadable.reason);
+        }
         resource.children.extend(self.storage.person_resources());
         resource
     }
@@ -523,6 +533,25 @@ impl<R: Resource> ResourceRoot<R> {
                 views
             }
         }
+    }
+
+    /// Show why the record does not read as the resource instead of the
+    /// view while it does not, never the last state as if it were current,
+    /// and refuse submissions with the same reason.
+    fn follow_readability(&mut self) {
+        let reason = self.live.unreadable().map(|unreadable| unreadable.reason);
+        if self.unreadable.as_ref().map(|(shown, _)| shown) == reason.as_ref() {
+            return;
+        }
+        self.dispatch.set_unreadable(reason.clone());
+        self.unreadable = reason.map(|reason| {
+            let shown: Element = Box::new(ui_core::widget::EmptyState::error(
+                ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
+                reason.clone(),
+            ));
+            (reason, shown)
+        });
+        self.swapped = true;
     }
 
     /// The dispatcher the root's views submit through, which the host drains.
@@ -576,6 +605,22 @@ fn nested_view_types(resources: &[tilo_actions::Resource]) -> HashSet<String> {
     let mut views = HashSet::new();
     collect(resources, &mut views);
     views
+}
+
+/// Every document action of `resource` and its children, unavailable for
+/// `reason`: the record does not read as the resource.
+fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
+    for spec in &mut resource.actions {
+        if spec.kind == tilo_actions::OperationKind::Document {
+            spec.contract.availability = tilo_actions::Availability::Unavailable {
+                code: "unreadable".into(),
+                reason: reason.to_owned(),
+            };
+        }
+    }
+    for child in &mut resource.children {
+        withhold_document_actions(child, reason);
+    }
 }
 
 fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
@@ -971,11 +1016,22 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
-        self.content.as_ref()
+        match &self.unreadable {
+            Some((_, shown)) => shown.as_ref(),
+            None => self.content.as_ref(),
+        }
     }
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.content.as_mut()
+        match &mut self.unreadable {
+            Some((_, shown)) => shown.as_mut(),
+            None => self.content.as_mut(),
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let swapped = std::mem::take(&mut self.swapped);
+        self.inner_mut().take_structure_dirty() || swapped
     }
 
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
@@ -988,6 +1044,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
         self.refresh(state);
+        self.follow_readability();
         self.storage.refresh();
         {
             #[cfg(feature = "test-support")]
@@ -1916,6 +1973,75 @@ mod search_tests {
         OPENED.with_borrow(|opened| {
             assert_eq!(opened.last().map(String::as_str), Some("folder:sent/msg:2"));
         });
+    }
+}
+
+/// The window of a record that did not read as the resource when it was
+/// opened: why, instead of the app's view, and the resource's actions
+/// published as unavailable for that reason.
+pub(crate) struct Unopened<R: Resource> {
+    title: &'static str,
+    icon: IconDescriptor,
+    reason: String,
+    shown: ui_core::widget::EmptyState,
+    marker: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R: Resource> Unopened<R> {
+    pub(crate) fn new(title: &'static str, icon: IconDescriptor, reason: String) -> Self {
+        Self {
+            title,
+            icon,
+            shown: ui_core::widget::EmptyState::error(
+                ui_core::i18n::I18nManager::lookup_plain("framework-unreadable"),
+                reason.clone(),
+            ),
+            reason,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R: Resource> Decorator for Unopened<R> {
+    ui_core::provides!(dyn ui_core::resources::PublishesResources);
+
+    type Inner = ui_core::widget::EmptyState;
+
+    fn inner(&self) -> &ui_core::widget::EmptyState {
+        &self.shown
+    }
+
+    fn inner_mut(&mut self) -> &mut ui_core::widget::EmptyState {
+        &mut self.shown
+    }
+}
+
+impl<R: Resource> ui_core::resources::PublishesResources for Unopened<R> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resource = tilo_actions::Resource::new(R::KIND, R::KIND, R::LABEL);
+        for decl in R::declarations() {
+            resource = resource.with_action(tilo_resource::declaration_spec::<R>(&decl));
+        }
+        withhold_document_actions(&mut resource, &self.reason);
+        vec![resource]
+    }
+}
+
+impl<R: Resource> AppWidget for Unopened<R> {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+
+    fn app_title(&self) -> &str {
+        self.title
+    }
+
+    fn app_icon(&self) -> IconDescriptor {
+        self.icon.clone()
+    }
+
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
     }
 }
 

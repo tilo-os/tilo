@@ -55,6 +55,8 @@ pub mod settings;
 pub mod surface_semantics;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
+#[path = "unreadable.rs"]
+pub mod unreadable;
 #[path = "window_content.rs"]
 pub mod window_content;
 #[path = "window_view.rs"]

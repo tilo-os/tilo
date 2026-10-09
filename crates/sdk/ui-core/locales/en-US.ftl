@@ -602,3 +602,6 @@ music-recommendations-disable = Disable input
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+
+# Shown instead of an app's view while its record does not read as the app expects.
+framework-unreadable = This cannot be opened

@@ -73,7 +73,13 @@ pub enum ActionBindingError {
     ActionNotExported { resource: String, action: String },
     #[error(transparent)]
     InvalidArguments(#[from] ArgError),
+    /// The control's value does not make arguments of the action at all.
+    #[error("{0}")]
+    Unbindable(String),
 }
+
+type Arguments<I> =
+    Arc<dyn Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync>;
 
 /// Type-safe adapter from a control's input value to an exported action.
 ///
@@ -85,7 +91,7 @@ pub enum ActionBindingError {
 pub struct ActionBinding<I> {
     address: ActionAddress,
     spec: ActionSpec,
-    arguments: Arc<dyn Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync>,
+    arguments: Arguments<I>,
 }
 
 impl<I> ActionBinding<I> {
@@ -100,6 +106,25 @@ impl<I> ActionBinding<I> {
         resource: &Resource,
         spec: &ActionSpec,
         arguments: impl Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync + 'static,
+    ) -> Result<Self, ActionBindingError> {
+        Self::fallible(resource, spec, move |input| Ok(arguments(input)))
+    }
+
+    /// [`Self::new`] for an input that may not make arguments: a value that
+    /// does not serialize, a form that does not fit the parameters. Such an
+    /// input is refused when the control emits it, never sent empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
+    /// from `resource`.
+    pub fn fallible(
+        resource: &Resource,
+        spec: &ActionSpec,
+        arguments: impl Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String>
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<Self, ActionBindingError> {
         let exported = resource
             .actions
@@ -125,7 +150,7 @@ impl<I> ActionBinding<I> {
     /// Returns [`ActionBindingError::InvalidArguments`] if the mapped input
     /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
-        let arguments = (self.arguments)(input);
+        let arguments = (self.arguments)(input).map_err(ActionBindingError::Unbindable)?;
         if self.spec.deferred_invocation_type().is_some()
             || matches!(self.spec.input, ActionInput::Deferred { .. })
         {
@@ -196,9 +221,13 @@ impl ActionBinding<()> {
         if binding.spec.deferred_invocation_type().is_some()
             || matches!(binding.spec.input, ActionInput::Deferred { .. })
         {
-            binding.spec.validate_json(&(binding.arguments)(()))?;
+            binding
+                .spec
+                .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         } else {
-            binding.spec.build_json(&(binding.arguments)(()))?;
+            binding
+                .spec
+                .build_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         }
         Ok(binding)
     }

@@ -785,6 +785,20 @@ impl HostContext {
     pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
         self.person.as_ref()
     }
+    /// Bring the record up to the storage version its app reads, before it
+    /// is read: `migrate` makes at most one deterministic housekeeping change
+    /// (two devices migrating the same document make the same one) and
+    /// answers whether it changed anything.
+    /// # Errors
+    /// The record is not open here, or the migration failed.
+    pub fn migrate_record(
+        &self,
+        migrate: impl FnOnce(&mut AutoCommit) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        self.records
+            .with(&self.record.id, migrate)
+            .ok_or_else(|| "the record is not open".to_owned())?
+    }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
     /// A reserved or missing record cannot be read.
