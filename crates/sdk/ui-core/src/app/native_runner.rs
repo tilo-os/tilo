@@ -2046,7 +2046,7 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.update_model() {
+        if app.update_native_model() {
             floating_content_changed = true;
         }
         mark_first_frame("first-frame-update-done");
@@ -3371,7 +3371,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        let idle_model = app.service_idle_model();
+        let idle_model = app.service_native_idle_model();
         if idle_model.changed {
             request_primary_redraw();
         }
@@ -3444,7 +3444,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // spellcheck), not "commit a buffer". Files' 750ms metadata
             // poll found nothing and still presented at ~2 Hz because
             // `needs_sync` forced a full redraw.
-            let updated = app.update_model();
+            let updated = app.update_native_model();
             let _ = app.sync_model(true);
             let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(

@@ -54,10 +54,5 @@ pub(crate) fn layout_rect(
         reason = "see widgets Taffy layout helpers doc comment"
     )]
     let l = taffy.layout(node).unwrap();
-    Rect::new(
-        origin.x + f64::from(l.location.x),
-        origin.y + f64::from(l.location.y),
-        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-    )
+    ui::widget::placed(l, origin)
 }
