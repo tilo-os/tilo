@@ -875,7 +875,15 @@ and no control was projected for it.
 
 `crates/agent/agent-participant/src/host.rs` runs a supervisor in a host
 process. Each agent's participant runs on its own thread with the host's
-model, pumping its session until it stops or the host shuts down. Grants
+model, pumping its session until it stops or the host shuts down. Between
+pumps the thread sleeps until its session or steering changes or its
+presence keep-alive is due, never on an interval; a pump runs a plan's local
+steps back to back for up to 5 ms and at most one model call. Records the
+agent has not opened are held as their documents, history kept and each
+change once, so opening one seeds its replica with exactly what its changes
+made: the shared desktop live, merged as it changes, its tabs read only when
+it changed; every other record saved, with the changes since merged in one
+load once they outweigh it (or 64 KiB). Grants
 (agent key, certificate, delegation) and agents (status, room, task log,
 conversation) are kept in `<state>/agents/agents.json` (owner-only). A
 ticker settles expired grants: the agent stops and the relay refuses its
