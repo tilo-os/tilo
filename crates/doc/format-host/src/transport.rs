@@ -13,7 +13,7 @@ use crate::router::Router;
 use crate::service::FormatRouterService;
 
 pub fn default_socket_path() -> Option<PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|base| {
+    tilo_paths::xdg::runtime_dir().map(|base| {
         base.join("tilo")
             .join("services")
             .join("format-router.sock")

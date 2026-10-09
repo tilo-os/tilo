@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::RwLockReadGuard;
 use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
@@ -555,7 +555,7 @@ pub struct ChromeState {
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
-    /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
+    /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
     /// instead of silently borrowing the wrong thing; use
     /// [`Self::tree`] / [`Self::tree_mut`].
@@ -1393,7 +1393,7 @@ impl ChromeState {
     /// The guard drops at the end of the borrow scope, so concurrent
     /// readers (paint, portal lookup, peer-sync export) unblock as soon
     /// as the mutation lands.
-    pub fn tree_mut(&self) -> RwLockWriteGuard<'_, WorkspaceTree> {
+    pub fn tree_mut(&self) -> crate::shell::state::WorkspaceTreeWriteGuard<'_> {
         self.tree_handle.write()
     }
 
@@ -3516,9 +3516,7 @@ mod active_tab_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
-    use std::sync::Arc;
 
     fn tree_with(active_tab_id: u64) -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
@@ -3573,21 +3571,21 @@ mod active_tab_tests {
     #[test]
     fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
         fn active_app_title_follows_group_active_tab() {
-            let handle = Arc::new(RwLock::new(tree_with(200)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_app_title().as_deref(), Some("Second"));
         }
 
         fn active_tab_id_matches_the_active_tab_pointer() {
-            let handle = Arc::new(RwLock::new(tree_with(100)));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), Some(100));
         }
 
         fn no_active_returns_none_instead_of_first_group() {
-            let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3597,7 +3595,7 @@ mod active_tab_tests {
         fn without_active_strip_returns_none_not_first_strip() {
             let mut tree = tree_with(100);
             tree.desktop.active_strip.clear();
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
             assert_eq!(st.active_tab_id(), None);
@@ -3888,7 +3886,7 @@ mod active_tab_tests {
                 surface_id: 77,
             });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 
@@ -3932,7 +3930,7 @@ mod active_tab_tests {
                     label: "notes.ts".into(),
                 });
             let ws_id = tree.desktop.active;
-            let handle = Arc::new(RwLock::new(tree));
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
             let chrome = ChromeState::new_with_handle(handle);
             let st = chrome.borrow();
 

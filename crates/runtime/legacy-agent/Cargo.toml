@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 workspace-hack = { version = "0.1" }
 

@@ -20,7 +20,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    RemoveMemberRequest, Rooms, SetMemberRoleRequest, now_ns, system_time,
+    RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
 
 /// How long a declined request still answers its device's status.
@@ -141,7 +141,7 @@ impl Rooms {
         device: &DeviceCert,
         request: RoomsRequest,
     ) -> Result<RoomsReply, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         Ok(match request {
             RoomsRequest::List => self.page_list(device, now).await?,
             RoomsRequest::Create { name } => self.page_create(device, &name, now).await?,
@@ -473,7 +473,7 @@ impl Rooms {
     }
 
     async fn page_join_inner(&self, step: JoinStep) -> Result<JoinReply, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self

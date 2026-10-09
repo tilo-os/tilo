@@ -499,3 +499,5 @@ terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung 
 terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
 terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
 terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

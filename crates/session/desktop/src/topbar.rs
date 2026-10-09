@@ -8,7 +8,7 @@
 //! back as a [`ChromeIntent`]; it never probes or changes the system itself.
 
 use std::collections::HashMap;
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
@@ -1017,9 +1017,7 @@ impl TopBarChrome {
 
     /// Wake again when the time reading just drawn goes stale.
     fn schedule_time_wake(&mut self) {
-        let since_epoch = ui::clock::SystemTime::now()
-            .duration_since(ui::clock::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
+        let since_epoch = Duration::from_nanos(ui::time::unix_now_ns());
         let bucket = time_bucket_secs(self.activity_is_visible(), self.center_widget);
         self.time_wake = Instant::now().checked_add(until_next_time_bucket(since_epoch, bucket));
     }

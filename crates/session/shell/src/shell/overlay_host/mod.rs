@@ -859,6 +859,10 @@ pub struct ShellOverlayHost {
     /// different workspace with unseen work opens Catch up once, so the user
     /// does not have to notice and decode a tiny unread badge after time away.
     activity_awareness_workspace: Option<u64>,
+    /// What the passive Activity awareness last refreshed from, and when.
+    /// A frame whose key is unchanged skips the refresh (and its tree write
+    /// lock and record reads) until [`ACTIVITY_AWARENESS_FALLBACK`] passes.
+    activity_refresh: ActivityRefreshGate,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as
     /// Catch up is shown or opened manually, so dismissal remains sticky.
@@ -1358,6 +1362,62 @@ fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) ->
     let entering = last_workspace.is_some_and(|previous| previous != workspace);
     *last_workspace = Some(workspace);
     entering
+}
+
+/// The longest the passive Activity awareness goes without a refresh while
+/// nothing it can observe cheaply has changed: a record rewritten on disk by
+/// an app, or the clock crossing the away recap's threshold, is caught here.
+const ACTIVITY_AWARENESS_FALLBACK: Duration = Duration::from_secs(1);
+
+/// Everything the passive Activity awareness reads that a frame can compare
+/// without the tree's write lock: chrome and external tree revisions, the
+/// active workspace, the desktop document's heads, the open records'
+/// content and the rooms' record corpus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ActivityRefreshKey {
+    chrome_revision: u64,
+    external_revision: u64,
+    active: u64,
+    tree_heads: Vec<automerge::ChangeHash>,
+    tree_pending: usize,
+    records: String,
+    room_records: (u64, u64),
+}
+
+/// Decides when the passive Activity awareness refreshes: when its key
+/// moved, when asked to, or once [`ACTIVITY_AWARENESS_FALLBACK`] passed.
+#[derive(Debug, Default)]
+struct ActivityRefreshGate {
+    key: Option<ActivityRefreshKey>,
+    at: Option<Instant>,
+}
+
+impl ActivityRefreshGate {
+    /// Whether a frame with `key` at `now` must refresh; records the refresh
+    /// when it must.
+    fn due(&mut self, key: ActivityRefreshKey, force: bool, now: Instant) -> bool {
+        let stale = self
+            .at
+            .is_none_or(|at| now.saturating_duration_since(at) >= ACTIVITY_AWARENESS_FALLBACK);
+        if !force && !stale && self.key.as_ref() == Some(&key) {
+            return false;
+        }
+        self.key = Some(key);
+        self.at = Some(now);
+        true
+    }
+
+    /// Refresh on the next frame whatever the key says.
+    fn invalidate(&mut self) {
+        self.key = None;
+    }
+
+    /// The state a refresh left behind is the state it saw.
+    fn settle(&mut self, key: ActivityRefreshKey) {
+        if self.key.is_some() {
+            self.key = Some(key);
+        }
+    }
 }
 
 fn take_pending_activity_reveal(
@@ -2322,6 +2382,7 @@ impl ShellOverlayHost {
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
+            activity_refresh: ActivityRefreshGate::default(),
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
@@ -10622,19 +10683,83 @@ impl ShellOverlayHost {
         };
         if let Some(request) = self.room_activity.narrative_request() {
             narrator.request(&request);
-            if let Some(narrative) = narrator.take_for(&request) {
-                let _ = self.room_activity.apply_generated_narrative(narrative);
+            if let Some(narrative) = narrator.take_for(&request)
+                && self.room_activity.apply_generated_narrative(narrative)
+            {
+                // The glance may quote it; publish on the next frame.
+                self.activity_refresh.invalidate();
             }
         }
     }
 
-    /// Keep passive chrome truthful while the sheet is closed. The source's
-    /// heads check makes the resting path constant-time; publishing is also a
-    /// no-op unless headline, unread count, or latest content id changed.
-    fn refresh_room_activity_awareness(&mut self) {
+    /// The passive awareness's [`ActivityRefreshKey`] now, read under the
+    /// tree's read lock.
+    fn activity_refresh_key(&self) -> Option<ActivityRefreshKey> {
+        use automerge::transaction::Transactable as _;
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        let (external_revision, active, tree_heads, tree_pending) = {
+            let tree = state.tree();
+            (
+                tree.desktop.external_revision,
+                tree.desktop.active.raw(),
+                tree.doc.base_heads(),
+                tree.doc.pending_ops(),
+            )
+        };
+        Some(ActivityRefreshKey {
+            chrome_revision: state.revision,
+            external_revision,
+            active,
+            tree_heads,
+            tree_pending,
+            records: state.records().content_revision(),
+            room_records: self.room_records.borrow().revision(),
+        })
+    }
+
+    /// Record the shortcut runs the broker finished, each as one undoable
+    /// run in the workspace document. On the frame pump, never in paint;
+    /// the tree's write lock is taken only while a run waits.
+    fn record_finished_shortcut_runs(&mut self) {
+        if !self.room_activity.shortcut_runs_pending() {
+            return;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let state = chrome.borrow();
+        let records = state.records().clone();
+        let local = self.room_records.borrow();
+        let mut tree = state.tree_mut();
+        let recorded = self.room_activity.record_finished_shortcut_runs(
+            &mut tree,
+            &records,
+            &local,
+            Instant::now(),
+        );
+        if recorded {
+            tree.queue_save();
+        }
+    }
+
+    /// Keep passive chrome truthful while the sheet is closed. Runs only on
+    /// frames where something it reads may have moved (see
+    /// [`ActivityRefreshKey`]), when `force`d, or once a second; publishing
+    /// is a no-op unless headline, unread count, or latest content id changed.
+    fn refresh_room_activity_awareness(&mut self, force: bool) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let force = force || self.activity_pending_reveal.is_some();
+        let due = self
+            .activity_refresh_key()
+            .is_some_and(|key| self.activity_refresh.due(key, force, Instant::now()));
+        if !due {
+            self.refresh_history_narrative();
+            self.refresh_automatic_status();
+            return;
+        }
         let workspace = {
             let st = chrome.borrow();
             let records = st.records().clone();
@@ -10684,6 +10809,11 @@ impl ShellOverlayHost {
             }
         }
         self.refresh_automatic_status();
+        // What this refresh wrote itself (a commit, a published glance) is
+        // already reflected; only a later change needs another pass.
+        if let Some(key) = self.activity_refresh_key() {
+            self.activity_refresh.settle(key);
+        }
     }
 
     fn refresh_automatic_status(&mut self) {
@@ -17503,6 +17633,7 @@ impl Widget for ShellOverlayHost {
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
         self.pump_shortcut_step_prompts();
+        self.record_finished_shortcut_runs();
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -21539,6 +21670,12 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        // The open window reads the pane every frame, and opening, closing
+        // or retargeting it changes what the passive glance shows.
+        let force_awareness = view_request.is_some()
+            || flags.room_activity
+            || self.room_activity_was_open
+            || self.activity_window_rect().is_some();
         if let Some((previous, request)) = view_request {
             // Finish against the outgoing admission before awareness refreshes
             // for the destination. A first open must not acknowledge its feed.
@@ -21561,7 +21698,7 @@ impl ShellOverlayHost {
         {
             chrome.borrow_mut().open_room_activity(None);
         }
-        self.refresh_room_activity_awareness();
+        self.refresh_room_activity_awareness(force_awareness);
         self.room_activity.observe_replay_presence(presence);
         let visible = self.activity_window_rect().is_some();
         if visible && !self.room_activity_was_open {

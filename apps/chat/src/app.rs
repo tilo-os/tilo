@@ -452,7 +452,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    ui::clock::Duration::ZERO
+                    ui::time::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },

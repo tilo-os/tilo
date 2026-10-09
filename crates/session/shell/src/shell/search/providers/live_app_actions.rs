@@ -3134,7 +3134,6 @@ pub(crate) fn fixture_with_directory_page(
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::{
@@ -3152,7 +3151,6 @@ mod tests {
     };
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use tilo_actions::remote::{
         ActionHostError, CataloguePage, CatalogueResource, CatalogueRow, pending,
     };
@@ -3181,7 +3179,8 @@ mod tests {
             .workspaces
             .push(Workspace::new(WorkspaceId(1), "Search fixture"));
         workspace_tree.desktop.active = WorkspaceId(1);
-        let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
+        let tree: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(workspace_tree);
         ChromeState::new_with_handle(tree)
     }
 

@@ -2045,7 +2045,7 @@ fn spawn_agent_mcp(
         eprintln!("tilo compositor: agent MCP endpoint: no active workspace");
         return;
     };
-    let scratch = xdg_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
+    let scratch = tilo_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
     let Some(scratch) = scratch.filter(|path| {
         std::fs::create_dir_all(path).is_ok()
             && std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
@@ -8485,7 +8485,7 @@ pub fn run() {
         let runtime = crate::shell::launcher::runtime_dir();
         // SAFETY: getuid has no arguments or memory contract.
         let uid = unsafe { libc::getuid() };
-        let pending = xdg_paths::data_local_dir().is_some_and(|data| {
+        let pending = tilo_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("tilo-imager/migrations/desktop-continuation.json"),
                 uid,
@@ -9044,6 +9044,7 @@ pub fn run() {
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
+    let mut published_output_colors = PublishedOutputColors::default();
 
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
@@ -10927,11 +10928,10 @@ pub fn run() {
             // adoption/destruction is immediately visible to chrome and persistence.
             // The input router's queues remain bookkeeping and are drained each
             // tick so they cannot grow across a long session.
+            // Re-derived only after a tree write or a surface (un)registering,
+            // which is also what every pending entry implies.
             let had_pending = state.client_input.clear_pending();
-            let placements_changed = {
-                let tree = state.workspace_tree.read();
-                state.client_input.refresh_placements_from_tree(&tree)
-            };
+            let placements_changed = state.client_input.refresh_from_tree(&state.workspace_tree);
             if had_pending || placements_changed {
                 frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
@@ -11085,7 +11085,7 @@ pub fn run() {
         // Adaptive sync engages where a fullscreen client is shown; while it
         // is on, frames follow the content instead of the fixed refresh grid.
         backend.set_fullscreen_output(fullscreen_output);
-        publish_output_colors(&state, backend.as_ref());
+        publish_output_colors(&state, backend.as_ref(), &mut published_output_colors);
         if frame_clock.set_adaptive(backend.adaptive_sync_active()) {
             eprintln!(
                 "tilo compositor: pacing {}",
@@ -11563,41 +11563,18 @@ pub fn run() {
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
-        // socket); room set is re-read each tick since a workspace can join a
-        // room mid-session and the subscription must follow.
+        // socket); the room set is re-read after every tree write, since a
+        // workspace can join a room mid-session and the subscription must follow.
         let pump_network_done = Instant::now();
         let pump_presence_started = pump_network_done;
         // The pointer as the input state knows it — "nowhere", not the origin, for
         // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
         frame_builder.note_local_pointer(state.client_input.pointer_position());
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
-            let (rooms, here) = {
-                // Clone the tree handle and drop the `ChromeState` borrow before
-                // locking the tree — nothing here needs the RefCell guard itself.
-                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-                let tree = tree_handle.read();
-                let rooms = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .map(|w| w.room.to_string())
-                    .collect::<Vec<_>>();
-                // The room the user is looking at (where their pointer is), distinct from
-                // the set above (every room the session listens to).
-                let here = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == tree.desktop.active)
-                    .map(|w| w.room.to_string());
-                (rooms, here)
-            };
-            relay.set_rooms(rooms);
-            // Say where this session's pointer is whether or not an app is publishing —
-            // the app-driven republish alone stays silent over a window whose app draws no cursor.
-            if let Some(here) = here.as_deref() {
-                relay.publish_local_cursor(here);
-            }
+            // Clone the tree handle and drop the `ChromeState` borrow before
+            // the relay locks the tree — nothing here needs the RefCell guard.
+            let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+            relay.follow_tree(&tree_handle);
             frame_builder.pump_peer_presence()
         } else {
             false
@@ -17459,22 +17436,58 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
     }
 }
 
+/// What [`publish_output_colors`] last told colour-managed clients.
+#[derive(Default)]
+struct PublishedOutputColors {
+    described: Vec<(
+        crate::compositor::backend::OutputId,
+        Option<crate::wayland::color_management::OutputDescription>,
+    )>,
+    /// [`crate::wayland::color_management::ColorManagerState::output_objects`]
+    /// at that time; `None` before the first publish.
+    objects: Option<u64>,
+}
+
 /// Tell colour-managed clients what each output displays: the HDR signal of
 /// an output driven in HDR, SDR otherwise. Surfaces are asked to render in
 /// HDR only while every output is HDR, since an SDR output can show an HDR
 /// surface only tone-mapped.
-fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend::Backend) {
+///
+/// Runs on every wakeup but tells clients only when something changed: an
+/// output's description (hotplug, an HDR toggle) or a new output object
+/// that has not heard its output's description yet.
+fn publish_output_colors(
+    state: &State,
+    backend: &dyn crate::compositor::backend::Backend,
+    published: &mut PublishedOutputColors,
+) {
     use crate::wayland::color_management::OutputDescription;
     let outputs = backend.outputs();
-    let described: Vec<_> = outputs
+    // Read before `update_outputs` takes the object list: an object created
+    // after this read is counted next time and published then.
+    let objects = state.color_manager.output_objects();
+    let describe = |output: &crate::compositor::backend::Output| {
+        backend
+            .output_hdr(output.id)
+            .map(|hdr| OutputDescription::hdr_pq(&hdr.display, hdr.sdr_white_nits))
+    };
+    let unchanged = published.objects == Some(objects)
+        && published.described.len() == outputs.len()
+        && outputs
+            .iter()
+            .zip(&published.described)
+            .all(|(output, (id, description))| {
+                output.id == *id && describe(output) == *description
+            });
+    if unchanged {
+        return;
+    }
+    published.described = outputs
         .iter()
-        .map(|output| {
-            let description = backend
-                .output_hdr(output.id)
-                .map(|hdr| OutputDescription::hdr_pq(&hdr.display, hdr.sdr_white_nits));
-            (output.id, description)
-        })
+        .map(|output| (output.id, describe(output)))
         .collect();
+    published.objects = Some(objects);
+    let described = published.described.as_slice();
     state.color_manager.update_outputs(|resource| {
         let id = output_globals::output_id_of(resource)?;
         described
@@ -17482,7 +17495,7 @@ fn publish_output_colors(state: &State, backend: &dyn crate::compositor::backend
             .find_map(|(output, description)| (*output == id).then_some(*description))
             .flatten()
     });
-    let preferred = match described.as_slice() {
+    let preferred = match described {
         [(_, Some(first)), rest @ ..] if rest.iter().all(|(_, d)| d.is_some()) => *first,
         _ => OutputDescription::sdr(),
     };

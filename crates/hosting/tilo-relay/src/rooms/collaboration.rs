@@ -26,7 +26,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 use tilo_peer_state::StatePeer;
 
-use super::{GovernedRoom, RoomRecord, Rooms, now_ns, system_time};
+use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 
 /// Pending challenges of one kind a room keeps at once.
 const MAX_PENDING_CHALLENGES: usize = 4096;
@@ -234,7 +234,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "invitation.issue")?;
         let digest = request_digest(&(
             &request.role,
@@ -324,7 +324,11 @@ impl Rooms {
         administrator: &DeviceCert,
         request: CancelInvitationRequest,
     ) -> Result<(), CollaborationError> {
-        self.authorize(administrator, now_ns(), "invitation.cancel")?;
+        self.authorize(
+            administrator,
+            tilo_clock::unix_now_ns(),
+            "invitation.cancel",
+        )?;
         let digest = request_digest(&request)?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -374,7 +378,7 @@ impl Rooms {
         room: &str,
         administrator: &DeviceCert,
     ) -> Result<Vec<PendingInvitation>, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "invitation.pending")?;
         let room = self.room(room).await?;
         let room = room.lock().await;
@@ -416,7 +420,7 @@ impl Rooms {
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
     pub async fn enter(&self, room: &str, device: &DeviceCert) -> Result<bool, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(device, now, "room.enter")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -443,7 +447,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: SetMemberRoleRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "member.role.set")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -477,7 +481,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: RemoveMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "member.remove")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -515,7 +519,7 @@ impl Rooms {
         administrator: &DeviceCert,
         request: GrantAppAuthorshipRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "app.authorship.grant")?;
         if request.request_id == [0; 32] {
             return Err(CollaborationError::new(
@@ -568,7 +572,7 @@ impl Rooms {
         invocation: uuid::Uuid,
         redacted: &[u8],
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         tilo_user_identity::verify_device_cert_at(caller, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if self.revocations().is_revoked(&caller.device_public_key) {
@@ -1045,7 +1049,7 @@ impl Rooms {
         remote_endpoint: [u8; 32],
         request: JoinTransportRequest,
     ) -> Result<JoinTransportResponse, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         Ok(match request {
             JoinTransportRequest::Inspect { signed_invitation } => {
                 let room = self.room(&invitation_room(&signed_invitation)?).await?;
@@ -1127,8 +1131,12 @@ impl WorkspaceJoinService for RoomJoinService {
 /// The room an invitation names, read without trusting it: the room it
 /// names is then verified against what that room issued.
 pub(super) fn invitation_room(signed_invitation: &[u8]) -> Result<String, CollaborationError> {
-    let join =
-        decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns())?;
+    let join = decode_and_verify_invitation(
+        signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )?;
     Ok(join.grant().room.clone())
 }
 

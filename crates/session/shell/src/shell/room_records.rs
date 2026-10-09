@@ -186,17 +186,13 @@ impl RoomRecords {
     /// this value rather than an allocation address, which could be reused
     /// after a cache refresh (ABA) and incorrectly look current.
     pub fn search_generation(&self) -> String {
-        let scan_revision = self
-            .scan
-            .as_ref()
-            .and_then(|scan| scan.lock().ok().map(|state| state.revision))
-            .unwrap_or(0);
+        let (generation, scan_revision) = self.revision();
         // Domain-separated deterministic projection of every input to
         // `known()`'s cache key. `generation` changes on local mutations;
         // scan_revision changes for every effective retained corpus update.
         let mut hash = blake3::Hasher::new();
         hash.update(b"tilo-room-record-search-generation\0");
-        hash.update(&self.generation.to_le_bytes());
+        hash.update(&generation.to_le_bytes());
         hash.update(&scan_revision.to_le_bytes());
         hash.finalize().to_hex().to_string()
     }
@@ -229,6 +225,33 @@ impl RoomRecords {
                 ambiguous: BTreeSet::new(),
             });
         }
+    }
+
+    /// Scan the record stores under `root` now, as the background scan walks
+    /// `$XDG_DATA_HOME`, and serve what it found.
+    #[cfg(test)]
+    pub(crate) fn scan_now_for_test(&mut self, root: &Path) {
+        let mut state = ScanState::default();
+        state.replace(scan_record_stores(root));
+        self.scan = Some(Arc::new(Mutex::new(state)));
+    }
+
+    /// Where the scan under `root` finds package `package_id`'s record
+    /// `record_dir`, as an app's sandbox writes it.
+    #[cfg(test)]
+    pub(crate) fn record_document_path_for_test(
+        root: &Path,
+        package_id: &str,
+        record_dir: &str,
+    ) -> PathBuf {
+        root.join(launcher::appdir::ROOMS_DIR)
+            .join("room")
+            .join(package_id)
+            .join(&*SANDBOX_DATA_SUBDIR)
+            .join(package_id)
+            .join(app_state::RECORDS_DIR)
+            .join(record_dir)
+            .join(app_state::DOCUMENT_FILE)
     }
 
     /// Something changed that [`Self::known`] would answer differently.
@@ -444,6 +467,43 @@ impl RoomRecords {
         let location = scan.locations.get(id).cloned()?;
         drop(scan);
         read_validated_record_document(id, &location)
+    }
+
+    /// A witness of the bytes [`Self::load_local_record`] would read for
+    /// `id` now: the document's length and modification time, from one
+    /// `stat`. `None` when the record has no scanned location.
+    pub fn local_record_revision(&self, id: &RecordId) -> Option<u64> {
+        let scan = self.scan.as_ref()?.lock().ok()?;
+        if scan.ambiguous.contains(id) {
+            return None;
+        }
+        let location = scan.locations.get(id).cloned()?;
+        drop(scan);
+        let metadata = std::fs::metadata(&location.document).ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"tilo-room-record-revision\0");
+        hash.update(location.document.as_os_str().as_encoded_bytes());
+        hash.update(&metadata.len().to_le_bytes());
+        hash.update(&modified.as_nanos().to_le_bytes());
+        let mut word = [0_u8; 8];
+        word.copy_from_slice(&hash.finalize().as_bytes()[..8]);
+        Some(u64::from_le_bytes(word))
+    }
+
+    /// Changes whenever the room indexes or the scanned corpus change, so a
+    /// frame can tell cheaply that nothing about the rooms' records moved.
+    pub fn revision(&self) -> (u64, u64) {
+        let scan_revision = self
+            .scan
+            .as_ref()
+            .and_then(|scan| scan.lock().ok().map(|state| state.revision))
+            .unwrap_or(0);
+        (self.generation, scan_revision)
     }
 
     /// Write out every pending index and wait for it to land.
@@ -748,6 +808,9 @@ fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
 impl crate::shell::workspace_history::PersistedRecordHistory for RoomRecords {
     fn load_record(&self, id: &RecordId) -> Option<AutoCommit> {
         self.load_local_record(id)
+    }
+    fn revision(&self, id: &RecordId) -> Option<u64> {
+        self.local_record_revision(id)
     }
 }
 

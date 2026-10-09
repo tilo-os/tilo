@@ -147,14 +147,6 @@ pub struct AgentParticipant {
     answered: actions::Answered,
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl AgentParticipant {
     /// Connect as `identity` and join `config.room`'s durable and live
     /// planes.
@@ -234,7 +226,7 @@ impl AgentParticipant {
     /// Take in what the session delivered, then take at most one step of
     /// the current task. Call it from the agent's own loop.
     pub fn pump(&mut self) {
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
             self.receive(event, now);
         }
@@ -621,7 +613,7 @@ impl AgentParticipant {
     /// Every other live participant as this agent sees them: browsers,
     /// native devices and other agents, with their presence.
     pub fn remote_members(&mut self) -> Vec<RemoteMember> {
-        self.live.remote(now_ms())
+        self.live.remote(tilo_clock::unix_now_ms())
     }
 
     fn participant(&self) -> LiveParticipant {
@@ -643,7 +635,7 @@ impl AgentParticipant {
     }
 
     fn publish_presence(&mut self) {
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         let participant = self.participant();
         let focus = self.focus.clone();
         let place = self.place.clone();

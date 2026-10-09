@@ -20,7 +20,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

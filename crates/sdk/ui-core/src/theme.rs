@@ -182,12 +182,10 @@ pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
     use chrono::{Datelike, Offset, Timelike};
     // Through the epoch offset: chrono converts only std's clock type, which
     // is not the toolkit clock in the browser.
-    let since = crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let since_ms = crate::time::unix_now_ms();
     let local = chrono::DateTime::from_timestamp(
-        i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-        since.subsec_nanos(),
+        i64::try_from(since_ms / 1000).unwrap_or(i64::MAX),
+        u32::try_from(since_ms % 1000).unwrap_or(0) * 1_000_000,
     )
     .unwrap_or_default()
     .with_timezone(&chrono::Local);

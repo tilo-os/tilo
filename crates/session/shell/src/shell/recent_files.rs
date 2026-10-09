@@ -190,13 +190,13 @@ pub fn record(xbel: &Path, home: &Path, path: &Path, now: &str) -> std::io::Resu
 
 /// Where the session's bookmark file lives.
 pub fn xbel_path() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home().map(|dir| dir.join("recently-used.xbel"))
+    tilo_paths::xdg::data_home().map(|dir| dir.join("recently-used.xbel"))
 }
 
 /// Publish a document the person just opened. Written off the compositor
 /// thread; concurrent opens are serialised so none overwrites another.
 pub fn note_opened(path: &Path) {
-    let (Some(xbel), Some(home)) = (xbel_path(), xdg_paths::home()) else {
+    let (Some(xbel), Some(home)) = (xbel_path(), tilo_paths::home()) else {
         return;
     };
     let Ok(path) = path.canonicalize() else {

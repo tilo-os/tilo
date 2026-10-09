@@ -165,7 +165,7 @@ impl SecretServiceMlsVault {
     ///
     /// Returns an error when session state or vault material cannot be opened.
     pub fn open_for_session() -> Result<Self, MlsAuthorityError> {
-        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
+        let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             MlsAuthorityError::VaultUnavailable(
                 "launcher did not provide XDG_STATE_HOME for MLS state".into(),
             )
@@ -1234,20 +1234,16 @@ mod tests {
         let mut coordinator = MlsAuthorityCoordinator::open(
             root.clone(),
             Arc::clone(&provider),
-            Arc::clone(&workspaces),
+            workspaces.clone(),
             Arc::clone(&broker),
         )
         .unwrap();
         assert!(coordinator.apply(tx.clone()).is_err());
         drop(coordinator);
 
-        let mut coordinator = MlsAuthorityCoordinator::open(
-            root,
-            provider,
-            Arc::clone(&workspaces),
-            Arc::clone(&broker),
-        )
-        .unwrap();
+        let mut coordinator =
+            MlsAuthorityCoordinator::open(root, provider, workspaces.clone(), Arc::clone(&broker))
+                .unwrap();
         let recovered = coordinator.apply(tx.clone()).unwrap();
         assert_eq!(coordinator.apply(tx.clone()).unwrap(), recovered);
         let workspace_name = tx.workspace.clone();

@@ -1298,11 +1298,8 @@ impl Widget for AuthenticatorApp {
         if !self.reduce_motion {
             return None;
         }
-        let now = ui::time::wall()
-            .duration_since(ui::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let until_next_second =
-            Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
+        let subsec_nanos = ui::time::unix_now_ns() % 1_000_000_000;
+        let until_next_second = Duration::from_nanos(1_000_000_000 - subsec_nanos);
         Some(ui::time::now() + until_next_second)
     }
 

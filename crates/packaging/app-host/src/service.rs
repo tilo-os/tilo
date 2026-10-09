@@ -520,7 +520,7 @@ fn wayland_socket() -> Option<std::path::PathBuf> {
     if display.is_absolute() {
         Some(display)
     } else {
-        xdg_paths::xdg::runtime_dir().map(|root| root.join(display))
+        tilo_paths::xdg::runtime_dir().map(|root| root.join(display))
     }
 }
 

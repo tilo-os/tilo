@@ -1261,7 +1261,7 @@ pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
         PathBuf::from("/usr/local/share/color/icc"),
         PathBuf::from("/var/lib/colord/icc"),
     ];
-    if let Some(data) = xdg_paths::xdg::data_home() {
+    if let Some(data) = tilo_paths::xdg::data_home() {
         roots.push(data.join("icc"));
         roots.push(data.join("color/icc"));
     }

@@ -20,7 +20,7 @@ impl FileRecentsStore {
     /// `$XDG_STATE_HOME/tilo/emoji-recents.json`, or `None` without a user
     /// state directory.
     pub fn for_user() -> Option<Self> {
-        xdg_paths::state_dir().map(|root| Self::at(root.join("tilo/emoji-recents.json")))
+        tilo_paths::state_dir().map(|root| Self::at(root.join("tilo/emoji-recents.json")))
     }
 
     pub fn path(&self) -> &Path {

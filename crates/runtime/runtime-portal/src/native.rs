@@ -136,6 +136,22 @@ mod unix {
 
     pub(super) fn ensure_attached(app_id: &str) -> io::Result<()> {
         if inherited()? {
+            if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
+                let fd = raw
+                    .to_str()
+                    .and_then(|raw| raw.parse::<i32>().ok())
+                    .filter(|fd| *fd >= 3)
+                    .ok_or_else(|| invalid("invalid native launch guard"))?;
+                // SAFETY: this changes only descriptor flags on the inherited
+                // lifetime guard. Keep its lock, but never pass it to an exec child.
+                let changed = unsafe {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    flags >= 0 && libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) >= 0
+                };
+                if !changed {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             return Ok(());
         }
         if env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(OsStr::new("1")) {
