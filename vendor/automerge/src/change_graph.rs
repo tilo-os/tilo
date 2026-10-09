@@ -857,11 +857,18 @@ impl ChangeGraph {
         changes: &mut BTreeSet<ChangeHash>,
         heads: &[ChangeHash],
     ) {
+        // Tilo patch: stop once nothing is left to remove. Every received
+        // sync message calls this with the hashes sent so far, which an
+        // idle exchange leaves empty; walking all of `heads`' ancestry for
+        // nothing made every such message O(history).
+        if changes.is_empty() {
+            return;
+        }
         let nodes = self.heads_to_nodes(heads);
         self.traverse_ancestors(nodes.collect(), |idx| {
             let hash = &self.hashes[idx.0 as usize];
             changes.remove(hash);
-            true
+            !changes.is_empty()
         });
     }
 
