@@ -42,7 +42,7 @@ class RunnerLabels(unittest.TestCase):
         self.assertIn('runner', seen)
 
     def test_native_arch_assertion_matches_runner_context_and_rejects_wrong_host(self):
-        script = ROOT / 'os/dev/assert-native-arch.sh'
+        script = ROOT / 'tools/ci/assert-native-runner.sh'
         with tempfile.TemporaryDirectory() as directory:
             uname = Path(directory) / 'uname'
             uname.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_NATIVE_MACHINE"\n')
