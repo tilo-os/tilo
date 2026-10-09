@@ -1,5 +1,2 @@
-[ratchets.action_address_new]
-"apps/totp/src/resource.rs" = 1
-
 [ratchets.direct_automerge_write]
 "apps/totp/src/app.rs" = 2

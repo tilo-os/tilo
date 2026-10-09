@@ -1,3 +1,2 @@
 [ratchets.action_address_new]
 "apps/mail/src/app.rs" = 1
-"apps/mail/src/contact_recipients.rs" = 1

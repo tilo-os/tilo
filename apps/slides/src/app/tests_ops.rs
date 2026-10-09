@@ -193,17 +193,9 @@ fn the_selection_publishes_its_bound_edits() {
             "`{id}` in {ids:?}"
         );
     }
-    let instance_id = bench.app.harness().component_instance_id().unwrap();
     bench
         .app
-        .harness()
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id,
-                address: tilo_actions::ActionAddress::new("slides.deck", "bring-selection-front"),
-            },
-            &serde_json::Map::new(),
-        )
+        .call("bring-selection-front", serde_json::json!({}))
         .expect("bring to front applies");
     bench.frame();
     let deck = bench.deck();

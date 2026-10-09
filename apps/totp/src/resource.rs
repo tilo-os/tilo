@@ -12,7 +12,7 @@ use ui::framework::{
 use ui::icons::Icon;
 use ui::search::SearchRequest;
 use ui::secrets::SecretStore;
-use ui::tilo_actions::{ActionAddress, ResourcePresentation};
+use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::tokens::SpacingStep;
 use ui::widget::{ButtonRole, Element, NavShell, Spacer};
@@ -66,15 +66,12 @@ impl Totp {
             .iter()
             .map(|account| {
                 let id = account_resource_id(account.id);
-                SearchEntry::new(account.title(), account.label.clone())
-                    .invoking(ActionAddress::new(
-                        id.clone(),
-                        TotpEffect::OpenAccount {
-                            account: account.id.to_string(),
-                        }
-                        .id(),
-                    ))
-                    .anchored(id)
+                SearchEntry::new(account.title(), account.label.clone()).opening(
+                    id,
+                    &TotpEffect::OpenAccount {
+                        account: account.id.to_string(),
+                    },
+                )
             })
             .collect()
     }

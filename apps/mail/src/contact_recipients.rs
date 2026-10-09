@@ -130,11 +130,7 @@ impl MailApp {
             .into_iter()
             .map(|choice| {
                 let mut entry = SearchEntry::new(choice.label(), choice.email.clone())
-                    .anchored(choice.id())
-                    .invoking(ui::tilo_actions::ActionAddress::new(
-                        choice.id(),
-                        MailEffect::PREPARE_CONTACT_DRAFT.id,
-                    ));
+                    .opening(choice.id(), &choice.effect());
                 entry.within = Some("mail.contacts".into());
                 entry
             })
