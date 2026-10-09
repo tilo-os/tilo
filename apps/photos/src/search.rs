@@ -71,9 +71,9 @@ enum RowKind {
 }
 
 impl RowKind {
-    /// The id of the effect the row's resource offers to open it: a hit
-    /// invokes it under that id. A photograph or an album is opened as the
-    /// item it is.
+    /// The id of the view the row's resource offers to open it, which the
+    /// window's opener runs for a hit anchored at it. A photograph or an
+    /// album is opened as the item it is.
     fn opened_by(self) -> &'static str {
         match self {
             Self::Library => "view-library",
@@ -105,7 +105,8 @@ struct LibraryRow {
     subtitle: String,
     /// The lucide name of the glyph its hit leads with.
     icon: &'static str,
-    action: ActionAddress,
+    /// The resource it opens: the anchor of its hit.
+    id: String,
     kind: RowKind,
     /// The facets a photograph is filtered by: its people, tags and place.
     facets: Vec<(&'static str, String)>,
@@ -123,7 +124,7 @@ impl LibraryRow {
             title: title.into(),
             subtitle: subtitle.into(),
             icon: "image",
-            action: ActionAddress::new(id, kind.opened_by()),
+            id: id.to_owned(),
             kind,
             facets: Vec::new(),
         }
@@ -135,9 +136,14 @@ impl LibraryRow {
     }
 
     fn result(&self) -> SearchResult {
-        SearchResult::for_action(PHOTO_SEARCH_KIND, &self.title, &self.action)
-            .with_subtitle(&self.subtitle)
-            .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))
+        // The index the timeline filters by keeps canonical addresses.
+        SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            &self.title,
+            ActionAddress::new(&self.id, self.kind.opened_by()),
+        )
+        .with_subtitle(&self.subtitle)
+        .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))
     }
 
     /// The text the index finds the row by: its title first.
@@ -150,12 +156,9 @@ impl LibraryRow {
             .grouped(PHOTO_SEARCH_KIND)
             .subtitled(self.subtitle.clone())
             .with_icon(self.icon);
-        // An item opens as the item it is; any other place by its view.
-        entry = if self.kind.item() {
-            entry.anchored(self.action.resource.clone())
-        } else {
-            entry.invoking(self.action.clone())
-        };
+        // An item opens as the item it is; any other place by its view
+        // ([`opened`]).
+        entry = entry.anchored(self.id.clone());
         for (facet, value) in &self.facets {
             let group = match *facet {
                 "person" => "photos-people",
@@ -219,6 +222,28 @@ fn photo_row(photo: &LibraryPhoto) -> LibraryRow {
     row
 }
 
+/// The view that shows the row anchored at `anchor` of `library`: the one
+/// its published place offers. `None` for an item (opened as the item it
+/// is) and for an anchor that names no row any more.
+pub fn opened(library: &PhotoLibrary, anchor: &str) -> Option<crate::actions::PhotosEffect> {
+    use ui::tilo_resource::Effect as _;
+    let kind = library_rows(library).get(anchor)?.kind;
+    if kind.item() {
+        return None;
+    }
+    let published = if anchor == LIBRARY_ID {
+        ui::tilo_resource::publish::<PhotoLibrary>(LIBRARY_ID, "Photos", library)
+    } else {
+        <PhotoLibrary as ui::tilo_resource::Resource>::child(library, anchor)?
+    };
+    let spec = published
+        .actions
+        .iter()
+        .find(|action| action.id == kind.opened_by())?;
+    let encoded = spec.build_json(&serde_json::Map::new()).ok()?;
+    crate::actions::PhotosEffect::from_payload(&encoded.payload).ok()
+}
+
 /// The library's search entries: every row, each hit opening its exact
 /// resource. What [`Resource::search`](ui::tilo_resource::Resource::search)
 /// answers for the photos library.
@@ -240,7 +265,7 @@ fn library_rows(library: &PhotoLibrary) -> BTreeMap<String, LibraryRow> {
     let mut rows = BTreeMap::<String, LibraryRow>::new();
     let mut collisions = HashSet::<String>::new();
     let mut insert = |row: LibraryRow| {
-        let id = row.action.resource.clone();
+        let id = row.id.clone();
         if collisions.contains(&id) {
             return;
         }
@@ -607,13 +632,16 @@ mod tests {
         ui::framework::testing::search_source::<PhotoLibrary>(library_search_entries(library))
     }
 
-    /// Where a hit goes: the resource it opens, and the view it invokes
-    /// there; a photograph or an album opens as the item it is.
+    /// Where a hit goes: the resource it is anchored at. The view that
+    /// shows it is the window's opener's ([`super::opened`]).
     fn target(hit: &SearchResult) -> (String, Option<String>) {
-        match hit.action_address() {
-            Some(address) => (address.resource, Some(address.action)),
-            None => (hit.anchor(), None),
-        }
+        (hit.action_id.clone(), None)
+    }
+
+    /// The view the window's opener runs for a hit anchored at `anchor`.
+    fn view_of(doc: &AutoCommit, anchor: &str) -> Option<String> {
+        use ui::tilo_resource::Effect as _;
+        super::opened(&crate::test_doc::library(doc), anchor).map(|effect| effect.id().to_owned())
     }
 
     /// The resource `id` as the library `doc` holds publishes it.
@@ -628,16 +656,13 @@ mod tests {
     }
 
     /// The resource a search hit opens, as the library publishes it, when
-    /// it offers the view the hit invokes.
-    fn opened(doc: &AutoCommit, (resource, action): &(String, Option<String>)) -> Option<Resource> {
-        published(doc, resource).filter(|published| {
-            action.as_ref().is_none_or(|action| {
-                published
-                    .actions
-                    .iter()
-                    .any(|offered| &offered.id == action)
-            })
-        })
+    /// the window can show it: an item as itself, any other place through
+    /// the view it offers.
+    fn opened(doc: &AutoCommit, (resource, _): &(String, Option<String>)) -> Option<Resource> {
+        let library = crate::test_doc::library(doc);
+        let item = library_rows(&library).get(resource)?.kind.item();
+        let published = published(doc, resource)?;
+        (item || super::opened(&library, resource).is_some()).then_some(published)
     }
 
     fn open_doc(name: &str) -> AutoCommit {
@@ -757,7 +782,7 @@ mod tests {
                     .map(target)
                     .find(|(resource, _)| *resource == expected_resource)
                     .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
-                assert_eq!(hit.1.as_deref(), Some("view-timeline"));
+                assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-timeline"));
                 assert!(
                     opened(&doc, &hit).is_some(),
                     "search must resolve the exact timeline resource"
@@ -885,7 +910,7 @@ mod tests {
             .map(target)
             .find(|(resource, _)| *resource == place)
             .expect("place is globally searchable");
-        assert_eq!(hit.1.as_deref(), Some("view-place"));
+        assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-place"));
         let resource = LibraryIndex::new(&library)
             .unwrap()
             .resource(&hit.0)
@@ -949,7 +974,7 @@ mod tests {
                 .map(target)
                 .find(|(resource, _)| *resource == albums)
                 .expect("album browsing is a global-search destination");
-            assert_eq!(hit.1.as_deref(), Some("view-albums"));
+            assert_eq!(view_of(&doc, &hit.0).as_deref(), Some("view-albums"));
             let resource = LibraryIndex::new(&library)
                 .unwrap()
                 .resource(&hit.0)

@@ -413,6 +413,19 @@ impl ResourceApp for PhotosShell {
         // A search hit, or an agent's `open`, shows the photograph or album
         // it names.
         cx.on_open_item(app.opener());
+        // Any other place a hit names opens through the view it offers.
+        let (live, dispatcher) = (cx.live().clone(), cx.dispatcher());
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                let effect = live
+                    .with(|library| crate::search::opened(library, anchor))
+                    .ok_or_else(|| {
+                        ui::tilo_resource::Refusal::new(format!("`{anchor}` names nothing to show"))
+                    })?;
+                dispatcher.effect(&effect);
+                Ok(())
+            },
+        );
         cx.surface(app)
     }
 
