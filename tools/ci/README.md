@@ -26,6 +26,7 @@ not listed here.
 |---|---|---|---|
 | `runner` | x86_64 | General jobs and native Rust builds: 4-5 CPUs, 10 GiB memory, 50 GiB disk, Docker | ubuntu-24.04 |
 | `runner-arm64` | aarch64 | `runner` on native ARM64 | ubuntu-24.04-arm |
+| `runner-native-portable` | x86_64/aarch64 | Host-independent native SDK and WASM qualification: at least 22 GiB memory, Docker | self-hosted on either native architecture |
 | `runner-quality` | x86_64 | Lint, change selection and result aggregation: 2 CPUs, 4 GiB memory | ubuntu-24.04 |
 | `runner-large` | x86_64 | Whole-collection compiles: 12 CPUs, 32 GiB memory, 100 GiB disk | a 16-core larger runner |
 | `runner-large-arm64` | aarch64 | `runner-large` on native ARM64 | a 16-core ARM64 larger runner |
