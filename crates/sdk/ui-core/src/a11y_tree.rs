@@ -303,7 +303,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<false>(root, node_map, None, focused, resources, &[])
+        self.refresh_impl::<false>(root, node_map, None, focused, resources, &[], false)
     }
     pub(crate) fn refresh_bound(
         &mut self,
@@ -313,8 +313,30 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, Some(admitted), focused, resources, &[])
+        self.refresh_impl::<true>(
+            root,
+            node_map,
+            Some(admitted),
+            focused,
+            resources,
+            &[],
+            false,
+        )
     }
+    /// Build only the durable semantic subtree consumed by action publication.
+    /// Unkeyed ancestors make every descendant non-durable, so their entire
+    /// branch is absent from `action_resources`, irrespective of layout/focus.
+    /// The full accessibility refresh remains independent of this projection.
+    pub(crate) fn refresh_action_projection(
+        &mut self,
+        root: &dyn Widget,
+        node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        admitted: &AdmittedNodeNames,
+        focused: Option<TaffyNodeId>,
+    ) -> TreeDelta {
+        self.refresh_impl::<true>(root, node_map, Some(admitted), focused, &[], &[], true)
+    }
+
     pub(crate) fn refresh_components(
         &mut self,
         root: &dyn Widget,
@@ -331,6 +353,7 @@ impl SemanticTree {
             focused,
             resources,
             components,
+            false,
         )
     }
     #[cfg(test)]
@@ -359,6 +382,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
+        actions_only: bool,
     ) -> TreeDelta {
         let ptr_to_taffy = WidgetNodeMap::new::<BOUND>(root, node_map, admitted);
 
@@ -368,6 +392,8 @@ impl SemanticTree {
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
+            actions_only,
+            ambiguous_projection: false,
             ptr_to_taffy: &ptr_to_taffy,
             focused,
         };
@@ -407,6 +433,14 @@ impl SemanticTree {
             },
         );
 
+        // Keys are not escaped in semantic IDs. A key containing the path
+        // separator can collide with a positional descendant in a pruned
+        // branch; retain the full walk's duplicate rejection in that case.
+        if actions_only && builder.ambiguous_projection {
+            return self.refresh_impl::<BOUND>(
+                root, node_map, admitted, focused, resources, components, false,
+            );
+        }
         let delta = self.diff(&builder.nodes);
 
         self.nodes = builder.nodes;
@@ -758,6 +792,8 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
 /// Separate from [`SemanticTree`] so the retained frame is only replaced
 /// once the new one is fully built (and diffed against).
 struct Build<'a, const BOUND: bool> {
+    actions_only: bool,
+    ambiguous_projection: bool,
     nodes: HashMap<SemanticId, SemanticNode>,
     order: Vec<SemanticId>,
     prompted: PromptedMap,
@@ -812,6 +848,14 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                     SemanticId::synthetic(parent, parent_children.len())
                 };
                 let durable_identity = access.semantic_key.is_some() && parent_durable;
+                self.ambiguous_projection |= durable_identity
+                    && access
+                        .semantic_key
+                        .as_ref()
+                        .is_some_and(|key| key.contains('~'));
+                if self.actions_only && !durable_identity {
+                    return;
+                }
 
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
@@ -1062,6 +1106,8 @@ mod tests {
     use crate::widget::{Button, Column, TextInput, Widget};
     use std::collections::HashMap;
     use taffy::TaffyTree;
+
+    include!("a11y_tree/action_projection_tests.rs");
 
     /// Lays a widget tree out the way the App does, populating the
     /// `node_map` the tree keys ids off.

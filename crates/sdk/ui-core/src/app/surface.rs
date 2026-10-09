@@ -798,6 +798,8 @@ mod tests {
 
     }
 
+    include!("native_publication_scroll_tests.rs");
+
     /// Records where it is clicked, in its own logical coordinates.
     struct ClickProbe {
         rect: KurboRect,
