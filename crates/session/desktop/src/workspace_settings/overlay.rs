@@ -22,10 +22,10 @@ use tilo_desktop_model::{DesktopTree, UserId};
 
 use super::{
     AppDirectory, DefaultAppsCtx, GrantDraft, MemberPaneIdentity, WorkspaceSettingsSubject, WsTab,
-    agents_add_rect, agents_pane_rows_for, default_app_rows, draw_agents_pane_for,
-    draw_default_apps_pane, draw_members_pane_for, draw_permissions_pane, members_pane_rows_for,
-    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
-    permissions_pane_layout,
+    agents_add_rect_for_theme, agents_pane_rows_for_theme, default_app_rows, draw_agents_pane_for,
+    draw_default_apps_pane, draw_members_pane_for, draw_permissions_pane,
+    members_pane_rows_for_theme, ownership_action_rect_for_theme, ownership_transfer_resource,
+    permission_profiles_rect, permissions_pane_layout,
 };
 use ui::TextRole;
 use ui::text_render::TextStyle;
@@ -1636,13 +1636,13 @@ impl WorkspaceSettingsOverlay {
         if let Some(ws) = model.desktop.active_workspace() {
             let actor = model.acting_user;
             if !ownership_transfer_resource(ws, actor).actions.is_empty() {
-                self.ownership_action_rect = ownership_action_rect(body_rect);
+                self.ownership_action_rect = ownership_action_rect_for_theme(body_rect, theme);
             }
             let selected_user = match model.selected_subject {
                 Some(WorkspaceSettingsSubject::Person(user)) => Some(user.as_str()),
                 _ => None,
             };
-            for row in members_pane_rows_for(ws, body_rect, selected_user) {
+            for row in members_pane_rows_for_theme(ws, body_rect, selected_user, theme) {
                 self.member_control_rects
                     .push((row.user.clone(), row.role_rect, row.remove_rect));
             }
@@ -1681,14 +1681,14 @@ impl WorkspaceSettingsOverlay {
         self.agent_control_rects.clear();
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
-        self.agent_add_rect = agents_add_rect(body_rect);
+        self.agent_add_rect = agents_add_rect_for_theme(body_rect, theme);
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
             let selected_agent = match model.selected_subject {
                 Some(WorkspaceSettingsSubject::Agent(agent)) => Some(agent.as_str()),
                 _ => None,
             };
-            for row in agents_pane_rows_for(ws, body_rect, selected_agent) {
+            for row in agents_pane_rows_for_theme(ws, body_rect, selected_agent, theme) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
                     row.review_rect,
