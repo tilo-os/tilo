@@ -285,7 +285,7 @@ struct Fingerprint {
     query: WorkspaceHistoryQuery,
     documents: Vec<(String, Vec<ChangeHash>)>,
     references: Vec<RecordCheckout>,
-    supplied_tree_rows: Option<Vec<(HistoryEntryId, ui::clock::SystemTime)>>,
+    supplied_tree_rows: Option<Vec<(HistoryEntryId, ui::time::SystemTime)>>,
 }
 
 struct IndexedRecords {
