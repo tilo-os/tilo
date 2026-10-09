@@ -237,6 +237,14 @@ pub trait Operations: Model {
         true
     }
 
+    /// What `op` did, as a history entry records it: the kind of edit and
+    /// its plain facts by name (`{mark: "strong", words: 3}`), which the
+    /// reader's message receives.
+    fn describe(op: &Self::Op) -> OpDescription {
+        let _ = op;
+        OpDescription::default()
+    }
+
     /// Where the actor of `op` is after it applied (the caret after typed
     /// text), read from the value it applied to.
     fn lands(&self, op: &Self::Op) -> Option<crate::Place> {
@@ -258,6 +266,34 @@ pub fn op_coalesces<T: Operations>(
     let previous = serde_json::from_value(previous.clone()).ok()?;
     let next = serde_json::from_value(next.clone()).ok()?;
     Some(T::coalesces(&previous, &next))
+}
+
+/// What an edit in a type's own vocabulary did ([`Operations::describe`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpDescription {
+    pub op: tilo_actions::EditOp,
+    pub args: std::collections::BTreeMap<String, tilo_actions::Scalar>,
+}
+
+impl Default for OpDescription {
+    fn default() -> Self {
+        Self {
+            op: tilo_actions::EditOp::Mark,
+            args: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// [`Model::op_describe`] of an [`Operations`] type.
+#[doc(hidden)]
+pub fn op_describe<T: Operations>(
+    path: &[Segment],
+    op: &serde_json::Value,
+) -> Option<OpDescription> {
+    if !path.is_empty() {
+        return None;
+    }
+    Some(T::describe(&serde_json::from_value(op.clone()).ok()?))
 }
 
 /// [`Model::op_continuable`] of an [`Operations`] type.
@@ -299,6 +335,12 @@ macro_rules! operations_model {
             op: &$crate::__private::serde_json::Value,
         ) -> ::core::option::Option<bool> {
             $crate::path::op_continuable::<Self>(path, op)
+        }
+        fn op_describe(
+            path: &[$crate::Segment],
+            op: &$crate::__private::serde_json::Value,
+        ) -> ::core::option::Option<$crate::path::OpDescription> {
+            $crate::path::op_describe::<Self>(path, op)
         }
         fn op_lands(
             &self,

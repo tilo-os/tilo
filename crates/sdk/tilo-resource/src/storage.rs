@@ -610,6 +610,12 @@ impl<T: Model> Model for Grid<T> {
             _ => None,
         }
     }
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        match path.split_first() {
+            Some((Segment::Cell { .. }, rest)) => T::op_describe(rest, op),
+            _ => None,
+        }
+    }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
             Some((Segment::Cell { row, column }, rest)) => {

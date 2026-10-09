@@ -80,6 +80,12 @@ impl Shelf {
         }
     }
 
+    /// Place a picture on the shelf.
+    #[action]
+    pub fn place_picture(&mut self, #[param("The picture", content)] picture: String) {
+        self.name = format!("{} with {picture}", self.name);
+    }
+
     /// Mail the shelf to someone.
     #[action]
     pub fn mail_to(&mut self, cx: &mut ActionCx, mail: &mut Outbox<String>, to: String) {
@@ -123,14 +129,19 @@ impl Shelf {
         colours
             .into_iter()
             .map(|colour| {
-                Derived::new(colour).of_kind("colour").with(Self::ADD.bind(
-                    shelf::Add::paths().colour,
-                    Some(Colour {
-                        red: u8::from(colour == "red") * 255,
-                        green: 0,
-                        blue: u8::from(colour == "blue") * 255,
-                    }),
-                ))
+                Derived::new(colour)
+                    .of_kind("colour")
+                    .with_child(Derived::new("shade").with(
+                        Self::RENAME.bind(shelf::Rename::paths().name, format!("{colour} shelf")),
+                    ))
+                    .with(Self::ADD.bind(
+                        shelf::Add::paths().colour,
+                        Some(Colour {
+                            red: u8::from(colour == "red") * 255,
+                            green: 0,
+                            blue: u8::from(colour == "blue") * 255,
+                        }),
+                    ))
             })
             .collect()
     }
@@ -427,4 +438,48 @@ fn each_labelled_item_is_its_own_search_entry() {
         entries[0].anchor.as_deref(),
         Some(format!("test.shelf/cards/{id}").as_str())
     );
+}
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.view")]
+pub enum ShelfView {
+    /// Type at the invoker's caret.
+    #[effect(edit, participant)]
+    TypeHere { text: String },
+    /// Scroll to the top.
+    #[effect(view)]
+    Top,
+}
+
+#[test]
+fn content_inputs_nested_derived_places_and_edit_effects() {
+    use tilo_resource::Effect;
+    let shelf = Replica::<Shelf>::new();
+    let tree = published(&shelf);
+    let place = tree
+        .actions
+        .iter()
+        .find(|spec| spec.id == "place-picture")
+        .unwrap();
+    assert!(matches!(
+        place.input,
+        tilo_actions::ActionInput::Prompted {
+            collects: tilo_actions::Collects::Content,
+            ..
+        }
+    ));
+    let encoded = place.build_json(&serde_json::Map::from_iter([(
+        tilo_actions::PROMPTED_PARAM.to_owned(),
+        serde_json::json!("blake3:abc"),
+    )]));
+    assert!(encoded.is_ok(), "{encoded:?}");
+
+    let shade = Shelf::child(&shelf.state().unwrap(), "test.shelf/derived/red/shade").unwrap();
+    assert!(shade.actions.iter().any(|spec| spec.id == "retitle"));
+
+    let kinds: Vec<ActionKind> = ShelfView::specs()
+        .iter()
+        .map(tilo_resource::spec_kind)
+        .collect();
+    assert_eq!(kinds, [ActionKind::Undoable, ActionKind::Read]);
 }

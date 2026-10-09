@@ -288,6 +288,12 @@ pub trait Model: Sized {
         let _ = (path, op);
         None
     }
+    /// What the edit `op` at `path` below this type did, in the history
+    /// entry's terms ([`Operations::describe`](crate::Operations::describe)).
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        let _ = (path, op);
+        None
+    }
 
     /// Where the actor of the edit `op` at `path` below this value is after
     /// it applied.
@@ -865,6 +871,9 @@ impl<T: Model> Model for Option<T> {
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         T::op_continuable(path, op)
     }
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        T::op_describe(path, op)
+    }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         self.as_ref()?.op_lands(path, op)
     }
@@ -966,6 +975,9 @@ impl<T: Model> Model for Box<T> {
     }
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         T::op_continuable(path, op)
+    }
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        T::op_describe(path, op)
     }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         (**self).op_lands(path, op)
@@ -1117,6 +1129,12 @@ impl<T: Model> Model for BTreeMap<String, T> {
     fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
         match path.split_first() {
             Some((Segment::Key(_), rest)) => T::op_continuable(rest, op),
+            _ => None,
+        }
+    }
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        match path.split_first() {
+            Some((Segment::Key(_), rest)) => T::op_describe(rest, op),
             _ => None,
         }
     }

@@ -257,7 +257,15 @@ pub struct EffectDecl {
     /// agent's caret, its Find), so a remote participant may invoke it
     /// without moving anybody else's.
     pub participant: bool,
+    /// A view of the invoker that submits only edits of this record (typing
+    /// at the invoker's caret): its kind is Undoable, offered to whoever may
+    /// edit, and the edits it submits are checked like any other.
+    pub edits: bool,
 }
+
+/// The contract tag of an effect that submits only edits of its record
+/// ([`EffectDecl::edits`]): its kind is Undoable.
+pub const EDITS_TAG: &str = "submits-edits";
 
 /// How an effect answers its caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,7 +310,9 @@ impl EffectDecl {
     /// reaches outside the document.
     #[must_use]
     pub fn action_kind(&self) -> crate::ActionKind {
-        if self.kind == OperationKind::View {
+        if self.edits {
+            crate::ActionKind::Undoable
+        } else if self.kind == OperationKind::View {
             crate::ActionKind::Read
         } else {
             crate::ActionKind::Outside
@@ -381,6 +391,9 @@ impl EffectDecl {
                 }
                 if self.participant {
                     tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
+                }
+                if self.edits {
+                    tags.push(EDITS_TAG.to_owned());
                 }
                 tags
             },

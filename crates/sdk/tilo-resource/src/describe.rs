@@ -151,7 +151,7 @@ const fn operation(op: &EditOp) -> tilo_actions::EditOp {
 }
 
 /// A field edit of a record of shape `shape`, as it reads before it applies.
-pub(crate) fn edit<R>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> Option<Described> {
+pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> Option<Described> {
     let located = locate(doc, shape, edit.path());
     let (owner, field) = located.owner?;
     let old = located.value.as_ref().and_then(|(value, _)| scalar(value));
@@ -169,7 +169,11 @@ pub(crate) fn edit<R>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> Option<Describ
         ty: owner.to_owned(),
         field,
         path: edit.path().iter().map(step).collect(),
-        op: operation(edit.op()),
+        op: match edit.op() {
+            EditOp::Rich { rich } => R::op_describe(edit.path(), rich)
+                .map_or(tilo_actions::EditOp::Mark, |described| described.op),
+            op => operation(op),
+        },
         old: matches!(edit.op(), EditOp::Set { .. } | EditOp::Add { .. })
             .then_some(old)
             .flatten(),

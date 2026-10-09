@@ -177,8 +177,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ChangeKind, OperationKind, ParamType, PermissionRequirement,
-        Resource, ResourceViewSpec, RiskLevel,
+        ActionArgs, ActionParam, ChangeKind, OperationKind, PROMPTED_PARAM, ParamType,
+        PermissionRequirement, Resource, ResourceViewSpec, RiskLevel,
     };
 
     /// A parameter's schema: its type's, described, with an example.

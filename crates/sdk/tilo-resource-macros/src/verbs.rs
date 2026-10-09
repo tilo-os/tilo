@@ -180,6 +180,7 @@ struct ParamOptions {
     description: Option<String>,
     name: Option<String>,
     example: Option<Expr>,
+    content: bool,
 }
 
 impl syn::parse::Parse for ParamOptions {
@@ -194,6 +195,14 @@ impl syn::parse::Parse for ParamOptions {
         }
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
+            if key == "content" {
+                options.content = true;
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
             input.parse::<Token![=]>()?;
             if key == "name" {
                 options.name = Some(input.parse::<syn::LitStr>()?.value());
@@ -202,7 +211,7 @@ impl syn::parse::Parse for ParamOptions {
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"` or `example = ...`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...` or `content`",
                 ));
             }
             if input.is_empty() {
@@ -221,6 +230,8 @@ struct Param {
     by_ref: bool,
     description: String,
     example: Option<Expr>,
+    /// Content another action produced, carried by its callers as a hash.
+    content: bool,
 }
 
 enum Input {
@@ -326,6 +337,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     by_ref,
                     description: param_options.description.unwrap_or_else(|| humanize(&name)),
                     example: param_options.example,
+                    content: param_options.content,
                 });
             }
         }
@@ -334,6 +346,17 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
         return Err(syn::Error::new(
             method.sig.span(),
             "an action takes `&mut self`",
+        ));
+    }
+    if params.iter().any(|param| param.content)
+        && !(params.len() == 1
+            && params.first().is_some_and(|param| {
+                last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
+            }))
+    {
+        return Err(syn::Error::new(
+            method.sig.span(),
+            "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
         ));
     }
     Ok(Verb {
@@ -736,6 +759,23 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         };
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));
+        let (collects, prompted) = match verb.params.iter().find(|param| param.content) {
+            Some(param) => {
+                let description = &param.description;
+                let public = &param.public;
+                (
+                    quote!(.collecting_content(#description)),
+                    quote! {
+                        if let ::core::option::Option::Some(hash) =
+                            arguments.remove(#krate::__private::PROMPTED_PARAM)
+                        {
+                            arguments.insert(::std::string::String::from(#public), hash);
+                        }
+                    },
+                )
+            }
+            None => (quote!(), quote!()),
+        };
         let describe = (!verb.description.is_empty()).then(|| {
             let description = &verb.description;
             quote!(.describe(#description))
@@ -760,8 +800,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #label_text,
                 ::std::vec![#(#params),*],
                 |args, now_ms| {
+                    let mut arguments = args.to_json();
+                    let _ = &mut arguments;
+                    #prompted
                     let params: #params_mod::#variant = #krate::__private::serde_json::from_value(
-                        #krate::__private::serde_json::Value::Object(args.to_json()),
+                        #krate::__private::serde_json::Value::Object(arguments),
                     )
                     .map_err(|error| ::std::string::ToString::to_string(&error))?;
                     ::core::result::Result::Ok(#krate::Stamped {
@@ -774,6 +817,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .requiring(#krate::__private::PermissionRequirement::#permission)
             .of_kind(#krate::ActionKind::#action_kind)
             #destructive
+            #collects
         });
     }
 
@@ -801,10 +845,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         || quote!(),
         |path| {
             quote! {
-                if let ::core::option::Option::Some(found) = #path(state)
-                    .iter()
-                    .map(#krate::Derived::<Self>::publish)
-                    .find(|child| child.id.as_str() == id)
+                if let ::core::option::Option::Some(found) =
+                    #krate::Derived::<Self>::find(&#path(state), id)
                 {
                     return ::core::option::Option::Some(found);
                 }

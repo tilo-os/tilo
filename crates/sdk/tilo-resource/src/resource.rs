@@ -910,7 +910,10 @@ pub fn origin_now_ms() -> i64 {
         .unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
 }
 
-/// Run `f` with the origin clock reading `now_ms`.
+/// Run `f` with the origin clock reading `now_ms`: every action built
+/// inside it is stamped with that time, so encoding the same invocation
+/// twice (once to ask for confirmation, once to check it) gives the same
+/// action.
 pub fn with_origin_clock<T>(now_ms: i64, f: impl FnOnce() -> T) -> T {
     struct Restore(Option<i64>);
     impl Drop for Restore {
@@ -1249,6 +1252,14 @@ fn apply_spec<R: Resource>() -> ActionSpec {
 /// document when the host's undo reverts it, else it reaches outside.
 #[must_use]
 pub fn spec_kind(spec: &ActionSpec) -> ActionKind {
+    if spec
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == crate::effect::EDITS_TAG)
+    {
+        return ActionKind::Undoable;
+    }
     match spec.kind {
         OperationKind::View => ActionKind::Read,
         OperationKind::Document if spec.contract.reversible => ActionKind::Undoable,

@@ -106,6 +106,7 @@ pub struct Derived<R> {
     kind: Option<String>,
     actions: Vec<Bound<R>>,
     effects: Vec<tilo_actions::ActionSpec>,
+    children: Vec<Derived<R>>,
 }
 
 impl<R> Derived<R> {
@@ -119,7 +120,15 @@ impl<R> Derived<R> {
             kind: None,
             actions: Vec::new(),
             effects: Vec::new(),
+            children: Vec::new(),
         }
+    }
+
+    /// Nest `child` beneath it (a table's cells), identified within it.
+    #[must_use]
+    pub fn with_child(mut self, child: Self) -> Self {
+        self.children.push(child);
+        self
     }
 
     /// What kind of thing it is among the record's derived resources
@@ -169,13 +178,30 @@ impl<R: Resource> Derived<R> {
     /// The child resource this is published as.
     #[must_use]
     pub fn publish(&self) -> tilo_actions::Resource {
+        self.publish_under(&format!("{}/derived", R::KIND))
+    }
+
+    /// The published resource `id` among `derived` and their children.
+    #[must_use]
+    pub fn find(derived: &[Self], id: &str) -> Option<tilo_actions::Resource> {
+        fn walk(resource: tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource
+                .children
+                .into_iter()
+                .find_map(|child| walk(child, id))
+        }
+        derived.iter().find_map(|entry| walk(entry.publish(), id))
+    }
+
+    fn publish_under(&self, parent: &str) -> tilo_actions::Resource {
+        let id = format!("{parent}/{}", self.id);
         let declarations = R::declarations();
         let kind = self.kind.as_deref().unwrap_or("derived");
-        let mut child = tilo_actions::Resource::new(
-            format!("{}/derived/{}", R::KIND, self.id),
-            format!("{}.{kind}", R::KIND),
-            &self.label,
-        );
+        let mut child =
+            tilo_actions::Resource::new(&id, format!("{}.{kind}", R::KIND), &self.label);
         for bound in &self.actions {
             if let Some(decl) = declarations.iter().find(|decl| decl.id == bound.action) {
                 child = child.with_action(crate::items::bound(decl, &bound.values));
@@ -184,6 +210,6 @@ impl<R: Resource> Derived<R> {
         for effect in &self.effects {
             child = child.with_action(effect.clone());
         }
-        child
+        child.with_children(self.children.iter().map(|nested| nested.publish_under(&id)))
     }
 }

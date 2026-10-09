@@ -413,6 +413,12 @@ impl<T: Model> Model for Collection<T> {
             _ => None,
         }
     }
+    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
+        match path.split_first() {
+            Some((Segment::Item(_), rest)) => T::op_describe(rest, op),
+            _ => None,
+        }
+    }
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
             Some((Segment::Item(id), rest)) => self.get(id)?.op_lands(rest, op),

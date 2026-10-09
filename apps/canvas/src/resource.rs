@@ -988,6 +988,7 @@ impl ui::tilo_resource::Effect for ViewOp {
                     OperationKind::Effect
                 },
                 row: false,
+                edits: false,
                 answers: if matches!(declared.id, "look" | "export" | "find-area") {
                     ui::tilo_resource::Answers::Later {
                         cancellable: false,

@@ -111,6 +111,7 @@ struct VariantOptions {
     programmatic: bool,
     untrusted: bool,
     participant: bool,
+    edit: bool,
     permission: Option<String>,
 }
 
@@ -156,11 +157,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.untrusted = true;
             } else if meta.path.is_ident("participant") {
                 options.participant = true;
+            } else if meta.path.is_ident("edit") {
+                options.edit = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `participant` or `permission`",
+                     `risk`, `programmatic`, `untrusted`, `participant`, `edit` or `permission`",
                 ));
             }
             Ok(())
@@ -346,14 +349,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let row = options.row;
         let programmatic = options.programmatic;
         let untrusted = options.untrusted;
-        if options.participant && !options.view {
+        if options.participant && !options.view && !options.edit {
             return Err(syn::Error::new(
                 variant.span(),
                 "`participant` declares a view of the invoking participant: add `view`",
             ));
         }
         let participant = options.participant;
-        let kind = if options.view {
+        let edits = options.edit;
+        let kind = if options.view || options.edit {
             quote!(View)
         } else {
             quote!(Effect)
@@ -375,6 +379,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 programmatic: #programmatic,
                 untrusted: #untrusted,
                 participant: #participant,
+                edits: #edits,
             }
         });
 

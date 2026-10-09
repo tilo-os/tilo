@@ -388,6 +388,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut op_coalesce_arms = Vec::new();
     let mut op_continuable_arms = Vec::new();
     let mut op_lands_arms = Vec::new();
+    let mut op_describe_arms = Vec::new();
     let mut op_schemas = Vec::new();
     let mut collection_names = Vec::new();
     let mut item_label_arms = Vec::new();
@@ -439,6 +440,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .push(quote!(#key => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
         op_continuable_arms.push(quote!(#key => <#ty as #krate::Model>::op_continuable(rest, op),));
         op_lands_arms.push(quote!(#key => #krate::Model::op_lands(&self.#ident, rest, op),));
+        op_describe_arms.push(quote!(#key => <#ty as #krate::Model>::op_describe(rest, op),));
         op_schemas.push(quote! {
             <#ty as #krate::Model>::op_schemas(&::std::format!("{prefix}{}.", #key), out);
         });
@@ -679,6 +681,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                         let _ = rest;
                         match key.as_str() {
                             #(#op_continuable_arms)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn op_describe(
+                path: &[#krate::Segment],
+                op: &#krate::__private::serde_json::Value,
+            ) -> ::core::option::Option<#krate::path::OpDescription> {
+                let _ = op;
+                match path.split_first() {
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#op_describe_arms)*
                             _ => ::core::option::Option::None,
                         }
                     }
