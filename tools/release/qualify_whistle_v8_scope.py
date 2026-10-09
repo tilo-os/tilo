@@ -50,7 +50,7 @@ def floats_for(fixture):
     return floats.tobytes()
 
 
-def command_for(root, pcm, language, names):
+def command_for(root, pcm, language, names, mode):
     command = ['bwrap', '--unshare-all', '--die-with-parent', '--ro-bind', '/usr', '/usr',
                '--symlink', 'usr/lib64', '/lib64', '--symlink', 'usr/lib', '/lib',
                '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--dir', '/review']
@@ -64,6 +64,8 @@ def command_for(root, pcm, language, names):
                 '/review/needle.wasm', '/review/whistle.cact', '/review/public.f32', language]
     if names:
         command.append('Hongkong\nKowloon')
+    if mode != 'stream':
+        command.append('--' + mode)
     return command
 
 
@@ -73,6 +75,7 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--case', choices=scope.PUBLIC_CASES, required=True)
     parser.add_argument('--name-cues', action='store_true')
+    parser.add_argument('--mode', choices=('stream', 'endpoint', 'lifecycle'), default='endpoint')
     args = parser.parse_args()
     if os.geteuid() == 0 or os.geteuid() != os.getuid():
         parser.error('unprivileged public review only')
@@ -82,7 +85,7 @@ def main():
     cpus = sorted(os.sched_getaffinity(0))[:2]
     if len(cpus) != 2:
         raise RuntimeError('two admitted CPUs required')
-    ledger_path = PROJECT / 'docs/architecture/dictation-whistle-v8-review.json'
+    ledger_path = PROJECT / 'docs/architecture/dictation-whistle-v8-endpoint-review.json'
     ledger = json.loads(ledger_path.read_text())
     root = args.runtime_dir.resolve(strict=True)
     receipts = verified_bundle(root, ledger)
@@ -96,13 +99,13 @@ def main():
         pcm = Path(directory) / 'public.f32'
         pcm.write_bytes(floats)
         identity = (root / 'v8-review').stat()
-        result = probe.observe(command_for(root, pcm, language, args.name_cues), cpus,
+        result = probe.observe(command_for(root, pcm, language, args.name_cues, args.mode), cpus,
                                (identity.st_dev, identity.st_ino), max_threads=2,
                                capture_lines=True)
     after = events()
     result.update(case=args.case, language=language, fixture_sha256=sha,
                   input_pcm_sha256=pcm_sha, input_float_sha256=hashlib.sha256(floats).hexdigest(),
-                  audio_seconds=seconds, name_cues=args.name_cues, materialization=receipts,
+                  audio_seconds=seconds, name_cues=args.name_cues, mode=args.mode, materialization=receipts,
                   scope_before=before, scope_after=after,
                   scope_peak_bytes=int((cg / 'memory.peak').read_text()),
                   scope_script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -112,13 +115,46 @@ def main():
             or result['memory_peak'].get('Threads', 0) < 1
             or any(before[key] != after[key] for key in ('high', 'max', 'oom', 'oom_kill'))):
         raise RuntimeError('compiled speech qualification failed resource observation')
-    replies = [json.loads(line.split(' ', 1)[1]) for line in result['stdout'].splitlines()
-               if line.startswith('WHISTLE_V8_REPLY ')]
-    loads = [json.loads(line.split(' ', 1)[1]) for line in result['stdout'].splitlines()
-             if line.startswith('WHISTLE_V8_LOAD ')]
-    if (len(loads) != 1 or not replies or replies[-1]['kind'] != 'done'
-            or abs(replies[-1]['result']['received'] - seconds) > 0.02):
-        raise RuntimeError('compiled speech qualification did not observe a complete stream')
+    verify_sessions(result['stdout'], seconds, args.mode)
+
+
+def verify_sessions(output, seconds, mode):
+    rows = {}
+    for line in output.splitlines():
+        if line.startswith('WHISTLE_V8_'):
+            kind, payload = line.split(' ', 1)
+            rows.setdefault(kind, []).append(json.loads(payload))
+    replies = rows.get('WHISTLE_V8_REPLY', [])
+    if len(rows.get('WHISTLE_V8_LOAD', [])) != 1 or not replies:
+        raise RuntimeError('one resident model and observed replies required')
+    if any(reply['policy']['committed'] for reply in replies if reply['kind'] == 'draft'):
+        raise RuntimeError('provisional text entered committed output')
+    done = [reply for reply in replies if reply['kind'] == 'done']
+    canceled = [reply for reply in replies if reply['kind'] == 'canceled']
+    expected = [0, 1, 3] if mode == 'lifecycle' else [0]
+    if [reply['session'] for reply in done] != expected:
+        raise RuntimeError('complete ordered sessions required')
+    durations = [seconds, 3, seconds] if mode == 'lifecycle' else [seconds]
+    if any(abs(reply['result']['received'] - duration) > 0.02
+           for reply, duration in zip(done, durations)):
+        raise RuntimeError('complete audio observation required')
+    if mode == 'lifecycle':
+        if (len(canceled) != 1 or canceled[0]['session'] != 2
+                or canceled[0]['policy'] != {'provisional': '', 'committed': ''}
+                or abs(canceled[0]['discarded_result']['received'] - 3) > 0.02):
+            raise RuntimeError('canceled session leaked or was not observed')
+        if done[1]['policy']['committed'] or done[0]['policy'] != done[2]['policy']:
+            raise RuntimeError('silence or repeated session leaked text')
+    elif canceled:
+        raise RuntimeError('unexpected canceled session')
+    if mode != 'stream':
+        endpoints = rows.get('WHISTLE_V8_ENDPOINT', [])
+        if [reply['session'] for reply in endpoints] != expected:
+            raise RuntimeError('one endpoint per completed session required')
+        for endpoint, reply in zip(endpoints, done):
+            if (endpoint['committed'] != endpoint['raw_selected']['text']
+                    or reply['policy']['committed'] != endpoint['committed']):
+                raise RuntimeError('committed text differs from raw selected recognition')
 
 
 if __name__ == '__main__':

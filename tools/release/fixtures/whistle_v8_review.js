@@ -5,6 +5,7 @@
   const emit = (kind, value) => reviewPrint(`WHISTLE_V8_${kind} ${JSON.stringify(value)}`);
   const limit = 512 * 1024 * 1024;
   const fail = message => { throw new Error(message); };
+  if (!['stream', 'endpoint', 'lifecycle'].includes(reviewMode)) fail('review mode');
   if (!['en', 'de', 'fr', 'es', 'it', 'nl', 'pl'].includes(reviewLanguage)) fail('language');
   if (reviewPrompt && (reviewLanguage !== 'de' || reviewPrompt !== 'Hongkong\nKowloon')) fail('public cue');
   const audio = new Float32Array(audioBytes);
@@ -72,7 +73,20 @@
   // Keep model allocation alive: the public load contract does not transfer ownership.
   const pcm = allocate(new Uint8Array(30 * 16000 * 4));
   const output = allocate(new Uint8Array(65536));
-  const encode = text => Uint8Array.from([...text].map(character => character.charCodeAt(0)).concat(0));
+  const encode = text => {
+    const escaped = encodeURIComponent(text);
+    const bytes = [];
+    for (let index = 0; index < escaped.length;) {
+      if (escaped[index] === '%') {
+        bytes.push(parseInt(escaped.slice(index + 1, index + 3), 16));
+        index += 3;
+      } else {
+        bytes.push(escaped.charCodeAt(index++));
+      }
+    }
+    bytes.push(0);
+    return Uint8Array.from(bytes);
+  };
   const language = allocate(encode(reviewLanguage));
   const prompt = reviewPrompt ? allocate(encode(reviewPrompt)) : 0;
   emit('LOAD', {compile_seconds: compiled - beginning, initialize_load_seconds: reviewClock() - compiled,
@@ -86,24 +100,78 @@
     for (const byte of bytes.subarray(0, end)) encoded += `%${byte.toString(16).padStart(2, '0')}`;
     return JSON.parse(decodeURIComponent(encoded));
   };
-  const start = reviewClock();
-  let offset = 0;
-  let planned = 32000;
-  while (offset < audio.length) {
-    planned = Math.min(planned, audio.length);
-    reviewPause(Math.max(0, planned / 16000 - (reviewClock() - start)));
-    const end = Math.min(audio.length, Math.max(planned, Math.floor((reviewClock() - start) * 16000)));
-    new Uint8Array(memory.buffer, output, 65536).fill(0);
-    new Float32Array(memory.buffer, pcm, end - offset).set(audio.subarray(offset, end));
-    const decoding = reviewClock();
-    if (engine.v(pcm, end - offset, language, prompt, output, 65536) < 0) fail('stream process');
-    emit('REPLY', {kind: 'draft', wall_seconds: reviewClock() - start,
-      decode_seconds: reviewClock() - decoding, result: decode()});
-    offset = end; planned = offset + 16000;
+  const clearOutput = () => new Uint8Array(memory.buffer, output, 65536).fill(0);
+  const join = (left, right) => left && right ? `${left} ${right}` : left || right;
+  const runStream = (samples, session, cancelled = false) => {
+    const start = reviewClock();
+    let offset = 0;
+    let planned = 32000;
+    let stable = '';
+    while (offset < samples.length) {
+      planned = Math.min(planned, samples.length);
+      reviewPause(Math.max(0, planned / 16000 - (reviewClock() - start)));
+      const end = Math.min(samples.length, Math.max(planned, Math.floor((reviewClock() - start) * 16000)));
+      clearOutput();
+      new Float32Array(memory.buffer, pcm, end - offset).set(samples.subarray(offset, end));
+      const decoding = reviewClock();
+      if (engine.v(pcm, end - offset, language, prompt, output, 65536) < 0) fail('stream process');
+      const result = decode();
+      stable = join(stable, result.text);
+      // Native two-pass agreement remains provisional for OS field insertion.
+      emit('REPLY', {session, kind: 'draft', wall_seconds: reviewClock() - start,
+        decode_seconds: reviewClock() - decoding, result,
+        policy: {provisional: join(stable, result.pending), committed: ''}});
+      offset = end; planned = offset + 16000;
+    }
+    clearOutput();
+    const stopping = reviewClock();
+    if (engine.w(output, 65536) < 0) fail('stream stop');
+    const stopped = decode();
+    stable = join(stable, stopped.text);
+    if (cancelled) {
+      emit('REPLY', {session, kind: 'canceled', wall_seconds: reviewClock() - start,
+        discarded_result: stopped, discarded_stream_text: stable,
+        policy: {provisional: '', committed: ''}});
+      return;
+    }
+    if (reviewMode !== 'stream') {
+      // Public needle_transcribe: exact complete audio, selected language and
+      // the same dictionary bias. It replaces the provisional hypothesis;
+      // no dictionary substitution or reference-aware text cleanup follows it.
+      new Float32Array(memory.buffer, pcm, samples.length).set(samples);
+      clearOutput();
+      const endpoint = reviewClock();
+      if (engine.x(pcm, samples.length, language, prompt, 1, output, 65536) < 0) fail('endpoint transcribe');
+      const selected = decode();
+      const selectedSeconds = reviewClock() - endpoint;
+      emit('ENDPOINT', {session, raw_stream_text: stable, raw_selected: selected,
+        selected_language: reviewLanguage, selected_decode_seconds: selectedSeconds,
+        selected_wall_seconds: reviewClock() - start, committed: selected.text});
+      emit('REPLY', {session, kind: 'done', wall_seconds: reviewClock() - start,
+        result: stopped, policy: {provisional: '', committed: selected.text}});
+      clearOutput();
+      const automatic = reviewClock();
+      if (engine.x(pcm, samples.length, 0, prompt, 1, output, 65536) < 0) fail('language control');
+      const detected = decode();
+      emit('LANGUAGE_CONTROL', {session, raw_auto: detected,
+        auto_decode_seconds: reviewClock() - automatic});
+      clearOutput();
+      const untimed = reviewClock();
+      if (engine.x(pcm, samples.length, language, prompt, 0, output, 65536) < 0) fail('timestamp control');
+      emit('TIMESTAMP_CONTROL', {session, raw_without_timestamps: decode(),
+        decode_seconds: reviewClock() - untimed});
+    } else {
+      emit('REPLY', {session, kind: 'done', wall_seconds: reviewClock() - start,
+        decode_seconds: reviewClock() - stopping, result: stopped,
+        policy: {provisional: '', committed: stable}});
+    }
+  };
+  if (reviewMode === 'lifecycle') {
+    runStream(audio, 0);
+    runStream(new Float32Array(3 * 16000), 1);
+    runStream(audio.subarray(0, 3 * 16000), 2, true);
+    runStream(audio, 3);
+  } else {
+    runStream(audio, 0);
   }
-  new Uint8Array(memory.buffer, output, 65536).fill(0);
-  const decoding = reviewClock();
-  if (engine.w(output, 65536) < 0) fail('stream stop');
-  emit('REPLY', {kind: 'done', wall_seconds: reviewClock() - start,
-    decode_seconds: reviewClock() - decoding, result: decode()});
 })();
