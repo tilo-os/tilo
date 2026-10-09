@@ -271,13 +271,16 @@ impl Session {
         self.wakeups.load(Ordering::SeqCst)
     }
 
-    /// Wait until the service has finished starting: its wakeup count holds still for 200 ms.
+    /// Wait until the service is running its loop and has gone quiet: its wakeup count is past
+    /// zero and holds still for 200 ms. Startup itself is not counted, but the lid stream yields
+    /// the value startup cached as soon as the loop runs, so a count past zero means startup —
+    /// including the first lid reading — is over.
     async fn settle(&self) {
         let start = Instant::now();
         loop {
             let seen = self.wakeups();
             tokio::time::sleep(Duration::from_millis(200)).await;
-            if self.wakeups() == seen {
+            if seen > 0 && self.wakeups() == seen {
                 return;
             }
             assert!(
