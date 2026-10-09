@@ -17040,17 +17040,27 @@ pub mod tests {
                         invocation: request.invocation,
                     },
                 };
-                let acknowledgement = DirectedAction {
-                    room: cancel.room,
-                    request_id: cancel.request_id,
-                    source: cancel.target,
-                    target: cancel.source,
-                    message: ActionMessage::CancellationRequested {
+                // The broker's reply path answers exactly this cancel: same
+                // room and request, reversed direction, the same invocation.
+                let acknowledgement = crate::peer_actions::bounded_reply(
+                    &cancel,
+                    ActionMessage::CancellationRequested {
                         invocation: request.invocation,
                     },
-                };
-                // The acknowledgement answers the cancel on the private lane
-                // the relay carries: it is a valid reply and survives the wire.
+                );
+                assert_eq!(
+                    acknowledgement,
+                    DirectedAction {
+                        room: cancel.room,
+                        request_id: cancel.request_id,
+                        source: cancel.target,
+                        target: cancel.source,
+                        message: ActionMessage::CancellationRequested {
+                            invocation: request.invocation,
+                        },
+                    }
+                );
+                // And it survives the private lane the relay carries.
                 assert!(cancel.validate() && acknowledgement.validate());
                 let reply = EnvelopeV2::Directed(acknowledgement);
                 let encoded = transport_v2::encode(&reply).unwrap();
