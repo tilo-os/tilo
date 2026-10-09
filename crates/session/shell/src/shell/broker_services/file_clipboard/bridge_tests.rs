@@ -121,12 +121,12 @@ async fn connect(socket: &Path, room: &str, identity: &[u8], record: &str) -> Co
         .await
         .expect("local socket");
     let handoff = serde_json::to_vec(&serde_json::json!({
-        "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+        "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
         "app_id": APP, "workspace_id": room,
     }))
     .expect("launcher handoff");
     stream
-        .write_all(&collab_types::local_transport::COLLAB_LAUNCH_MAGIC)
+        .write_all(&launcher::services::COLLAB_LAUNCH_MAGIC)
         .await
         .expect("marker");
     stream

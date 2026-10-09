@@ -1221,7 +1221,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             let workspace_id = uuid::Uuid::new_v4();
             let signer = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
             let person = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-            let actor = collab_types::FileActor {
+            let actor = fs_protocol::FileActor {
                 person: Ed25519PublicKey::from_bytes(person.verifying_key().to_bytes()),
                 device: Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes()),
             };

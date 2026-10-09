@@ -6,12 +6,12 @@ use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
     RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
 };
-use collab_types::{
-    CapOverride, ContentHash, ContentRevisionV1, Ed25519PublicKey, Effect, FILE_BINDING_VERSION,
-    FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMetadataV1,
-    FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
-    FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FileProvenance,
-    FileRecordId, FileVersionId, FileVersionV1, IndexStatus, Scope, Subject, Verb,
+use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+use fs_protocol::{
+    ContentHash, ContentRevisionV1, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION,
+    FileActor, FileBindingV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
+    FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionManifest,
+    FileNodeKind, FileProvenance, FileRecordId, FileVersionId, FileVersionV1, IndexStatus,
 };
 use std::time::Duration;
 
@@ -964,9 +964,8 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
     }
     // Phase `record_session_guards_manifest_chunks_thumbnails_and_get_many_live`.
     {
-        use collab_types::{
-            Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
-        };
+        use collab_types::Ed25519PublicKey;
+        use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
         use iroh_blobs::protocol::{ChunkRangesSeq, GetManyRequest};
         use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
@@ -1712,7 +1711,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 assert!(server_namespace.set_content_revision(
                     ino,
                     &ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(hash),
@@ -1803,7 +1802,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                         observed_at_ms: 2,
                     },
                     proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id: version.id,
                         content_hash: version.content_hash,
@@ -2185,7 +2184,7 @@ async fn publish_durable_test_revision(
     publisher
         .publish(
             &FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id,
                 content_hash: Some(ContentHash(*manifest.as_bytes())),
                 byte_len: bytes.len() as u64,

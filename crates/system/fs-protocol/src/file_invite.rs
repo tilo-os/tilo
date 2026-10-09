@@ -9,9 +9,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::canonical::CanonicalError;
-use crate::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 use crate::files::FileRecordId;
+use collab_types::canonical::CanonicalError;
+use collab_types::crypto::{Ed25519PublicKey, Signature, VerifyError, sign_event, verify_event};
 
 pub const FILE_INVITE_DOMAIN_TAG: &str = "tilo-file-invite-v1";
 pub const FILE_INVITE_LINK_PREFIX: &str = "tilo-file://v1/";
@@ -87,7 +87,7 @@ impl BearerFileInvite {
     ///
     /// Returns an error if canonical encoding fails or the token exceeds the wire bound.
     pub fn encode_link(&self) -> Result<String, FileInviteError> {
-        let token = crate::canonical::canonical_bytes(&self.token)?;
+        let token = collab_types::canonical::canonical_bytes(&self.token)?;
         if token.len() > MAX_FILE_INVITE_TOKEN_BYTES {
             return Err(FileInviteError::TokenTooLarge);
         }
@@ -119,7 +119,7 @@ impl BearerFileInvite {
         let secret: [u8; 32] = secret_bytes
             .try_into()
             .map_err(|_| FileInviteError::InvalidLink)?;
-        let token: FileInviteV1 = crate::canonical::from_canonical_bytes(&token_bytes)?;
+        let token: FileInviteV1 = collab_types::canonical::from_canonical_bytes(&token_bytes)?;
         token.verify_at(now_ms)?;
         let FileInviteSubject::Bearer { secret_hash } = token.subject else {
             return Err(FileInviteError::NotBearer);
@@ -368,7 +368,7 @@ mod tests {
                 invite.token.verify_bearer_at(&[9; 32], 1_000),
                 Err(FileInviteError::WrongSecret)
             ));
-            let encoded = crate::canonical::canonical_bytes(&invite.token).unwrap();
+            let encoded = collab_types::canonical::canonical_bytes(&invite.token).unwrap();
             assert!(!encoded.windows(32).any(|window| window == invite.secret));
         }
     }
