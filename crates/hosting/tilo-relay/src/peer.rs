@@ -1706,14 +1706,11 @@ async fn audit_subscriber_access(
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
-        let (current, decision) = {
-            let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
-            watched &= workspace.membership_is_current();
-            (
-                current_session(&workspace, peer, session.outbound),
-                session.decide(&workspace, peer, RoomOperation::Subscribe),
-            )
-        };
+        let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
+        watched &= workspace.membership_is_current();
+        let current = current_session(&workspace, peer, session.outbound);
+        let decision = session.decide(&workspace, peer, RoomOperation::Subscribe);
+        drop(workspace);
         if !current {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),

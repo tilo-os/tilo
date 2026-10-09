@@ -373,4 +373,8 @@ pub(crate) fn role_grants(role: collab_types::Role, verb: Verb) -> bool {
 
 #[cfg(test)]
 #[path = "room_access_tests.rs"]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each test keeps its room runtime until its last assertion"
+)]
 pub(crate) mod tests;
