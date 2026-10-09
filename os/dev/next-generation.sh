@@ -36,6 +36,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # registry a disk build happened to push to.
 TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-registry.tilo.so/tilo/tilo}"
 
+# Board series share the verifier but never the generic counter or tags.
+TILO_GENERATION_NAMESPACE="${TILO_GENERATION_NAMESPACE:-}"
+case "$TILO_GENERATION_NAMESPACE" in
+  '') generation_prefix=gen; latest_tag=latest ;;
+  lenovo-83ed) generation_prefix=lenovo-83ed-gen; latest_tag=lenovo-83ed-latest ;;
+  *) die "unsupported generation namespace: $TILO_GENERATION_NAMESPACE" ;;
+esac
+
 WANT=next
 case "${1:-}" in
   --current) WANT=current ;;
@@ -204,28 +212,33 @@ rm -f "$tag_error"
 # The highest gen<N> tag. `sort -n | tail -1` rather than a max in the pipeline,
 # because a lexical sort makes gen9 the newest of gen9..gen10.
 command -v jq >/dev/null 2>&1 || die "jq is required to parse the registry response safely"
-generations="$(printf '%s' "$tags" | jq -r '
-  .Tags // [] | .[] | select(test("^gen[0-9]+$")) | sub("^gen"; "")
+generations="$(printf '%s' "$tags" | jq -r --arg prefix "$generation_prefix" '
+  .Tags // [] | .[] | select(test("^" + $prefix + "[0-9]+$")) | sub("^" + $prefix; "")
 ' | sort -n)" || die "the registry returned an invalid tag listing"
 current="$(printf '%s\n' "$generations" | tail -1)"
 current="${current:-0}"
 
 verify_signed_generation() {
-  local generation="$1" image="$TILO_PUBLISH_REPO:gen$1" signatures provenance
+  local generation="$1" image="$TILO_PUBLISH_REPO:$generation_prefix$1" signatures provenance digest
   command -v cosign >/dev/null 2>&1 || die \
     "cosign is required: unsigned registry tags are not a generation oracle"
   [ -s "$TILO_GENERATION_VERIFY_KEY" ] || die \
     "release verification key is missing: $TILO_GENERATION_VERIFY_KEY"
   signatures="$(cosign verify --key "$TILO_GENERATION_VERIFY_KEY" "$image")" || die \
     "gen$generation has no valid transparency-logged Tilo release signature"
+  digest="$(printf '%s' "$signatures" | jq -er '
+    .[0].critical.image["docker-manifest-digest"]')"
   provenance="$(cosign verify-attestation --key "$TILO_GENERATION_VERIFY_KEY" \
     --type slsaprovenance1 "$image")" || die \
     "gen$generation has no valid transparency-logged SLSA provenance"
-  printf '%s' "$provenance" | jq -e --argjson generation "$generation" '
+  printf '%s' "$provenance" | jq -e --argjson generation "$generation" --arg profile "$TILO_GENERATION_NAMESPACE" --arg digest "$digest" '
     [(if type == "array" then .[] else . end)
       | .payload | @base64d | fromjson
-      | .predicate.buildDefinition.externalParameters.generation]
-    | any(. == $generation)
+      | .predicate.buildDefinition]
+    | any(.externalParameters.generation == $generation and
+          ($profile == "" or (.externalParameters.hardwareProfile == $profile
+           and .externalParameters.architecture == "aarch64"
+           and .internalParameters.expectedReleaseDigest == $digest)))
   ' >/dev/null || die \
     "gen$generation provenance does not bind the tag to generation $generation"
   printf '%s' "$signatures" | jq -er \
@@ -245,7 +258,7 @@ if [ "$current" != 0 ]; then
 
   current_digest="$(verify_signed_generation "$current")"
   latest_signatures="$(cosign verify --key "$TILO_GENERATION_VERIFY_KEY" \
-    "$TILO_PUBLISH_REPO:latest")" || die \
+    "$TILO_PUBLISH_REPO:$latest_tag")" || die \
     "latest has no valid transparency-logged Tilo release signature"
   latest_digest="$(printf '%s' "$latest_signatures" | jq -er \
     '.[0].critical.image["docker-manifest-digest"]')"
@@ -262,7 +275,7 @@ next=$(( current + 1 ))
 
 # A gen tag for the number we are about to hand out means the series was read
 # wrong, and reusing it would give two images one sealed policy.
-if grep -q "\"gen$next\"" <<<"$tags"; then
+if grep -q "\"$generation_prefix$next\"" <<<"$tags"; then
   die "gen$next is already a tag in $TILO_PUBLISH_REPO, but gen$current was read as the
   newest. Refusing to reuse a published generation number."
 fi

@@ -389,3 +389,26 @@ To find the current tag, read the `org.opencontainers.image.version` label of
   GitHub Artifact API is not compatible with this instance.
 - Use artifacts for jobs in one workflow and the generic package registry for
   outputs consumed by later workflow runs.
+
+## Lenovo board successors
+
+An explicit **Release / OS** main dispatch with `release=true` and
+`hardware_profile=lenovo-83ed` publishes a separate signed dense board series.
+Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains both
+`lenovo-83ed-<source>` and `lenovo-83ed-gen<N>`. `lenovo-83ed-latest` is a
+registry discovery hint, never permission to install an image. A consumer must
+verify the exact image signature, profile/architecture/source/generation-bound
+SLSA provenance and repository/digest-bound release-freshness attestation, then
+complete the existing owner image-trust and measured-boot checks.
+
+Initializing this series requires the `board_series_seed` dispatch input: an
+operator-reviewed immutable historical Lenovo image reference ending in
+`@sha256:<digest>`, verified as the existing signed generation 1. There is no
+fallback to tag order, commit counts or timestamps. Missing or conflicting
+history refuses allocation; the next successful release is generation 2.
+Generic OS generation allocation and Orange Pi one-off publication are unchanged.
+
+This publication prerequisite does not change an installed immutable board
+origin, authorize a new owner endorsement, or retire retained development
+cohorts. On-device successor selection and compatible cohort retirement must
+be qualified before claiming the ordinary Updates button delivers this series.
