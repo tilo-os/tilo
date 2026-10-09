@@ -77,6 +77,11 @@ struct Args {
 }
 
 fn main() -> ExitCode {
+    // Both processes run Automerge in isolated workers (the collaborators'
+    // `StatePeer`s, the relay's store), which re-execute this binary.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return ExitCode::from(code);
+    }
     let args = Args::parse();
     let result = if args.serve {
         relay_process::serve()
