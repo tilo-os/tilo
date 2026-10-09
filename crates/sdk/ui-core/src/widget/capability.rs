@@ -99,11 +99,16 @@ pub fn capability_mut<T: ?Sized + 'static>(widget: &mut (impl Widget + ?Sized)) 
 /// A wrapper that provides some capabilities itself and passes every other
 /// request to the widget in one of its fields names that field:
 /// `provides!(dyn CommittedActions; inner = content);`
+///
+/// Capabilities may carry conditional compilation attributes, so a platform-only
+/// implementation need not be compiled or advertised on other targets:
+/// `provides!(#[cfg(not(target_family = "wasm"))] dyn NativeCapability);`
 #[macro_export]
 macro_rules! provides {
-    (@each [$($capability:ty),+] { $($field:ident)? }) => {
+    (@each [$($(#[$attribute:meta])* $capability:ty),+] { $($field:ident)? }) => {
         fn provide<'a>(&'a self, request: &mut $crate::widget::capability::Request<'a, '_>) {
             $(
+                $(#[$attribute])*
                 if request.wants::<$capability>() {
                     request.provide::<$capability>(self);
                     return;
@@ -117,6 +122,7 @@ macro_rules! provides {
             request: &mut $crate::widget::capability::RequestMut<'a, '_>,
         ) {
             $(
+                $(#[$attribute])*
                 if request.wants::<$capability>() {
                     request.provide::<$capability>(self);
                     return;
@@ -125,11 +131,11 @@ macro_rules! provides {
             $(self.$field.provide_mut(request);)?
         }
     };
-    ($($capability:ty),+ $(,)?) => {
-        $crate::provides!(@each [$($capability),+] {});
+    ($($(#[$attribute:meta])* $capability:ty),+ $(,)?) => {
+        $crate::provides!(@each [$($(#[$attribute])* $capability),+] {});
     };
-    ($($capability:ty),+ ; inner = $field:ident) => {
-        $crate::provides!(@each [$($capability),+] { $field });
+    ($($(#[$attribute:meta])* $capability:ty),+ ; inner = $field:ident) => {
+        $crate::provides!(@each [$($(#[$attribute])* $capability),+] { $field });
     };
 }
 
@@ -158,7 +164,7 @@ mod tests {
     }
 
     impl Widget for Probe {
-        crate::provides!(dyn Greeting);
+        crate::provides!(#[cfg(all())] dyn Greeting, #[cfg(any())] dyn Unrelated);
         crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
         fn name(&self) -> &'static str {
             "probe"
@@ -176,9 +182,41 @@ mod tests {
             Some("hello a".to_owned())
         );
         assert!(capability::<dyn Unrelated>(widget).is_none());
+        assert!(capability_mut::<dyn Unrelated>(widget).is_none());
         capability_mut::<dyn Greeting>(widget)
             .expect("declared")
             .rename("b");
         assert_eq!(probe.greet(), "hello b");
+    }
+    struct Wrapper {
+        inner: Probe,
+    }
+
+    impl Widget for Wrapper {
+        crate::provides!(#[cfg(any())] dyn Unrelated; inner = inner);
+        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        fn name(&self) -> &'static str {
+            "wrapper"
+        }
+    }
+
+    #[test]
+    fn excluded_capabilities_forward_shared_and_mutable_requests_to_the_inner_widget() {
+        let mut wrapper = Wrapper {
+            inner: Probe {
+                name: "a".to_owned(),
+            },
+        };
+        let widget: &mut dyn Widget = &mut wrapper;
+        assert!(capability::<dyn Unrelated>(widget).is_none());
+        assert!(capability_mut::<dyn Unrelated>(widget).is_none());
+        assert_eq!(
+            capability::<dyn Greeting>(widget).map(Greeting::greet),
+            Some("hello a".to_owned())
+        );
+        capability_mut::<dyn Greeting>(widget)
+            .expect("forwarded")
+            .rename("b");
+        assert_eq!(wrapper.inner.greet(), "hello b");
     }
 }
