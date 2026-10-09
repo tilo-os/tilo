@@ -57,7 +57,7 @@ fn slide_ops_update_the_deck_and_the_current_slide() {
     bench
         .app
         .invoke_confirmed(
-            ui::tilo_resource::Invoke::apply(&actions::delete_slide_action(2, current)).unwrap(),
+            ui::tilo_resource::Invoke::apply(&actions::delete_slide_action(&current)).unwrap(),
         )
         .unwrap();
     assert_eq!(bench.deck().slides.len(), n0 + 1);

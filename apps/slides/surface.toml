@@ -1,0 +1,2831 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "slides.deck"
+label = "Deck"
+version = 1
+
+[[resources.fields]]
+label = true
+owner = "deck"
+path = "title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "deck"
+path = "palette"
+stored = "value"
+title = "Theme"
+type = "PaletteKind"
+
+[[resources.fields]]
+owner = "deck"
+path = "slides"
+stored = "collection"
+title = "Slides"
+type = "Collection<Slide>"
+
+[[resources.fields]]
+owner = "slide"
+path = "slides.*.layout"
+stored = "value"
+title = "Layout"
+type = "Layout"
+
+[[resources.fields]]
+owner = "slide"
+path = "slides.*.background"
+stored = "value"
+title = "Background"
+type = "Background"
+
+[[resources.fields]]
+owner = "slide"
+path = "slides.*.notes"
+stored = "value"
+title = "Speaker notes"
+type = "String"
+
+[[resources.fields]]
+owner = "slide"
+path = "slides.*.elements"
+stored = "collection"
+title = "Elements, back to front"
+type = "Collection<Element>"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.kind"
+readonly = true
+stored = "value"
+title = "Kind"
+type = "ElementKind"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.x"
+stored = "value"
+title = "Left, in slide units (the slide is 1280 × 720)"
+type = "f64"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.y"
+stored = "value"
+title = "Top"
+type = "f64"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.w"
+stored = "value"
+title = "Width"
+type = "f64"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.h"
+stored = "value"
+title = "Height"
+type = "f64"
+
+[[resources.fields]]
+label = true
+owner = "element"
+path = "slides.*.elements.*.body"
+stored = "value"
+title = "Text: a text box's words, read whole: a slide draws all of them"
+type = "RichText"
+
+[resources.fields.ops]
+description = "Every collaborative, document-mutating operation the word processor exports. Deliberately positional: each variant names the exact block ids and offsets it touches, so `Action::apply` is a pure, replayable write. Ordinary typing, deletion, paragraph splitting, Find & Replace, and agent-authored edits all enter through these same envelopes; caret and selection updates remain local."
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete = `ins` empty). The deterministic text primitive."
+required = ["SpliceText"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SpliceText]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "del",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.del]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SpliceText.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace disjoint character ranges together without recreating blocks. Offsets refer to the pre-action document; application runs back to front."
+required = ["ReplaceMatches"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches]
+additionalProperties = false
+required = [
+    "region",
+    "spans",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items]
+additionalProperties = false
+description = "One `(block, [start, end))` range a formatting mark covers. A selection that spans several blocks is carried as one span per touched block."
+required = [
+    "block",
+    "start",
+    "end",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceMatches.properties.spans.items.properties.start]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace one selection in document order.  Unlike a sequence of splices and deletes, this preserves the old editor's cross-paragraph merge as a single deterministic, atomic action/undo boundary."
+required = ["ReplaceSelection"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection]
+additionalProperties = false
+required = [
+    "region",
+    "start_block",
+    "start",
+    "end_block",
+    "end",
+    "ins",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.end_block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.ins]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceSelection.properties.start_block]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Apply or clear an inline mark over `spans`. `value` `None` removes the mark; `Some` replaces it (any prior value of the same mark over each span is removed first, so a re-colour/re-size overwrites rather than stacks). `also_clear` names sibling marks to drop over the same spans first (so a super/subscript pair stays mutually exclusive)."
+required = ["SetMark"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark]
+additionalProperties = false
+required = [
+    "region",
+    "spans",
+    "name",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.also_clear]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.also_clear.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items]
+additionalProperties = false
+description = "One `(block, [start, end))` range a formatting mark covers. A selection that spans several blocks is carried as one span per touched block."
+required = [
+    "block",
+    "start",
+    "end",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.spans.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value]
+description = "A serializable inline-mark value (the character-format payload). `Bool` is a toggle mark (bold/italic/underline/strike/super/sub); `Int` is a size; `Str` is a font family / colour / highlight."
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf]]
+type = "null"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf]]
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetMark.properties.value.oneOf.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set a paragraph's structural kind (`heading`/`paragraph`/`list-item`/…) on each of `blocks`, plus its `level` / `ordered` attrs when given."
+required = ["SetParagraphStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle]
+additionalProperties = false
+required = [
+    "blocks",
+    "kind",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SetParagraphStyle.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Apply a named paragraph style to `blocks`: set the `style` attr, and — for a built-in style — the structural `kind`/`level`/`ordered` too, as one action/undo boundary (not a kind write racing a separate style write)."
+required = ["ApplyNamedStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle]
+additionalProperties = false
+required = [
+    "blocks",
+    "style",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.kind]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ApplyNamedStyle.properties.style]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set one block attribute (`align`, `page_break_before`, `indent`, `first_line_indent`, `line_spacing`, `tab_stops`, `style`, image `width`/`height`/`flip_*`/`alt`) to `value` on each of `blocks`. An image's `alt` is its accessible description and is accepted on image blocks only."
+required = ["SetBlockAttr"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr]
+additionalProperties = false
+required = [
+    "region",
+    "blocks",
+    "key",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value]
+description = "A serializable block-attribute value. Maps onto the scalar an attr stores (`align`/`style`/`tab_stops` are `Str`, `level`/image dims are `Int`, `indent`/`line_spacing` are `Float`, `page_break_before`/flips are `Bool`)."
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Float"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Float]
+type = "number"
+
+[[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetBlockAttr.properties.value.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Remove one block attribute from each of `blocks`, restoring its default: a list item that stops being a task (`checked`), a code line that becomes prose (`code`, `lang`, `code_group`), a block back at the outline's top (`nesting`), an image whose description falls back to its caption (`alt`)."
+required = ["ClearBlockAttr"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr]
+additionalProperties = false
+required = [
+    "blocks",
+    "key",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ClearBlockAttr.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace all four page margins as one absolute page-setup operation. Keeping the rectangle atomic avoids transient invalid page geometry while still giving history and collaborators a single authored mutation."
+required = ["SetPageMargins"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins]
+additionalProperties = false
+required = [
+    "top",
+    "right",
+    "bottom",
+    "left",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.bottom]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.left]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.right]
+type = "number"
+
+[resources.fields.ops.oneOf.properties.SetPageMargins.properties.top]
+type = "number"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set one scalar property of one stable named style. Keeping each field in its own envelope lets replicas edit e.g. font and spacing concurrently without replaying an entire stale stylesheet over either change."
+required = ["SetStyleProperty"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty]
+additionalProperties = false
+required = [
+    "style",
+    "key",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.key]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.style]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value]
+description = "A serializable block-attribute value. Maps onto the scalar an attr stores (`align`/`style`/`tab_stops` are `Str`, `level`/image dims are `Int`, `indent`/`line_spacing` are `Float`, `page_break_before`/flips are `Bool`)."
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Float"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Float]
+type = "number"
+
+[[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetStyleProperty.properties.value.oneOf.properties.Str]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Delete one custom style and atomically move its addressed instances back to the body default. The style id receives a grow-only tombstone."
+required = ["DeleteStyle"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle]
+additionalProperties = false
+required = [
+    "style",
+    "fallback_blocks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.fallback_blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.fallback_blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.DeleteStyle.properties.style]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Set an image crop in ten-thousandths of its source rectangle.  Keeping all four edges in one action is important: a crop must never briefly become invalid while a collaborator/replay observes it."
+required = ["SetImageCrop"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop]
+additionalProperties = false
+required = [
+    "block",
+    "left",
+    "top",
+    "right",
+    "bottom",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.bottom]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.left]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.right]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageCrop.properties.top]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Resize an image frame while preserving a single replay/undo boundary."
+required = ["SetImageSize"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageSize]
+additionalProperties = false
+required = [
+    "block",
+    "width",
+    "height",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.height]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImageSize.properties.width]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Move an image between normal flow and a free page-positioned object. Offsets are document pixels relative to the page content origin; `page` is zero-based.  This is deliberately a single canonical operation so a drag cannot publish a half-updated anchor/coordinate pair."
+required = ["SetImagePlacement"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement]
+additionalProperties = false
+required = [
+    "block",
+    "anchor",
+    "wrap",
+    "x",
+    "y",
+    "page",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.anchor]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.page]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.wrap]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.x]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SetImagePlacement.properties.y]
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a `rows`×`cols` table after `after`. Cells are consecutive `cell` blocks sharing a freshly-minted `table` id, tagged with `row`/`col`."
+required = ["InsertTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertTable]
+additionalProperties = false
+required = [
+    "after",
+    "rows",
+    "cols",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.cols]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertTable.properties.rows]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a table after `after` already holding its contents: `cells` is its rows top to bottom, each row's cell texts left to right, and every row has the same number of cells. The first row is the header row (qdoc has no separate header marker: the editor shades row 0 and the exporters write it as the table's head). Laid out exactly as `InsertTable` lays out an empty table, with the table and cell ids minted inside `apply`, so the table and its text are one edit and one undo step."
+required = ["InsertFilledTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable]
+additionalProperties = false
+required = [
+    "after",
+    "cells",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells.items]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.InsertFilledTable.properties.cells.items.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Mutate one stable table id using an absolute row/column boundary."
+required = ["EditTable"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable]
+additionalProperties = false
+required = [
+    "table",
+    "edit",
+]
+type = "object"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["InsertRow"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertRow]
+additionalProperties = false
+required = ["at"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertRow.properties.at]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["InsertColumn"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertColumn]
+additionalProperties = false
+required = ["at"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.InsertColumn.properties.at]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["DeleteRow"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteRow]
+additionalProperties = false
+required = ["row"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteRow.properties.row]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+additionalProperties = false
+required = ["DeleteColumn"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteColumn]
+additionalProperties = false
+required = ["column"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf.properties.DeleteColumn.properties.column]
+minimum = 0
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.EditTable.properties.edit.oneOf]]
+const = "Delete"
+type = "string"
+
+[resources.fields.ops.oneOf.properties.EditTable.properties.table]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert an image at `(block, at)`: the caret block is split so the tail follows the image in a fresh paragraph beneath it. The image is a binary input referenced by its content address (already in the caller's content store), described by its media type, length and optional intrinsic `width`/`height`; the action never carries the bytes."
+required = ["InsertImage"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertImage]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+    "content",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.content]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.height]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.len]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.mime]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertImage.properties.width]
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a manual page break at `(block, at)`: split the block like Enter and mark the new block to start on a fresh page."
+required = ["InsertPageBreak"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertPageBreak.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Split one paragraph at an absolute character offset. The new block id is minted by the pinned action actor, so origin and replay produce the same stable child entity. Used by Enter in body/header/footer alike."
+required = ["SplitBlock"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SplitBlock]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "kind",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.next]
+description = "The block that followed `block` where the split was made, so the new block's place is found without reading the region's order. Stale (a block inserted in between meanwhile) it still places the new block between the two, as a concurrent insert would."
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.SplitBlock.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert one canonical field marker at an absolute text position."
+required = ["InsertField"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertField]
+additionalProperties = false
+required = [
+    "region",
+    "block",
+    "at",
+    "field",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.field]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertField.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the generated TOC using stable heading ids and authored page labels captured from one pagination frame."
+required = ["GenerateToc"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc]
+additionalProperties = false
+required = ["entries"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items]
+additionalProperties = false
+required = [
+    "heading",
+    "level",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.heading]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.level]
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.page]
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.GenerateToc.properties.entries.items.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Paste a rich or plain multi-paragraph fragment at an absolute selection. Paragraphs and marks are authored payload, while newly-created block ids are minted under the pinned action actor."
+required = ["PasteFragment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment]
+additionalProperties = false
+required = [
+    "region",
+    "start_block",
+    "start",
+    "end_block",
+    "end",
+    "blocks",
+    "adopt_first_style",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.adopt_first_style]
+type = "boolean"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.end_block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.PasteFragment.properties.start_block]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert a fresh paragraph carrying `text` directly after block `after`. Enter itself is `Self::SplitBlock` (published as `new-paragraph`); this inserts a whole paragraph after a named block in one envelope."
+required = ["InsertParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph]
+additionalProperties = false
+required = [
+    "after",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph.properties.after]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.InsertParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append `text` as a new paragraph at the end of the body. The target is resolved from the document at apply time (not captured in the payload), so a catalogue captured before other appends still lands at the end. An empty trailing `paragraph` (a fresh document's only line) is filled instead of leaving a blank line above the new text."
+required = ["AppendParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AppendParagraph]
+additionalProperties = false
+required = ["text"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AppendParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append `text` at the end of the last body block, which must be a text block (paragraph, heading or list item). Resolved at apply time, so repeated invocations append in order. A caret-free writer (an agent streaming text) uses it; an editor with a caret uses `move-caret {to: document-end}` then `type-text`."
+required = ["ContinueParagraph"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ContinueParagraph]
+additionalProperties = false
+required = ["text"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ContinueParagraph.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Remove `blocks` (an image, or every cell of a table). Ids are sorted before removal so replicas emit the identical op sequence."
+required = ["RemoveBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.RemoveBlocks.properties.blocks.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Tombstone `blocks` in a header or footer. Body removal stays `Self::RemoveBlocks`."
+required = ["RemoveRegionBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks]
+additionalProperties = false
+required = [
+    "region",
+    "blocks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.blocks.items]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.RemoveRegionBlocks.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert one empty paragraph when `region` has no blocks. A no-op when the region already has a write target, so a replay does not add another."
+required = ["EnsureRegionBlock"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EnsureRegionBlock]
+additionalProperties = false
+required = ["region"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.EnsureRegionBlock.properties.region]
+description = "Which page region a text/formatting op addresses. Mirrors `tilo_doc::model::Region` (which is not itself serializable) so the region travels in the payload."
+enum = [
+    "Body",
+    "Header",
+    "Footer",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Move body paragraphs `blocks`, in the order given, to directly after `after`, or to the start of the body when `after` is `None`: a dragged paragraph, or a run of them. Each keeps its id, text and style."
+required = ["MoveBlocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.after]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.MoveBlocks.properties.blocks.items]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the whole document body with `markdown` (re-import a template / restore a version): every existing body block is removed, then the Markdown is imported as fresh blocks."
+required = ["ReplaceBody"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceBody]
+additionalProperties = false
+required = ["markdown"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceBody.properties.markdown]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the whole body with `blocks`, formatted as they are: text an app brings with marks Markdown cannot carry (a note's links to other notes, a slide's runs, a copied fragment)."
+required = ["ReplaceClips"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips]
+additionalProperties = false
+required = ["blocks"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplaceClips.properties.blocks.items.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Replace the body with `bytes` decoded as `format`. A decode failure refuses the action so the open document stays as it was. The document remembers the bytes' content address as the file it was last read from (`FILE_DIGEST`)."
+required = ["ReplaceFormatted"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted]
+additionalProperties = false
+required = [
+    "format",
+    "bytes",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.bytes]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.bytes.items]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplaceFormatted.properties.format]
+description = "A file format `RichTextAction::ReplaceFormatted` can import."
+enum = [
+    "markdown",
+    "text",
+    "html",
+    "rtf",
+    "docx",
+    "odt",
+]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "The document was written to its file, whose bytes now have content address `digest` (`FILE_DIGEST`): what a later open compares the file with to tell whether it changed elsewhere. Content from outside: it syncs, but no undo takes it back."
+required = ["NoteFileWritten"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.NoteFileWritten]
+additionalProperties = false
+required = ["digest"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.NoteFileWritten.properties.digest]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Accept one tracked change, or every change when `id` is absent."
+required = ["AcceptChanges"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AcceptChanges]
+additionalProperties = false
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AcceptChanges.properties.id]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Reject one tracked change, or every change when `id` is absent."
+required = ["RejectChanges"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RejectChanges]
+additionalProperties = false
+type = "object"
+
+[resources.fields.ops.oneOf.properties.RejectChanges.properties.id]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Resolve a comment by removing both its anchor mark and record."
+required = ["ResolveComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ResolveComment]
+additionalProperties = false
+required = ["id"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ResolveComment.properties.id]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Insert `text` at `at` and mark it as a tracked insertion by `author`."
+required = ["TrackInsert"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.TrackInsert]
+additionalProperties = false
+required = [
+    "block",
+    "at",
+    "text",
+    "author",
+    "date",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.at]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.TrackInsert.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Add a durable root comment anchored to one exact body range. The comment and its first body block are minted inside `apply`, so replay gets the same stable CRDT ids as the originating action."
+required = ["AddComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AddComment]
+additionalProperties = false
+required = [
+    "block",
+    "start",
+    "end",
+    "author",
+    "date",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.block]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.AddComment.properties.text]
+type = "string"
+
+[[resources.fields.ops.oneOf]]
+additionalProperties = false
+description = "Append a durable reply below an existing comment thread. Parent ids are stable resources; stale/deleted parents refuse atomically. `body`, when given, is the reply as written (paragraphs, their kinds and marks); `text` is its plain text, and the whole reply when `body` is empty."
+required = ["ReplyToComment"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment]
+additionalProperties = false
+required = [
+    "comment",
+    "author",
+    "date",
+    "text",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.author]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.kind]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks]
+type = "array"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.body.items.properties.text]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.comment]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.date]
+type = "string"
+
+[resources.fields.ops.oneOf.properties.ReplyToComment.properties.text]
+type = "string"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.src"
+stored = "value"
+title = "Picture: the content id of a picture element"
+type = "Atom"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.fill"
+stored = "value"
+title = "Fill colour: a role of the deck's theme, `none` or `#RRGGBB`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.stroke"
+stored = "value"
+title = "Outline colour"
+type = "Atom"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.stroke_width"
+stored = "value"
+title = "Outline width"
+type = "f64"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.font_size"
+stored = "value"
+title = "Font size"
+type = "f64"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.align"
+stored = "value"
+title = "Alignment"
+type = "TextAlign"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.bold"
+stored = "value"
+title = "Bold, for an element without words of its own; a text box's words"
+type = "bool"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.italic"
+stored = "value"
+title = "Italic"
+type = "bool"
+
+[[resources.fields]]
+owner = "element"
+path = "slides.*.elements.*.radius"
+stored = "value"
+title = "Corner radius"
+type = "f64"
+
+[[resources.verbs]]
+description = "Add slide  A new slide after `after` (last when none), its title and body text boxes holding `title` and `body` when given. A `title` layout makes a cover slide."
+id = "add-slide"
+kind = "undoable"
+label = "Add slide"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+description = "Title"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "body"
+required = false
+
+[resources.verbs.params.schema]
+description = "Body, a paragraph per line"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "layout"
+required = false
+
+[resources.verbs.params.schema]
+description = "Layout"
+
+[[resources.verbs.params.schema.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.oneOf]]
+enum = [
+    "title",
+    "title_content",
+    "two_column",
+    "section",
+    "blank",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "after"
+required = false
+
+[resources.verbs.params.schema]
+description = "The slide it goes after; last when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Insert slide  The slide `slide`, whole, at position `at` (counting from 0): the window's new and pasted slides, under the ids they carry."
+id = "insert-slide"
+kind = "undoable"
+label = "Insert slide"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Position, counting from 0"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The slide"
+required = [
+    "id",
+    "layout",
+    "background",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.background]
+description = "Per-slide background treatment, resolved against the palette at draw time. Keeps slides theme-driven while still allowing variety."
+
+[[resources.verbs.params.schema.properties.background.oneOf]]
+const = "surface"
+description = "Neutral content surface (raised panel)."
+type = "string"
+
+[[resources.verbs.params.schema.properties.background.oneOf]]
+const = "accent"
+description = "Full accent wash — used for section / cover slides."
+type = "string"
+
+[[resources.verbs.params.schema.properties.background.oneOf]]
+const = "deep"
+description = "Deep, near-black accent tint."
+type = "string"
+
+[resources.verbs.params.schema.properties.elements]
+description = "Back to front."
+type = "array"
+
+[resources.verbs.params.schema.properties.elements.items]
+additionalProperties = false
+description = "An element as a verb carries it whole: the window's paste, a slide's copy, a file's import. `blocks` are a text box's words as written."
+required = [
+    "id",
+    "kind",
+    "x",
+    "y",
+    "w",
+    "h",
+    "fill",
+    "stroke",
+    "stroke_width",
+    "font_size",
+    "align",
+    "radius",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.align]
+enum = [
+    "left",
+    "center",
+    "right",
+    "justify",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks]
+type = "array"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.elements.items.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.bold]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.elements.items.properties.fill]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.font_size]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.id]
+description = "The id it is kept under."
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.italic]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.elements.items.properties.kind]
+enum = [
+    "text",
+    "rect",
+    "ellipse",
+    "line",
+    "image",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.radius]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.src]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.stroke]
+type = "string"
+
+[resources.verbs.params.schema.properties.elements.items.properties.stroke_width]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.elements.items.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.id]
+description = "The id it is kept under."
+type = "string"
+
+[resources.verbs.params.schema.properties.layout]
+enum = [
+    "title",
+    "title_content",
+    "two_column",
+    "section",
+    "blank",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.notes]
+type = "string"
+
+[[resources.verbs]]
+description = "Duplicate slide  A copy of the slide, right after it."
+id = "duplicate-slide"
+kind = "undoable"
+label = "Duplicate slide"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete slide"
+destructive = true
+id = "delete-slide"
+kind = "undoable"
+label = "Delete slide"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs]]
+description = "Move slide  Put the slide at `position`, counting from 0 for the first slide."
+id = "move-slide"
+kind = "undoable"
+label = "Move slide"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "position"
+required = true
+
+[resources.verbs.params.schema]
+description = "Where the slide ends up, counting from 0"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Set slide text  Replace the words of the slide's title (its first text box) and/or body (its second) as plain text, a paragraph per line, keeping their place and style."
+id = "set-text"
+kind = "undoable"
+label = "Set slide text"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+description = "New title"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "body"
+required = false
+
+[resources.verbs.params.schema]
+description = "New body, a paragraph per line"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Add element  A text box, shape, line or picture on the slide, above everything on it, styled as its kind is unless `element` names a style."
+id = "add-element"
+kind = "undoable"
+label = "Add element"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "element"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "What to add, where, and any style"
+required = [
+    "kind",
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.align]
+description = "Text alignment."
+
+[[resources.verbs.params.schema.properties.align.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.properties.align.oneOf]]
+enum = [
+    "left",
+    "center",
+    "right",
+    "justify",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.bold]
+description = "Bold text."
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.fill]
+description = "Fill colour, and a text box's text colour: a palette role (accent, accent-soft, accent-deep, surface, surface-dim, deep, text, text-dim, on-accent, white, success, warning, danger, info), `#RRGGBB`, or `none`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.font_size]
+description = "Font size in slide units, 4 to 256."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.h]
+description = "Height, in slide units."
+type = "number"
+
+[resources.verbs.params.schema.properties.italic]
+description = "Italic text."
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.kind]
+description = "What to add."
+enum = [
+    "text",
+    "rect",
+    "ellipse",
+    "line",
+    "image",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.radius]
+description = "Corner radius of a rectangle, in slide units, 0 to 720."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.src]
+description = "A picture's content id."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.stroke]
+description = "Outline colour: `none`, a palette role or `#RRGGBB`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.stroke_width]
+description = "Outline width in slide units, 0 to 64."
+type = [
+    "number",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.text]
+description = "A text box's words, a paragraph per line."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.text_color]
+description = "A text box's text colour: the same value as `fill`, by its text name."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.w]
+description = "Width, in slide units."
+type = "number"
+
+[resources.verbs.params.schema.properties.x]
+description = "Left edge, in slide units (the slide is 1280 wide)."
+type = "number"
+
+[resources.verbs.params.schema.properties.y]
+description = "Top edge, in slide units (the slide is 720 high)."
+type = "number"
+
+[[resources.verbs]]
+description = "Insert element  The element `element`, whole, above everything on the slide: the window's pasted and new elements, under the ids they carry."
+id = "insert-element"
+kind = "undoable"
+label = "Insert element"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "element"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The element"
+required = [
+    "id",
+    "kind",
+    "x",
+    "y",
+    "w",
+    "h",
+    "fill",
+    "stroke",
+    "stroke_width",
+    "font_size",
+    "align",
+    "radius",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.align]
+enum = [
+    "left",
+    "center",
+    "right",
+    "justify",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.blocks]
+type = "array"
+
+[resources.verbs.params.schema.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.bold]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.fill]
+type = "string"
+
+[resources.verbs.params.schema.properties.font_size]
+type = "number"
+
+[resources.verbs.params.schema.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.id]
+description = "The id it is kept under."
+type = "string"
+
+[resources.verbs.params.schema.properties.italic]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.kind]
+enum = [
+    "text",
+    "rect",
+    "ellipse",
+    "line",
+    "image",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.radius]
+type = "number"
+
+[resources.verbs.params.schema.properties.src]
+type = "string"
+
+[resources.verbs.params.schema.properties.stroke]
+type = "string"
+
+[resources.verbs.params.schema.properties.stroke_width]
+type = "number"
+
+[resources.verbs.params.schema.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.y]
+type = "number"
+
+[[resources.verbs]]
+description = "Delete element"
+destructive = true
+id = "delete-element"
+kind = "undoable"
+label = "Delete element"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "element"
+required = true
+
+[resources.verbs.params.schema]
+description = "The element"
+type = "string"
+
+[[resources.verbs]]
+description = "Bring to front"
+id = "bring-to-front"
+kind = "undoable"
+label = "Bring to front"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "element"
+required = true
+
+[resources.verbs.params.schema]
+description = "The element"
+type = "string"
+
+[[resources.verbs]]
+description = "Send to back"
+id = "send-to-back"
+kind = "undoable"
+label = "Send to back"
+
+[[resources.verbs.params]]
+name = "slide"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slide"
+type = "string"
+
+[[resources.verbs.params]]
+name = "element"
+required = true
+
+[resources.verbs.params.schema]
+description = "The element"
+type = "string"
+
+[[resources.verbs]]
+description = "Replace deck  Replace the whole deck — its title, theme and every slide — with another: a presentation file opened into it."
+id = "replace-deck"
+kind = "undoable"
+label = "Replace deck"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+description = "Title"
+type = "string"
+
+[[resources.verbs.params]]
+name = "palette"
+required = true
+
+[resources.verbs.params.schema]
+description = "Theme"
+enum = [
+    "indigo",
+    "emerald",
+    "amber",
+    "rose",
+    "sky",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "slides"
+required = true
+
+[resources.verbs.params.schema]
+description = "Slides, in order"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A slide as a verb carries it whole."
+required = [
+    "id",
+    "layout",
+    "background",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.background]
+description = "Per-slide background treatment, resolved against the palette at draw time. Keeps slides theme-driven while still allowing variety."
+
+[[resources.verbs.params.schema.items.properties.background.oneOf]]
+const = "surface"
+description = "Neutral content surface (raised panel)."
+type = "string"
+
+[[resources.verbs.params.schema.items.properties.background.oneOf]]
+const = "accent"
+description = "Full accent wash — used for section / cover slides."
+type = "string"
+
+[[resources.verbs.params.schema.items.properties.background.oneOf]]
+const = "deep"
+description = "Deep, near-black accent tint."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements]
+description = "Back to front."
+type = "array"
+
+[resources.verbs.params.schema.items.properties.elements.items]
+additionalProperties = false
+description = "An element as a verb carries it whole: the window's paste, a slide's copy, a file's import. `blocks` are a text box's words as written."
+required = [
+    "id",
+    "kind",
+    "x",
+    "y",
+    "w",
+    "h",
+    "fill",
+    "stroke",
+    "stroke_width",
+    "font_size",
+    "align",
+    "radius",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.align]
+enum = [
+    "left",
+    "center",
+    "right",
+    "justify",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.blocks.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.bold]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.fill]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.font_size]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.id]
+description = "The id it is kept under."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.italic]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.kind]
+enum = [
+    "text",
+    "rect",
+    "ellipse",
+    "line",
+    "image",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.radius]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.src]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.stroke]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.stroke_width]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.elements.items.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.items.properties.id]
+description = "The id it is kept under."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.layout]
+enum = [
+    "title",
+    "title_content",
+    "two_column",
+    "section",
+    "blank",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.notes]
+type = "string"

@@ -1,7 +1,7 @@
 //! Pure data model for a Slides deck.
 //!
-//! The on-wire source of truth lives in the Automerge document (see
-//! [`crate::doc`]); this module is the in-memory mirror plus the pure
+//! The deck is stored as the [`crate::deck::Deck`] record; this module is
+//! the deck as the window draws it, plus the pure
 //! logic the editor needs (geometry, palette resolution, the seed deck).
 //! Nothing here touches the CRDT, the renderer, or winit — it is unit
 //! testable in isolation.
@@ -16,8 +16,10 @@
 // call-by-call.
 #![allow(clippy::should_implement_trait)]
 
+use serde::{Deserialize, Serialize};
 use ui::ColorCompat;
 use ui::paint::with_alpha;
+use ui::tilo_resource::{self, JsonSchema, Model};
 use ui::tokens::colors::PresenceHue;
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
@@ -41,8 +43,10 @@ pub fn new_id() -> Id {
 // Elements
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ElementKind {
+    #[default]
     Text,
     Rect,
     Ellipse,
@@ -80,8 +84,10 @@ impl ElementKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TextAlign {
+    #[default]
     Left,
     Center,
     Right,
@@ -414,9 +420,11 @@ impl PartialEq for Element {
 // Slides + layouts
 // ===========================================================================
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Layout {
     Title,
+    #[default]
     TitleContent,
     TwoColumn,
     Section,
@@ -467,9 +475,11 @@ impl Layout {
 
 /// Per-slide background treatment, resolved against the palette at draw
 /// time. Keeps slides theme-driven while still allowing variety.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Background {
     /// Neutral content surface (raised panel).
+    #[default]
     Surface,
     /// Full accent wash — used for section / cover slides.
     Accent,
@@ -560,8 +570,10 @@ impl Slide {
 /// Named accent palettes a deck can adopt. Every colour is still pulled
 /// from the OS [`Theme`](ui::theme::Theme) so the deck respects the
 /// system look — the palette only chooses *which* token drives the accent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PaletteKind {
+    #[default]
     Indigo,
     Emerald,
     Amber,

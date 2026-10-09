@@ -1,5 +1,5 @@
-//! Slides as a [`tilo_resource::Resource`]: the deck is [`SlidesDeck`], the
-//! editor is the surface, and `publish` is the only palette/agent door.
+//! The slides app on the framework: the [`Deck`] record, its editor, and
+//! what opening a presentation file does.
 
 use std::rc::Rc;
 
@@ -12,9 +12,9 @@ use ui::record::RecordId;
 use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::Element;
 
-use crate::actions::{SlidesAction, SlidesDeck, SlidesResourceCtx, replace_deck_action};
 use crate::app::SlidesApp;
-use crate::model::{Deck, seed_deck};
+use crate::deck::Deck;
+use crate::model::seed_deck;
 
 /// The media type of an ODF presentation (`.odp`).
 pub const ODP_MEDIA_TYPE: &str = "application/vnd.oasis.opendocument.presentation";
@@ -26,21 +26,22 @@ pub const PPTX_MEDIA_TYPE: &str =
 /// rail and the inspector are flaps over the canvas.
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
-/// Framework app: the slides editor is the surface over [`SlidesDeck`].
+/// Framework app: the slides editor is the surface over the [`Deck`].
 pub struct SlidesShell;
 
 impl ResourceApp for SlidesShell {
-    type Resource = SlidesDeck;
+    type Resource = Deck;
     const ID: &'static str = "so.tilo.slides";
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
     const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];
     const ARGUMENTS: usize = 1;
 
-    fn view(cx: &mut ViewCx<SlidesDeck>) -> Element {
+    fn view(cx: &mut ViewCx<Deck>) -> Element {
         // In a container, the editor is a widget of the view's tree that
         // tests and staging reach by its type.
         let editor = SlidesApp::new(cx);
+        cx.on_open_item(editor.opener());
         Box::new(ui::widget::Stack::new().push(cx.surface(editor)))
     }
 
@@ -48,8 +49,8 @@ impl ResourceApp for SlidesShell {
         Some(&crate::strings::CATALOG)
     }
 
-    fn label(state: &SlidesResourceCtx) -> String {
-        let title = state.deck_title.trim();
+    fn label(state: &Deck) -> String {
+        let title = state.title.trim();
         if title.is_empty() {
             "Slides".into()
         } else {
@@ -67,7 +68,7 @@ impl ResourceApp for SlidesShell {
 
     /// The deck a file opens as is the file's when the record is new; a deck
     /// opened before keeps the edits made to it since.
-    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<SlidesDeck>> {
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Deck>> {
         let Some(file) = input.file().filter(|_| created) else {
             return Vec::new();
         };
@@ -82,7 +83,7 @@ impl ResourceApp for SlidesShell {
             crate::odp::read_odp(file.bytes(), &content)
         };
         match deck {
-            Ok(deck) => replace_deck(&deck).into_iter().collect(),
+            Ok(deck) => vec![replace_deck(&deck)],
             Err(error) => {
                 tracing::warn!(%error, file = file.name(), "slides: the presentation cannot be read");
                 Vec::new()
@@ -133,7 +134,7 @@ impl ResourceApp for SlidesShell {
     }
 
     /// The `image` scenario's picture is in the capture's content store.
-    fn fixture(fixture: &mut Fixture<SlidesDeck>) {
+    fn fixture(fixture: &mut Fixture<Deck>) {
         if fixture.scenario() == Some("image") {
             let _ = crate::assets::store_asset(fixture.content(), &crate::sample::photo_png());
         }
@@ -141,7 +142,7 @@ impl ResourceApp for SlidesShell {
 
     /// Every scenario but `empty` opens the sample deck; the long and
     /// picture scenarios a variant of it.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<SlidesDeck>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Deck>> {
         let deck = match name {
             Some("empty") => return Vec::new(),
             Some("many" | "many_rail") => crate::sample::long_deck(),
@@ -154,17 +155,20 @@ impl ResourceApp for SlidesShell {
             }
             _ => seed_deck(),
         };
-        replace_deck(&deck).into_iter().collect()
+        vec![replace_deck(&deck)]
     }
 }
 
-fn replace_deck(deck: &Deck) -> Option<Invoke<SlidesDeck>> {
-    let action: SlidesAction = replace_deck_action(deck);
-    Invoke::apply(&action).ok()
+fn replace_deck(deck: &crate::model::Deck) -> Invoke<Deck> {
+    Deck::REPLACE_DECK.with(crate::deck::deck::ReplaceDeck {
+        title: deck.title.clone(),
+        palette: deck.palette,
+        slides: deck.slides.iter().map(crate::deck::SlideData::of).collect(),
+    })
 }
 
-impl ResourceSurface<SlidesDeck, SlidesEffect> for SlidesApp {
-    fn present(&mut self, state: &Rc<SlidesResourceCtx>) {
+impl ResourceSurface<Deck, SlidesEffect> for SlidesApp {
+    fn present(&mut self, state: &Rc<Deck>) {
         self.adopt_resource_state(state);
     }
 
@@ -172,15 +176,11 @@ impl ResourceSurface<SlidesDeck, SlidesEffect> for SlidesApp {
         self.stage_scenario(scenario);
     }
 
-    fn effect(
-        &mut self,
-        effect: SlidesEffect,
-        cx: &mut EffectCx<SlidesDeck, Self>,
-    ) -> EffectAnswer {
+    fn effect(&mut self, effect: SlidesEffect, cx: &mut EffectCx<Deck, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
 
-    fn bound_declarations(&self) -> Vec<ActionDecl<SlidesDeck>> {
+    fn bound_declarations(&self) -> Vec<ActionDecl<Deck>> {
         self.selection_declarations()
     }
 }
@@ -188,17 +188,14 @@ impl ResourceSurface<SlidesDeck, SlidesEffect> for SlidesApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{
-        ADD_ELEMENT, ADD_SLIDE, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT,
-    };
-    use crate::model::{Deck, PaletteKind, seed_deck};
-    use ui::tilo_resource::Resource;
+    use crate::model::seed_deck;
+    use ui::tilo_resource::{Invoke, Replica};
 
     use ui::framework::testing::TestApp;
 
     fn titles(app: &TestApp<SlidesShell>) -> (String, usize) {
         let state = app.state();
-        (state.deck_title.clone(), state.slides.len())
+        (state.title.clone(), state.slides.len())
     }
 
     #[test]
@@ -248,7 +245,7 @@ mod tests {
         assert!(ready, "the capture's content store holds the picture");
     }
 
-    fn odp_of(deck: &Deck) -> Vec<u8> {
+    fn odp_of(deck: &crate::model::Deck) -> Vec<u8> {
         crate::odp::write_odp(deck, &tilo_content::ContentStore::memory()).unwrap()
     }
 
@@ -286,17 +283,17 @@ mod tests {
         let mut deck = seed_deck();
         let twin = deck.slides[0].clone();
         deck.slides.push(twin);
-        let mut doc = ui::tilo_resource::Doc::new();
-        SlidesDeck::initialize(&mut doc).unwrap();
+        let mut replica = Replica::<Deck>::new();
         let refused =
-            tilo_actions::Action::apply(&crate::actions::replace_deck_action(&deck), &mut doc);
+            replica.apply(Invoke::apply(&crate::actions::replace_deck_action(&deck)).unwrap());
         assert!(refused.is_err());
         let empty = crate::model::Deck {
             slides: Vec::new(),
             ..seed_deck()
         };
         assert!(
-            tilo_actions::Action::apply(&crate::actions::replace_deck_action(&empty), &mut doc)
+            replica
+                .apply(Invoke::apply(&crate::actions::replace_deck_action(&empty)).unwrap())
                 .is_err()
         );
     }
@@ -320,7 +317,7 @@ mod tests {
             "present-largest-external",
             "present-primary-external",
             "end-presentation",
-            "open",
+            "open-presentation",
             "save-as",
             "read",
         ] {
@@ -329,73 +326,47 @@ mod tests {
                 "`{effect}` is published: {surface}"
             );
         }
-        let slide = app.state().slides[0].data.id.clone();
-        assert!(on(&crate::actions::slide_resource_id(&slide), "open-slide"));
-        assert!(
-            !on("slides.deck", "open-slide"),
-            "revealing a slide is offered on the slide itself"
-        );
-    }
-
-    #[test]
-    fn the_deck_publish_includes_add_slide_and_theme_ops() {
-        let ctx = SlidesResourceCtx::from_deck(&seed_deck());
-        let published = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", "Deck", &ctx);
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(
-            ids.contains(&ADD_SLIDE),
-            "add-slide must ride bound_actions through publish, not a bolt-on: {ids:?}"
-        );
-        for kind in PaletteKind::ALL {
-            let theme = format!("theme-{}", kind.as_str());
+        let slide = app.state().slides.ids().next().unwrap().clone();
+        let item = crate::actions::slide_resource_id(slide.as_str());
+        for verb in [
+            "duplicate-slide",
+            "delete-slide",
+            "move-slide",
+            "set-text",
+            "add-element",
+        ] {
             assert!(
-                ids.contains(&theme.as_str()),
-                "theme `{theme}` must ride bound_actions through publish: {ids:?}"
+                on(&item, verb),
+                "`{verb}` is offered on the slide itself: {surface}"
             );
         }
     }
 
+    /// The deck publishes its verbs and edits, and its slides as items.
     #[test]
-    fn the_deck_publishes_its_operations_and_durable_slides() {
-        let ctx = SlidesResourceCtx::from_deck(&seed_deck());
-        let published = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", "Deck", &ctx);
-        assert_eq!(published.kind, "slides.deck");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in [
-            ADD_ELEMENT,
-            MOVE_ELEMENT,
-            RESTYLE_ELEMENT,
-            DELETE_ELEMENT,
-            MOVE_SLIDE,
-            ADD_SLIDE,
-            "theme-emerald",
+    fn the_deck_publishes_its_verbs_and_slides() {
+        let mut app = TestApp::<SlidesShell>::new().unwrap();
+        let surface = app.agent_surface();
+        let rows = surface.as_array().unwrap();
+        let on_deck = |action: &str| {
+            rows.iter()
+                .any(|row| row["resource"] == "slides.deck" && row["action"] == action)
+        };
+        for verb in [
+            "add-slide",
+            "insert-slide",
+            "replace-deck",
             ui::tilo_resource::APPLY,
             ui::tilo_resource::GROUP,
         ] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
-            );
+            assert!(on_deck(verb), "`{verb}` is published: {surface}");
         }
-        assert!(
-            published
-                .children
-                .iter()
-                .all(|child| child.kind == "slides.slide"),
-            "publish children are durable slides, not the live selection: {:?}",
-            published
-                .children
-                .iter()
-                .map(|child| child.kind.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            published
-                .children
-                .iter()
-                .flat_map(|child| child.children.iter())
-                .all(|child| child.kind != "slides.selection"),
-            "selection is not document state"
-        );
+        let slides = app.state().slides.len();
+        let items = rows
+            .iter()
+            .filter_map(|row| row["resource"].as_str())
+            .filter(|resource| resource.starts_with("slides.deck/slides/"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(items.len(), slides, "each slide is an item: {surface}");
     }
 }

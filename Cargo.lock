@@ -14621,6 +14621,7 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-files",
+ "tilo-history",
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",
