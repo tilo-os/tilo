@@ -29,9 +29,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
@@ -796,25 +794,7 @@ impl Widget for AppearancePane {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
+    ui::forward_to_composed!(composed);
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
@@ -822,14 +802,6 @@ impl Widget for AppearancePane {
         if let Some(composed) = self.composed.element() {
             composed.collect_damage(regions);
         }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -840,10 +812,6 @@ impl Widget for AppearancePane {
         let own = std::mem::take(&mut self.structure_dirty);
         let child = self.composed.take_structure_dirty();
         own || child
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 
     /// Surface the user's current appearance choice so the running Settings
