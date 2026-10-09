@@ -45,7 +45,7 @@ const TYPED: &str = "!";
 fn seed_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -71,7 +71,7 @@ fn seed_document() -> AutoCommit {
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    let c = word_processor::model::open(doc).expect("schema");
     tilo_doc::model::materialize(doc, &c).blocks
 }
 
@@ -88,7 +88,7 @@ fn heading_id(doc: &AutoCommit) -> String {
 fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
     let before = doc.get_heads();
     {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+        let c = word_processor::model::open(doc).expect("schema");
         let at = blocks(doc)
             .into_iter()
             .find(|b| b.id == block)
@@ -149,9 +149,9 @@ fn publish_word_processor_actions(peer: &mut TypedPeer, doc: &AutoCommit) {
     let actions = typed_peer::exported_actions(&resources);
     assert!(
         actions.iter().any(|action| {
-            action.resource == "tilo.rich-text" && action.action == "insert-table"
+            action.resource == typed_peer::WP_DOCUMENT && action.action == "insert-table-here"
         }),
-        "the production Word Processor surface must export insert-table"
+        "the production Word Processor surface must export insert-table-here"
     );
     typed_peer::publish_actions(peer, APP, &resources);
 }
@@ -365,7 +365,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn_with_agent_actions(
         &sock,
-        &[(APP, typed_peer::WP_DOCUMENT, "insert-table")],
+        &[(APP, typed_peer::WP_DOCUMENT, "insert-table-here")],
     );
     tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
 

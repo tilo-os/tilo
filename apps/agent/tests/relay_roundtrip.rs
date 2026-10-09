@@ -57,7 +57,7 @@ fn seed_document() -> AutoCommit {
 fn seed_document_as(actor: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(actor.as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -87,7 +87,7 @@ fn seed_document_as(actor: &str) -> AutoCommit {
 fn seed_sequence_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -110,7 +110,7 @@ fn seed_sequence_document() -> AutoCommit {
 fn seed_unanswerable_sequence_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -146,7 +146,7 @@ const COLLIDING_ACTOR: &str = "files-2";
 fn seed_foreign() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(COLLIDING_ACTOR.as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -171,7 +171,7 @@ fn seed_colliding_document() -> AutoCommit {
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    let c = word_processor::model::open(doc).expect("schema");
     tilo_doc::model::materialize(doc, &c).blocks
 }
 
@@ -207,9 +207,9 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     let exported = typed_peer::exported_actions(&resources);
     assert!(
         exported.iter().any(|action| {
-            action.resource == "tilo.rich-text" && action.action == "insert-table"
+            action.resource == typed_peer::WP_DOCUMENT && action.action == "insert-table-here"
         }),
-        "the production Word Processor surface must export insert-table"
+        "the production Word Processor surface must export insert-table-here"
     );
     typed_peer::publish_actions(peer, APP, &resources);
 }
@@ -356,10 +356,11 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
         .into_iter()
         .map(|v| v.actor)
         .filter(|a| *a != genesis && *a != seed)
+        .map(|a| ui::history_source::actor_handle(&a).unwrap_or(a))
         .collect();
     assert_eq!(
         actors,
-        std::collections::HashSet::from([hex::encode("Scribe"), hex::encode(invocation_actor),]),
+        std::collections::HashSet::from(["Scribe".to_owned(), invocation_actor.to_owned()]),
         "the broker action carries the authenticated invocation actor and the acknowledgement edit carries Scribe's document actor"
     );
 }
