@@ -1157,14 +1157,8 @@ impl SearchRegistry {
         self.query_inner(args, true, include_programmatic)
     }
 
-    fn query_rounds(
-        &self,
-        args: &QueryArgs<'_>,
-        exhaustive: bool,
-        include_programmatic: bool,
-    ) -> Vec<ProviderQuery<'_>> {
-        let mut sources: Vec<_> = self
-            .enabled_providers()
+    fn query_sources(&self, args: &QueryArgs<'_>) -> Vec<ProviderQuery<'_>> {
+        self.enabled_providers()
             .filter(|provider| {
                 args.action_scope
                     .is_none_or(|_| ActionDiscoveryScope::allows_provider(provider.as_ref()))
@@ -1187,7 +1181,16 @@ impl SearchRegistry {
                     incomplete: Some(QueryIncompleteReason::Continuation),
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    fn query_rounds(
+        &self,
+        args: &QueryArgs<'_>,
+        exhaustive: bool,
+        include_programmatic: bool,
+    ) -> Vec<ProviderQuery<'_>> {
+        let mut sources = self.query_sources(args);
         let mut pages = 0usize;
         let mut results = 0usize;
         let mut bytes = 0usize;
