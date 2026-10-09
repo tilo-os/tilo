@@ -156,7 +156,8 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             assert_eq!(text, "a".repeat(sample + 1), "real editor mutation");
             for phase in [
                 "search_blocks",
-                "reconcile_canonical",
+                "search_delta_adopted",
+                "canonical_projection_adopted",
                 "notebook_children",
                 "page_tree_commands",
                 "page_tree_action",
@@ -173,6 +174,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             ] {
                 assert!(rows.iter().any(|row| row.phase == phase));
             }
+            assert!(rows.iter().all(|row| row.phase != "search_body_decode"));
             assert!(rows.iter().any(|row| row.phase == "tree_metadata_plan"));
             if pages > 1 {
                 for phase in [
@@ -322,4 +324,57 @@ fn action_presence(root: &dyn ui::Widget, dense: bool) -> (bool, u128) {
         ui::widget::controls::has_action_control_bindings(root)
     };
     (present, began.elapsed().as_nanos())
+}
+
+#[test]
+fn unchanged_publication_reuses_tree_and_remote_and_locale_changes_refresh_it() {
+    use automerge::transaction::Transactable;
+    fn contains(resources: &[tilo_actions::Resource], id: &str) -> bool {
+        resources
+            .iter()
+            .any(|resource| resource.id.as_str() == id || contains(&resource.children, id))
+    }
+
+    let (mut app, _) = fixture(16);
+    // Settle and publish once before observing ordinary repeated catalogue reads.
+    let original = app.harness().resources();
+    assert!(contains(&original, "notes.notebook"));
+    let before = app.read_document(Transactable::base_heads);
+    let (_, rows) = observe(|| {
+        for _ in 0..10 {
+            let resources = app.harness().resources();
+            assert!(contains(&resources, "notes.notebook"));
+            assert_eq!(resources[0].children.len(), original[0].children.len());
+        }
+    });
+    assert!(
+        !rows.iter().any(|row| row.phase == "notebook_children"),
+        "unchanged catalogue reads must reuse the canonical resource tree"
+    );
+    assert_eq!(app.read_document(Transactable::base_heads), before);
+
+    let locale = ui::i18n::I18nManager::pseudo_locale();
+    ui::i18n::I18nManager::set_pseudo_locale(ui::i18n::PseudoLocale::Expanded);
+    let (_, rows) = observe(|| {
+        assert!(contains(&app.harness().resources(), "notes.notebook"));
+    });
+    ui::i18n::I18nManager::set_pseudo_locale(locale);
+    assert!(
+        rows.iter().any(|row| row.phase == "notebook_children"),
+        "translation changes must invalidate cached resource labels"
+    );
+    assert_eq!(app.read_document(Transactable::base_heads), before);
+
+    let page = crate::PageId::new_v4();
+    let mut peer = app.peer_document();
+    apply_fixture_action(
+        &mut peer,
+        &crate::actions::append_page_action(page, None, "Remote creation"),
+    );
+    app.merge_peer(&mut peer).unwrap();
+    let resources = app.harness().resources();
+    assert!(
+        contains(&resources, &crate::actions::page_resource_id(page)),
+        "the cache must expose collaborator changes at the new revision"
+    );
 }

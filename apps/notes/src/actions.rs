@@ -2240,7 +2240,7 @@ pub(crate) fn notebook_bound_actions(workspace: &crate::Workspace) -> Vec<Action
 }
 
 /// The title of today's note: the local date.
-fn today_title() -> String {
+pub(crate) fn today_title() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
