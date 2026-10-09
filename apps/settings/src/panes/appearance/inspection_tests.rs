@@ -91,10 +91,7 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
             .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
     );
     let refused = app.call_by(
-        ui::tilo_actions::ActionInvoker {
-            actor: "unrelated-collaborator".into(),
-            participant: None,
-        },
+        ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
         &action.address.resource,
         &action.address.action,
         serde_json::json!({}),

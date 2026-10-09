@@ -149,7 +149,13 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             Vec::new()
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Err("fixture never launches applications".into())
         }
         fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
