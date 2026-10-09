@@ -76,3 +76,5 @@ store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
 store-build-version = Full build version
+
+store-source-partial = Some repositories are unavailable. Other apps remain available.

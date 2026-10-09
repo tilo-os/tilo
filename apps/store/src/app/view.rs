@@ -150,15 +150,23 @@ impl StoreApp {
                     )),
             ));
         }
-        self.operation_error.as_ref().map(|error| {
+        let source_error = self
+            .remotes
+            .iter()
+            .find_map(|remote| remote.catalogue_error.as_ref());
+        self.operation_error.as_ref().or(source_error).map(|error| {
             let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
             if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
                 refresh = refresh.on_action(binding);
             }
             Box::new(
-                Banner::error(ui::i18n!("store-operation-failed"))
-                    .with_message(visible_operation_status(error))
-                    .with_action(refresh),
+                (if self.operation_error.is_some() {
+                    Banner::error(ui::i18n!("store-operation-failed"))
+                } else {
+                    Banner::warning(ui::i18n!("store-source-partial"))
+                })
+                .with_message(visible_operation_status(error))
+                .with_action(refresh),
             ) as Element
         })
     }
@@ -308,7 +316,11 @@ impl StoreApp {
         // refreshing. The visible action goes through the same one-shot
         // `store.refresh` resource action as the pointer, keyboard, assistive
         // technology and agents, so each requests one serialized operation.
-        let empty = if let Some(error) = &self.operation_error {
+        let empty = if let Some(error) = self.operation_error.as_ref().or_else(|| {
+            self.remotes
+                .iter()
+                .find_map(|remote| remote.catalogue_error.as_ref())
+        }) {
             EmptyState::error("Catalogues offline", visible_operation_status(error))
         } else {
             EmptyState::new("No apps available")
@@ -878,7 +890,7 @@ impl StoreApp {
                 let mut row =
                     ListRow::new(format!("store.{}", remote.resource_id()), &remote.title)
                         .icon(Icon::Globe)
-                        .secondary(&remote.url)
+                        .secondary(remote.catalogue_error.as_deref().unwrap_or(&remote.url))
                         .meta(remote_state_label(remote));
                 if !remote.disabled
                     && let Some(binding) = bindings::effect(&StoreEffect::BrowseRemote {
