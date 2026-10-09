@@ -19,6 +19,8 @@
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`rooms`] — governed rooms over HTTPS: administration and joining;
+//! - [`room_operator`] — the JSON-lines protocol between the public-room
+//!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the server advertisements compute admission checks;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
@@ -61,6 +63,7 @@ pub mod metrics;
 pub mod policy;
 pub mod process_lease;
 pub mod retention;
+pub mod room_operator;
 pub mod rooms;
 mod sig64;
 pub mod transport;
