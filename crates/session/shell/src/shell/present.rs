@@ -688,9 +688,9 @@ mod tests {
             [1, 2, 3, 255],
             31_337,
         );
-        let (released, releases) = std::sync::mpsc::channel::<()>();
+        let (on_release, given_back) = std::sync::mpsc::channel::<()>();
         frame.hold(crate::shell::gpu_frames::BufferLease::new(move || {
-            let _ = released.send(());
+            let _ = on_release.send(());
         }));
         let mut scene = Scene::new();
         scene.fill(
@@ -715,13 +715,13 @@ mod tests {
         frame.note_superseded();
         drop(frame);
         assert!(
-            releases.recv_timeout(Duration::from_millis(200)).is_err(),
+            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
             "the buffer stays held while the queued frame can still draw it"
         );
         drop(rendering);
         tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
         assert!(
-            releases.recv_timeout(Duration::from_secs(2)).is_ok(),
+            given_back.recv_timeout(Duration::from_secs(2)).is_ok(),
             "presenting the frame gives the buffer back"
         );
         pipe.shutdown();
