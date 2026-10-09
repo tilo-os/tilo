@@ -53,6 +53,11 @@ impl SpeechRecognition {
             Err(SpeechError::Protocol)
         } else if samples.len() > MAX_SAMPLES || samples.iter().any(|s| !s.is_finite()) {
             Err(SpeechError::AudioTooLong)
+        } else if samples.iter().all(|sample| *sample == 0.0) {
+            // Exact silence needs no inference, including image-owned engines.
+            // Do not use an energy threshold: quiet speech must still decode.
+            self.observed = samples.len();
+            Ok(String::new())
         } else if deferred {
             // A truncated opening word produced confident hallucinations in
             // paced public speech. Wait for initial context, without decoding
@@ -146,6 +151,37 @@ fn append(output: &mut String, part: &str) -> Result<(), SpeechError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_silence_never_decodes_but_appended_quiet_audio_does() {
+        let mut audio = vec![0.0; INITIAL_DRAFT_SAMPLES];
+        audio[0] = -0.0;
+        let mut recognition = SpeechRecognition::default();
+        assert_eq!(
+            recognition.recognize_with(&audio, false, |_| panic!("silence must not infer")),
+            Ok(String::new())
+        );
+        audio.push(f32::MIN_POSITIVE);
+        let mut calls = 0;
+        assert_eq!(
+            recognition.recognize_with(&audio, true, |chunk| {
+                assert_eq!(chunk, audio);
+                calls += 1;
+                Ok("quiet speech".into())
+            }),
+            Ok("quiet speech".into())
+        );
+        assert_eq!(calls, 1);
+        assert!(recognition.retired);
+        let mut silent = SpeechRecognition::default();
+        assert_eq!(
+            silent.recognize_with(&audio[..INITIAL_DRAFT_SAMPLES], true, |_| panic!(
+                "silent final must not infer"
+            )),
+            Ok(String::new())
+        );
+        assert!(silent.retired && silent.draft.is_empty());
+    }
 
     #[test]
     fn worker_boundary_keeps_confirmed_prefix_and_revises_only_the_tail() {
