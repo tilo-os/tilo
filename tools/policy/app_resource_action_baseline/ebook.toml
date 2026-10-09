@@ -1,5 +1,2 @@
 [ratchets.action_address_new]
 "apps/ebook/src/component_tests.rs" = 1
-
-[ratchets.direct_automerge_write]
-"apps/ebook/src/resource.rs" = 1

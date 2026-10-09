@@ -15,7 +15,6 @@
 
 [ratchets.direct_automerge_write]
 "apps/chat/src/component_tests.rs" = 5
-"apps/chat/src/events.rs" = 1
 "apps/chat/src/feedback.rs" = 2
 "apps/chat/src/feedback/receipt_read/tests.rs" = 1
 "apps/chat/src/semantic_read/tests.rs" = 2

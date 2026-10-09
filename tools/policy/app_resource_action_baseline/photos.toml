@@ -1,7 +1,2 @@
 [ratchets.action_address_new]
 "apps/photos/src/search.rs" = 1
-
-[ratchets.direct_automerge_write]
-"apps/photos/src/app.rs" = 3
-"apps/photos/src/app/tests.rs" = 1
-"apps/photos/src/lib.rs" = 1

@@ -11,4 +11,4 @@
 
 [ratchets.direct_automerge_write]
 "apps/agent/src/plan.rs" = 1
-"apps/agent/src/session.rs" = 3
+"apps/agent/src/session.rs" = 1

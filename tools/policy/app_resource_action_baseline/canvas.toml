@@ -3,7 +3,3 @@
 
 [ratchets.action_decl_new]
 "apps/canvas/src/resource.rs" = 10
-
-[ratchets.direct_automerge_write]
-"apps/canvas/src/resource.rs" = 1
-"apps/canvas/src/surface.rs" = 2

@@ -227,12 +227,109 @@ LEGACY_API_RATCHETS = {
         "direct Automerge write; change the document with a field edit or a verb",
     ),
 }
-# A legacy rule here counts only in a file that reaches the named API: a
-# secret store's or a cache's `put` is not a document write.
-LEGACY_API_SCOPES = {
-    "direct_automerge_write": re.compile(
-        r"\bautomerge\b|\bAutoCommit\b|\bObjId\b|\bTransactable\b|\bROOT\b"
-    ),
+# Which matches of a legacy rule are the old API, given the file's code and
+# its raw text (same offsets): a `put` on a content store, a secret store or a
+# cache is no document write, and `args.get(1)` on a binary's own command line
+# is no action argument.
+DOCUMENT_TYPE = (
+    r"(?:[A-Za-z_]\w*\s*::\s*)*(?:AutoCommit|Automerge|Doc|Transaction)\b"
+    r"|(?:impl|dyn)\s+(?:[A-Za-z_]\w*\s*::\s*)*Transactable\b"
+)
+TRANSACTABLE_GENERIC = re.compile(
+    r"\b([A-Z]\w*)\s*:\s*(?:\?Sized\s*\+\s*)?(?:[A-Za-z_]\w*\s*::\s*)*Transactable\b"
+)
+DOCUMENT_LET = re.compile(
+    r"\blet\s+(?:mut\s+)?([a-z_]\w*)\s*(?::[^=;]*)?=\s*(?:"
+    r"(?:[A-Za-z_]\w*\s*::\s*)*(?:AutoCommit|Automerge)\s*::"
+    r"|[\w.]*\s*\.\s*(?:transaction|transaction_at|fork|fork_at)\s*\()"
+)
+# A receiver with one of these names is the document even where its type is
+# inferred (a closure's parameter).
+DOCUMENT_NAMES = {"doc", "tx", "txn", "transaction"}
+AUTOMERGE_FILE = re.compile(r"\bautomerge\b|\bAutoCommit\b|\bObjId\b|\bTransactable\b|\bROOT\b")
+# A `put` into the document's root is a document write whatever its receiver.
+AUTOMERGE_OBJECT_ARG = re.compile(r"\s*&?\s*(?:automerge\s*::\s*)?ROOT\b")
+ACTION_ARGS_DECL = re.compile(
+    r"\bargs\s*:\s*&?\s*(?:mut\s+)?(?:[A-Za-z_]\w*\s*::\s*)*(?:ActionArgs|Value|Map)\b"
+)
+
+
+def document_receivers(code: str) -> set[str]:
+    """The names this file gives a document or a transaction on one."""
+    types = DOCUMENT_TYPE + "".join(
+        rf"|{re.escape(name)}\b" for name in sorted(set(TRANSACTABLE_GENERIC.findall(code)))
+    )
+    declared = re.compile(
+        rf"\b([a-z_]\w*)\s*:\s*&?\s*(?:'\w+\s+)?(?:mut\s+)?(?:{types})"
+    )
+    names = set(declared.findall(code)) | set(DOCUMENT_LET.findall(code))
+    if AUTOMERGE_FILE.search(code):
+        names |= DOCUMENT_NAMES
+    return names
+
+
+def receiver(code: str, dot: int) -> str:
+    """The name a method call at `dot` is made on: the variable or field,
+    or the function whose result it is."""
+    i = dot - 1
+    while i >= 0 and code[i].isspace():
+        i -= 1
+    if i >= 0 and code[i] == ")":
+        depth = 0
+        while i >= 0:
+            if code[i] == ")":
+                depth += 1
+            elif code[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    break
+            i -= 1
+        i -= 1
+        while i >= 0 and code[i].isspace():
+            i -= 1
+    end = i + 1
+    while i >= 0 and (code[i].isalnum() or code[i] == "_"):
+        i -= 1
+    return code[i + 1 : end]
+
+
+def document_writes(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """Automerge's own writers (`put_object`, `splice_text`, ...) in a file
+    that reaches Automerge; `put`, which stores and caches share, only into
+    `ROOT` or on a receiver this file types or names as a document."""
+    if not matches or not AUTOMERGE_FILE.search(code):
+        return []
+    names = document_receivers(code)
+    return [
+        match
+        for match in matches
+        if not re.fullmatch(r"\.\s*put\s*\(", match.group())
+        or AUTOMERGE_OBJECT_ARG.match(code, match.end()) is not None
+        or (name := receiver(code, match.start())) in names
+        or re.fullmatch(r"(?:doc|document|transaction)\w*", name) is not None
+    ]
+
+
+def action_arguments(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+    """Every ActionArgs accessor; `get` only by name (`args.get("title")`) or
+    on arguments declared as ActionArgs or JSON, not a command line's index."""
+    if not matches:
+        return matches
+    typed = ACTION_ARGS_DECL.search(code) is not None
+    kept = []
+    for match in matches:
+        if not match.group().rstrip("( \t\n").endswith("get"):
+            kept.append(match)
+            continue
+        after = raw[match.end() :].lstrip()
+        if typed or after.startswith('"'):
+            kept.append(match)
+    return kept
+
+
+LEGACY_API_FILTERS = {
+    "direct_automerge_write": document_writes,
+    "untyped_action_args": action_arguments,
 }
 # Ratchets that reached zero and stay there: a ceiling for one is refused.
 CLOSED_RATCHETS = {"raw_operation_handler"}
@@ -384,12 +481,7 @@ def audit_ratchets(
         )
         if workspace:
             rules += [
-                (
-                    rule,
-                    pattern,
-                    reason,
-                    code if rule not in LEGACY_API_SCOPES or LEGACY_API_SCOPES[rule].search(code) else "",
-                )
+                (rule, pattern, reason, code)
                 for rule, (pattern, reason) in LEGACY_API_RATCHETS.items()
             ]
         # A Tilo workspace invariant, like the app host check in `audit`; the
@@ -407,6 +499,8 @@ def audit_ratchets(
             ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
+            if rule in LEGACY_API_FILTERS:
+                matches = LEGACY_API_FILTERS[rule](code, source_text, matches)
             limit = baseline.get(rule, {}).get(relative, 0)
             if len(matches) <= limit:
                 if len(matches) < limit:
