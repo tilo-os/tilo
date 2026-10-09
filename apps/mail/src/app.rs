@@ -3600,9 +3600,7 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &children);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -5047,20 +5045,17 @@ impl MailApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
-    use winit::event::{DeviceId, Modifiers, MouseButton};
+    use winit::event::{Modifiers, MouseButton};
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -5069,36 +5064,18 @@ mod tests {
         named_key(NamedKey::Escape)
     }
     fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
     }
     fn char_key(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(s.into());
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(s.into()),
+            Some(s.into()),
+            ElementState::Pressed,
+        ))
     }
 
     /// Route `ev` to the app through the tree it was last laid out in (a
@@ -5132,7 +5109,7 @@ mod tests {
 
     fn left_release() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }

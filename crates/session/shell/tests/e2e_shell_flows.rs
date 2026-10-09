@@ -31,8 +31,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use shell::shell::build_tilo_overlay_host_with_inputs;
 use shell::shell::hosted_inputs::HostedTileInputs;
@@ -248,16 +248,16 @@ impl Harness {
     )]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(x, y),
         });
         self.pump(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.pump(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -281,39 +281,17 @@ impl Harness {
         handled
     }
 
-    /// `pump_host` can't answer this for a declined key: it hands the host a
-    /// zeroed taffy node, relying on the hotkey pre-pass returning before any
-    /// child walk.
     fn key(&mut self, key: Key) -> bool {
         self.pump(&key_press(key))
     }
 }
 
-// winit's `KeyEvent` has a private field, so it can't come from a struct
-// literal — zero-init instead (see SAFETY below).
 fn escape_event() -> WindowEvent {
-    // SAFETY: `KeyEvent`'s pub fields are all safe to zero-init
-    // (`Option<SmolStr>` → `None`; `PhysicalKey`, `Key`, `KeyLocation`,
-    // `ElementState` all have a valid first variant at the all-zero bit
-    // pattern; `bool` → `false`). The private `platform_specific` field
-    // is a platform-specific zero-sized or plain struct whose zero
-    // bit pattern is valid on every target we care about. The shell
-    // only reads `logical_key` + `state` from this event so the rest is
-    // immaterial. This workaround is needed because winit 0.30 doesn't
-    // expose a KeyEvent constructor; upgrading to 0.31 (ActiveEventLoop)
-    // is out of scope for this test harness.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(NamedKey::Escape);
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(NamedKey::Escape),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 // Test serialisation: tests share a wgpu/vello/cosmic-text static cache and
@@ -662,14 +640,14 @@ impl DragCtx<'_> {
 
     fn move_to(&mut self, p: Point) {
         self.pump_event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
     }
 
     fn button(&mut self, state: ElementState) {
         self.pump_event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         });
@@ -1396,7 +1374,7 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     pump_ev(
         group,
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(pill.x, pill.y),
         },
     );
@@ -1435,14 +1413,14 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     pump_ev(
         group,
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(max_center.x, max_center.y),
         },
     );
     pump_ev(
         group,
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
@@ -1452,7 +1430,7 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     pump_ev(
         group,
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         },
@@ -1658,24 +1636,12 @@ fn assert_region_visibly_differs(before: &Path, after: &Path, region: Rect, mini
 // hotkey path a real user hits is the pre-pass inside
 // `ShellOverlayHost::handle_event`.
 
-/// Same zero-init workaround as [`escape_event`] — winit 0.30 keeps
-/// `KeyEventExtra` `pub(crate)`.
 fn key_press(logical_key: Key) -> WindowEvent {
-    // SAFETY: see the note on `escape_event` — all pub fields of `KeyEvent`
-    // tolerate the all-zero bit pattern, and the overlay-host pre-pass
-    // only inspects `logical_key` + `state`.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        logical_key,
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 /// Throwaway `AutoCommit` + empty taffy tree, so the hotkey pre-pass
@@ -1691,7 +1657,7 @@ fn pump_host(
     let mut focus_target: Option<NodeId> = None;
     let taffy: TaffyTree<()> = TaffyTree::new();
     // `node_id` is only dereferenced when walking children; the pre-pass returns first.
-    let dummy_node: NodeId = unsafe { std::mem::zeroed() };
+    let dummy_node = NodeId::from(0_u64);
     host.handle_event(
         event,
         &mut ui::widget::EventCtx {

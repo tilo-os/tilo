@@ -39,29 +39,21 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
 
-fn synth_device() -> DeviceId {
-    // SAFETY: `DeviceId` is opaque; integration-test scaffolding
-    // already uses this pattern in
-    // `tests/permission_prompt_pump.rs` and several other shell
-    // integration tests.
-    unsafe { std::mem::zeroed() }
-}
-
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn left_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
@@ -69,7 +61,7 @@ fn left_press() -> WindowEvent {
 
 fn left_release() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     }

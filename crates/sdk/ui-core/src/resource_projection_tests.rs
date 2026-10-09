@@ -153,9 +153,7 @@ impl Widget for SemanticCountingPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -361,9 +359,7 @@ impl Widget for InventoryOnlyPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -431,9 +427,7 @@ impl Widget for FastInventoryPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(

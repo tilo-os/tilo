@@ -677,11 +677,7 @@ mod tests {
 mod control_bar_tests {
     use super::*;
     use crate::icons::Icon;
-    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-    fn device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, MouseButton, WindowEvent};
 
     #[test]
     fn a_control_bar_is_concentric_and_reports_its_clicks() {
@@ -714,14 +710,14 @@ mod control_bar_tests {
         let click = |bar: &mut ControlBar, p: Point| {
             bar.handle(
                 &WindowEvent::CursorMoved {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(p.x, p.y),
                 },
                 1.0,
             );
             bar.handle(
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
@@ -729,7 +725,7 @@ mod control_bar_tests {
             );
             bar.handle(
                 &WindowEvent::MouseInput {
-                    device_id: device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },

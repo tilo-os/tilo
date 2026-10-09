@@ -368,7 +368,7 @@ fn native_key(app: &mut App, key: &str) {
             "Tab" => winit::keyboard::NamedKey::Tab,
             _ => panic!("unsupported fixture key"),
         });
-        let event = crate::synthetic_input::key_event(&logical, state);
+        let event = crate::synthetic_input::key_input(&logical, state);
         let framework = app.history_controls_event(&event, 1.0);
         assert!(
             framework,
@@ -3972,7 +3972,7 @@ fn palette_activate(app: &mut App, action: &str, value: &str) {
 }
 
 fn palette_enter(app: &mut App) {
-    let event = crate::synthetic_input::key_event(
+    let event = crate::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
         winit::event::ElementState::Pressed,
     );
@@ -5395,7 +5395,7 @@ fn fresh_component_palette_does_not_require_history_identity_even_after_cancel()
     );
     activate_component_palette(&mut app, &handles[0], "ordinary", input);
     palette_history_round_trip(&mut app);
-    let escape = crate::synthetic_input::key_event(
+    let escape = crate::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
         winit::event::ElementState::Pressed,
     );
@@ -6517,7 +6517,7 @@ fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_jso
     if kind == "CommandPalette" {
         app.mutate_node(node, |widget| widget.set_focus(true))
             .unwrap();
-        let event = crate::synthetic_input::key_event(
+        let event = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
             ElementState::Pressed,
         );

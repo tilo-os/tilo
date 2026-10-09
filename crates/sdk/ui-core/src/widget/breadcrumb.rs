@@ -488,24 +488,18 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`, mirroring `permission_prompt.rs`'s helper.
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, Modifiers, MouseButton};
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

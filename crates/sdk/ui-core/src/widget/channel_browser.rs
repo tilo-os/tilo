@@ -1261,7 +1261,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
 
     #[test]
     fn channel_browser_presentation_and_accessibility() {
@@ -1513,18 +1513,11 @@ mod tests {
     }
 
     fn key_press(logical_key: Key) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(b: &mut ChannelBrowser, event: &WindowEvent, mods: Modifiers) {
@@ -1551,14 +1544,14 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }

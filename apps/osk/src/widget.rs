@@ -3709,7 +3709,7 @@ mod tests {
     fn pointer_and_toolbar_taps_route_to_their_targets() {
         eprintln!("phase pointer_tap_routes_to_key_under_cursor");
         {
-            use winit::event::{DeviceId, Modifiers};
+            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 800.0, 360.0);
 
@@ -3723,7 +3723,7 @@ mod tests {
                 .expect("q key laid out");
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = Modifiers::default();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -3819,12 +3819,12 @@ mod tests {
         {
             // A hidden keyboard must not consume taps meant for the app behind it:
             // `handle_event` returns early and `handled` stays false.
-            use winit::event::{DeviceId, Modifiers};
+            use winit::event::Modifiers;
             let mut osk =
                 OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
             lay_out(&mut osk, 800.0, 360.0);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = Modifiers::default();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -4202,7 +4202,7 @@ mod tests {
 
         eprintln!("phase short_tap_is_not_treated_as_a_swipe");
         {
-            use winit::event::{DeviceId, Modifiers};
+            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
 
@@ -4215,7 +4215,7 @@ mod tests {
                 .unwrap();
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = Modifiers::default();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -4279,13 +4279,13 @@ mod tests {
 
         eprintln!("phase pointer_swipe_decodes_through_keys");
         {
-            use winit::event::{DeviceId, Modifiers};
+            use winit::event::Modifiers;
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
             let path = path_through(&osk, "the");
             let start = *path.first().unwrap();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = Modifiers::default();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;

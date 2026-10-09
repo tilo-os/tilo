@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -317,21 +318,14 @@ impl Widget for AddressSuggestions {
         // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(self.panel_height() as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::length(self.width),
+                height: Dimension::length(self.panel_height() as f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -721,17 +715,10 @@ mod tests {
             let mods = winit::event::Modifiers::default();
 
             let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
+                let ev =
+                    ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
                 let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     event: ev,
                     is_synthetic: false,
                 };
@@ -777,17 +764,13 @@ mod tests {
             let root = automerge::ROOT;
             let mods = winit::event::Modifiers::default();
 
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Escape);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Escape),
+                None,
+                ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
@@ -847,14 +830,14 @@ mod tests {
             dispatch(
                 &mut w,
                 WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
                 },
             );
             let handled = dispatch(
                 &mut w,
                 WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

@@ -80,7 +80,7 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
 
 fn cursor(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     }
 }

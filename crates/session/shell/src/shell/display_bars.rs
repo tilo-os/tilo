@@ -8,6 +8,7 @@
 //! variant, placed by this layer rather than by the workspace column.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -142,11 +143,7 @@ impl Widget for DisplayBars {
     ) -> NodeId {
         // The bars are placed on their displays directly; this layer takes
         // no room in the desktop's layout.
-        let node = taffy
-            .new_leaf(Style::default())
-            .unwrap_or_else(|_| NodeId::from(0u64));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

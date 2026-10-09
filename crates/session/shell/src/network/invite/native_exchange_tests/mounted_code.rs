@@ -457,9 +457,7 @@ async fn drive(
             }
             tokio::select! {
                 Some(request) = refreshes.recv() => {
-                    let mut governor = authority.lock().unwrap().take().unwrap();
-                    super::refresh::refresh_on_request(&mut governor, request).await.unwrap();
-                    *authority.lock().unwrap() = Some(governor);
+                    super::refresh::refresh_shared_on_request(authority, request).await.unwrap();
                     publish(authority, context.publisher);
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {

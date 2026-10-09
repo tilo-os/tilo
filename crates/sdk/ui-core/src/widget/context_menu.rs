@@ -2095,7 +2095,7 @@ mod tests {
     }
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use winit::event::{DeviceId, TouchPhase};
+    use winit::event::TouchPhase;
 
     /// A shared counter the rows' callbacks bump.
     fn open_menu() -> (ContextMenu, Arc<AtomicU32>) {
@@ -2132,25 +2132,22 @@ mod tests {
         m.apply_layout(&taffy, node, Point::ZERO);
     }
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
     fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
@@ -2159,26 +2156,17 @@ mod tests {
     }
     fn wheel_lines(y: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, y),
             phase: TouchPhase::Moved,
         }
     }
     fn key(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -2415,7 +2403,7 @@ mod tests {
             let point = menu.get_rect().center();
             dispatch(&mut menu, &cursor_at(point));
             let wheel = |y| WindowEvent::MouseWheel {
-                device_id: synth_device(),
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, y),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -2692,39 +2680,28 @@ mod nested_and_anchored_tests {
     use automerge::AutoCommit;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use winit::event::DeviceId;
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
     fn key(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();

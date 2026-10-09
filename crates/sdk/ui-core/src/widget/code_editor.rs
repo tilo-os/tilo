@@ -1214,7 +1214,7 @@ mod tests {
     use taffy::{Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::Affine;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::{Key, NamedKey};
 
     fn mods(ctrl: bool, shift: bool) -> Modifiers {
@@ -1230,37 +1230,19 @@ mod tests {
     }
 
     fn char_event(s: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(winit::keyboard::SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new(s)),
+            Some(winit::keyboard::SmolStr::new(s)),
+            ElementState::Pressed,
+        ))
     }
 
     fn named_event(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
@@ -1586,7 +1568,7 @@ mod tests {
                 &mut large,
                 &mut doc,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(point.x, point.y),
                 },
                 mods(false, false),
@@ -1595,7 +1577,7 @@ mod tests {
                 &mut large,
                 &mut doc,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: winit::event::MouseButton::Left,
                 },
@@ -1697,23 +1679,15 @@ mod document_tests {
         assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
     }
 
-    use winit::event::{ElementState, KeyEvent};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.text = text.map(Into::into);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            key,
+            text.map(Into::into),
+            ElementState::Pressed,
+        ))
     }
 
     fn send(editor: &mut CodeEditor, event: &WindowEvent) -> bool {

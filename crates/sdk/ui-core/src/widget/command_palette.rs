@@ -2655,25 +2655,14 @@ mod tests {
     use super::*;
     use taffy::TaffyTree;
     use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
 
-    /// winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent` can't
-    /// be built through a struct literal — this zero-inits instead.
     fn key_press(logical_key: Key) -> WindowEvent {
-        // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
-        // pattern; `handle_event` only inspects `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]
@@ -2938,7 +2927,7 @@ mod tests {
 
             assert!(p.handle_overlay_key(
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
                 },
                 &modifiers,
@@ -2952,7 +2941,7 @@ mod tests {
             );
             assert!(p.handle_overlay_key(
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },

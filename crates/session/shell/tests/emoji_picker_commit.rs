@@ -41,7 +41,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::wayland::private_text_input_protocol::{
     tilo_text_input_manager_v1, tilo_text_input_v1,
@@ -343,18 +343,9 @@ impl Harness {
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         };

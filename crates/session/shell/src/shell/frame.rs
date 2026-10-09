@@ -4520,8 +4520,8 @@ mod tests {
     use crate::shell::state::FreshId as _;
     use automerge::ReadDoc as _;
     use automerge::transaction::Transactable;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+    use winit::event::ElementState;
+    use winit::keyboard::ModifiersState;
 
     /// A peer's window arriving in a workspace nobody governs yet: owed a
     /// look, but [`crate::shell::peer_windows::examine`] keeps it pending
@@ -5263,19 +5263,9 @@ mod tests {
     }
 
     fn key_press(key: Key) -> WindowEvent {
-        // SAFETY: winit keeps platform-private key metadata inaccessible to
-        // constructors. The production path under test reads only the public
-        // fields initialized immediately below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
