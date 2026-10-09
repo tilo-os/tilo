@@ -545,6 +545,11 @@ mod tests {
         assert_eq!(tab_shown(&mut app, 1), Some(true));
         app.call("open", serde_json::json!({ "anchor": id }))
             .unwrap();
+        assert!(
+            app.call("open", serde_json::json!({ "anchor": "a-process" }))
+                .is_err(),
+            "an anchor that names no process is refused"
+        );
         app.settle();
         app.harness().relayout();
         assert_eq!(

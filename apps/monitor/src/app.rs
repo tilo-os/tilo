@@ -865,9 +865,13 @@ impl MonitorApp {
 
     /// What a search hit or an agent's `open` runs: inspect the process
     /// row its anchor names.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let shared = Rc::clone(&self.shared);
-        move |anchor| shared.borrow_mut().push(Request::Open(anchor.to_owned()))
+        move |anchor| {
+            parse_process_resource_id(anchor).ok_or("not a process of this machine")?;
+            shared.borrow_mut().push(Request::Open(anchor.to_owned()));
+            Ok(())
+        }
     }
 
     /// Ask the host to run `effect` through the same door as the palette

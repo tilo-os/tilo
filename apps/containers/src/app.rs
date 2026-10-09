@@ -566,9 +566,18 @@ impl ContainersApp {
 
     /// What a search hit or an agent's `open` runs: show the row its
     /// anchor names, as choosing it does.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let opened = Rc::clone(&self.opened);
-        move |anchor| opened.borrow_mut().push(anchor.to_owned())
+        move |anchor| {
+            if !["container:", "image:", "volume:", "distrobox:"]
+                .iter()
+                .any(|prefix| anchor.starts_with(prefix))
+            {
+                return Err("not a container, image, volume or distrobox");
+            }
+            opened.borrow_mut().push(anchor.to_owned());
+            Ok(())
+        }
     }
 
     /// Show what the openers named since the last frame.

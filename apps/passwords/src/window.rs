@@ -237,15 +237,21 @@ impl PasswordsSurface {
     }
 
     /// What a search hit or an agent's `open` runs: show the vault item
-    /// its anchor names, as clicking its row does.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+    /// its anchor names, as clicking its row does; refused for an item the
+    /// vault does not hold.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
+        let core = Rc::clone(&self.core);
         let requests = Rc::clone(&self.requests);
         move |anchor| {
-            if let Some(id) = anchor.strip_prefix(crate::actions::ITEM_PREFIX) {
-                requests
-                    .borrow_mut()
-                    .push(Request::Open(SecretId(id.to_owned())));
+            let id = anchor
+                .strip_prefix(crate::actions::ITEM_PREFIX)
+                .map(|id| SecretId(id.to_owned()))
+                .ok_or("not an item of the vault")?;
+            if core.borrow().item(&id).is_none() {
+                return Err("the vault holds no such item");
             }
+            requests.borrow_mut().push(Request::Open(id));
+            Ok(())
         }
     }
 

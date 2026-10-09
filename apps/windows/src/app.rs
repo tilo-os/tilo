@@ -466,12 +466,14 @@ impl WindowsApp {
 
     /// What a search hit or an agent's `open` runs: show the application
     /// its anchor names, as choosing its row does.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
         let opened = Rc::clone(&self.opened);
         move |anchor| {
-            if let Some(app) = anchor.strip_prefix(crate::search::APP_PREFIX) {
-                *opened.borrow_mut() = Some(app.to_owned());
-            }
+            let app = anchor
+                .strip_prefix(crate::search::APP_PREFIX)
+                .ok_or("not a Windows application")?;
+            *opened.borrow_mut() = Some(app.to_owned());
+            Ok(())
         }
     }
 

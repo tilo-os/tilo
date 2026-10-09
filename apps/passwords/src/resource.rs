@@ -275,6 +275,14 @@ mod tests {
         .unwrap();
         app.call("open", serde_json::json!({ "anchor": row_id }))
             .unwrap();
+        assert!(
+            app.call(
+                "open",
+                serde_json::json!({ "anchor": item_resource_id("not-in-the-vault") })
+            )
+            .is_err(),
+            "an item the vault does not hold is not opened"
+        );
         app.settle();
         assert_eq!(
             app.surface_mut::<PasswordsSurface>()
