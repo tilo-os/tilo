@@ -13,7 +13,11 @@ fn sidebar_remains_docked_and_semantically_resizable_in_a_medium_chat_window() {
         .iter()
         .find(|resource| resource.label == "Resize sidebar")
         .expect("a medium conversation keeps its shared resize handle");
-    let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+    let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
+        .into_iter()
+        .find(|offered| offered.address.action == "set-value")
+        .expect("the separator offers set-value")
+        .address;
     let arguments = serde_json::Map::from_iter([(
         ui::tilo_actions::PROMPTED_PARAM.to_owned(),
         serde_json::Value::String("40%".into()),
@@ -66,7 +70,11 @@ fn sidebar_shared_resize_uses_the_complete_mounted_app_door() {
         .expect("the mounted app publishes exact resize");
     assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
     assert!(app.harness().component_contract_violations().is_empty());
-    let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+    let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
+        .into_iter()
+        .find(|offered| offered.address.action == "set-value")
+        .expect("the separator offers set-value")
+        .address;
     let arguments = serde_json::Map::from_iter([(
         ui::tilo_actions::PROMPTED_PARAM.to_owned(),
         serde_json::Value::String("30%".into()),

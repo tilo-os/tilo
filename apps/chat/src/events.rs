@@ -1997,13 +1997,25 @@ mod tests {
                 &crate::testing::item("channels", "c_crit"),
             )
             .expect("c_crit is a channel resource");
+            let offered = tilo_actions::door::survey(std::slice::from_ref(&crit))
+                .into_iter()
+                .find(|offered| offered.address.action == "delete-channel")
+                .expect("the channel offers delete-channel");
             let from_spec = tilo_actions::door::encode_json(
                 std::slice::from_ref(&crit),
-                &tilo_actions::ActionAddress::new(crit.id.as_str(), "delete-channel"),
+                &offered.address,
                 &serde_json::Map::new(),
             )
             .expect("the channel offers delete-channel with itself bound");
             let from_spec: serde_json::Value = serde_json::from_slice(&from_spec.payload).unwrap();
+            assert_eq!(
+                from_spec["op"],
+                crate::testing::operation(
+                    &crate::resource::Chat::DELETE_CHANNEL
+                        .with(ui::tilo_resource::Id::from_raw("c_crit"))
+                ),
+                "the palette's delete-channel is the record's verb on that channel"
+            );
 
             // Drive the real on-screen affordance (right-click menu → Delete).
             activate_context_menu_action(
@@ -3644,7 +3656,11 @@ mod tests {
         for id in ["increment", "decrement", "set-value"] {
             assert!(resize.actions.iter().any(|action| action.id == id));
         }
-        let address = ui::tilo_actions::ActionAddress::new(resize.id.as_str(), "set-value");
+        let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
+            .into_iter()
+            .find(|offered| offered.address.action == "set-value")
+            .expect("the separator offers set-value")
+            .address;
         let arguments = serde_json::Map::from_iter([(
             ui::tilo_actions::PROMPTED_PARAM.to_owned(),
             serde_json::Value::String("30%".into()),
