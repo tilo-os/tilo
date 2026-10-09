@@ -868,11 +868,32 @@ impl<R: Resource> ActionDecl<R> {
     }
 }
 
-/// Milliseconds since the Unix epoch on this machine. Only ever read on the
-/// origin, when an action is built; never inside `apply`.
+thread_local! {
+    /// The origin clock of a [`Replica`](crate::Replica) applying an action
+    /// on this thread, in place of the machine's.
+    static ORIGIN_CLOCK: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Milliseconds since the Unix epoch on this machine (or the clock of the
+/// replica applying an action here). Only ever read on the origin, when an
+/// action is built; never inside `apply`.
 #[must_use]
 pub fn origin_now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
+    ORIGIN_CLOCK
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(|| i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+}
+
+/// Run `f` with the origin clock reading `now_ms`.
+pub(crate) fn with_origin_clock<T>(now_ms: i64, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<i64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ORIGIN_CLOCK.with(|clock| clock.set(self.0));
+        }
+    }
+    let _restore = Restore(ORIGIN_CLOCK.with(|clock| clock.replace(Some(now_ms))));
+    f()
 }
 
 /// Encode a resource action under its registry type id.

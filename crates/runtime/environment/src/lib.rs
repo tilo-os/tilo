@@ -661,10 +661,10 @@ mod tests {
         );
         assert!(r.apply(add(&["pandoc"], "riscv", image(5))).is_err());
 
-        r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
+        r.apply_confirmed(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
             .unwrap();
         assert!(
-            r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
+            r.apply_confirmed(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
                 .is_err()
         );
         assert_eq!(r.state().unwrap().tools.len(), 1);
@@ -711,11 +711,11 @@ mod tests {
         ] {
             assert!(is_grantable(Path::new(good)), "{good} should be grantable");
         }
-        r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
+        r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
             .unwrap();
         assert!(r.state().unwrap().grants.0.is_empty());
         assert!(
-            r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
+            r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
                 .is_err()
         );
     }
@@ -754,7 +754,8 @@ mod tests {
             );
         }
         let id = host_grant_id("github.com");
-        r.apply(Environment::REVOKE_GRANT.with(id)).unwrap();
+        r.apply_confirmed(Environment::REVOKE_GRANT.with(id))
+            .unwrap();
         assert_eq!(r.state().unwrap().grants.0.len(), 1);
     }
 

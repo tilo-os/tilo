@@ -159,10 +159,7 @@ impl std::error::Error for ProjectFileError {}
 pub fn encode(project: &Project) -> Result<Vec<u8>, ProjectFileError> {
     let mut replica = Replica::<VideoProject>::new();
     replica
-        .apply_action(
-            &crate::actions::load_project_action(project),
-            "Save project",
-        )
+        .apply_action(&crate::actions::load_project_action(project))
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))?;
     let payload = replica.save();
 

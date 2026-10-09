@@ -3,14 +3,20 @@
 //! file an app saves its resource to and opens it from ([`Replica::load`],
 //! [`Replica::save`]).
 //!
-//! A replica applies actions exactly as the host does — built from the same
-//! declarations the palette and agents use, applied by the same executor with
-//! the same pinned actor and time — so a test written against it proves the
-//! behaviour every surface gets. Fork two replicas to test collaboration;
-//! replay one replica's log into a fresh one to prove determinism.
+//! A replica applies actions exactly as the host does: it publishes the
+//! resource's tree, and every invocation goes through the action door —
+//! resolved against what is published, checked for availability and
+//! confirmation, built from the same declarations the palette and agents
+//! use, decoded through the registry a peer would replay with, and committed
+//! with its history entry. A test written against it proves the behaviour
+//! every surface gets. Fork two replicas to test collaboration; replay one
+//! replica's log into a fresh one to prove determinism.
 
 use automerge::ChangeHash;
-use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry, EncodedAction};
+use tilo_actions::door::{self, InvocationProvenance};
+use tilo_actions::{
+    ActionAddress, ActionEnvelope, ActionError, ActionRegistry, DoorError, LocalTransport,
+};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::Invoke;
@@ -98,69 +104,95 @@ impl<R: Resource> Replica<R> {
         self.now_ms = now_ms;
     }
 
-    /// Invoke a declared action by name, exactly as a control, the palette,
-    /// an agent or a script does.
+    /// The tree the resource publishes now: what the door resolves against.
     ///
     /// # Errors
-    /// Returns a refusal, an argument error or a document error.
-    pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, ActionError> {
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn published(&self) -> Result<tilo_actions::Resource, ModelError> {
+        Ok(resource::publish::<R>(
+            R::KIND,
+            R::LABEL,
+            &R::read(&self.doc)?,
+        ))
+    }
+
+    /// Invoke a published action exactly as a control, the palette, an
+    /// agent or a script does: through the door, which refuses one that
+    /// asks for confirmation ([`Self::apply_confirmed`]).
+    ///
+    /// # Errors
+    /// Returns the door's refusal: unknown, unavailable, invalid arguments,
+    /// confirmation required, or the action's own refusal.
+    pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke, false)
+    }
+
+    /// [`Self::apply`] after the person confirmed it.
+    ///
+    /// # Errors
+    /// As [`Self::apply`], without asking for confirmation.
+    pub fn apply_confirmed(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke, true)
+    }
+
+    /// Apply one typed action value, the path a custom surface takes once
+    /// its person confirmed what it does: the generic
+    /// [`APPLY`](crate::APPLY) action, through the door.
+    ///
+    /// # Errors
+    /// Returns the door's refusal or the action's own.
+    pub fn apply_action(&mut self, action: &R::Action) -> Result<&ActionEnvelope, DoorError> {
+        let invoke = Invoke::apply(action)
+            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        self.invoke(invoke, true)
+    }
+
+    fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, DoorError> {
         if let Some(refusal) = invoke.refusal() {
-            return Err(ActionError::Refused(refusal.to_owned()));
+            return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
-        if id == crate::GROUP {
-            let group = crate::group::build_group::<R>(&arguments, self.now_ms)
-                .map_err(ActionError::Refused)?;
-            let encoded = EncodedAction::encode(crate::group::group_type::<R>(), &group)?;
-            return self.apply_encoded(&group, encoded, Some(id));
-        }
-        let action = resource::build_action::<R>(id, &arguments, self.now_ms)
-            .map_err(ActionError::Refused)?;
-        let encoded = resource::encode::<R>(&action)?;
-        self.apply_encoded(&action, encoded, Some(id))
-    }
-
-    /// Apply one typed action value (the path a custom surface takes).
-    ///
-    /// # Errors
-    /// Returns a refusal or a document error.
-    pub fn apply_action(
-        &mut self,
-        action: &R::Action,
-        _label: &str,
-    ) -> Result<&ActionEnvelope, ActionError> {
-        let encoded = resource::encode::<R>(action)?;
-        self.apply_encoded(action, encoded, None)
-    }
-
-    /// Apply `action`, invoked as the declared action `declared` when it was
-    /// invoked by name.
-    fn apply_encoded(
-        &mut self,
-        action: &dyn tilo_actions::Action,
-        encoded: EncodedAction,
-        declared: Option<&str>,
-    ) -> Result<&ActionEnvelope, ActionError> {
-        let mut context = ActionContext::for_resource(R::KIND, R::KIND, R::LABEL);
-        if let Some(described) = declared.and_then(|id| {
-            tilo_actions::Described::of_published(
-                &encoded,
-                tilo_actions::ActionKey::new("", R::KIND, id),
-            )
-        }) {
-            context = context.with_described(described);
-        }
-        let envelope = tilo_actions::apply_local_with_context(
-            &mut self.doc,
-            action,
-            encoded,
-            self.author.as_deref(),
-            context,
-        )?;
-        self.log.push(envelope);
+        let tree = self
+            .published()
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        let address = ActionAddress::new(tree.id.as_str(), id);
+        // Without an author, the replica's own actor: every replica is a
+        // device of its own.
+        let actor = self
+            .author
+            .clone()
+            .unwrap_or_else(|| self.doc.get_actor().to_bytes().to_vec());
+        let mut transport = LocalTransport::new();
+        let (doc, registry) = (&mut self.doc, &self.registry);
+        let dispatched = resource::with_origin_clock(self.now_ms, || {
+            let resources = std::slice::from_ref(&tree);
+            let provenance = InvocationProvenance::caller(&actor);
+            if confirmed {
+                door::invoke_json_confirmed(
+                    doc,
+                    resources,
+                    &address,
+                    &arguments,
+                    provenance,
+                    registry,
+                    &mut transport,
+                )
+            } else {
+                door::invoke_json(
+                    doc,
+                    resources,
+                    &address,
+                    &arguments,
+                    provenance,
+                    registry,
+                    &mut transport,
+                )
+            }
+        })?;
+        self.log.push(dispatched.envelope().clone());
         self.log
             .last()
-            .ok_or_else(|| ActionError::Refused("no envelope".into()))
+            .ok_or_else(|| DoorError::Failed("no envelope".into()))
     }
 
     /// Replay an envelope authored on another replica.

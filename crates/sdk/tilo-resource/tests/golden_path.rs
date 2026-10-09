@@ -198,7 +198,7 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         let heads = board.heads();
         let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
         assert!(
-            matches!(refused, Err(tilo_actions::ActionError::Refused(reason)) if reason == "no such card")
+            matches!(refused, Err(tilo_actions::DoorError::Failed(reason)) if reason == "no such card")
         );
         assert_eq!(board.heads(), heads);
     }
@@ -412,8 +412,19 @@ fn apply_and_group_name_the_declared_actions_instead_of_repeating_them() {
     ]);
     let apply = schema(tilo_resource::APPLY);
     let operations = apply["properties"]["op"]["oneOf"].as_array().unwrap();
-    assert_eq!(operations.len(), 1, "{apply}");
-    assert_eq!(operations[0]["properties"]["action"]["enum"], declared);
+    assert_eq!(operations.len(), 2, "{apply}");
+    assert!(
+        operations
+            .iter()
+            .any(|operation| operation["properties"]["action"]["enum"] == declared),
+        "{apply}"
+    );
+    assert!(
+        operations.iter().any(
+            |operation| operation["properties"]["action"]["const"] == tilo_resource::FIELD_EDIT
+        ),
+        "{apply}"
+    );
     let group = schema(tilo_resource::GROUP);
     assert_eq!(
         group["items"]["oneOf"][0]["properties"]["action"]["enum"],
@@ -527,7 +538,7 @@ fn action_parameter_examples_are_guidance_not_a_value_restriction() {
         tilo_actions::ActionArgs::bind_json(&rename.params, supplied.as_object().unwrap()).unwrap();
     let action = (rename.build)(&bound, 0).unwrap();
     let mut replica = Replica::<Board>::new();
-    replica.apply_action(&action, "Rename").unwrap();
+    replica.apply_action(&action).unwrap();
     assert_eq!(replica.state().unwrap().title, "Another valid title");
 }
 

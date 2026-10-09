@@ -127,16 +127,13 @@ fn host_declarations_roles_and_replay_are_honoured() {
         let mut origin = Replica::<VideoProject>::new();
         let mut peer = origin.fork();
         origin
-            .apply_action(&load_project_action(&sample_project()), "Open project")
+            .apply_action(&load_project_action(&sample_project()))
             .unwrap();
         let first = origin.state().unwrap().clips.first().unwrap().id;
         origin
-            .apply_action(
-                &VideoEditorAction::DeleteClip {
-                    id: first.to_string(),
-                },
-                "Delete clip",
-            )
+            .apply_action(&VideoEditorAction::DeleteClip {
+                id: first.to_string(),
+            })
             .unwrap();
         for envelope in origin.log().to_vec() {
             peer.replay(&envelope).unwrap();

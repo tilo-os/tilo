@@ -198,3 +198,37 @@ fn the_surface_lists_verbs_kinds_and_fields() {
         surface
     );
 }
+
+#[test]
+fn a_replica_acts_through_the_door() {
+    let mut contact = Replica::<Contact>::new();
+    // A destructive verb asks the person first.
+    assert!(matches!(
+        contact.apply(Contact::INVITE.invoke()),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(contact.state().unwrap().outbox.len(), 0);
+    contact.apply_confirmed(Contact::INVITE.invoke()).unwrap();
+    assert_eq!(contact.state().unwrap().outbox.len(), 1);
+    // An action the resource does not publish is unknown.
+    let unknown: tilo_resource::ActionRef<Contact, ()> = tilo_resource::ActionRef::new("nope", &[]);
+    assert!(matches!(
+        contact.apply(unknown.invoke()),
+        Err(tilo_actions::DoorError::Unknown(_))
+    ));
+    // The change carries the history entry the door writes.
+    contact
+        .apply(Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())))
+        .unwrap();
+    let versions = contact.versions();
+    let context = versions.last().unwrap().context.clone().unwrap();
+    let Some(tilo_actions::Described {
+        what: tilo_actions::Did::Verb(verb),
+        ..
+    }) = context.described()
+    else {
+        panic!("the change names its verb: {context:?}");
+    };
+    assert_eq!(verb.action.action, "rename");
+    assert_eq!(verb.action.kind, "test.contact");
+}

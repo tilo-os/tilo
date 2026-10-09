@@ -603,7 +603,7 @@ pub(crate) fn declared_invocation<'a>(
 /// [`APPLY`](crate::APPLY) takes it: `{"op": {"action": id, "args": {..}},
 /// "at": ms}`, one alternative per declaration.
 pub fn record_action_schema<R: crate::Resource>() -> Value {
-    let operations = R::declarations()
+    let mut operations: Vec<Value> = R::declarations()
         .iter()
         .map(|decl| {
             let variant = object(vec![
@@ -613,6 +613,25 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
             describe(variant, decl.description.as_deref().unwrap_or(&decl.label))
         })
         .collect();
+    if R::EDITS {
+        operations.push(describe(
+            object(vec![
+                ("action", constant(crate::FIELD_EDIT), true),
+                (
+                    "args",
+                    <crate::Edit<R> as crate::JsonSchema>::json_schema(),
+                    true,
+                ),
+            ]),
+            "Change one field",
+        ));
+    }
+    if R::seed().is_some() {
+        operations.push(describe(
+            object(vec![("action", constant("seed"), true)]),
+            "Write the record's first content",
+        ));
+    }
     object(vec![
         ("op", one_of(operations), true),
         (

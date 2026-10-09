@@ -251,6 +251,9 @@ fn item_verbs_are_offered_on_the_items_of_their_collection() {
 fn a_verb_with_an_outbox_reaches_outside() {
     let mut shelf = Replica::<Shelf>::new();
     shelf.apply(Shelf::RENAME.with("Pantry")).unwrap();
+    shelf
+        .apply(Shelf::ADD.with(("Tea".to_owned(), None)))
+        .unwrap();
     shelf.apply(Shelf::MAIL_TO.with("ada")).unwrap();
     let state = shelf.state().unwrap();
     assert_eq!(
@@ -297,7 +300,7 @@ fn seed_availability_children_and_content() {
     assert!(!mail.contract.availability.is_available());
 
     let seed = Shelf::seed().unwrap();
-    shelf.apply_action(&seed, "seed").unwrap();
+    shelf.apply_action(&seed).unwrap();
     let state = shelf.state().unwrap();
     assert!(state.seeded);
     assert_eq!(state.cards.values().next().unwrap().title, "Welcome");
@@ -322,7 +325,7 @@ fn seed_availability_children_and_content() {
     )]));
     let encoded = built.unwrap();
     let action: <Shelf as Resource>::Action = serde_json::from_slice(&encoded.payload).unwrap();
-    shelf.apply_action(&action, "add").unwrap();
+    shelf.apply_action(&action).unwrap();
     assert!(
         shelf
             .state()

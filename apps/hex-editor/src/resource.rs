@@ -452,7 +452,10 @@ mod tests {
         replica: &mut Replica<HexEditor>,
         action: &HexEditorAction,
     ) -> Result<(), ActionError> {
-        replica.apply_action(action, "edit").map(|_| ())
+        replica
+            .apply_action(action)
+            .map(|_| ())
+            .map_err(|error| ActionError::Refused(error.to_string()))
     }
 
     fn state(replica: &Replica<HexEditor>) -> HexState {

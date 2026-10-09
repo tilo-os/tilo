@@ -28,13 +28,10 @@ fn document(paragraphs: usize) -> Replica<RichText> {
             .unwrap()
             .to_owned();
         replica
-            .apply_action(
-                &RichTextAction::InsertParagraph {
-                    after: last,
-                    text: format!("Paragraph {n} of the document."),
-                },
-                "Add paragraph",
-            )
+            .apply_action(&RichTextAction::InsertParagraph {
+                after: last,
+                text: format!("Paragraph {n} of the document."),
+            })
             .unwrap();
     }
     replica
@@ -106,7 +103,7 @@ fn random_edit(replica: &mut Replica<RichText>, rng: &mut Lcg, step: usize) {
             text: format!("inserted {step}"),
         },
     };
-    replica.apply_action(&action, "Edit").unwrap();
+    replica.apply_action(&action).unwrap();
 }
 
 #[test]
@@ -136,16 +133,13 @@ fn a_keystroke_reads_its_paragraph_and_not_the_document() {
     replica.demand(Demand::range(190..210)).unwrap();
 
     replica
-        .apply_action(
-            &RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: target.clone(),
-                at: 0,
-                del: 0,
-                ins: "k".into(),
-            },
-            "Type",
-        )
+        .apply_action(&RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: target.clone(),
+            at: 0,
+            del: 0,
+            ins: "k".into(),
+        })
         .unwrap();
     let scans = model::ordered_keys_scan_count();
     let body_before = Rc::clone(replica.live().unwrap().body());
@@ -159,17 +153,14 @@ fn a_keystroke_reads_its_paragraph_and_not_the_document() {
 
     // Splitting a paragraph moves one entry of the order, still without a scan.
     replica
-        .apply_action(
-            &RichTextAction::SplitBlock {
-                region: RegionKind::Body,
-                block: target,
-                at: 1,
-                kind: "paragraph".into(),
-                ordered: None,
-                next: None,
-            },
-            "Enter",
-        )
+        .apply_action(&RichTextAction::SplitBlock {
+            region: RegionKind::Body,
+            block: target,
+            at: 1,
+            kind: "paragraph".into(),
+            ordered: None,
+            next: None,
+        })
         .unwrap();
     let scans = model::ordered_keys_scan_count();
     let live = body_ids(replica.live().unwrap());
@@ -184,17 +175,14 @@ fn replayed_actions_mint_the_same_blocks() {
     let mut peer = origin.fork();
     let first = origin.state().unwrap().body().id_at(1).unwrap().to_owned();
     origin
-        .apply_action(
-            &RichTextAction::SplitBlock {
-                region: RegionKind::Body,
-                block: first,
-                at: 3,
-                kind: "paragraph".into(),
-                ordered: None,
-                next: None,
-            },
-            "Enter",
-        )
+        .apply_action(&RichTextAction::SplitBlock {
+            region: RegionKind::Body,
+            block: first,
+            at: 3,
+            kind: "paragraph".into(),
+            ordered: None,
+            next: None,
+        })
         .unwrap();
     let envelope = origin.log().last().unwrap().clone();
     peer.replay(&envelope).unwrap();
@@ -210,32 +198,26 @@ fn the_outline_follows_headings() {
     let id = replica.state().unwrap().body().id_at(3).unwrap().to_owned();
     replica.live().unwrap();
     replica
-        .apply_action(
-            &RichTextAction::SetParagraphStyle {
-                region: RegionKind::Body,
-                blocks: vec![id.clone()],
-                kind: "heading".into(),
-                level: Some(2),
-                ordered: None,
-            },
-            "Heading",
-        )
+        .apply_action(&RichTextAction::SetParagraphStyle {
+            region: RegionKind::Body,
+            blocks: vec![id.clone()],
+            kind: "heading".into(),
+            level: Some(2),
+            ordered: None,
+        })
         .unwrap();
     let outline = replica.live().unwrap().headings();
     assert_eq!(outline.len(), 1);
     assert_eq!(outline[0].id, id);
     assert_eq!(outline[0].level, 2);
     replica
-        .apply_action(
-            &RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: id,
-                at: 0,
-                del: 0,
-                ins: "Chapter: ".into(),
-            },
-            "Type",
-        )
+        .apply_action(&RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: id,
+            at: 0,
+            del: 0,
+            ins: "Chapter: ".into(),
+        })
         .unwrap();
     let outline = replica.live().unwrap().headings();
     assert!(outline[0].text.starts_with("Chapter: "));
@@ -359,7 +341,7 @@ fn a_filled_table_is_laid_out_row_by_row_with_its_header_first() {
     let mut replica = document(2);
     let ids = body_ids(&replica.state().unwrap());
     let action = action::insert_filled_table_action(&ids[1], team());
-    replica.apply_action(&action, "Insert table").unwrap();
+    replica.apply_action(&action).unwrap();
 
     let cells = table_cells(&replica);
     assert_eq!(cells.len(), 9);
@@ -399,10 +381,7 @@ fn replicas_applying_a_filled_table_mint_the_same_table() {
     let mut peer = origin.fork();
     let after = origin.state().unwrap().body().id_at(1).unwrap().to_owned();
     origin
-        .apply_action(
-            &action::insert_filled_table_action(&after, team()),
-            "Insert table",
-        )
+        .apply_action(&action::insert_filled_table_action(&after, team()))
         .unwrap();
     let envelope = origin.log().last().unwrap().clone();
     peer.replay(&envelope).unwrap();
@@ -454,7 +433,7 @@ fn an_empty_table_still_replays_as_it_always_has() {
     let mut replica = document(1);
     let after = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
     replica
-        .apply_action(&action::insert_table_action(&after, 2, 3), "Insert table")
+        .apply_action(&action::insert_table_action(&after, 2, 3))
         .unwrap();
     let cells = table_cells(&replica);
     assert_eq!(cells.len(), 6);
@@ -481,19 +460,13 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
     let heads = replica.heads();
     for cells in hostile {
         let shape: Vec<usize> = cells.iter().map(Vec::len).collect();
-        let refused = replica.apply_action(
-            &action::insert_filled_table_action(&after, cells),
-            "Insert table",
-        );
+        let refused = replica.apply_action(&action::insert_filled_table_action(&after, cells));
         assert!(refused.is_err(), "{shape:?} was accepted");
     }
     // A stale anchor.
     assert!(
         replica
-            .apply_action(
-                &action::insert_filled_table_action("gone", team()),
-                "Insert table"
-            )
+            .apply_action(&action::insert_filled_table_action("gone", team()))
             .is_err()
     );
     assert_eq!(replica.heads(), heads, "nothing was written");
@@ -503,10 +476,7 @@ fn a_filled_table_outside_the_limits_is_refused_before_it_writes() {
     let side = action::MAX_TABLE_DIMENSION;
     let cells = vec![row(side, "c"); side];
     replica
-        .apply_action(
-            &action::insert_filled_table_action(&after, cells),
-            "Insert table",
-        )
+        .apply_action(&action::insert_filled_table_action(&after, cells))
         .unwrap();
     assert_eq!(table_cells(&replica).len(), side * side);
 }
@@ -518,13 +488,10 @@ fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
     let mut peer = local.fork();
     for (replica, text) in [(&mut local, "Local"), (&mut peer, "Peer")] {
         replica
-            .apply_action(
-                &RichTextAction::InsertParagraph {
-                    after: ids[0].clone(),
-                    text: text.into(),
-                },
-                "Add paragraph",
-            )
+            .apply_action(&RichTextAction::InsertParagraph {
+                after: ids[0].clone(),
+                text: text.into(),
+            })
             .unwrap();
     }
     local.sync_with(&mut peer).unwrap();
@@ -532,13 +499,10 @@ fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
     assert_eq!(merged, body_ids(&peer.state().unwrap()));
     assert_eq!(merged.len(), 5);
     local
-        .apply_action(
-            &RichTextAction::InsertParagraph {
-                after: merged[1].clone(),
-                text: "Between".into(),
-            },
-            "Add paragraph",
-        )
+        .apply_action(&RichTextAction::InsertParagraph {
+            after: merged[1].clone(),
+            text: "Between".into(),
+        })
         .unwrap();
     let after = body_ids(&local.state().unwrap());
     assert_eq!(after.len(), 6);
@@ -583,17 +547,14 @@ fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
     let mut replica = document(1);
     let block = body_ids(&replica.state().unwrap()).pop().unwrap();
     replica
-        .apply_action(
-            &RichTextAction::AddComment {
-                block,
-                start: 0,
-                end: 4,
-                author: "Ada".into(),
-                date: String::new(),
-                text: "Why?".into(),
-            },
-            "Comment",
-        )
+        .apply_action(&RichTextAction::AddComment {
+            block,
+            start: 0,
+            end: 4,
+            author: "Ada".into(),
+            date: String::new(),
+            text: "Why?".into(),
+        })
         .unwrap();
     let comment = replica.state().unwrap().comments()[0].id.clone();
     let body = vec![
@@ -622,16 +583,13 @@ fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
         },
     ];
     replica
-        .apply_action(
-            &RichTextAction::ReplyToComment {
-                comment: comment.clone(),
-                author: "Grace".into(),
-                date: String::new(),
-                text: "plain bold\ndone".into(),
-                body,
-            },
-            "Reply",
-        )
+        .apply_action(&RichTextAction::ReplyToComment {
+            comment: comment.clone(),
+            author: "Grace".into(),
+            date: String::new(),
+            text: "plain bold\ndone".into(),
+            body,
+        })
         .unwrap();
     let state = replica.state().unwrap();
     let thread = state
@@ -774,16 +732,13 @@ fn text_nobody_invoked_and_text_taken_away_stay_unattributed() {
     let mut replica = document(1);
     let ids = body_ids(&replica.state().unwrap());
     replica
-        .apply_action(
-            &RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: ids[1].clone(),
-                at: 0,
-                del: 0,
-                ins: "Unsigned ".into(),
-            },
-            "Type",
-        )
+        .apply_action(&RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: ids[1].clone(),
+            at: 0,
+            del: 0,
+            ins: "Unsigned ".into(),
+        })
         .unwrap();
     assert!(author_runs(&replica).is_empty());
 
@@ -837,14 +792,11 @@ fn replace_matches_refuses_invalid_batches_before_any_mutation() {
     ] {
         assert!(
             replica
-                .apply_action(
-                    &RichTextAction::ReplaceMatches {
-                        region: RegionKind::Body,
-                        spans,
-                        ins
-                    },
-                    "Replace all"
-                )
+                .apply_action(&RichTextAction::ReplaceMatches {
+                    region: RegionKind::Body,
+                    spans,
+                    ins
+                })
                 .is_err()
         );
         assert_eq!(replica.heads(), heads, "invalid batch wrote a partial edit");
@@ -856,39 +808,33 @@ fn replace_matches_uses_pre_action_unicode_offsets_and_one_replay_envelope() {
     let mut replica = document(0);
     let id = replica.state().unwrap().body().id_at(0).unwrap().to_owned();
     replica
-        .apply_action(
-            &RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: id.clone(),
-                at: 0,
-                del: 0,
-                ins: "😀alpha alpha 日".into(),
-            },
-            "Type",
-        )
+        .apply_action(&RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: id.clone(),
+            at: 0,
+            del: 0,
+            ins: "😀alpha alpha 日".into(),
+        })
         .unwrap();
     let mut peer = replica.fork();
     let logs = replica.log().len();
     replica
-        .apply_action(
-            &RichTextAction::ReplaceMatches {
-                region: RegionKind::Body,
-                spans: vec![
-                    Span {
-                        block: id.clone(),
-                        start: 7,
-                        end: 12,
-                    },
-                    Span {
-                        block: id.clone(),
-                        start: 1,
-                        end: 6,
-                    },
-                ],
-                ins: "β😀".into(),
-            },
-            "Replace all",
-        )
+        .apply_action(&RichTextAction::ReplaceMatches {
+            region: RegionKind::Body,
+            spans: vec![
+                Span {
+                    block: id.clone(),
+                    start: 7,
+                    end: 12,
+                },
+                Span {
+                    block: id.clone(),
+                    start: 1,
+                    end: 6,
+                },
+            ],
+            ins: "β😀".into(),
+        })
         .unwrap();
     assert_eq!(replica.log().len(), logs + 1);
     assert_eq!(
@@ -970,18 +916,15 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
     let mut replica = document(1);
     let paragraph = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
     replica
-        .apply_action(
-            &RichTextAction::InsertImage {
-                block: paragraph.clone(),
-                at: 0,
-                content: "ab".repeat(32),
-                mime: "image/jpeg".into(),
-                len: 1_024,
-                width: Some(640),
-                height: Some(480),
-            },
-            "Insert image",
-        )
+        .apply_action(&RichTextAction::InsertImage {
+            block: paragraph.clone(),
+            at: 0,
+            content: "ab".repeat(32),
+            mime: "image/jpeg".into(),
+            len: 1_024,
+            width: Some(640),
+            height: Some(480),
+        })
         .unwrap();
     let image = block_alts(&replica)
         .into_iter()
@@ -1012,9 +955,7 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
         (vec!["gone".to_owned()], "A desk light"),
     ] {
         assert!(
-            replica
-                .apply_action(&set(blocks, alt), "Describe image")
-                .is_err(),
+            replica.apply_action(&set(blocks, alt)).is_err(),
             "{alt:?} was accepted"
         );
     }
@@ -1022,7 +963,7 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
 
     let alt = "Chalk-white articulated desk light on a desk, with a deep-teal campaign panel to the right.";
     replica
-        .apply_action(&set(vec![image.clone()], alt), "Describe image")
+        .apply_action(&set(vec![image.clone()], alt))
         .unwrap();
     let described = block_alts(&replica);
     assert!(described.contains(&(image.clone(), "image".into(), Some(alt.to_owned()))));
@@ -1035,14 +976,11 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
     );
 
     replica
-        .apply_action(
-            &RichTextAction::ClearBlockAttr {
-                region: RegionKind::Body,
-                blocks: vec![image],
-                key: "alt".into(),
-            },
-            "Clear image description",
-        )
+        .apply_action(&RichTextAction::ClearBlockAttr {
+            region: RegionKind::Body,
+            blocks: vec![image],
+            key: "alt".into(),
+        })
         .unwrap();
     assert!(block_alts(&replica).iter().all(|(_, _, alt)| alt.is_none()));
 }

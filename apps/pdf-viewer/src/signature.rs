@@ -106,21 +106,15 @@ mod tests {
     fn the_signature_keeps_its_signer_and_strokes_and_refuses_garbage() {
         let mut replica = Replica::<SignatureProfile>::new();
         replica
-            .apply_action(
-                &SignatureAction::SetSigner {
-                    name: " Ada Lovelace ".into(),
-                },
-                "sign as",
-            )
+            .apply_action(&SignatureAction::SetSigner {
+                name: " Ada Lovelace ".into(),
+            })
             .unwrap();
         let strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
         replica
-            .apply_action(
-                &SignatureAction::SetStrokes {
-                    strokes: strokes.clone(),
-                },
-                "draw",
-            )
+            .apply_action(&SignatureAction::SetStrokes {
+                strokes: strokes.clone(),
+            })
             .unwrap();
         assert_eq!(
             replica.state().unwrap(),
@@ -131,12 +125,9 @@ mod tests {
         );
         assert!(
             replica
-                .apply_action(
-                    &SignatureAction::SetStrokes {
-                        strokes: vec![vec![(f64::NAN, 0.0)]],
-                    },
-                    "draw",
-                )
+                .apply_action(&SignatureAction::SetStrokes {
+                    strokes: vec![vec![(f64::NAN, 0.0)]],
+                })
                 .is_err()
         );
     }

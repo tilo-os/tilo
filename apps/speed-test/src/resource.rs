@@ -184,7 +184,9 @@ mod tests {
             "the oldest runs went first"
         );
 
-        replica.apply(SpeedTest::CLEAR.invoke()).expect("clear");
+        replica
+            .apply_confirmed(SpeedTest::CLEAR.invoke())
+            .expect("clear");
         assert!(replica.state().expect("state").results.is_empty());
     }
 }

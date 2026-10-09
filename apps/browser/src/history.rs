@@ -687,13 +687,13 @@ mod tests {
         };
         let mut laptop = Replica::<BrowsingHistory>::new();
         laptop
-            .apply_action(&visit("https://a.test", "Alpha", 111), "Visit")
+            .apply_action(&visit("https://a.test", "Alpha", 111))
             .unwrap();
         laptop
-            .apply_action(&visit("https://b.test", "Beta", 222), "Visit")
+            .apply_action(&visit("https://b.test", "Beta", 222))
             .unwrap();
         laptop
-            .apply_action(&visit("https://a.test", "", 333), "Visit")
+            .apply_action(&visit("https://a.test", "", 333))
             .unwrap();
         let history = laptop.state().unwrap();
         assert_eq!(history.len(), 2);
@@ -707,12 +707,12 @@ mod tests {
 
         let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
         laptop
-            .apply_action(&visit("https://kept.test", &long_title, 1), "Visit")
+            .apply_action(&visit("https://kept.test", &long_title, 1))
             .unwrap();
         let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
         assert!(
             laptop
-                .apply_action(&visit(&too_long_url, "ignored", 1), "Visit")
+                .apply_action(&visit(&too_long_url, "ignored", 1))
                 .is_err()
         );
         let history = laptop.state().unwrap();
@@ -729,15 +729,12 @@ mod tests {
 
         let mut phone = Replica::<BrowsingHistory>::from_doc(laptop.doc().clone().fork());
         phone
-            .apply_action(&visit("https://c.test", "Gamma", 444), "Visit")
+            .apply_action(&visit("https://c.test", "Gamma", 444))
             .unwrap();
         laptop
-            .apply_action(
-                &HistoryAction::Forget {
-                    url: "https://b.test".into(),
-                },
-                "Forget",
-            )
+            .apply_action(&HistoryAction::Forget {
+                url: "https://b.test".into(),
+            })
             .unwrap();
         tilo_automerge::ApplyIncoming::merge_incoming(laptop.doc_mut(), phone.doc_mut()).unwrap();
         let urls: Vec<String> = laptop
@@ -750,7 +747,7 @@ mod tests {
         assert!(urls.contains(&"https://c.test".to_string()));
         assert!(!urls.contains(&"https://b.test".to_string()));
 
-        laptop.apply_action(&HistoryAction::Clear, "Clear").unwrap();
+        laptop.apply_action(&HistoryAction::Clear).unwrap();
         assert!(laptop.state().unwrap().is_empty());
     }
 }
