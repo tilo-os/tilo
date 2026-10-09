@@ -24,7 +24,7 @@ of the current-main delivery branch; it does not rewrite that authored commit.
 
 ## Verification
 
-Focused commands on the rcargo builder:
+Focused commands using Cargo on the remote builder:
 
 ~~~sh
 cargo test --locked -p shell --lib people_
