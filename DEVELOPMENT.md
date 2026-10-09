@@ -1629,10 +1629,8 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
-  it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
-  `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
-  or on the image. The host package omits this file.
+- **No `/etc/tilo/desktop.toml`.** The host package omits it, so the compositor
+  uses its defaults unless `~/.config/tilo-desktop/desktop.toml` exists.
 
 `/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
 no such unit here, so the permission UI will talk about a path that is not
