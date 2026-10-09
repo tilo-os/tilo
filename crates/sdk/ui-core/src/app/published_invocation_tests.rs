@@ -591,3 +591,59 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
         );
     }
 }
+
+/// TIL-652: a caller that names no revision is admitted against the one the
+/// owner resolved the action at, and the broker binds the admission to the
+/// revision that resolution names. When the directory moves on between that
+/// resolution and the host running the action (the owner's actions changed),
+/// the host refuses before the handler runs, exactly as it does for a
+/// revision the caller named. Two controls run: the same invocation with no
+/// change, and one resolved after the change.
+#[test]
+fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    // (the directory moves on, the invocation is resolved after it moved)
+    for (case, (moved, resolved_after)) in [(false, false), (true, false), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let request = remote_request(900 + u64::try_from(case).unwrap(), "bump");
+        let (mut app, store, checkout, _temp) = owned_counter(CounterCard::new());
+        if moved && resolved_after {
+            let _ = app.action_registry_mut();
+        }
+        let runtime_collab::ActionDirectoryResolution::Found {
+            revision: Some(resolved),
+            ..
+        } = app.resolve_action_directory("", "test.counter", "bump")
+        else {
+            panic!("an empty revision resolves the directory as it is now, and names it");
+        };
+        assert_eq!(resolved, app.action_directory_revision());
+        // What the broker admits: the revision the resolution named.
+        let mut spec = original_counter_spec("bump");
+        spec.directory_revision = Some(resolved.clone());
+        if moved && !resolved_after {
+            let _ = app.action_registry_mut();
+            assert_ne!(
+                app.action_directory_revision(),
+                resolved,
+                "the owner's change moved the directory"
+            );
+        }
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer_with_spec(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+            Some(spec),
+        ))
+        .unwrap();
+        deliver_remote(&mut app, &request);
+        assert_eq!(
+            owned_count(&store, &checkout),
+            i64::from(!(moved && !resolved_after)),
+            "case {case}: a directory that moved after a revisionless resolution must refuse \
+             before mutation; an unchanged one, or one resolved after the change, must run"
+        );
+    }
+}

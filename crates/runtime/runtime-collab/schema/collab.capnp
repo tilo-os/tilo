@@ -438,6 +438,8 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
+  # An empty `revision` resolves against the directory as it is now; a found
+  # resolution then names that revision in `resolvedRevision`.
   resolve @1 (revision :Text, resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
 }
@@ -500,6 +502,12 @@ struct ActionDirectoryResolution {
     staleRevision @2 :Void;
     unavailable @3 :Void;
   }
+  # For `found`: the revision the owner resolved the row against, which is
+  # the named one or, for an empty revision, the directory as it is now. The
+  # broker binds the admission to it, so a host worker refuses to run the
+  # action once its directory moved on. Empty from an owner built before
+  # this field existed.
+  resolvedRevision @4 :Text;
 }
 
 interface WorkspaceControlHandle {

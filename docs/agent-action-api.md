@@ -290,7 +290,13 @@ Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer
 valid now fails loudly instead of running something else. The request runs from
 that one resolution: nothing else runs between resolving the address and
-invoking it.
+invoking it. An application's directory action is admitted bound to the
+directory revision it was resolved at, which the invocation journal records;
+the host that runs it refuses (`published_invocation_revision_changed`) when
+the app's directory moved on before it ran, rather than acting on something
+other than what was resolved. A remote caller that names no revision is bound
+to the one the app resolved at, except for an action whose contract asks for
+confirmation: that one needs the revision it was shown at.
 
 ## Why enumeration carries no invoke handle
 

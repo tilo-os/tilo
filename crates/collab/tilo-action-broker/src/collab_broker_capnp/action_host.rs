@@ -15,10 +15,10 @@ use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-    ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
-    pending, workspace_provider, workspace_provider_room,
+    ActionHostError, CONFIRMED_ACTION_NEEDS_REVISION, Caller, CallerPrincipal, CataloguePage,
+    CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
+    Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -1735,17 +1735,16 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let row = match reply {
+        let stale = || ActionHostError::InvalidRequest {
+            reason: "the action changed since that revision; list it again".into(),
+        };
+        let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::Found(row),
-            ))) => row,
+                runtime_collab::ActionDirectoryResolution::Found { row, revision },
+            ))) => (row, revision),
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => {
-                return Err(ActionHostError::InvalidRequest {
-                    reason: "the action changed since that revision; list it again".into(),
-                });
-            }
+            ))) => return Err(stale()),
             Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
@@ -1754,8 +1753,25 @@ impl CapnpBrokerState {
                 });
             }
         };
+        // The admission is bound to the revision the caller chose the target
+        // at or, when it named none, the one its owner resolved it against
+        // just now: a host refuses to run it once the directory moved on.
+        // An owner that names no revision for an empty one resolved nothing
+        // the host could check against later.
+        let revision = request.revision.clone().or(resolved).ok_or_else(stale)?;
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
+        // A person's confirmation covers the action as they were shown it.
+        // Without the revision it was shown at, the broker cannot tell that
+        // from the action as it is now, so only reads and plain edits act on
+        // the directory as it is now.
+        if request.revision.is_none()
+            && offered.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None
+        {
+            return Err(ActionHostError::InvalidRequest {
+                reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
+            });
+        }
         let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
@@ -1803,7 +1819,7 @@ impl CapnpBrokerState {
             },
             super::AdmissionProvenance {
                 durable: None,
-                revision: request.revision.as_deref(),
+                revision: Some(&revision),
                 origin: origin.cloned(),
                 retained_time: None,
             },
@@ -2738,7 +2754,7 @@ fn directory_page(
                 ..CataloguePage::default()
             };
             match resolution {
-                runtime_collab::ActionDirectoryResolution::Found(row) => {
+                runtime_collab::ActionDirectoryResolution::Found { row, .. } => {
                     page.rows.extend(directory_row(root, &row));
                 }
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
