@@ -397,3 +397,50 @@ fn content_from_outside_compensates_nothing_however_much_it_wrote() {
     assert!(context.compensation.is_none(), "nobody undoes it");
     assert_eq!(planner.state().unwrap().events.len(), 3000);
 }
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Runs {
+    /// What the device runs; changed by verbs, settled by the device.
+    #[model(readonly)]
+    pub queue: Outbox<String>,
+}
+
+#[resource(kind = "test.runs", label = "Runs")]
+impl Runs {
+    /// Run a command.
+    #[action]
+    pub fn run(&mut self, cx: &mut ActionCx, queue: &mut Outbox<String>, command: String) {
+        queue.push(cx.id(), command);
+    }
+}
+
+#[test]
+fn a_read_only_outbox_takes_its_settlement() {
+    let mut runs = Replica::<Runs>::new();
+    runs.apply(Runs::RUN.with("ls")).unwrap();
+    let entry = runs
+        .state()
+        .unwrap()
+        .queue
+        .entries()
+        .next()
+        .unwrap()
+        .0
+        .clone();
+    assert!(
+        runs.apply(Runs::paths().queue.forget(&Id::from_raw("nothing")))
+            .is_err(),
+        "nothing to forget"
+    );
+    runs.apply(Runs::paths().queue.settle(&entry, &Settled::Done(())))
+        .expect("the device settles the entry");
+    assert!(
+        runs.state()
+            .unwrap()
+            .queue
+            .get(&entry)
+            .unwrap()
+            .settled
+            .is_some()
+    );
+}

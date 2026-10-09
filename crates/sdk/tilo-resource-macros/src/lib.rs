@@ -595,10 +595,20 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         .map_err(|error| error.at(#key))?));
         if readonly {
             readonly_fields.push(key.clone());
+            // The outside settling an outbox entry, or forgetting a settled
+            // one, is no edit of the field's content: a read-only outbox
+            // takes them.
             edit_arms.push(quote!(#key => {
-                return ::core::result::Result::Err(#krate::ModelError::Refused(
-                    ::std::format!("`{}` is changed only by the record's actions", #field_name),
-                ));
+                if !matches!(
+                    op,
+                    #krate::EditOp::Settle { .. } | #krate::EditOp::Forget { .. }
+                ) {
+                    return ::core::result::Result::Err(#krate::ModelError::Refused(
+                        ::std::format!("`{}` is changed only by the record's actions", #field_name),
+                    ));
+                }
+                <#ty as #krate::Model>::edit(doc, #krate::Slot::Key(obj, #key), rest, op, cx)
+                    .map_err(|error| error.at(#key))?
             }));
         } else if options.atom {
             edit_arms.push(quote!(#key => <#krate::Atom as #krate::Model>::edit(
