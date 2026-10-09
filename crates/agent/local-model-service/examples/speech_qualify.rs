@@ -119,13 +119,28 @@ mod qualification {
         let root = fixture.path().join("store");
         fs::create_dir_all(root.join("sha256"))?;
         let sha = hex::encode(Sha256::digest(model));
+        let whistle = model.len() == 16_919_407
+            && sha == "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb";
+        let (format, license, revision) = if whistle {
+            (
+                "whistle_cact",
+                "Apache-2.0",
+                "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            )
+        } else {
+            (
+                "whisper_ggml",
+                "MIT",
+                "5359861c739e955e79d9a303bcbc70fb988958b1",
+            )
+        };
         let object = root.join("sha256").join(&sha);
         fs::write(&object, model)?;
         let release: agent_provider_config::local::LocalModelRelease = serde_json::from_value(
             serde_json::json!({
-                "id": "speech-qualification", "label": "Public fixture", "description": "Isolated test only", "version": "5359861c739e955e79d9a303bcbc70fb988958b1",
+                "id": "speech-qualification", "label": "Public fixture", "description": "Isolated test only", "version": revision,
                 "artifact": {"url": "https://example.invalid/public-fixture", "sha256": sha, "size_bytes": model.len()},
-                "artifact_format": "whisper_ggml", "license_id": "MIT", "license_url": "https://example.invalid/LICENSE", "requires_acceptance": true,
+                "artifact_format": format, "license_id": license, "license_url": "https://example.invalid/LICENSE", "requires_acceptance": true,
                 "installed_size_bytes": model.len(), "allowed_runtimes": [], "required_memory_mib": 1024, "required_accelerator_mib": 0, "context_window": 0,
                 "vision": false, "face_recognition": false, "segmentation": false
             }),
@@ -139,7 +154,7 @@ mod qualification {
                 process: None,
                 in_process: Some(InProcessRecord {
                     revision: release.version.clone(),
-                    license_id: "MIT".into(),
+                    license_id: license.into(),
                     size_bytes: u64::try_from(model.len())?,
                     capabilities: vec![InProcessCapability::SpeechRecognition],
                     recorded_at_unix_ms: 1,
@@ -151,7 +166,7 @@ mod qualification {
             LicenseAcceptance {
                 model_version: release.version.clone(),
                 model_sha256: sha,
-                license_id: "MIT".into(),
+                license_id: license.into(),
             },
         );
         fs::write(root.join("state.json"), serde_json::to_vec(&state)?)?;
@@ -372,6 +387,10 @@ mod qualification {
                 .read_to_end(&mut model)?;
             let digest = hex::encode(Sha256::digest(&*model));
             let reviewed = [
+                (
+                    16_919_407,
+                    "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+                ),
                 (
                     77_691_713,
                     "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
