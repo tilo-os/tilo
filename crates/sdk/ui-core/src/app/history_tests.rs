@@ -36,7 +36,7 @@ fn native_focus_order_keeps_live_rows_before_history_controls() {
         .iter()
         .map(|&node| {
             app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
-                .flatten()
+                .unwrap()
         })
         .collect();
     assert_eq!(

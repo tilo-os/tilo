@@ -9048,7 +9048,7 @@ mod tests {
                 .filter_map(|node| {
                     frame
                         .inspect_node(node, |widget| widget.test_id().map(str::to_owned))
-                        .flatten()
+                        .unwrap()
                         .filter(|id| id.starts_with("row-"))
                 })
                 .collect::<Vec<_>>()
