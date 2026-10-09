@@ -5453,8 +5453,46 @@ impl MusicApp {
         if let Some((playlist, track)) = crate::actions::parse_playlist_track_resource_id(row) {
             return membership_edits(lib, &playlist, &track);
         }
+        if let Some(playlist) = crate::actions::parse_playlist_resource_id(row) {
+            return playlist_edits(lib, &playlist);
+        }
         recommendation_edits(lib, row)
     }
+}
+
+/// Setting `playlist`'s cover and adding a song of the library at its end,
+/// each asking for its value. Renaming is every labelled item's own.
+fn playlist_edits(lib: &Library, playlist: &str) -> Vec<ui::tilo_resource::ActionDecl<Library>> {
+    use ui::tilo_resource::{ActionDecl, Id};
+    let Some(list) = lib.playlist(playlist) else {
+        return Vec::new();
+    };
+    let paths = Library::playlist_paths(playlist);
+    let cover = paths.cover.clone();
+    let tracks = paths.tracks;
+    let end = list.len();
+    vec![
+        ActionDecl::edit_asking(
+            "set-cover-url",
+            "Set playlist cover URL",
+            "cover",
+            "An https:// image address; blank clears the cover",
+            move |value: String| cover.replace(value.trim()),
+        ),
+        ActionDecl::edit_asking(
+            "add-track",
+            "Add track to playlist",
+            "track",
+            "The song of the library to add, by id or music.track: address",
+            move |value: String| {
+                let track = value
+                    .strip_prefix("music.track:")
+                    .unwrap_or(&value)
+                    .to_owned();
+                tracks.insert_as(&Id::from_raw(track.as_str()), end, &track)
+            },
+        ),
+    ]
 }
 
 /// Taking `track` out of `playlist` and moving it one place, while the

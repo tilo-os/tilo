@@ -664,6 +664,66 @@ mod tests {
         );
     }
 
+    /// A playlist's row renames it, sets its cover and adds a song of the
+    /// library at its end, each asking for its value.
+    #[test]
+    fn playlist_rows_rename_cover_and_add_songs() {
+        let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
+        let morning = crate::actions::playlist_resource_id("pl_morning");
+        app.call_on(
+            &morning,
+            "rename",
+            serde_json::json!({ "name": "Slow start" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().playlist("pl_morning").unwrap().name,
+            "Slow start"
+        );
+        app.call_on(
+            &morning,
+            "add-track",
+            serde_json::json!({ "track": "music.track:tk_a1" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state()
+                .playlist("pl_morning")
+                .unwrap()
+                .track_ids()
+                .last(),
+            Some(&"tk_a1".to_owned())
+        );
+        assert!(
+            app.call_on(
+                &morning,
+                "add-track",
+                serde_json::json!({ "track": "tk_gone" })
+            )
+            .is_err(),
+            "only a song of the library is added"
+        );
+        assert!(
+            app.call_on(
+                &morning,
+                "set-cover-url",
+                serde_json::json!({ "cover": "file:///tmp/cover.png" })
+            )
+            .is_err(),
+            "a cover is portable"
+        );
+        app.call_on(
+            &morning,
+            "set-cover-url",
+            serde_json::json!({ "cover": "https://example.test/cover.png" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().playlist("pl_morning").unwrap().cover,
+            "https://example.test/cover.png"
+        );
+    }
+
     #[test]
     fn a_new_library_is_empty() {
         let app = TestApp::<MusicShell>::new().unwrap();
