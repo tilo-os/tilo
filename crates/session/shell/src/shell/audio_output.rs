@@ -4,7 +4,7 @@ use media::pw_stream::{PlaybackSource, PlaybackStream};
 use runtime_collab::audio_output::{CHANNELS, Command, MAX_SAMPLES, Snapshot};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    Arc, Mutex, Weak,
+    Arc, Condvar, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
 use tilo_action_broker::services::{
@@ -13,6 +13,9 @@ use tilo_action_broker::services::{
 
 const MAX_OUTPUTS: usize = 8;
 const MAX_QUEUED_SAMPLES: usize = MAX_SAMPLES * 8;
+/// How often an open output's admission is re-checked. Admission has a clock
+/// in it (certificate expiry), so while an output is open this stays a timer.
+const REVALIDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 type Prepare = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Box<dyn PlaybackStream>, String>> + Send>,
 >;
@@ -161,6 +164,62 @@ struct Outputs {
     next: u64,
     entries: BTreeMap<Key, Entry>,
 }
+/// Wakes the authority watchdog when there is something to watch again.
+///
+/// With no output open there is no admission to re-check, so the watchdog
+/// blocks here instead of ticking (TIL-704): an idle desktop's audio
+/// authority costs no wakeups.
+#[derive(Default)]
+struct Watch {
+    state: Mutex<WatchState>,
+    wake: Condvar,
+}
+#[derive(Default)]
+struct WatchState {
+    /// Bumped by every `open`; read before the watchdog looks at the
+    /// registry, so an output inserted after that look still wakes it.
+    epoch: u64,
+    /// The watchdog is blocked in [`Watch::wait_after`].
+    parked: bool,
+    /// The service is gone; the watchdog exits.
+    closed: bool,
+}
+impl Watch {
+    /// The current epoch, or `None` once the service closed.
+    fn epoch(&self) -> Option<u64> {
+        let state = self.state.lock().ok()?;
+        (!state.closed).then_some(state.epoch)
+    }
+    fn notify(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.epoch = state.epoch.wrapping_add(1);
+            if state.parked {
+                self.wake.notify_all();
+            }
+        }
+    }
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            self.wake.notify_all();
+        }
+    }
+    /// Blocks, without a timeout, until the epoch moves past `seen` or the
+    /// service closes.
+    fn wait_after(&self, seen: u64) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.parked = true;
+        while state.epoch == seen && !state.closed {
+            state = match self.wake.wait(state) {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+        }
+        state.parked = false;
+    }
+}
 struct Shared {
     lifecycle: LocalSessionLifecycle,
     outputs: Mutex<Outputs>,
@@ -168,8 +227,19 @@ struct Shared {
     factory: Arc<Factory>,
     lifecycle_listener: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     privacy_listener: Mutex<Option<Arc<PrivacyListener>>>,
+    watch: Arc<Watch>,
+}
+impl Drop for Shared {
+    fn drop(&mut self) {
+        self.watch.close();
+    }
 }
 impl Shared {
+    fn watching(&self) -> bool {
+        self.outputs
+            .lock()
+            .is_ok_and(|outputs| !outputs.entries.is_empty())
+    }
     fn revalidate(&self) {
         let callers = self
             .outputs
@@ -226,6 +296,7 @@ impl AudioOutputService {
             factory,
             lifecycle_listener: Mutex::new(None),
             privacy_listener: Mutex::new(None),
+            watch: Arc::default(),
         });
         let weak = Arc::downgrade(&shared);
         let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -255,16 +326,26 @@ impl AudioOutputService {
             *keep = Some(privacy);
         }
         let weak = Arc::downgrade(&shared);
+        let watch = shared.watch.clone();
         if std::thread::Builder::new()
             .name("tilo-audio-output-authority".into())
             .spawn(move || {
-                loop {
+                // Re-check every open output's admission on a short timer;
+                // with none open, block until `open` registers one.
+                while let Some(seen) = watch.epoch() {
                     let Some(shared) = weak.upgrade() else {
                         break;
                     };
-                    shared.revalidate();
+                    let watching = shared.watching();
+                    if watching {
+                        shared.revalidate();
+                    }
                     drop(shared);
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if watching {
+                        std::thread::sleep(REVALIDATE_INTERVAL);
+                    } else {
+                        watch.wait_after(seen);
+                    }
                 }
             })
             .is_err()
@@ -314,6 +395,8 @@ impl AudioOutputService {
             );
             generation
         };
+        // Revalidation covers the preparation window too.
+        self.0.watch.notify();
         let mut guard = PreparationGuard {
             shared: Arc::downgrade(&self.0),
             key: key.clone(),
@@ -780,6 +863,86 @@ mod tests {
                 .is_err()
         );
         assert_eq!(render(&sources, 0, 2), vec![0.0; 2]);
+    }
+
+    /// Waits up to `bound` for `done`, polling the test's own clock.
+    fn eventually(bound: std::time::Duration, done: impl Fn() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + bound;
+        while std::time::Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        done()
+    }
+    fn parked(service: &AudioOutputService) -> bool {
+        service.0.watch.state.lock().unwrap().parked
+    }
+
+    #[tokio::test]
+    async fn governed_output_watchdog_parks_without_outputs_and_still_fences_revocation() {
+        use std::time::Duration;
+
+        let (_owner, service, sources) = fixture();
+        // No output open: the production watchdog blocks without a timeout.
+        assert!(
+            eventually(Duration::from_secs(2), || parked(&service)),
+            "the audio authority watchdog kept ticking with no output open"
+        );
+
+        let current = Arc::new(AtomicBool::new(true));
+        let checked = current.clone();
+        let mut music = caller(1, "so.tilo.music");
+        music.current = Arc::new(move || {
+            checked
+                .load(Ordering::Acquire)
+                .then_some(())
+                .ok_or_else(|| "process custody ended".into())
+        });
+        let generation = service.open(music.clone()).await.unwrap().generation;
+        service
+            .control(
+                music.clone(),
+                Command::Write {
+                    generation,
+                    sequence: 1,
+                    samples: vec![16384; 2],
+                },
+            )
+            .unwrap();
+        // Opening woke it: the lapse is fenced by the watchdog alone, with no
+        // command and no manual revalidation, within a few intervals.
+        current.store(false, Ordering::Release);
+        assert!(
+            eventually(Duration::from_secs(1), || service
+                .0
+                .outputs
+                .lock()
+                .unwrap()
+                .entries
+                .is_empty()),
+            "an open output whose admission lapsed was not fenced"
+        );
+        assert_eq!(render(&sources, 0, 2), vec![0.0; 2]);
+        assert!(
+            service
+                .control(music, Command::Status { generation })
+                .is_err()
+        );
+        // Nothing left to watch: it parks again.
+        assert!(
+            eventually(Duration::from_secs(2), || parked(&service)),
+            "the watchdog did not park after the last output ended"
+        );
+
+        // It exits with the service rather than staying parked forever.
+        let watch = Arc::downgrade(&service.0.watch);
+        drop(service);
+        assert!(
+            eventually(Duration::from_secs(2), || watch.upgrade().is_none()),
+            "the watchdog outlived its service"
+        );
     }
 
     #[test]
