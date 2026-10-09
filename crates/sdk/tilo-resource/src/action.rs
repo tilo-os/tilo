@@ -738,29 +738,33 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
                 return index(doc);
             }
         }
-        // What it was: for the record's `queue`, and to hold what the verb
-        // produced against its footprint.
-        let before = if queues || units {
-            Some(O::Record::read_fields(doc, &ROOT).map_err(refused)?)
-        } else {
-            None
-        };
         // The record the previous action of this type left behind, brought
         // up to date with only the changes since, stands in for a whole read.
+        let committed = automerge::transaction::Transactable::pending_ops(doc) == 0;
         let (mut record, dirty) = match crate::apply_cache::take::<O::Record>(doc) {
             Some(warm) => (warm.record, Some(warm.dirty)),
             None => (O::Record::read_fields(doc, &ROOT).map_err(refused)?, None),
         };
-        // Only an action starting from a committed version leaves a record
-        // the next one can start from.
-        let kept = if automerge::transaction::Transactable::pending_ops(doc) == 0 {
+        // What it was: for the record's `queue`, to hold what the verb
+        // produced against its footprint, and, when it starts from a
+        // committed version, for the next action to start from.
+        let kept = if committed || queues || units {
             O::snapshot(&record)
         } else {
             None
         };
+        let read_before;
+        let before = match (&kept, queues || units) {
+            (_, false) => None,
+            (Some(kept), true) => Some(kept),
+            (None, true) => {
+                read_before = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+                Some(&read_before)
+            }
+        };
         let minting = MintScope::enter(&cx);
         let performed = self.operation.perform(&mut record, &mut cx);
-        if let (Ok(()), Some(before), true) = (&performed, &before, queues) {
+        if let (Ok(()), Some(before), true) = (&performed, before, queues) {
             O::queue(&mut record, before, &mut cx);
         }
         drop(minting);
@@ -780,7 +784,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         } else {
             crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
         }
-        if let (Some(before), true) = (&before, units) {
+        if let (Some(before), true) = (before, units) {
             crate::footprint::check(before, &record, &self.operation.writes())
                 .map_err(|refusal| ActionError::Refused(refusal.0))?;
         }
@@ -789,10 +793,13 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             _ => record.write_fields(doc, &ROOT),
         }
         .map_err(refused)?;
-        if let Some(kept) = kept {
+        index(doc)?;
+        // Kept once all it wrote is written: the next action finds this
+        // one's change by its size.
+        if let (Some(kept), true) = (kept, committed) {
             crate::apply_cache::keep(kept, doc);
         }
-        index(doc)
+        Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
