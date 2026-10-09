@@ -93,3 +93,14 @@ Those are held by thread probes in their own crates.
 Each later fix lowers the matching budget in its own pull request: the
 audio-output poll (−20/s), the collaboration broker threads (−21/s), the
 network runtime (−10/s) and the rest of the table.
+
+## Later fixes
+
+| fix | thread | before | after | parked desktop, whole tree |
+| -- | -- | --: | --: | --: |
+| TIL-704 | `tilo-audio-output-authority` | 20.1/s (run 89961) | 0.0/s (run 89960) | 31.9/s (run 89960) |
+
+TIL-704: the watchdog re-checks an open output's admission every 50 ms as
+before, and blocks on a condition variable while no output is open; `open`
+wakes it. The parked budget becomes 31.9/s plus a quarter, 40/s, once
+TIL-696 lets the gate use it.
