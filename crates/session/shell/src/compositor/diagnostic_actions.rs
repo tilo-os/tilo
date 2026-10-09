@@ -117,11 +117,18 @@ pub(super) fn dispatch(command: &Command) -> Option<Response> {
                 message: crate::shell::i18n::t("session-diagnostics-dispatch-requires-timestamps"),
             });
         }
-        session.configure_diagnostics(Options(flags));
+        let options = Options(flags);
+        if let Err(error) = options.persist() {
+            return Some(Response::Err {
+                code: "diagnostics_persistence_failed".into(),
+                message: error.to_string(),
+            });
+        }
+        session.configure_diagnostics(options);
     }
     let flags = session.diagnostic_options();
     Some(Response::Answer(
-        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged","live_compositor_phase_export":flags.0[1],"gpu_timestamp_options":"startup_only"}),
+        json!({"applies_to":"subsequent_launches","diagnostics":flags.value(),"live_input_delivery":flags.0[0],"current_gpu_renderer":"unchanged","live_compositor_phase_export":flags.0[1],"gpu_timestamp_options":"startup_only","managed_startup":"next_session_refresh"}),
     ))
 }
 
@@ -131,6 +138,9 @@ mod tests {
 
     #[test]
     fn session_diagnostics_strict_admission_readback_and_session_isolation() {
+        let config = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
         let session = LaunchSession::current();
         assert!(session.diagnostics.lock().unwrap().is_none());
         let mut command = Command::ActionsInvoke {
@@ -176,5 +186,56 @@ mod tests {
         assert!(
             matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())
         );
+    }
+
+    #[test]
+    fn session_diagnostics_persist_before_live_change_and_load_at_startup() {
+        use std::os::unix::fs::PermissionsExt;
+        let config = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let session = LaunchSession::current();
+        let mut command = Command::ActionsInvoke {
+            provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
+            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None,
+        };
+        assert!(matches!(dispatch(&command), Some(Response::Answer(_))));
+        let options = session.diagnostic_options();
+        let saved = config.path().join("tilo/diagnostics/session.json");
+        let bytes = std::fs::read(&saved).unwrap();
+        let persisted: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(persisted["schema"], 1);
+        assert_eq!(persisted["gpu_timestamps"], true);
+        assert_eq!(persisted.as_object().unwrap().len(), 5);
+        assert_eq!(
+            std::fs::metadata(&saved).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(saved.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        // Exercise the startup loader, not a serialisation-only round trip.
+        env.remove("VELLO_GPU_TIMESTAMPS");
+        env.remove("TILO_PROFILE_GPU_STAGES");
+        // SAFETY: ScopedEnv serialises all test environment access.
+        unsafe { crate::shell::launcher::diagnostics::apply_managed_startup() }.unwrap();
+        assert_eq!(std::env::var("VELLO_GPU_TIMESTAMPS").unwrap(), "1");
+        assert_eq!(std::env::var("TILO_PROFILE_GPU_STAGES").unwrap(), "1");
+        // A failed durable update must not change the existing live policy.
+        std::fs::remove_file(&saved).unwrap();
+        std::fs::create_dir(&saved).unwrap();
+        if let Command::ActionsInvoke { args, .. } = &mut command {
+            args.insert("gpu_timestamps".into(), json!(true));
+            args.insert("gpu_dispatch_timestamps".into(), json!(false));
+        }
+        assert!(
+            matches!(dispatch(&command), Some(Response::Err { code, .. }) if code == "diagnostics_persistence_failed")
+        );
+        assert_eq!(session.diagnostic_options(), options);
     }
 }

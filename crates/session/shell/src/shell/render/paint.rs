@@ -9149,6 +9149,8 @@ mod tests {
     #[test]
     fn direct_gpu_submission_envelope_covers_real_scanout_blit_and_preserves_pixels() {
         let mut env = tilo_test_env::ScopedEnv::new();
+        let config = tempfile::tempdir().unwrap();
+        env.set("XDG_CONFIG_HOME", config.path());
         env.set("VELLO_GPU_TIMESTAMPS", "0");
         env.set("VELLO_GPU_DISPATCH_TIMESTAMPS", "0");
         let mut ordinary = required_bridge(128, 96);
@@ -9180,7 +9182,11 @@ mod tests {
                 .all(|pixel| pixel == [0, 0, 255, 255])
         );
         drop(ordinary);
-        env.set("VELLO_GPU_TIMESTAMPS", "1");
+        crate::shell::launcher::diagnostics::Options([true, true, true, false])
+            .persist()
+            .unwrap();
+        // SAFETY: the test environment guard serialises environment access.
+        unsafe { crate::shell::launcher::diagnostics::apply_managed_startup() }.unwrap();
         let mut observed = required_bridge(128, 96);
         assert!(
             observed

@@ -15655,9 +15655,27 @@ mod tests {
         assert!(session.is_locked());
     }
 
+    fn session_diagnostics_config_fixture() -> (tempfile::TempDir, tilo_test_env::ScopedEnv, PathBuf)
+    {
+        let config = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let managed = config.path().join("tilo/diagnostics/session.json");
+        (config, env, managed)
+    }
+
+    fn assert_session_diagnostics_config(path: &Path, expected: &[u8]) {
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            expected,
+            "refused actor changed owner startup policy"
+        );
+    }
+
     #[test]
     fn session_diagnostics_require_the_unlocked_authenticated_owner_connection() {
         use std::io::Write as _;
+        let (_config, _env, managed) = session_diagnostics_config_fixture();
         let mut fb = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
         let mut ctx = TestControlCtx::new();
         let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
@@ -15680,6 +15698,10 @@ mod tests {
             test_control::Response::Err { .. }
         ));
         assert!(
+            !managed.exists(),
+            "unauthenticated control cannot persist diagnostics"
+        );
+        assert!(
             crate::shell::launcher::LaunchSession::current()
                 .diagnostics
                 .lock()
@@ -15696,6 +15718,7 @@ mod tests {
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Answer(value) if value["diagnostics"]["presentation"] == true && value["live_compositor_phase_export"] == true && value["gpu_timestamp_options"] == "startup_only" && value["current_gpu_renderer"] == "unchanged")
         );
+        let owner_config = std::fs::read(&managed).unwrap();
         let phases = presenter
             .collect_gpu_phase_fixture()
             .expect("existing presenter exports real work");
@@ -15724,6 +15747,7 @@ mod tests {
         assert!(
             matches!(socket_response(&mut reader), test_control::Response::Err { code, .. } if code == "not_permitted")
         );
+        assert_session_diagnostics_config(&managed, &owner_config);
         let mut disabled = request.clone();
         disabled["args"]["gpu_stages"] = serde_json::json!(false);
         writer
@@ -15739,6 +15763,7 @@ mod tests {
             presenter.collect_gpu_phase_fixture().is_none(),
             "live disable removes prior frame phases"
         );
+        let locked_config = std::fs::read(&managed).unwrap();
         let _ = session.request_lock(Instant::now());
         writer.write_all(format!("{request}\n").as_bytes()).unwrap();
         pump_test_control_conn(
@@ -15748,6 +15773,7 @@ mod tests {
             socket_response(&mut reader),
             test_control::Response::Err { .. }
         ));
+        assert_session_diagnostics_config(&managed, &locked_config);
     }
 
     /// A driver's request often lands after its connection was accepted and

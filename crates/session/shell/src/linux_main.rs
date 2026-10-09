@@ -489,6 +489,22 @@ pub fn run() -> std::process::ExitCode {
                 | "--provision-identity"
                 | "--verify-collaboration-identity"
         )
+    }) {
+        // SAFETY: no shader, identity, service or GPU workers have started.
+        if let Err(error) = unsafe { shell::shell::launcher::diagnostics::apply_managed_startup() }
+        {
+            eprintln!("session diagnostics startup refused: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    if !early_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--portal-server-only"
+                | "--firstboot-only"
+                | "--provision-identity"
+                | "--verify-collaboration-identity"
+        )
     }) && let Err(error) = shell::shader_seed::prepare_session()
     {
         eprintln!("session shader seed unavailable ({error}); compiling normally");

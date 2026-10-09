@@ -12,7 +12,7 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
-pub(crate) mod diagnostics;
+pub mod diagnostics;
 
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
