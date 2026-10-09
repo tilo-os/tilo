@@ -540,15 +540,7 @@ mod tests {
     fn key(named: NamedKey) -> WindowEvent {
         // `KeyEvent`'s platform field is private; initialize the same minimal
         // synthetic event used by the shared TextInput's own tests.
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event,

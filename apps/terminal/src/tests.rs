@@ -86,14 +86,6 @@ impl MasterPty for MockMasterShared {
     }
 }
 
-/// `DeviceId::dummy()` is gated behind a winit unstable feature; the
-/// regular constructor isn't pub. Match what
-/// `crates/sdk/ui-core/src/widget/date_picker.rs` does: zero-init the value, which
-/// `handle_event` never inspects for these tests.
-fn fake_device_id() -> winit::event::DeviceId {
-    unsafe { std::mem::zeroed() }
-}
-
 /// Construct a terminal widget with a writer that funnels bytes
 /// into a channel so tests can assert what was sent to the PTY.
 fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
@@ -426,7 +418,7 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
@@ -454,7 +446,7 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     };
@@ -483,7 +475,7 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::CursorMoved {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     };
     widget.handle_event(
@@ -521,7 +513,7 @@ fn send_mouse_button_mods(
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state,
         button,
     };
@@ -601,8 +593,7 @@ fn send_key_with_modifiers(
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
 
     let modifiers: Modifiers = state.into();
     let mut handled = false;
@@ -610,15 +601,7 @@ fn send_key_with_modifiers(
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
 
-    // Construct over a zeroed buffer because winit's `KeyEventExtra`
-    // is `pub(crate)` — same trick `ui::widget::modal_dialog`'s tests
-    // and `crates/session/shell/tests/e2e_shell_flows.rs::key_press` use.
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
+    let mut ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     // Real winit delivers the committed text alongside a character key; the
     // terminal encodes that into the PTY bytes (and typing snaps the
     // scrollback back to the live bottom). Named keys carry no `text`.
@@ -628,7 +611,7 @@ fn send_key_with_modifiers(
     };
 
     let win_ev = WindowEvent::KeyboardInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     };
@@ -656,24 +639,17 @@ pub(crate) fn send_key_without_text(
     key: winit::keyboard::Key,
 ) -> bool {
     use ui::widget::Widget;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
 
     let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus = None;
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
+    let ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     widget.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         },
@@ -3695,7 +3671,7 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
@@ -3724,7 +3700,7 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::Style::default()).unwrap();
     let ev = WindowEvent::MouseInput {
-        device_id: fake_device_id(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Middle,
     };
@@ -3926,7 +3902,7 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         let mut handled = false;
         let mut focus = None;
         let ev = WindowEvent::CursorMoved {
-            device_id: fake_device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0),
         };
         widget.handle_event(

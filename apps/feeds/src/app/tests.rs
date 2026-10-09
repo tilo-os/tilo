@@ -102,16 +102,7 @@ fn press(button: MouseButton) -> WindowEvent {
 }
 
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-    // winit's `KeyEventExtra` is crate-private: start from zero and set the
-    // inspected fields, as the toolkit's own widget tests do.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(Into::into);
+    let ev = ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
     WindowEvent::KeyboardInput {
         device_id: synth_device(),
         event: ev,

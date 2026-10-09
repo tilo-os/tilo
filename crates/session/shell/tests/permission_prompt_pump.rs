@@ -32,25 +32,18 @@ use ui::widget::{PermissionPrompt, PromptChoice, Widget};
 use automerge::AutoCommit;
 use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
-fn synth_device() -> DeviceId {
-    // SAFETY: `DeviceId` is opaque; integration-test scaffolding
-    // already uses this pattern in `quick-ui::widget::slider`'s
-    // tests + several other shell test files.
-    unsafe { std::mem::zeroed() }
-}
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
 
 fn left_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }

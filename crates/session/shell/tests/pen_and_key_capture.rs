@@ -29,8 +29,8 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_v2,
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use settings_store::hardware::{PadDial, TabletConfig};
 use shell::compositor::backend::{
@@ -771,8 +771,7 @@ fn an_app_that_declines_the_pad_keeps_the_pads_own_mapping() {
         &mut h.state,
         &mut h.fb,
         &WindowEvent::CursorMoved {
-            // SAFETY: an inert device id, as the input adapters use.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
         },
         &no_mods,
@@ -886,8 +885,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
         &mut h.state,
         &mut h.fb,
         &WindowEvent::CursorMoved {
-            // SAFETY: an inert device id, as the input adapters use.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
         },
         &no_mods,
@@ -1321,20 +1319,17 @@ fn a_pad_leaves_the_app_as_soon_as_keyboard_focus_does() {
 }
 
 fn key(logical: Key, pressed: bool) -> WindowEvent {
-    // SAFETY: `KeyEvent` keeps platform data private; the input adapters
-    // build it the same way.
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = logical;
-    event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
+    let event = ui::synthetic_input::key_event(
+        logical,
+        None,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
     WindowEvent::KeyboardInput {
-        // SAFETY: an inert device id, as the DRM adapter uses.
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     }

@@ -21,8 +21,8 @@ use ui::a11y::{AccessNode, Role};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn mode(width: u32, height: u32) -> OutputMode {
     OutputMode {
@@ -132,25 +132,16 @@ pub(crate) fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId
     (taffy, host_node)
 }
 
-/// Route a pressed logical key through the host dispatcher. `KeyEvent` has
-/// no public constructor, so its opaque platform payload is zeroed and every
-/// public field set, as the compositor's own harness does.
+/// Route a pressed logical key through the host dispatcher.
 pub(crate) fn press(
     host: &mut ShellOverlayHost,
     layout: &(TaffyTree<()>, NodeId),
     key: Key,
     mods: ModifiersState,
 ) {
-    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-    key_event.logical_key = key;
-    key_event.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    key_event.location = KeyLocation::Standard;
-    key_event.state = ElementState::Pressed;
-    key_event.repeat = false;
-    key_event.text = None;
+    let key_event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     let event = WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: key_event,
         is_synthetic: false,
     };

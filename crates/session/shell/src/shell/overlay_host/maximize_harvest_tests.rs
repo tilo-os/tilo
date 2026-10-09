@@ -140,7 +140,7 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(9000.0, 9000.0),
         };
         g.handle_event(

@@ -2545,21 +2545,14 @@ impl ComposeWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::KeyEvent;
+
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
     fn key(logical: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
+        let ev =
+            ui::synthetic_input::key_event(logical, text.map(SmolStr::new), ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         }

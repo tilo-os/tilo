@@ -31,8 +31,8 @@ mod tests {
     use portable_pty::{MasterPty, PtySize};
     use std::sync::mpsc::Receiver;
     use taffy::{NodeId, TaffyTree};
-    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
+    use winit::event::{ElementState, Modifiers, WindowEvent};
+    use winit::keyboard::{Key, SmolStr};
 
     use ui::widget::Widget;
 
@@ -108,28 +108,14 @@ mod tests {
         out
     }
 
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
-    /// A character keypress through the real winit event path (the same trick the
-    /// widget's own tests use for winit's `pub(crate)` `KeyEventExtra`). Real
-    /// winit delivers the committed `text` alongside a character key, which the
-    /// terminal encodes into the PTY bytes.
+    /// Real winit delivers the committed `text` alongside a character key, which the terminal
+    /// encodes into the PTY bytes.
     fn char_event(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(c));
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(c));
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(SmolStr::new(c)),
+            Some(SmolStr::new(c)),
+            ElementState::Pressed,
+        ))
     }
 
     /// Pump one event through the production `Widget::handle_event`.

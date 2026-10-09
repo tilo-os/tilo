@@ -1077,7 +1077,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let node = taffy.leaf_node(Style::default());
 
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(20.0, 20.0),
         };
         ti.handle_event(
@@ -1094,7 +1094,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             },
         );
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -1147,22 +1147,12 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
     }
 }
 
-/// `KeyEvent` has a `pub(crate)` platform field so it can't be
-/// struct-literalled from a test; zero it then overwrite fields.
 fn char_key_event(s: &str) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(winit::keyboard::SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        Key::Character(winit::keyboard::SmolStr::new(s)),
+        Some(winit::keyboard::SmolStr::new(s)),
+        ElementState::Pressed,
+    ))
 }
 
 /// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
@@ -1174,7 +1164,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let node = taffy.leaf_node(Style::default());
     let moved = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(x, y),
     };
     ti.handle_event(
@@ -1191,7 +1181,7 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
         },
     );
     let press = WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Right,
     };
@@ -1301,7 +1291,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(280.0, 38.0),
         };
         ti.handle_event(
@@ -1318,7 +1308,7 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
             },
         );
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -2412,44 +2402,36 @@ fn command_mods() -> Modifiers {
 }
 
 fn named_key_event(k: NamedKey) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(k);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        Key::Named(k),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn mouse_move(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(x, y),
     }
 }
 fn left_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
 }
 fn left_release() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
         button: MouseButton::Left,
     }
 }
 fn middle_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Middle,
     }
@@ -2463,7 +2445,7 @@ fn test_node() -> (TaffyTree<()>, NodeId) {
 
 fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: winit::dpi::PhysicalPosition::new(point.x, point.y),
         force: None,

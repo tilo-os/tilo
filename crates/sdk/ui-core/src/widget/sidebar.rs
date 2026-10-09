@@ -1514,7 +1514,7 @@ mod tests {
         );
 
         // The system shortcut closes it, as in every app.
-        let key = crate::synthetic_input::key_event(
+        let key = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character("L".into()),
             ElementState::Pressed,
         );

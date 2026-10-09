@@ -3925,11 +3925,11 @@ mod tests {
             assert!(sheet.y0 >= 0.0 && sheet.y1 <= 600.0);
             let center = sheet.center();
             Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(center.x, center.y),
             });
             Framed::harness_mut(&mut app).dispatch_to_root(&WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: winit::event::MouseScrollDelta::LineDelta(0.0, -10.0),
                 phase: winit::event::TouchPhase::Moved,
             });
@@ -4218,8 +4218,8 @@ mod tests {
         }
         // Phase `disk_shutter_writes_a_real_jpeg_via_handle_event`.
         {
-            use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-            use winit::keyboard::{Key, NamedKey, PhysicalKey};
+            use winit::event::{ElementState, Modifiers, WindowEvent};
+            use winit::keyboard::{Key, NamedKey};
 
             let dir =
                 std::env::temp_dir().join(format!("camera-shutter-test-{}", std::process::id()));
@@ -4238,19 +4238,13 @@ mod tests {
             // Simulate a camera frame arriving.
             app.push_camera_frame(frame::viewfinder(1, 64, 48));
 
-            // Press Space through the real event path. `KeyEvent` carries a
-            // non-exhaustive field, so build it via the zeroed-struct idiom used
-            // across the toolkit's own tests.
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Space);
-            ev.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Space),
+                None,
+                ElementState::Pressed,
+            );
             let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             };
@@ -4842,7 +4836,7 @@ mod tests {
 
             fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
                 WindowEvent::Touch(winit::event::Touch {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     phase,
                     location: winit::dpi::PhysicalPosition::new(point.x, point.y),
                     force: None,

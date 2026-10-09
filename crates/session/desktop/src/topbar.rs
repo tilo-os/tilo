@@ -6027,15 +6027,11 @@ mod tests {
     }
 
     fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
-        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key_event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(key),
+            None,
+            winit::event::ElementState::Pressed,
         );
-        key_event.logical_key = winit::keyboard::Key::Named(key);
-        key_event.text = None;
-        key_event.location = winit::keyboard::KeyLocation::Standard;
-        key_event.state = winit::event::ElementState::Pressed;
-        key_event.repeat = false;
         let event = WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: key_event,
@@ -6074,7 +6070,7 @@ mod tests {
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(bar.center_rect.center());
         let secondary = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Right,
         };
@@ -6092,9 +6088,11 @@ mod tests {
             })
         }));
 
-        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key_event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-        key_event.state = winit::event::ElementState::Pressed;
+        let key_event = ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         let escape = WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: key_event,
@@ -6108,7 +6106,7 @@ mod tests {
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(Point::new(2.0, 2.0));
         let outside = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: winit::event::ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         };

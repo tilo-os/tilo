@@ -169,7 +169,7 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         app.init_layout();
         assert!(!app.screen_reader_enabled());
         let ev = WindowEvent::CursorLeft {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
         };
         assert!(
             !app.handle_screen_reader_key(&ev),
@@ -183,7 +183,7 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         app.init_layout();
         assert!(app.screen_reader_enabled());
         let ev = WindowEvent::CursorLeft {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
         };
         assert!(!app.handle_screen_reader_key(&ev));
     }

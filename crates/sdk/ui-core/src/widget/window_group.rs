@@ -3691,7 +3691,7 @@ mod tests {
         dispatch(
             &mut g,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
             },
             &mut state,
@@ -3715,11 +3715,11 @@ mod tests {
         let click_pt = max_rect.center();
 
         let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(click_pt.x, click_pt.y),
         };
         let press = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
@@ -3817,7 +3817,7 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
             g.handle_event(
@@ -3908,7 +3908,7 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
             let mut state = automerge::AutoCommit::new();
@@ -4063,7 +4063,7 @@ mod tests {
             g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
             g.last_cursor = Point::new(20.0, 20.0);
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -4227,11 +4227,11 @@ mod tests {
             };
 
             let move_to = |x: f64| WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, press_y),
             };
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -4420,7 +4420,7 @@ mod tests {
             let mut state = automerge::AutoCommit::new();
             let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
             g.handle_event(
@@ -4510,7 +4510,7 @@ mod tests {
 
                 // Drive the WindowGroup drain block via a no-op cursor move.
                 let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
                 };
                 let mut state = automerge::AutoCommit::new();
@@ -4572,25 +4572,15 @@ mod tests {
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
-            use winit::event::{KeyEvent, Modifiers};
-            use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+            use winit::event::Modifiers;
+            use winit::keyboard::{Key, ModifiersState, SmolStr};
 
-            // winit 0.30 keeps `KeyEventExtra` `pub(crate)`, so a `KeyEvent`
-            // can't be built through a struct literal — zero-init instead.
             fn key_press(logical_key: Key) -> WindowEvent {
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = logical_key;
-                ev.physical_key =
-                    PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-                ev.location = KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
-                WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    logical_key,
+                    None,
+                    ElementState::Pressed,
+                ))
             }
 
             let mut g = make_group();
@@ -5391,7 +5381,7 @@ mod tests {
             let mut state = automerge::AutoCommit::new();
             let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
             g.handle_event(
@@ -5421,7 +5411,7 @@ mod tests {
 
             g.force_expire_closing(2);
             let moved2 = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
             let mut handled2 = false;
@@ -5494,7 +5484,7 @@ mod tests {
             let mut state = automerge::AutoCommit::new();
             let root_id = automerge::ROOT;
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
             g.handle_event(
@@ -5523,7 +5513,7 @@ mod tests {
             // away, discovers the group is empty, and latches the group close.
             g.force_expire_closing(1);
             let moved2 = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(1000.0, 1000.0),
             };
             let mut handled2 = false;
@@ -5683,7 +5673,7 @@ mod tests {
             g.last_cursor = Point::new(5.0, 5.0);
 
             let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             };
@@ -5736,7 +5726,7 @@ mod tests {
 
             g.force_expire_closing(1);
             let moved = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
             };
             let mut handled2 = false;

@@ -170,7 +170,7 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
 /// through `WindowGroup::handle_event` into `GroupRow`'s detach sweep.
 fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
     let event = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(9000.0, 9000.0),
     };
     let mut doc = automerge::AutoCommit::new();

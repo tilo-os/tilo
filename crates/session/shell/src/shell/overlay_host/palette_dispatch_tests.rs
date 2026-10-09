@@ -1361,7 +1361,7 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
             .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
         host.last_cursor = Some(Point::new(40.0, 35.0));
         let click = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: winit::event::MouseButton::Left,
         };
@@ -1581,22 +1581,15 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 // Proves both halves of the invite-token crossing (mint → clipboard
 // → paste) against the process clipboard.
 
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn key_event(key: Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key,
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";

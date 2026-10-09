@@ -5,14 +5,8 @@
 use super::*;
 use automerge::AutoCommit;
 use vello_encoding::DrawTag;
-use winit::event::{DeviceId, KeyEvent};
-use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
-}
 
 fn opened() -> Popover {
     let mut p = Popover::new().with_label("Refresh interval").with_items([
@@ -31,32 +25,25 @@ fn opened() -> Popover {
 
 fn cursor_at(pt: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(pt.x, pt.y),
     }
 }
 
 fn left_press() -> WindowEvent {
     WindowEvent::MouseInput {
-        device_id: synth_device(),
+        device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Pressed,
         button: MouseButton::Left,
     }
 }
 
 fn key_event(logical: Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical;
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        logical,
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn key(named: NamedKey) -> WindowEvent {

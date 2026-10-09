@@ -94,7 +94,7 @@ impl Harness {
         // winit y-positive = scroll up; the Scrollable negates, so a negative
         // y scrolls DOWN (reveals content below).
         let ev = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
             phase: TouchPhase::Moved,
         };
@@ -103,7 +103,7 @@ impl Harness {
 
     fn cursor(&mut self, x: f64, y: f64) {
         let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         };
         self.dispatch(&ev, Modifiers::default());
@@ -111,7 +111,7 @@ impl Harness {
 
     fn mouse(&mut self, state: ElementState) -> bool {
         let ev = WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         };

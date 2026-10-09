@@ -143,16 +143,14 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
 mod tests {
     use super::*;
     use winit::event::{DeviceId, ElementState, MouseButton};
-    use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+    use winit::keyboard::{Key, NamedKey};
 
     fn escape() -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.logical_key = Key::Named(NamedKey::Escape);
-        event.text = None;
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
         WindowEvent::KeyboardInput {
             device_id: DeviceId::dummy(),
             event,

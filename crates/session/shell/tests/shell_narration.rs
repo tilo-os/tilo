@@ -17,8 +17,8 @@ use ui::screen_reader::ScreenReader;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 #[derive(Clone, Default)]
 struct RecordingSpeaker(Arc<Mutex<Vec<tts::Utterance>>>);
@@ -99,20 +99,13 @@ fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
 }
 
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
-    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
-    key_event.logical_key = Key::Named(key);
-    key_event.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    key_event.location = KeyLocation::Standard;
-    key_event.state = ElementState::Pressed;
-    key_event.repeat = false;
-    key_event.text = None;
+    let key_event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
     let mut state = automerge::AutoCommit::new();
     let mut handled = false;
     let mut focus_target = None;
     host.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key_event,
             is_synthetic: false,
         },

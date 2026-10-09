@@ -175,8 +175,6 @@ fn press(
                 height: AvailableSpace::Definite(800.0),
             },
             |known, available, node_id, _, _| match node_map.get(&node_id) {
-                // SAFETY: the pointers were registered by this layout pass
-                // and the widgets outlive it.
                 Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
                 None => Size::ZERO,
             },
@@ -184,17 +182,9 @@ fn press(
         .unwrap();
     host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
 
-    // winit's `KeyEvent` carries a private platform field, so the struct is
-    // zero-initialised and every public field overwritten.
-    let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = winit::event::ElementState::Pressed;
-    event.repeat = false;
+    let event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event,
         is_synthetic: false,
     };

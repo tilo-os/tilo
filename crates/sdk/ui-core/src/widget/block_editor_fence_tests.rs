@@ -117,20 +117,18 @@ fn code_fence_chrome_copy_feedback_and_header_layout() {
 }
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.text = match &key {
-        Key::Character(text) => Some(text.clone()),
-        _ => None,
-    };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = ElementState::Pressed;
+    let event = crate::synthetic_input::key_event(
+        key.clone(),
+        match &key {
+            Key::Character(text) => Some(text.clone()),
+            _ => None,
+        },
+        ElementState::Pressed,
+    );
     let mut handled = false;
     editor.handle_event(
         &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         },

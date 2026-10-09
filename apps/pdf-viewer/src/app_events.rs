@@ -1602,15 +1602,6 @@ mod event_tests {
         (app, st)
     }
 
-    /// Synthesise the opaque dummy `DeviceId` winit uses in tests. It has no
-    /// public constructor; a zeroed value is the sentinel every backend uses
-    /// and the convention across this workspace's widget tests.
-    fn dummy_device_id() -> winit::event::DeviceId {
-        // SAFETY: DeviceId wraps a platform integer; zero is the "no device"
-        // sentinel and carries no validity requirements.
-        unsafe { std::mem::zeroed() }
-    }
-
     /// A ctrl-held `Modifiers`, mirroring the workspace convention (see
     /// `ui::widget::command_palette`'s `ctrl_a_selects_query`).
     fn ctrl_mods() -> Modifiers {
@@ -1619,12 +1610,8 @@ mod event_tests {
         Modifiers::from(s)
     }
 
-    /// Build a real `WindowEvent::KeyboardInput` for `key`. winit's
-    /// `KeyEventExtra` is `pub(crate)`, so we zero the struct and set the
-    /// public fields — the same trick the terminal + `modal_dialog` tests use.
+    /// the same trick the terminal + `modal_dialog` tests use.
     fn key_event(key: Key) -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
         // Real winit reports the committed text alongside a printable key; the
         // shared TextInput inserts from that `text` field, so mirror it (named
         // keys other than Space carry no text).
@@ -1633,18 +1620,11 @@ mod event_tests {
             Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
             _ => None,
         };
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text;
-        WindowEvent::KeyboardInput {
-            device_id: dummy_device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            key,
+            text,
+            ElementState::Pressed,
+        ))
     }
 
     fn character(ch: &str) -> Key {
@@ -1706,7 +1686,7 @@ mod event_tests {
             self.feed(
                 Modifiers::default(),
                 &WindowEvent::CursorMoved {
-                    device_id: dummy_device_id(),
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(p.0, p.1),
                 },
             );
@@ -1716,7 +1696,7 @@ mod event_tests {
             self.feed(
                 Modifiers::default(),
                 &WindowEvent::MouseInput {
-                    device_id: dummy_device_id(),
+                    device_id: winit::event::DeviceId::dummy(),
                     state,
                     button,
                 },
@@ -1739,7 +1719,7 @@ mod event_tests {
             self.feed(
                 mods,
                 &WindowEvent::MouseWheel {
-                    device_id: dummy_device_id(),
+                    device_id: winit::event::DeviceId::dummy(),
                     delta,
                     phase: TouchPhase::Moved,
                 },
@@ -2044,7 +2024,7 @@ mod event_tests {
             rig.feed(
                 Modifiers::default(),
                 &WindowEvent::PinchGesture {
-                    device_id: dummy_device_id(),
+                    device_id: winit::event::DeviceId::dummy(),
                     delta,
                     phase: TouchPhase::Moved,
                 },

@@ -363,7 +363,7 @@ pub(crate) fn back_key_as_escape(
         winit::event::WindowEvent::KeyboardInput { event: key, .. }
             if key.logical_key == Key::Named(NamedKey::BrowserBack) =>
         {
-            Some(crate::synthetic_input::key_event(
+            Some(crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Escape),
                 key.state,
             ))
@@ -1063,7 +1063,7 @@ mod tests {
         use winit::event::{ElementState, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
         for state in [ElementState::Pressed, ElementState::Released] {
-            let back = crate::synthetic_input::key_event(&Key::Named(NamedKey::BrowserBack), state);
+            let back = crate::synthetic_input::key_input(&Key::Named(NamedKey::BrowserBack), state);
             let Some(WindowEvent::KeyboardInput { event, .. }) = back_key_as_escape(&back) else {
                 panic!("Back must become a key event");
             };
@@ -1071,7 +1071,7 @@ mod tests {
             assert_eq!(event.state, state);
         }
         let escape =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(back_key_as_escape(&escape).is_none());
     }
 }

@@ -277,11 +277,13 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
 
         // Only the public fields read by the host are initialized; winit's
         // private KeyEvent payload is intentionally opaque to this unit test.
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Escape);
-        key.state = ElementState::Pressed;
+        let key = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: key,
             is_synthetic: false,
         };

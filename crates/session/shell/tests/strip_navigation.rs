@@ -40,7 +40,7 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -293,34 +293,25 @@ impl Harness {
 
     fn click(&mut self, p: Point) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event: ev,
             is_synthetic: false,
         };
@@ -348,11 +339,11 @@ impl Harness {
     /// two-finger sideways swipe arrives.
     fn scroll_horizontally(&mut self, dx: f32) {
         self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(600.0, 500.0),
         });
         self.event(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(dx, 0.0),
             phase: winit::event::TouchPhase::Moved,
         });
