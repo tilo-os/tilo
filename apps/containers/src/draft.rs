@@ -1,30 +1,17 @@
-//! The container manager's document: the new-container draft.
+//! The container manager's record: the new-container draft.
 //!
 //! The engine (containers, images, volumes, distroboxes, their stats and
 //! logs) is this device's podman, mirrored into memory and never written
 //! here; where the user is in the app (section, selection, detail tab) is
-//! the window's own. What the document holds is what a person fills in and
+//! the window's own. What the record holds is what a person fills in and
 //! may finish on another device or with someone else: the create form, one
-//! collaborative text per field.
-//!
-//! ```text
-//! root
-//! └── "create" (Map)
-//!     ├── "name"    (Text)
-//!     ├── "image"   (Text)
-//!     ├── "ports"   (Text)
-//!     ├── "env"     (Text)
-//!     ├── "volumes" (Text)
-//!     └── "command" (Text)
-//! ```
+//! collaborative text per field, edited at its path
+//! (`Containers::paths().draft.image`).
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use ui::tilo_actions::ActionError;
+use ui::tilo_resource::{self, Model, Path};
 
-/// The root key of the draft.
-const CREATE_KEY: &str = "create";
+use crate::resource::Containers;
 
 /// The editable fields of the create-container form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,14 +69,36 @@ impl CreateField {
         CreateField::Volumes,
         CreateField::Command,
     ];
-    /// Number of create-form fields.
-    pub const COUNT: usize = 6;
+    /// Where the field's text is in the record.
+    pub fn path(self) -> Path<Containers, String> {
+        let draft = Containers::paths().draft;
+        match self {
+            CreateField::Name => draft.name,
+            CreateField::Image => draft.image,
+            CreateField::Ports => draft.ports,
+            CreateField::Env => draft.env,
+            CreateField::Volumes => draft.volumes,
+            CreateField::Command => draft.command,
+        }
+    }
 }
 
-/// The new-container draft as the document holds it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The new-container draft: one text per field, each merging per
+/// character with a second person typing in the same form.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreateDraft {
-    fields: [String; CreateField::COUNT],
+    /// Name
+    pub name: String,
+    /// Image
+    pub image: String,
+    /// Ports
+    pub ports: String,
+    /// Environment
+    pub env: String,
+    /// Volumes
+    pub volumes: String,
+    /// Command
+    pub command: String,
 }
 
 impl CreateDraft {
@@ -97,21 +106,39 @@ impl CreateDraft {
     pub fn with(values: &[(CreateField, &str)]) -> Self {
         let mut draft = Self::default();
         for (field, value) in values {
-            if let Some(slot) = draft.fields.get_mut(field.index()) {
-                (*value).clone_into(slot);
-            }
+            (*value).clone_into(draft.field_mut(*field));
         }
         draft
     }
 
     /// The text of `field`.
     pub fn get(&self, field: CreateField) -> &str {
-        self.fields.get(field.index()).map_or("", String::as_str)
+        match field {
+            CreateField::Name => &self.name,
+            CreateField::Image => &self.image,
+            CreateField::Ports => &self.ports,
+            CreateField::Env => &self.env,
+            CreateField::Volumes => &self.volumes,
+            CreateField::Command => &self.command,
+        }
+    }
+
+    fn field_mut(&mut self, field: CreateField) -> &mut String {
+        match field {
+            CreateField::Name => &mut self.name,
+            CreateField::Image => &mut self.image,
+            CreateField::Ports => &mut self.ports,
+            CreateField::Env => &mut self.env,
+            CreateField::Volumes => &mut self.volumes,
+            CreateField::Command => &mut self.command,
+        }
     }
 
     /// Whether nothing has been filled in.
     pub fn is_empty(&self) -> bool {
-        self.fields.iter().all(|value| value.trim().is_empty())
+        CreateField::ALL
+            .iter()
+            .all(|field| self.get(*field).trim().is_empty())
     }
 
     /// The `podman run` argument vector the draft describes, or `None` while
@@ -149,78 +176,6 @@ impl CreateDraft {
                 .map(ToOwned::to_owned),
         );
         Some(args)
-    }
-}
-
-/// Reads and lays out the draft in the document. Writes happen only inside
-/// the resource's actions.
-pub struct CreateDoc;
-
-impl CreateDoc {
-    /// Lay out the draft: one map with an empty text per field, so every
-    /// replica types into the same texts.
-    ///
-    /// # Errors
-    /// Returns the document's refusal to create the objects.
-    pub fn initialize(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
-        let map = match Self::map(doc) {
-            Some(map) => map,
-            None => doc.put_object(ROOT, CREATE_KEY, ObjType::Map)?,
-        };
-        for field in CreateField::ALL {
-            if Self::text_in(doc, &map, field).is_none() {
-                doc.put_object(&map, field.key(), ObjType::Text)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// The draft as stored; fields that are missing read as empty.
-    pub fn read(doc: &AutoCommit) -> CreateDraft {
-        let mut draft = CreateDraft::default();
-        for field in CreateField::ALL {
-            if let (Some(slot), Some(obj)) = (
-                draft.fields.get_mut(field.index()),
-                Self::field_obj(doc, field),
-            ) {
-                *slot = doc.text(&obj).unwrap_or_default();
-            }
-        }
-        draft
-    }
-
-    /// The text object of `field`, if the draft has one.
-    pub fn field_obj(doc: &AutoCommit, field: CreateField) -> Option<ObjId> {
-        Self::map(doc).and_then(|map| Self::text_in(doc, &map, field))
-    }
-
-    /// The text object of `field`, laid out first when the draft does not
-    /// have it yet. For the resource's actions only.
-    ///
-    /// # Errors
-    /// Refuses when the document holds something else under the draft's
-    /// keys.
-    pub(crate) fn field_obj_mut(
-        doc: &mut AutoCommit,
-        field: CreateField,
-    ) -> Result<ObjId, ActionError> {
-        Self::initialize(doc)?;
-        Self::field_obj(doc, field)
-            .ok_or_else(|| ActionError::Refused(format!("the draft has no {} text", field.key())))
-    }
-
-    fn map(doc: &AutoCommit) -> Option<ObjId> {
-        match doc.get(ROOT, CREATE_KEY) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => None,
-        }
-    }
-
-    fn text_in(doc: &AutoCommit, map: &ObjId, field: CreateField) -> Option<ObjId> {
-        match doc.get(map, field.key()) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
-            _ => None,
-        }
     }
 }
 
@@ -290,20 +245,5 @@ mod tests {
                 "fsync=off"
             ]
         );
-    }
-
-    #[test]
-    fn initialize_lays_out_one_text_per_field_once() {
-        let mut doc = AutoCommit::new();
-        CreateDoc::initialize(&mut doc).unwrap();
-        let objects: Vec<_> = CreateField::ALL
-            .into_iter()
-            .map(|field| CreateDoc::field_obj(&doc, field).expect("a text per field"))
-            .collect();
-        CreateDoc::initialize(&mut doc).unwrap();
-        for (field, object) in CreateField::ALL.into_iter().zip(objects) {
-            assert_eq!(CreateDoc::field_obj(&doc, field), Some(object));
-        }
-        assert_eq!(CreateDoc::read(&doc), CreateDraft::default());
     }
 }

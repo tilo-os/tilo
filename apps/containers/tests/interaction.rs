@@ -19,7 +19,7 @@
 use automerge::AutoCommit;
 use containers::ContainersShell;
 use containers::app::ContainersApp;
-use containers::doc::{CreateDraft, CreateField};
+use containers::draft::{CreateDraft, CreateField};
 use containers::model::{DetailTab, Section, sample_engine};
 use containers::terminal;
 use ui::headless::Driver as FrameDriver;
@@ -224,7 +224,10 @@ fn create_form_edits_the_draft() {
         assert_eq!(draft(&app, CreateField::Image), "接続");
         app.merge_peer(&mut peer).expect("peer merge");
         assert_eq!(
-            containers::doc::CreateDoc::read(&peer).get(CreateField::Image),
+            <containers::resource::Containers as ui::tilo_resource::Resource>::read(&peer)
+                .unwrap()
+                .draft
+                .get(CreateField::Image),
             "接続",
             "the field splices the shared collaborative text"
         );

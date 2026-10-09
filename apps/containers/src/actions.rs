@@ -2,21 +2,19 @@
 //!
 //! Every interaction is exactly one of three things:
 //!
-//! - **A document action** ([`crate::resource::ContainersAction`]): the
-//!   new-container draft, the only thing the app's document holds. Each
-//!   field is a collaborative text published as a child of the resource, so
-//!   typing is a splice that merges with a collaborator's and undoes a word
-//!   at a time; `clear-create` empties the draft once a container was made
-//!   from it.
+//! - **A document change** ([`crate::resource::Containers`]): the
+//!   new-container draft, the only thing the app's record holds. Each field
+//!   is a collaborative text edited at its path, so typing is a splice that
+//!   merges with a collaborator's and undoes a word at a time;
+//!   `clear-create` empties the draft once a container was made from it.
 //! - **An external effect on the engine**: start / stop / restart / pause /
 //!   remove a container, remove an image or volume, attach a shell, enter a
 //!   distrobox. These change rootless podman, not a shared document, so they
 //!   are effect operations on the live rows the surface publishes
 //!   ([`ResourceSurface::live_rows`](ui::framework::ResourceSurface::live_rows)).
-//!   Lifecycle buttons emit inert
-//!   [`ControlInvocation`](ui::tilo_actions::ControlInvocation)s; the host
-//!   resolves permission and availability, records the outcome in activity
-//!   history, then calls the widget's operation handler. No container control
+//!   Lifecycle buttons ask the host for the same typed effects on their
+//!   rows; the host resolves permission and availability, records the
+//!   outcome in activity history, then the surface answers the effect. No container control
 //!   shells out before that authority boundary.
 //! - **Where the window is**: the section, the selected container and its
 //!   detail tab are the surface's own state, never written to the document;
@@ -32,7 +30,7 @@ mod tests {
     use crate::app::ContainersApp;
     use crate::model::ContainerStatus;
     use crate::podman::Action as Lifecycle;
-    use crate::resource::{Containers, ContainersState};
+    use crate::resource::Containers;
 
     /// The resource as the framework publishes it beside the sample engine's
     /// rows.
@@ -51,9 +49,7 @@ mod tests {
 
     ui::action_contract_tests! {
         seed: {
-            let mut doc = AutoCommit::new();
-            Containers::initialize(&mut doc).unwrap();
-            doc
+            AutoCommit::new()
         },
         registry: {
             let mut registry = ui::tilo_actions::ActionRegistry::new();
@@ -109,10 +105,10 @@ mod tests {
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(
             keys,
-            ["create", "tilo:record", "tilo:schema_version"],
+            ["draft", "tilo:record", "tilo:schema_version"],
             "the canonical record contains only the app draft and framework metadata"
         );
-        assert_eq!(Containers::read(&doc).unwrap(), ContainersState::default());
+        assert_eq!(Containers::read(&doc).unwrap(), Containers::default());
     }
 
     /// The rows carry only view and effect operations; offline they are
