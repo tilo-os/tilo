@@ -1,6 +1,6 @@
 //! One state-file writer shared by UI snapshots and committed native owners.
 use super::{NativeAuthorityStorage, NativeWorkspaceOwner};
-use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle};
 use parking_lot::{Mutex, RwLock};
 use std::{
     io::{self, Write},
@@ -165,7 +165,7 @@ pub(super) struct Writer {
     /// The attached owner and the tree whose state file it publishes into.
     owner: Option<(
         tilo_joined_room::WeakNativeWorkspaceOwner,
-        Weak<RwLock<WorkspaceTree>>,
+        WeakWorkspaceTreeHandle,
     )>,
 }
 
@@ -208,13 +208,13 @@ impl NativeStateRuntime {
         let Some(owner) = owner.upgrade() else {
             return Ok(None);
         };
-        if !Weak::ptr_eq(&bound, &Arc::downgrade(tree)) {
+        if !bound.ptr_eq(&tree.downgrade()) {
             return Err("state writer already belongs to a different native tree handle".into());
         }
         Ok(Some(owner))
     }
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
-        self.0.writer.lock().owner = Some((owner.downgrade(), Arc::downgrade(tree)));
+        self.0.writer.lock().owner = Some((owner.downgrade(), tree.downgrade()));
     }
     pub(crate) fn requires_uncertain(&self, room: crate::shell::state::RoomId) -> bool {
         self.0.uncertain_rooms.read().contains(&room)

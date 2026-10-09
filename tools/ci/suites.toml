@@ -715,7 +715,6 @@ inputs = [
   "crates/system/tilo-startup-metrics/",
   "crates/system/tts/",
   "crates/system/wire-frame/",
-  "crates/system/xdg-paths/",
   "crates/text/spellcheck/",
   "crates/workspace-hack/",
 ]
@@ -1260,6 +1259,10 @@ reason = "needs a live BuildKit daemon"
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache_local.py"
 reason = "needs rootful Podman with cached images"
+
+[[unrequired]]
+suite = "os/tests/rootfs_firmware_cache.py"
+reason = "needs rootful Podman to observe real firmware mount layer-cache reuse on the build host"
 
 [[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"

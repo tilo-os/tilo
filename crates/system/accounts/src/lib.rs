@@ -376,7 +376,7 @@ impl AccountStore {
 /// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Like Settings, ignore empty or relative XDG paths.
 pub fn config_root() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// The accounts directory under a config root (`root/accounts`).

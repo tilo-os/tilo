@@ -24,6 +24,9 @@ pub(super) struct InitializeOptions {
     pub acknowledge_unavailable_recovery: bool,
 }
 
+mod recovery;
+pub(super) use recovery::{JoinOptions, join};
+
 fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
     let key = persist::load_device_key(paths).context("read existing certified device key")?;
     let person = persist::read_public_key(&paths.user_pubkey)?;

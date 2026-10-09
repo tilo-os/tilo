@@ -2272,3 +2272,31 @@ The required final remote `check --locked -p shell --tests` also passed on the
 exact document-routing source after cleanup (1m49s); no local build or fallback
 was used. Latest-head CI status remains a separate result, not inferred from
 these focused checks.
+
+
+### Current-main dependency conflict follow-up
+
+Current-head CI at db5d7fc7a8 found real conflicts with main d85c0c0363 in
+Cargo.lock and the terminal manifest before Rust validation. The candidate
+therefore integrates current main 426aa5cd2f52a5a9bbbed12b522e35947a5b0804,
+which removes the deprecated tilo-xdg-paths shim. Resolution adopts tilo-paths
+while preserving the native-editor tilo-process dependency and the optional
+Whistle wasmi dependency. No third-party package/version is added, removed or
+changed, and Cargo.lock was not regenerated. Workspace membership is now 280.
+The complete rootfs COPY contract still passes with its 156-instruction budget.
+
+CI OS run 85479 remains blocked by absent signed RPM snapshot
+set-4cee6ac4651b25573a4c65e1dba081d96f0ecc825daa76e7cfa53c0eed58a63c;
+its ensure-rpms job reports no main build-rpms.yml run producing the snapshot.
+The image job has no log because it did not execute. This is an external image
+prerequisite, not evidence of a dictation code/test failure; rerunning the same
+non-transient job cannot produce it. The PR stays draft and held.
+
+The current-main integration passed the required remote shell --tests compile
+(1m33s), opted-in local-model-service all-target compile (4.17s), and staged
+formatting/contracts/secrets checks. These results cover the manually resolved
+dependency union; no inference metric is attributed to a new model run.
+
+The actual Notes paragraph test also passed after the 426aa5cd2f integration
+(0.543 seconds for the three cases, remote compile 2m57s), proving the newly
+imported SDK view changes preserve the original field and owned undo transaction.
