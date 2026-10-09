@@ -257,12 +257,7 @@ impl CapnpBrokerState {
                     return Err("local sentinel forbidden".into());
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record
-                        .intent
-                        .get("request")
-                        .unwrap_or(&serde_json::Value::Null)
-                        != &request.intent()
-                    {
+                    if !record.admitted_request_is(&request.intent()) {
                         return Err("changed invocation intent".into());
                     }
                     return self.peer_observation(&caller, *invocation).await;
@@ -324,12 +319,7 @@ impl CapnpBrokerState {
                     offer.check_registration(self, directories, request.peer_id)?;
                 }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
-                    if record
-                        .intent
-                        .get("request")
-                        .unwrap_or(&serde_json::Value::Null)
-                        != &request.intent()
-                    {
+                    if !record.admitted_request_is(&request.intent()) {
                         return Err("changed invocation intent".into());
                     }
                     drop(admission);
