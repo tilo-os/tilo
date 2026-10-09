@@ -269,21 +269,6 @@ impl DatePicker {
         self.set_rect(rect);
     }
 
-    /// Report an externally laid-out picker hit without mutating selection.
-    /// Canvas hosts can translate it into their own typed action envelope.
-    pub fn hit_test_external(&self, point: Point) -> Option<ExternalDatePickerHit> {
-        if self.prev_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::PreviousMonth);
-        }
-        if self.next_button_rect.contains(point) {
-            return Some(ExternalDatePickerHit::NextMonth);
-        }
-        self.day_rects
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(date, _)| ExternalDatePickerHit::Date(*date))
-    }
-
     /// Hit regions for an embedded host's existing retained hit map. The
     /// regions are derived by the same shared layout code used for drawing.
     pub fn hit_regions_external(&self) -> Vec<(ExternalDatePickerHit, Rect)> {

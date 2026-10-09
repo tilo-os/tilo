@@ -827,11 +827,6 @@ impl TextInput {
         self
     }
 
-    pub fn set_spellcheck(&mut self, on: bool) {
-        self.spellcheck = Some(on);
-        self.spell_cache_key = None;
-    }
-
     pub fn spellcheck_enabled(&self) -> bool {
         self.checks_spelling()
     }
@@ -842,10 +837,6 @@ impl TextInput {
     pub fn with_autocorrect(mut self, on: bool) -> Self {
         self.autocorrect = Some(on);
         self
-    }
-
-    pub fn set_autocorrect(&mut self, on: bool) {
-        self.autocorrect = Some(on);
     }
 
     pub fn autocorrect_enabled(&self) -> bool {
@@ -892,10 +883,6 @@ impl TextInput {
             id: id.to_string(),
             label: label.to_string(),
         });
-    }
-
-    pub fn clear_text_actions(&mut self) {
-        self.text_actions.clear();
     }
 
     pub fn take_text_action_request(&mut self) -> Option<TextActionRequest> {
@@ -3075,10 +3062,6 @@ impl TextInput {
         self.gutter = on;
     }
 
-    pub fn has_gutter(&self) -> bool {
-        self.gutter
-    }
-
     #[must_use]
     pub fn with_current_line_highlight(mut self, on: bool) -> Self {
         self.highlight_current_line = on;
@@ -3180,10 +3163,6 @@ impl TextInput {
         self
     }
 
-    pub fn set_enter_submits(&mut self, on: bool) {
-        self.enter_submits = on;
-    }
-
     /// `true` once per submitting `Enter`; clears on read.
     pub fn take_submit(&mut self) -> bool {
         std::mem::take(&mut self.submit_requested)
@@ -3269,15 +3248,6 @@ impl TextInput {
     pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         self.enter_submits = true;
         self.on_submit = Some(Box::new(callback));
-        self
-    }
-
-    /// Route Enter through an exported resource action with the text as its
-    /// input; see [`Self::on_submit`].
-    #[must_use]
-    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.enter_submits = true;
-        self.submit_action = Some(ActionEmitter::new(binding));
         self
     }
 
@@ -3785,11 +3755,6 @@ impl TextInput {
     /// target. `anchor == cursor` clears.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.set_selection_at(anchor, TextPosition::new(cursor));
-    }
-
-    /// Public counterpart to `cursor_from_x`, for `BlockEditor`'s cross-block drag.
-    pub fn byte_at_x(&self, logical_x: f64) -> usize {
-        self.cursor_from_x(logical_x)
     }
 
     /// A secret refuses Copy and Cut, shown or not, as password fields do

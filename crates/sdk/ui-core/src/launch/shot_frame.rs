@@ -306,16 +306,6 @@ impl ShotFrame {
         self.write_png_on(scene, self.theme.tokens.colors.surfaces.content, out);
     }
 
-    /// [`ShotFrame::write_png`] over a transparent background, for a capture
-    /// that is composited onto something else afterwards.
-    ///
-    /// # Panics
-    ///
-    /// As [`ShotFrame::write_png`].
-    pub fn write_png_transparent(&self, scene: &Scene, out: &Path) {
-        self.write_png_on(scene, vello::peniko::Color::TRANSPARENT, out);
-    }
-
     fn write_png_on(&self, scene: &Scene, background: vello::peniko::Color, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
