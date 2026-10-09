@@ -9,7 +9,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[cfg(test)]
 #[path = "broker_services/native_effect_tests.rs"]

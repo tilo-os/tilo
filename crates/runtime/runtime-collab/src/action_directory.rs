@@ -823,6 +823,7 @@ mod codec {
     }
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(test)]
+#[cfg(feature = "client")]
 #[path = "action_directory_tests.rs"]
 mod tests;

@@ -3847,7 +3847,8 @@ pub fn tick(
     set.checkout(state, room, &want).then_some(want)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod identity_tests;
 
 #[cfg(test)]

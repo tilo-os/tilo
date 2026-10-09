@@ -6009,7 +6009,8 @@ pub struct TerminalBackend {
 }
 impl TerminalBackend {
     /// A backend with no process behind it — for tests of what opens where.
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(crate) fn for_test() -> Self {
         Self {
             writer: Box::new(std::io::sink()),

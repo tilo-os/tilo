@@ -1687,7 +1687,8 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod search_tests {
     use super::*;
     use crate::prelude::*;
