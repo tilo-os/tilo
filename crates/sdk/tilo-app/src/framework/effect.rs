@@ -16,7 +16,7 @@
 //!
 //! An outside consequence a verb queued in an
 //! [`Outbox`](tilo_resource::Outbox) is carried out with
-//! [`ViewCx::outbox`](super::ViewCx::outbox): the framework runs the app's
+//! [`RecordEnv::outbox`](super::RecordEnv::outbox): the framework runs the app's
 //! handler in the live app on the device that owns the entry and records how
 //! it settled.
 
@@ -102,7 +102,7 @@ impl Effected {
     }
 
     /// An outbox entry carried out, or failed for good: how it settled
-    /// ([`ViewCx::outbox`](super::ViewCx::outbox)). [`Self::value`] with the
+    /// ([`RecordEnv::outbox`](super::RecordEnv::outbox)). [`Self::value`] with the
     /// result alone settles it done.
     pub fn settled<O: serde::Serialize>(settled: &Settled<O>) -> Self {
         Self::value(settled)
@@ -1511,7 +1511,7 @@ type Owns<R, T> = Box<dyn Fn(&<R as Resource>::State, &T) -> bool>;
 type RunEntry<R, T> = Box<dyn FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer>;
 
 /// The drain of one [`Outbox`](tilo_resource::Outbox) on the device that
-/// owns its entries ([`ViewCx::outbox`](super::ViewCx::outbox)).
+/// owns its entries ([`RecordEnv::outbox`](super::RecordEnv::outbox)).
 struct OutboxDrain<R: Resource, T, O> {
     env: EffectEnv<R>,
     outbox: Path<R, Outbox<T, O>>,
@@ -1700,7 +1700,7 @@ where
 }
 
 /// A drain shared by the drains that run what is pending and, for
-/// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited), by those that
+/// [`RecordEnv::outbox_awaited`](super::RecordEnv::outbox_awaited), by those that
 /// run what an invocation queued.
 impl<R: Resource, D: Drainer<R>> Drainer<R> for Rc<RefCell<D>> {
     fn run(&mut self, state: &R::State, revision: u64) {

@@ -130,7 +130,7 @@ impl PaneCx {
                 dispatcher: cx.dispatcher(),
                 sections: Rc::new(sections(cx)),
             }),
-            storage: cx.storage(),
+            storage: cx.storage().clone(),
             mode: cx.mode(),
             scene: cx.fixture::<crate::scenarios::CaptureScene>(),
         }

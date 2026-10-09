@@ -1,6 +1,6 @@
 //! Outbox entries an admitted local invocation queued, carried out under
 //! that invocation, which completes once they settled
-//! ([`ViewCx::outbox_awaited`](crate::framework::ViewCx::outbox_awaited)).
+//! ([`RecordEnv::outbox_awaited`](crate::framework::RecordEnv::outbox_awaited)).
 
 use super::{
     ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceOperation,

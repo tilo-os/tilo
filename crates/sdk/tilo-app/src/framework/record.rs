@@ -271,20 +271,20 @@ impl<'a> Records<'a> {
         Self { storage }
     }
 
-    /// The person's own record of `P` ([`ViewCx::person`]).
+    /// The person's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let _ = self.storage.person::<P>();
         self
     }
 
     /// The person's record `P` another app keeps
-    /// ([`ViewCx::shared_person`]).
+    /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)).
     pub fn shared_person<P: tilo_resource::SharedRecord>(&mut self) -> &mut Self {
         let _ = self.storage.shared_person::<P>();
         self
     }
 
-    /// The settings section `T`, a resource model ([`ViewCx::settings`]).
+    /// The settings section `T`, a resource model ([`RecordEnv::settings`](super::RecordEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where
         T: Resource<State = T> + Fields + SettingsSchema,
@@ -386,8 +386,8 @@ pub(crate) fn action_id<A: Serialize>(action: &A) -> String {
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view over another record than the app's own — the
-    /// person's own record ([`ViewCx::person`]), a settings section
-    /// ([`ViewCx::settings`]) — built like a view of that record: its
+    /// person's own record ([`RecordEnv::person`](super::RecordEnv::person)), a settings section
+    /// ([`RecordEnv::settings`](super::RecordEnv::settings)) — built like a view of that record: its
     /// controls bind the record's paths
     /// (`cx.checkbox("high-contrast", Appearance::paths().high_contrast)`)
     /// and verbs, its edits go to that record as the person, recorded in its
@@ -407,23 +407,25 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             Rc::clone(&held),
         );
         let mut cx = ViewCx::<P> {
-            live: held.live().clone(),
+            env: super::env::RecordEnv {
+                live: held.live().clone(),
+                alive: self.alive.clone(),
+                dispatch,
+                saved: self.saved.clone(),
+                run: self.run.clone(),
+                storage: Rc::clone(&self.storage),
+                effects: Effects::inert(),
+            },
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
-            alive: self.alive.clone(),
-            dispatch,
             action_bindings: actions,
             item: None,
             path: Some(Vec::new()),
             controls: Rc::clone(&self.controls),
             forms: Forms::default(),
-            saved: self.saved.clone(),
             stages: self.stages.clone(),
             feeds: HistoryFeeds::default(),
-            run: self.run.clone(),
-            storage: Rc::clone(&self.storage),
             bindings: Bindings::new(),
-            effects: Effects::inert(),
         };
         let element = part(&mut cx);
         let updaters = cx.updaters;

@@ -86,19 +86,17 @@ pub trait ResourceApp: 'static {
     /// (`--purpose number` or `--purpose=number`): how this window runs
     /// rather than what it opens. [`Self::launch`] reads them from its
     /// [`LaunchInput::option`], views and surfaces from
-    /// [`ViewCx::launch_option`] and
-    /// [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option).
+    /// [`RecordEnv::launch_option`](super::RecordEnv::launch_option).
     const OPTIONS: &'static [&'static str] = &[];
     /// The app's own switches, which take no value (`--debug-hit-areas`):
-    /// [`LaunchInput::flag`], [`ViewCx::launch_flag`],
-    /// [`SurfaceCx::launch_flag`](super::SurfaceCx::launch_flag).
+    /// [`LaunchInput::flag`], [`RecordEnv::launch_flag`](super::RecordEnv::launch_flag).
     const FLAGS: &'static [&'static str] = &[];
     /// Whether the app opens private windows (`--private`): a window on a
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
     /// no runtime, so nothing it shows syncs or is shared. It holds none of
-    /// the person's own records ([`ViewCx::person`] answers `None`), and its
-    /// view tells with [`ViewCx::is_private`].
+    /// the person's own records ([`RecordEnv::person`](super::RecordEnv::person) answers `None`), and its
+    /// view tells with [`RecordEnv::is_private`](super::RecordEnv::is_private).
     const PRIVATE_WINDOWS: bool = false;
     /// The history of a file of the mounted filesystem the app shows (the
     /// file selected in a file manager), a History scope beside the
@@ -300,7 +298,7 @@ pub struct SeedCx<'a> {
 
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
-    /// [`ViewCx::me`] and the seed's actions read as their author.
+    /// [`RecordEnv::me`](super::RecordEnv::me) and the seed's actions read as their author.
     pub fn me(&self) -> &str {
         self.me
     }
@@ -454,7 +452,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         .then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
-        cx.effects = effects;
+        cx.env.effects = effects;
     }
     let content = A::view(&mut cx);
     let live = permissions.is_some();

@@ -14,8 +14,8 @@
 //! page), a scratch directory, blobs in the content store, versions of the
 //! resource written by other people at other times, and collaborators shown
 //! where they are in it. Views read the values with
-//! [`ViewCx::fixture`](super::ViewCx::fixture), surfaces with
-//! [`SurfaceCx::fixture`](super::SurfaceCx::fixture).
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -273,7 +273,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// The content store the capture's views read from
-    /// ([`ViewCx::content`](super::ViewCx::content)), for the blobs a scene
+    /// ([`RecordEnv::content`](super::RecordEnv::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
     pub fn content(&mut self) -> &tilo_content::ContentStore {

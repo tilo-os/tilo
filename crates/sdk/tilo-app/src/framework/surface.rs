@@ -15,13 +15,9 @@ use ui_core::{PresencePayload, WakeHandle};
 
 use super::controls::Actions;
 use super::dispatch::Dispatcher;
-use super::effect::{
-    EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs, Projection,
-};
+use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs};
 use super::live::Live;
 use super::rows::{LiveRow, outside_document, resolved_outside_document};
-use super::scenario::{Run, RunMode};
-use super::settings::{Setting, ViewStorage};
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
 /// layout engine — taking part in a resource.
@@ -47,7 +43,7 @@ use super::settings::{Setting, ViewStorage};
 ///   gesture that is several edits goes in one [`Dispatcher::group`] (or
 ///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
 ///   Ctrl+Z takes all of it back.
-/// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
+/// * **Permissions** — [`RecordEnv::read_only`](super::RecordEnv::read_only) says the participant may
 ///   only view; present accordingly. It follows role changes while the app
 ///   runs, and [`read_only_changed`](Self::read_only_changed) announces each
 ///   one. Refused actions change nothing.
@@ -69,8 +65,8 @@ use super::settings::{Setting, ViewStorage};
 ///   ([`Dispatcher::effect`]), the palette, an agent — reaches it the same
 ///   way; [`effects`](Self::effects) says which are unavailable right now.
 /// * **Run mode** — start work that reaches outside the process (a decoder
-///   service, a socket, a probe) only when [`SurfaceCx::mode`] is live. A
-///   capture reads [`SurfaceCx::fixture`] instead; a past version starts
+///   service, a socket, a probe) only when [`RecordEnv::mode`](super::RecordEnv::mode) is live. A
+///   capture reads [`RecordEnv::fixture`](super::RecordEnv::fixture) instead; a past version starts
 ///   nothing. Work still in flight that the frame shows (a page render, a
 ///   decode) is reported by the toolkit's `Widget::has_pending_visual_work`;
 ///   a capture waits for it.
@@ -339,15 +335,16 @@ impl SearchQueries {
 
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
+    pub(crate) env: super::env::RecordEnv<R>,
     pub(crate) jobs: Jobs<R>,
-    pub(crate) dispatch: Dispatcher<R>,
     pub(crate) actions: Actions<R>,
-    pub(crate) live: Live<R>,
-    pub(crate) run: Run,
-    pub(crate) storage: Rc<ViewStorage>,
-    pub(crate) effects: Effects<R>,
-    pub(crate) saved: ui_core::LocalState<ui_core::record::RecordSaveStatus>,
-    pub(crate) alive: Weak<()>,
+}
+
+impl<R: Resource> std::ops::Deref for SurfaceCx<R> {
+    type Target = super::env::RecordEnv<R>;
+    fn deref(&self) -> &super::env::RecordEnv<R> {
+        &self.env
+    }
 }
 
 impl<R: Resource> SurfaceCx<R> {
@@ -358,39 +355,11 @@ impl<R: Resource> SurfaceCx<R> {
         self.run.launched.record.as_ref()
     }
 
-    /// Open, in this window and in place of the record it shows, what a
-    /// launch of the app naming `arguments` opens: the record
-    /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
-    /// names, with its launch actions — the document a person chose with
-    /// the app's own Open. The window's view is rebuilt for that record on
-    /// the next frame. Refused in a past version and a capture.
-    ///
-    /// The outcome answers once the host opened it, or why it could not.
-    ///
-    /// # Errors
-    /// Returns that the window cannot open another record.
-    pub fn open_here(
-        &self,
-        arguments: &[String],
-    ) -> Result<ui_core::application::ReplacementOutcome, String> {
-        self.run.open_here(arguments)
-    }
-
-    /// What [`Self::open_here`] does, kept for later: the input that asks
+    /// What [`RecordEnv::open_here`](super::env::RecordEnv::open_here) does, kept for later: the input that asks
     /// for another record arrives after attaching (a file chosen in a
     /// picker). `None` in a past version and a capture.
     pub fn opener(&self) -> Option<super::OpenHere> {
         self.run.opener.clone()
-    }
-
-    /// The names of the participants, for showing the ids actions record
-    /// ([`People::name`](super::People::name)).
-    pub fn people(&self) -> super::People {
-        self.run.people.clone()
-    }
-
-    pub fn dispatcher(&self) -> Dispatcher<R> {
-        self.dispatch.clone()
     }
 
     /// Jobs the surface starts on its own, with nobody invoking an effect;
@@ -408,114 +377,12 @@ impl<R: Resource> SurfaceCx<R> {
         self.actions.clone()
     }
 
-    /// The dispatcher of the resource nested in this one at `id`, whose
-    /// edits are this resource's action `wrap(edit)`: the body of the item a
-    /// surface is editing. See [`Dispatcher::child`].
-    pub fn child<C: Resource>(
-        &self,
-        id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
-    ) -> Dispatcher<C> {
-        self.dispatch.child(id, wrap)
-    }
-
     /// The live state, for a surface that reads it where it needs it (in
     /// `draw`, in an event) rather than copying what it was presented, and
     /// that asks for the parts of a large resource it shows
     /// ([`Live::demand`]).
     pub fn live(&self) -> Live<R> {
         self.live.clone()
-    }
-
-    /// Who the surface is for: the participant reading and editing through
-    /// it, the same id an action they invoke reads as its author. See
-    /// [`ViewCx::me`](super::ViewCx::me). `None` when the surface shows a
-    /// past version.
-    pub fn me(&self) -> Option<&str> {
-        self.dispatch.me()
-    }
-
-    /// Whether the surface shows a past version in History mode
-    /// ([`ViewCx::is_past`](super::ViewCx::is_past)).
-    pub fn is_past(&self) -> bool {
-        self.dispatch.is_past()
-    }
-
-    /// Whether the record's latest edits are durable, as
-    /// [`ViewCx::save_status`](super::ViewCx::save_status): the same state
-    /// the host updates after every sync, for a surface that draws its own
-    /// status line. A surface never tracks durability itself.
-    pub fn save_status(&self) -> ui_core::LocalState<ui_core::record::RecordSaveStatus> {
-        self.saved.clone()
-    }
-
-    /// Whether the participant may only view, as of now.
-    pub fn read_only(&self) -> bool {
-        self.dispatch.read_only()
-    }
-
-    /// What the surface is built for. Start work that reaches outside the
-    /// process (a decoder service, a socket, a hardware probe) only when it
-    /// [is live](RunMode::is_live); a capture reads its
-    /// [fixtures](Self::fixture) instead, and a past version starts nothing.
-    pub fn mode(&self) -> RunMode {
-        self.run.mode
-    }
-
-    /// The capture's stand-in for a live source of type `T`
-    /// ([`Fixture::provide`](super::Fixture::provide)); `None` outside a
-    /// capture, or when the scenario provides none.
-    pub fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
-        self.run.fixture::<T>()
-    }
-
-    /// The content store the host lent the app. A capture's holds the blobs
-    /// its scenario put there.
-    pub fn content(&self) -> Option<tilo_content::ContentStore> {
-        self.run.content()
-    }
-
-    /// What the launch that opened the app named — its arguments, the file
-    /// a host handed over, a playback handoff — as
-    /// [`ViewCx::launch`](super::ViewCx::launch).
-    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
-        self.run.launch()
-    }
-
-    /// What the window's launch named (paths, URLs), as
-    /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
-    pub fn launch_arguments(&self) -> &[String] {
-        &self.run.launched.arguments
-    }
-
-    /// The value of the app's own option `name` the window's launch named,
-    /// as [`ViewCx::launch_option`](super::ViewCx::launch_option).
-    pub fn launch_option(&self, name: &str) -> Option<&str> {
-        super::launch::option(&self.run.launched.options, name)
-    }
-
-    /// Whether the window's launch named the app's switch `name`, as
-    /// [`ViewCx::launch_flag`](super::ViewCx::launch_flag).
-    pub fn launch_flag(&self, name: &str) -> bool {
-        super::launch::flag(&self.run.launched.options, name)
-    }
-
-    /// The service of type `T` the host that mounts the app in its own
-    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
-    /// taken once: the shell's connection to the session's process
-    /// supervisor for a terminal it hosts. `None` in the app's own process,
-    /// and for a past version or a capture, which start nothing.
-    pub fn take_lent<T: 'static>(&self) -> Option<T> {
-        if !self.run.mode.is_live() {
-            return None;
-        }
-        self.run.launched.lent.take::<T>()
-    }
-
-    /// Whether the window is private, as
-    /// [`ViewCx::is_private`](super::ViewCx::is_private).
-    pub fn is_private(&self) -> bool {
-        self.run.private
     }
 
     /// The file whose history History shows beside the resource's, for an
@@ -536,40 +403,6 @@ impl<R: Resource> SurfaceCx<R> {
         self.dispatch.app_id()
     }
 
-    /// The app's typed settings of type `S`, kept current while the view
-    /// that hosts the surface lives: keep the [`Setting`] and read it where
-    /// it is needed. `S` declares whether they follow the person or stay on
-    /// the device ([`Scope`](ui_core::storage::Scope)).
-    pub fn settings<S>(&self) -> Setting<S>
-    where
-        S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
-    {
-        self.storage.follow(self.alive.clone())
-    }
-
-    /// The device this window runs on, as [`ViewCx::device`](super::ViewCx::device).
-    pub fn device(&self) -> Option<&str> {
-        self.storage.device()
-    }
-
-    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)),
-    /// as [`ViewCx::person`](super::ViewCx::person) opens it.
-    pub fn person<P: tilo_resource::Resource>(&self) -> Option<super::PersonRecord<P>> {
-        self.storage.person::<P>()
-    }
-
-    /// The person's shared record `P`, as
-    /// [`ViewCx::shared_person`](super::ViewCx::shared_person) opens it.
-    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
-        self.storage.shared_person::<P>()
-    }
-
-    /// The app's files, secrets and settings documents, as its host gave
-    /// them.
-    pub fn storage(&self) -> ui_core::storage::AppStorage {
-        self.storage.storage().clone()
-    }
-
     /// The app's secrets. A secret of one document item (a profile's
     /// password) is `cx.secrets().item(purpose, id)`.
     pub fn secrets(&self) -> ui_core::secrets::SecretStore {
@@ -588,39 +421,6 @@ impl<R: Resource> SurfaceCx<R> {
         self.effects
             .env()
             .map_or_else(WakeHandle::new, |env| env.wake.clone())
-    }
-
-    /// Carry out the entries of an outbox this device owns, as
-    /// [`ViewCx::outbox`](super::ViewCx::outbox).
-    pub fn outbox<E, O>(
-        &self,
-        outbox: tilo_resource::Path<R, tilo_resource::Outbox<E, O>>,
-        owns: impl Fn(&R::State, &E) -> bool + 'static,
-        run: impl FnMut(&tilo_resource::Id, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) -> Projection
-    where
-        R: Resource<State = R> + tilo_resource::Model + 'static,
-        E: tilo_resource::Model + Clone + 'static,
-        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
-    {
-        self.effects
-            .outbox(self.alive.clone(), outbox, owns, run, false)
-    }
-
-    /// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited).
-    pub fn outbox_awaited<E, O>(
-        &self,
-        outbox: tilo_resource::Path<R, tilo_resource::Outbox<E, O>>,
-        owns: impl Fn(&R::State, &E) -> bool + 'static,
-        run: impl FnMut(&tilo_resource::Id, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) -> Projection
-    where
-        R: Resource<State = R> + tilo_resource::Model + 'static,
-        E: tilo_resource::Model + Clone + 'static,
-        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
-    {
-        self.effects
-            .outbox(self.alive.clone(), outbox, owns, run, true)
     }
 }
 

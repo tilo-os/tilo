@@ -208,7 +208,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose person records
-    /// ([`ViewCx::person`](super::ViewCx::person)) are theirs.
+    /// ([`RecordEnv::person`](super::RecordEnv::person)) are theirs.
     ///
     /// # Errors
     /// Returns any launch, storage or construction failure.
@@ -599,7 +599,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// Open what a launch naming `arguments` opens in this window, as the
-    /// app's view does with [`ViewCx::open_here`](super::ViewCx::open_here),
+    /// app's view does with [`RecordEnv::open_here`](super::RecordEnv::open_here),
     /// and run the frame that shows it.
     ///
     /// # Errors
@@ -623,7 +623,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The record the window shows now: the one it was opened on, or one
-    /// its view opened in its place ([`ViewCx::open_here`](super::ViewCx::open_here)).
+    /// its view opened in its place ([`RecordEnv::open_here`](super::RecordEnv::open_here)).
     fn checkout(&self) -> &RecordCheckout {
         self.harness
             .as_ref()
