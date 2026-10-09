@@ -220,6 +220,51 @@ max = 0.0
 min_delta = 1.0
 source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
 
+# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, TIL-614): a
+# headless dev build on the shared `runner` class with a signed-in desktop,
+# a restored Notes tab and a Terminal, left alone and sampled from /proc over
+# 60 s; context switches per second of every thread of the compositor's
+# process tree, of the compositor process alone, and its frame loop's
+# iterations. The installed desktop's counterpart is Dev / VM acceptance's
+# `idle.*` (TIL-589). The ceilings are the KPI target (an idle desktop <= 5
+# wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
+# regression, and are lowered there as each idle fix lands.
+#
+# A count of timers moves little with the runner, but TIL-696 makes these
+# bimodal: until an unrelated paint, the frame loop spins at a rate that
+# follows the runner, and whether a run measures inside the spin depends on
+# the wall clock (60/s parked, 2008/s spinning, docs/benchmarks/
+# idle-wakeups-2026-10-09.md). Until TIL-696 lands the relative rule would
+# call that a regression every other night, so its tolerances are wide; the
+# fix restores the defaults. The floor keeps a single extra timer tick from
+# reading as a percentage regression.
+
+[kpi."wakeups.headless_two_apps"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (headless share)"
+
+[kpi."wakeups.headless_two_apps.shell"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (compositor process)"
+
+# The compositor's frame loop parks while nothing asks for a frame, so an
+# idle loop iterates about never; any rate here is a deadline or a source
+# that keeps it awake. Its baseline is 0 while parked, which has no ratio;
+# min_delta is the TIL-696 spin's floor until that lands.
+[kpi."wakeups.frame_loop_ticks.headless_two_apps"]
+unit = "per_s"
+max = 1.0
+min_delta = 1500.0
+source = "the frame loop parks while idle (TIL-136, TIL-614)"
+
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md): kernel input event to KMS
 # presentation, per refresh rate. Weekly and report-only; never run by the
