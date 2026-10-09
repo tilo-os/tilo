@@ -1517,6 +1517,39 @@ impl LiveAppActionsProvider {
         (roots, revision)
     }
 
+    /// What [`Self::directory_roots_in`] answers changes with, read without
+    /// opening a certified session: the broker's published surfaces and
+    /// directory roots, and per workspace its local Person and that Person's
+    /// identity files. Stamps and counters only, so the palette can ask on
+    /// every tick.
+    fn directory_revision(&self, chrome: &crate::shell::chrome_state::ChromeState) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        /// Moves on every call while some identity can't be trusted to its
+        /// stamp, so such a revision never matches the previous one.
+        static UNSETTLED: AtomicU64 = AtomicU64::new(0);
+        let rooms = chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.room)
+            .collect::<Vec<_>>();
+        let mut identities = std::collections::hash_map::DefaultHasher::new();
+        for room in rooms {
+            let name = room.to_string();
+            let Some(identity) = self.action_sessions.identity_revision(&name) else {
+                return format!("unsettled-{}", UNSETTLED.fetch_add(1, Ordering::Relaxed));
+            };
+            (name, chrome.local_user_for_room(&room), identity).hash(&mut identities);
+        }
+        format!(
+            "{}.{}.{:016x}",
+            self.broker.surfaces_generation(),
+            self.broker.action_directory_root_page(None, 0).generation,
+            identities.finish()
+        )
+    }
+
     /// The drill-down scope for `resource` of the app `app_id` in the active
     /// workspace, labelled `label`, as entering it from a directory row
     /// would set it. `None` while the app publishes no browsable directory
@@ -2361,7 +2394,7 @@ impl SearchProvider for LiveAppActionsProvider {
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
-            self.directory_roots(ctx).1,
+            self.directory_revision(ctx.chrome),
             self.broker.statuses_generation(),
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
@@ -2777,6 +2810,28 @@ mod tests {
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
             output: tilo_actions::ActionOutput::default(),
         }
+    }
+
+    #[test]
+    fn search_revision_opens_no_session_when_nothing_changed() {
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let chrome = chrome();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = context("", &chrome, &doc);
+        let first = provider.search_revision(&ctx);
+        assert_eq!(provider.search_revision(&ctx), first);
+        assert_eq!(
+            provider.action_sessions.opens(),
+            0,
+            "the palette tick reads stamps and counters, never a certified session"
+        );
+        // Listing the roots themselves still goes through each workspace's session.
+        let _ = provider.directory_roots(&ctx);
+        assert!(provider.action_sessions.opens() > 0);
+        assert_eq!(provider.search_revision(&ctx), first);
     }
 
     #[test]
