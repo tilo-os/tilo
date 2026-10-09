@@ -81,26 +81,37 @@ class CheckAggregateTests(unittest.TestCase):
             return result.returncode, summary.read_text() if summary.exists() else ""
 
     def test_manual_wasm_diagnostic_executes_production_commands_with_bounded_selection(self):
-        import yaml
-        diagnostic = yaml.safe_load((ROOT / ".forgejo/workflows/wasm-check-qualification.yml").read_text())
-        production = yaml.safe_load(self.workflow)
-        self.assertEqual(set(diagnostic.get("on", diagnostic.get(True))), {"workflow_dispatch"})
-        self.assertEqual(diagnostic["jobs"]["builder"], production["jobs"]["builder"])
-        job = diagnostic["jobs"]["wasm"]
-        original = production["jobs"]["wasm"]
-        self.assertEqual(job["container"], original["container"])
-        self.assertEqual(job["env"], original["env"])
-        self.assertEqual(diagnostic["env"], production["env"])
-        originals = {step.get("name"): step for step in original["steps"]}
-        for step in job["steps"]:
-            name = step.get("name")
-            if name != "Verify native wasm-check runner architecture":
-                self.assertEqual(step.get("run"), originals[name].get("run"), name)
-            self.assertEqual(step.get("uses"), originals[name].get("uses"), name)
-        names = {step.get("name") for step in job["steps"]}
-        self.assertEqual(names, set(originals) - {"Merge onto the tested main"})
-        examples = next(step for step in job["steps"] if step.get("name") == "Build web-capable examples for the web")
-        self.assertEqual(examples["env"]["WEB_EXAMPLES"], "example-counter")
+        diagnostic = (ROOT / ".forgejo/workflows/wasm-check-qualification.yml").read_text()
+        self.assertEqual(section(diagnostic, "on", 0).splitlines()[0], "  workflow_dispatch:")
+        self.assertNotIn("  push:", diagnostic)
+        self.assertNotIn("  pull_request:", diagnostic)
+        self.assertEqual(section(diagnostic, "env", 0).rstrip(), section(self.workflow, "env", 0).rstrip())
+        self.assertEqual(section(diagnostic, "builder", 2).rstrip(), section(self.workflow, "builder", 2).rstrip())
+        original = section(self.workflow, "wasm", 2)
+        job = section(diagnostic, "wasm", 2)
+
+        def scripts(body):
+            result = []
+            lines = body.splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith("        run: "):
+                    value = line.removeprefix("        run: ")
+                    if value == "|":
+                        block = []
+                        for following in lines[index + 1:]:
+                            if following.strip() and not following.startswith("          "):
+                                break
+                            block.append(following.removeprefix("          "))
+                        value = "\n".join(block).rstrip()
+                    result.append(value)
+            return result
+
+        self.assertEqual(scripts(job), scripts(original))
+        names = lambda body: set(re.findall(r"(?m)^      - name: (.+)$", body))
+        self.assertEqual(names(job), names(original) - {"Merge onto the tested main"})
+        self.assertIn("WEB_EXAMPLES: example-counter", job)
+        self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+        self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", job)
 
     def test_wasm_qualification_uses_native_arm_without_losing_main_x86(self):
         job = section(self.workflow, "wasm", 2)
