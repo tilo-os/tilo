@@ -27,6 +27,10 @@
 //! Override iterations: `TILO_UI_DASH_ITERS=2000`.
 //! Override the render target: `TILO_UI_DASH_WIDTH=3840
 //! TILO_UI_DASH_HEIGHT=2160`.
+//! Set `TILO_UI_DASH_PEER=1` to add a collaborator whose pointer (dot and
+//! name) moves on every event, drawn through the framework's presence layer;
+//! `TILO_UI_DASH_PEER=full` repaints the window on every such frame instead,
+//! the rule before TIL-634, for comparison.
 //! Set `TILO_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
@@ -837,6 +841,86 @@ struct BenchState<'a> {
     damage_regions: &'a mut Vec<vello::kurbo::Rect>,
     canvas_w: u32,
     canvas_h: u32,
+    /// `TILO_UI_DASH_PEER=1`: a collaborator whose pointer moves on every
+    /// event, painted over the widgets the way an app window paints it.
+    peer: Option<&'a mut PeerBench>,
+}
+
+/// A remote collaborator's pointer, drawn through the framework's presence
+/// layer: each frame damages only where the pointer and its name were and
+/// are, never the whole window.
+struct PeerBench {
+    presence: PresenceCtx,
+    layer: tilo_ui::presence::PresenceLayer,
+    /// `TILO_UI_DASH_PEER=full`: the rule before TIL-634, under which any
+    /// visible collaborator repainted the whole window, for comparison.
+    full_repaint: bool,
+}
+
+impl PeerBench {
+    fn from_env() -> Option<Self> {
+        let mode = tilo_ui::env::var("TILO_UI_DASH_PEER").ok()?;
+        let full_repaint = match mode.as_str() {
+            "1" => false,
+            "full" => true,
+            _ => {
+                eprintln!("TILO_UI_DASH_PEER must be 1 or full, got {mode:?}");
+                std::process::exit(2);
+            }
+        };
+        Some(Self {
+            presence: PresenceCtx::default(),
+            layer: tilo_ui::presence::PresenceLayer::new(),
+            full_repaint,
+        })
+    }
+
+    /// Glide the pointer along a slow Lissajous path across the canvas, a
+    /// few dozen pixels per event, like a person's hand at ~30 Hz.
+    fn move_pointer(&mut self, i: usize, canvas_w: u32, canvas_h: u32) {
+        let (w, h) = (f64::from(canvas_w), f64::from(canvas_h));
+        let t = idx_f64(i);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "pointer positions inside a canvas well under f32's exact range"
+        )]
+        let at = [
+            (w / 2.0 + w / 3.0 * (t * 0.031).sin()) as f32,
+            (h / 2.0 + h / 3.0 * (t * 0.023).cos()) as f32,
+        ];
+        self.presence
+            .upsert_remote_cursor("peer-ada".into(), at, Some("Ada Lovelace"));
+    }
+
+    /// Paint the pointer into the presence layer and append it over the
+    /// widgets. Returns its damage, `None` when it must repaint everything.
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        viewport: vello::kurbo::Rect,
+    ) -> Option<Vec<vello::kurbo::Rect>> {
+        let presence = &self.presence;
+        self.layer.record(|layer| {
+            tilo_ui::scene_parts::part_drawn(
+                layer,
+                tilo_ui::scene_parts::PartKey::new("bench.remote-presence", ()),
+                |layer| {
+                    tilo_ui::presence::draw_remote_presence(
+                        layer,
+                        Affine::IDENTITY,
+                        viewport,
+                        text_renderer,
+                        theme,
+                        presence,
+                    )
+                },
+            );
+        });
+        scene.append(self.layer.scene(), None);
+        self.layer.damage().filter(|_| !self.full_repaint)
+    }
 }
 
 #[allow(
@@ -911,6 +995,10 @@ fn full_draw(
         state.perms,
     );
     state.presence.pop_viewport(prev_vp);
+    let peer_damage = state
+        .peer
+        .as_deref_mut()
+        .map(|peer| peer.draw(state.scene, state.text_renderer, state.theme, vp));
     phase.draw_us = t_draw.elapsed().as_micros();
     if let (Some(before), Some(breakdown)) =
         (allocation_before_draw, allocation_breakdown.as_deref_mut())
@@ -929,12 +1017,19 @@ fn full_draw(
     // the complete native target. Visual-only changes use the union of dirty
     // leaves plus a 16px safety margin for AA, focus rings, and small shadows.
     state.damage_regions.clear();
-    if layout_dirty {
+    if layout_dirty || matches!(peer_damage, Some(None)) {
         state.damage_regions.push(vp);
     } else {
         state.root.collect_damage(state.damage_regions);
         for rect in &mut *state.damage_regions {
             *rect = rect.inflate(16.0, 16.0).intersect(vp);
+        }
+        // The peer's marks, as the native runner submits them: whole pixels
+        // plus one for rounding.
+        for rect in peer_damage.into_iter().flatten().flatten() {
+            state
+                .damage_regions
+                .push(rect.expand().inflate(1.0, 1.0).intersect(vp));
         }
         state.damage_regions.retain(|rect| !rect.is_zero_area());
         if state.damage_regions.is_empty() {
@@ -980,6 +1075,9 @@ fn full_draw(
     }
 
     state.root.mark_drawn();
+    if let Some(peer) = state.peer.as_deref_mut() {
+        peer.layer.presented();
+    }
 }
 
 fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEvent) {
@@ -1228,6 +1326,11 @@ fn dispatch_bench_event(
     positions: [(f64, f64); 5],
 ) {
     let [pa, pb, pc, pd, pe] = positions;
+    // A collaborator's pointer moves on every event.
+    let (canvas_w, canvas_h) = (state.canvas_w, state.canvas_h);
+    if let Some(peer) = state.peer.as_deref_mut() {
+        peer.move_pointer(i, canvas_w, canvas_h);
+    }
     if scroll_mode {
         // Alternate scroll direction every ~50 events so we
         // exercise both clamp-eats-it (at the edges) and
@@ -1336,8 +1439,9 @@ fn run_bench_loop(
             );
         }
 
-        // App-style gate: only draw if the tree signals dirty.
-        let redrew = state.root.needs_redraw();
+        // App-style gate: only draw if the tree signals dirty (or the peer
+        // moved).
+        let redrew = state.root.needs_redraw() || state.peer.is_some();
         if redrew {
             total_redraws = total_redraws.saturating_add(1);
             let render_timing = render_timings
@@ -2713,6 +2817,17 @@ pub fn run(_args: &[String]) {
 
     let tree_size = count_widgets(root.as_ref());
     println!("dashboard widget tree: {tree_size} widgets");
+    let mut peer = PeerBench::from_env();
+    if let Some(peer) = peer.as_ref() {
+        println!(
+            "peer: a collaborator's pointer moves on every event ({})",
+            if peer.full_repaint {
+                "full repaint while visible, the rule before TIL-634"
+            } else {
+                "presence-layer damage"
+            }
+        );
+    }
 
     let mut state = BenchState {
         root: &mut root,
@@ -2728,6 +2843,7 @@ pub fn run(_args: &[String]) {
         damage_regions: &mut damage_regions,
         canvas_w,
         canvas_h,
+        peer: peer.as_mut(),
     };
 
     warm_up(&mut state);

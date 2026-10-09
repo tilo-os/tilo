@@ -6,6 +6,7 @@ pub mod capability;
 mod geom;
 mod interaction;
 mod key;
+mod layer;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
@@ -13,6 +14,7 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
+pub use layer::{PresenceLayer, WidgetPresence};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
 /// (the capture studio's docked recorder), so one rule decides how much
 /// larger than the default a label paints.
@@ -379,7 +381,7 @@ impl PresenceUser {
 /// One "just typed" highlight span: the run a peer inserted and when.
 /// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes it
 /// once past [`TYPING_FADE`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct TypingMark {
     range: SelectionRange,
     born: Instant,
