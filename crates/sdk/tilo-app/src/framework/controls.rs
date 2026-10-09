@@ -81,7 +81,9 @@ pub(crate) fn collect_unbound() -> Collecting {
 impl Collecting {
     /// What was collected, one sentence per control.
     pub(crate) fn finish(self) -> Vec<String> {
-        UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default())
+        let collected = UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
+        drop(self);
+        collected
     }
 }
 
