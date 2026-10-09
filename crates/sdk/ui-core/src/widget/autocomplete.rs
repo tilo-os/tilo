@@ -1436,8 +1436,8 @@ mod tests {
             // Click the second row ("album").
             let row = ac.row_rect(panel, 1);
             let c = row.center();
-            drive(&mut ac, &mouse_move(c.x, c.y));
-            assert!(drive(&mut ac, &left_press()));
+            drive(&mut ac, &cursor_moved(c.x, c.y));
+            assert!(drive(&mut ac, &mouse_press()));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1465,8 +1465,8 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("a"));
             // Move far away, then press: cancels but is not swallowed.
-            drive(&mut ac, &mouse_move(900.0, 900.0));
-            let consumed = drive(&mut ac, &left_press());
+            drive(&mut ac, &cursor_moved(900.0, 900.0));
+            let consumed = drive(&mut ac, &mouse_press());
             assert!(!consumed, "the outside click still reaches the host");
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
         }
@@ -1522,20 +1522,9 @@ mod tests {
 
     use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn drive(ac: &mut Autocomplete, ev: &WindowEvent) -> bool {
         let mut handled = false;

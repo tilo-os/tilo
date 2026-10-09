@@ -62,6 +62,6 @@ pub use model::{
     ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
-pub use participant::{AgentParticipant, ParticipantConfig};
+pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};

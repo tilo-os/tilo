@@ -10,7 +10,8 @@
 //! apps. Only devices of the delegating user may steer; an agent may not.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -100,11 +101,21 @@ struct ControlState {
     room: Option<String>,
 }
 
+/// Raised whenever something the agent's loop acts on changed — its
+/// steering, its session or its host — so the loop sleeps until then
+/// instead of on an interval.
+#[derive(Default)]
+struct Changed {
+    raised: Mutex<bool>,
+    condvar: Condvar,
+}
+
 /// One agent's steering state, shared by its participant and the
 /// supervisor.
 pub struct AgentControl {
     delegation: AgentDelegation,
     state: Mutex<ControlState>,
+    changed: Changed,
 }
 
 impl AgentControl {
@@ -121,6 +132,7 @@ impl AgentControl {
                 activity: None,
                 room: None,
             }),
+            changed: Changed::default(),
         })
     }
 
@@ -152,6 +164,7 @@ impl AgentControl {
                 activity: None,
                 room: info.room.clone(),
             }),
+            changed: Changed::default(),
         })
     }
 
@@ -195,10 +208,49 @@ impl AgentControl {
         state.status = AgentStatus::Failed;
         state.paused = false;
         state.activity = None;
+        drop(state);
+        self.wake();
     }
 
     fn state(&self) -> MutexGuard<'_, ControlState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wake the agent's loop: its steering, its session or its host
+    /// changed.
+    pub(crate) fn wake(&self) {
+        *self
+            .changed
+            .raised
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = true;
+        self.changed.condvar.notify_all();
+    }
+
+    /// Block until [`Self::wake`] or `timeout` (`None`: no limit), then
+    /// lower the signal. A wake that came before the call returns at once,
+    /// so none is lost between a pump and this wait.
+    pub(crate) fn wait_for_change(&self, timeout: Option<Duration>) {
+        let raised = self
+            .changed
+            .raised
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut raised = match timeout {
+            Some(timeout) => {
+                self.changed
+                    .condvar
+                    .wait_timeout_while(raised, timeout, |raised| !*raised)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+            None => self
+                .changed
+                .condvar
+                .wait_while(raised, |raised| !*raised)
+                .unwrap_or_else(PoisonError::into_inner),
+        };
+        *raised = false;
     }
 
     /// The agent's delegation.
@@ -244,6 +296,7 @@ impl AgentControl {
             error: None,
         });
         drop(state);
+        self.wake();
         Ok(id)
     }
 
@@ -260,6 +313,7 @@ impl AgentControl {
         state.paused = true;
         state.status = AgentStatus::Paused;
         drop(state);
+        self.wake();
         Ok(())
     }
 
@@ -283,6 +337,8 @@ impl AgentControl {
         } else {
             AgentStatus::Waiting
         };
+        drop(state);
+        self.wake();
         Ok(())
     }
 
@@ -298,6 +354,8 @@ impl AgentControl {
         state.status = AgentStatus::Stopped;
         state.paused = false;
         state.activity = None;
+        drop(state);
+        self.wake();
     }
 
     /// Cancel task `id` while it is queued or running; the agent goes on
@@ -331,6 +389,7 @@ impl AgentControl {
             }
         }
         drop(state);
+        self.wake();
         Ok(())
     }
 
@@ -379,6 +438,14 @@ impl AgentControl {
         state.status = AgentStatus::Running;
         drop(state);
         Some(begun)
+    }
+
+    /// Whether a task waits for [`Self::begin_next`].
+    pub(crate) fn has_queued(&self) -> bool {
+        self.state()
+            .tasks
+            .iter()
+            .any(|task| task.state == TaskState::Queued)
     }
 
     /// Record one action task `id` performed.

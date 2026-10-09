@@ -662,20 +662,9 @@ mod tests {
 
     use crate::synthetic_input::named_key;
 
-    fn mouse_move(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
@@ -703,8 +692,8 @@ mod tests {
             assert!(el.is_editing(), "still editing until a commit trigger");
 
             // Move the pointer well outside the field, then press — a click away.
-            drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
-            let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
+            drive(&mut el, &mut doc, &cursor_moved(500.0, 500.0), no_mods());
+            let consumed = drive(&mut el, &mut doc, &mouse_press(), no_mods());
 
             assert!(!el.is_editing(), "click outside ends the edit");
             assert_eq!(el.value(), "New", "blur committed the typed value");

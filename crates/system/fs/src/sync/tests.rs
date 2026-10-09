@@ -3541,13 +3541,22 @@ async fn session_member(
     workspace: uuid::Uuid,
     namespace: Arc<Mutex<Namespace>>,
 ) -> (Router, EndpointAddr, IdentityKey) {
+    session_member_under(workspace, namespace, None).await
+}
+
+/// [`session_member`], deciding who may do what by `policy`.
+async fn session_member_under(
+    workspace: uuid::Uuid,
+    namespace: Arc<Mutex<Namespace>>,
+    policy: PeerPolicy,
+) -> (Router, EndpointAddr, IdentityKey) {
     let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
     let person = identity.user_public_key();
     let (announcements, _) = mpsc::unbounded_channel();
     let protocol = SessionProtocol {
         endpoint: endpoint.clone(),
         identity,
-        policy: None,
+        policy,
         namespace,
         store: Arc::new(ContentStore::memory()),
         records: None,
@@ -3756,6 +3765,171 @@ async fn read_only_member_never_downloads_full_snapshot() {
     for router in [host_router, legacy_router, stranger_router] {
         router.shutdown().await.unwrap();
     }
+}
+
+/// A namespace whose document holds `changes` changes, as months of saves
+/// leave one: a file per hundred changes, rewritten in a change of its own.
+fn namespace_with_history(changes: u64) -> Namespace {
+    let mut namespace = Namespace::new("history").unwrap();
+    let mut file = ROOT_INO;
+    for change in 0..changes {
+        if change.is_multiple_of(100) {
+            file = namespace
+                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                .unwrap();
+        } else {
+            let content = Hash::new(change.to_le_bytes());
+            assert!(namespace.set_content(file, Some(&content), change, change));
+        }
+        // Reading the heads commits the edit as one change.
+        namespace.heads();
+    }
+    namespace
+}
+
+/// The sync bytes `host` and `device` generated in one session exchange,
+/// through the production client ([`session::sync_namespace`]) and server.
+async fn namespace_session_pass(
+    (sessions, session): (&SessionPool, &session::Session),
+    device: &Arc<Mutex<Namespace>>,
+    host: &Arc<Mutex<Namespace>>,
+    policy: &PeerPolicy,
+) -> Result<usize> {
+    let generated = || {
+        device
+            .lock()
+            .unwrap()
+            .sync_bytes_generated()
+            .saturating_add(host.lock().unwrap().sync_bytes_generated())
+    };
+    let before = generated();
+    session::sync_namespace(sessions, session, device, None, policy).await?;
+    Ok(generated().saturating_sub(before))
+}
+
+/// TIL-584. Two writers in sync, with 5,000 namespace changes behind them.
+/// Every pass used to start both ends from a fresh Automerge sync state,
+/// whose first message carries a Bloom filter over the document's whole
+/// history (10 bits a change): 6 KB here, 62 KB at 50,000 changes, every
+/// 3 s per peer, built under the namespace lock. A pass now resumes where
+/// the last completed one left off, and an idle one sends only heads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_namespace_pass_sends_no_history_bloom() {
+    let workspace = uuid::Uuid::new_v4();
+    let history = namespace_with_history(5_000).save();
+    let host = Arc::new(Mutex::new(Namespace::from_bytes("host", &history).unwrap()));
+    let (router, addr, _person) = session_member(workspace, Arc::clone(&host)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let device_key = identity.device_public_key();
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &history).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions
+        .get(&addr)
+        .await
+        .unwrap()
+        .expect("the host speaks the session protocol");
+    let pass = (&sessions, &*session);
+
+    let first = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        first > 5_000,
+        "first contact summarises the whole history ({first} B)"
+    );
+    let idle = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(
+        idle < 512,
+        "an idle pass sent {idle} B; the first sent {first} B"
+    );
+    // The server stores its progress once it has sent its last frame.
+    assert!(
+        wait_until(|| {
+            let mut host = host.lock().unwrap();
+            host.begin_sync_with(&device_key).shared_heads == host.heads()
+        })
+        .await,
+        "serving the exchange left the host resuming from it too"
+    );
+
+    // Resuming loses nothing: changes on either side still cross.
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-host", None, 0, 1)
+        .unwrap();
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-device", None, 0, 1)
+        .unwrap();
+    namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(device.lock().unwrap().entry_at("from-host").is_some());
+    assert!(host.lock().unwrap().entry_at("from-device").is_some());
+    let idle = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .unwrap();
+    assert!(idle < 512, "idle again after a change: {idle} B");
+    router.shutdown().await.unwrap();
+}
+
+/// A device's remembered sync progress is no authority: once its holder's
+/// write access is revoked, a session that completed exchanges before is
+/// refused like any other, and nothing more reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoked_writer_is_cut_off_with_persisted_state() {
+    let workspace = uuid::Uuid::new_v4();
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    let writer = identity.user_public_key();
+    let acl = policy_read_write(&[writer], &[]);
+    let host = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
+    let (router, addr, _person) =
+        session_member_under(workspace, Arc::clone(&host), Some(acl.clone())).await;
+    let device = Arc::new(Mutex::new(
+        Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
+    ));
+    let sessions = SessionPool::new(endpoint, identity, workspace);
+    let session = sessions
+        .get(&addr)
+        .await
+        .unwrap()
+        .expect("the host speaks the session protocol");
+    let pass = (&sessions, &*session);
+    for _ in 0..2 {
+        namespace_session_pass(pass, &device, &host, &None)
+            .await
+            .unwrap();
+    }
+
+    let mut revoked = WorkspaceAcl::new();
+    revoked.grant_read(writer, "/");
+    acl.replace(revoked);
+    host.lock()
+        .unwrap()
+        .create_file(ROOT_INO, "after-revoke", None, 0, 2)
+        .unwrap();
+    device
+        .lock()
+        .unwrap()
+        .create_file(ROOT_INO, "from-revoked-writer", None, 0, 2)
+        .unwrap();
+    let error = namespace_session_pass(pass, &device, &host, &None)
+        .await
+        .expect_err("a revoked writer's exchange is refused");
+    assert!(format!("{error:#}").contains("denied"), "{error:#}");
+    assert!(device.lock().unwrap().entry_at("after-revoke").is_none());
+    assert!(
+        host.lock()
+            .unwrap()
+            .entry_at("from-revoked-writer")
+            .is_none()
+    );
+    router.shutdown().await.unwrap();
 }
 
 #[tokio::test]

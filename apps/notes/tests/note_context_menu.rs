@@ -1,15 +1,10 @@
 use crate::framework_support::{add_note, notes, open, surface};
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
+use ui::synthetic_input::cursor_moved;
 use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
 
 fn mouse_press_right() -> WindowEvent {
     WindowEvent::MouseInput {

@@ -37,6 +37,16 @@ const RANGED_READ_SLO: Duration = Duration::from_secs(4);
 const COLD_THUMBNAIL_SLO: Duration = Duration::from_secs(3);
 const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(500);
 
+/// Namespace changes behind the two writers of the idle anti-entropy pass.
+const IDLE_SYNC_HISTORY: u64 = 50_000;
+/// One idle pass between two writers in sync, both directions together.
+/// Independent of history: a pass resumes where the last one left off.
+const IDLE_SYNC_BYTES: usize = 1_024;
+const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
+/// The device keys the two writers know each other by.
+const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
+const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
+
 fn require_enabled() -> bool {
     if let Ok("1") = std::env::var(ENABLE_ENV).as_deref() {
         true
@@ -99,6 +109,94 @@ fn thumbnail_fixture() -> Vec<u8> {
         "encode deterministic image fixture"
     );
     encoded
+}
+
+/// One exchange of sync messages as a session runs it (the client writes,
+/// the server answers, until neither has anything to send) between two
+/// namespaces in sync. Returns the bytes both sent and the time both spent
+/// generating and applying them, or `None` if the exchange failed.
+fn idle_namespace_pass(
+    (client, client_state): (&mut Namespace, &mut automerge::sync::State),
+    (server, server_state): (&mut Namespace, &mut automerge::sync::State),
+) -> Option<(usize, Duration)> {
+    let started = Instant::now();
+    let mut bytes = 0_usize;
+    for _ in 0..64 {
+        let message = client.sync_generate(client_state);
+        if let Some(message) = &message {
+            bytes = bytes.saturating_add(message.len());
+            server.sync_receive(server_state, message).ok()?;
+        }
+        let reply = server.sync_generate(server_state);
+        if let Some(reply) = &reply {
+            bytes = bytes.saturating_add(reply.len());
+            client.sync_receive(client_state, reply).ok()?;
+        }
+        if message.is_none() && reply.is_none() {
+            return Some((bytes, started.elapsed()));
+        }
+    }
+    None
+}
+
+/// TIL-584: the anti-entropy pass every writer runs with every peer every
+/// few seconds, with nothing changed. Starting each pass from a fresh sync
+/// state sent a Bloom filter over the namespace's whole history; resuming
+/// from the last completed pass sends heads, at any history length.
+#[test]
+fn idle_namespace_anti_entropy_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let mut host = Namespace::new("perf-idle-host").unwrap();
+    let mut file = ROOT_INO;
+    for change in 0..IDLE_SYNC_HISTORY {
+        if change.is_multiple_of(100) {
+            file = host
+                .create_file(ROOT_INO, format!("file-{change}"), None, 0, change)
+                .expect("create history fixture entry");
+        } else {
+            let content = iroh_blobs::Hash::new(change.to_le_bytes());
+            assert!(host.set_content(file, Some(&content), change, change));
+        }
+        // Reading the heads commits the edit as one change.
+        host.heads();
+    }
+    let mut device =
+        Namespace::from_bytes("perf-idle-device", &host.save()).expect("open in-sync device");
+
+    let (fresh_bytes, fresh_time) = idle_namespace_pass(
+        (&mut device, &mut automerge::sync::State::new()),
+        (&mut host, &mut automerge::sync::State::new()),
+    )
+    .expect("fresh idle pass");
+    eprintln!(
+        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before TIL-584)",
+        fresh_time.as_secs_f64() * 1_000.0
+    );
+
+    // The production path: each side begins where its last completed
+    // exchange with the other left off. The first is a full exchange.
+    let mut resumed = None;
+    for _ in 0..3 {
+        let mut device_state = device.begin_sync_with(&IDLE_SYNC_HOST);
+        let mut host_state = host.begin_sync_with(&IDLE_SYNC_DEVICE);
+        let pass = idle_namespace_pass(
+            (&mut device, &mut device_state),
+            (&mut host, &mut host_state),
+        )
+        .expect("resumed idle pass");
+        device.finish_sync_with(IDLE_SYNC_HOST, &device_state);
+        host.finish_sync_with(IDLE_SYNC_DEVICE, &host_state);
+        resumed = Some(pass);
+    }
+    let (bytes, time) = resumed.expect("a resumed pass ran");
+    eprintln!("PERF idle-namespace-pass-resumed-50k: {bytes} B (budget {IDLE_SYNC_BYTES} B)");
+    assert!(
+        bytes <= IDLE_SYNC_BYTES,
+        "an idle pass sent {bytes} B over {IDLE_SYNC_HISTORY} changes"
+    );
+    report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
 }
 
 /// The ranged reads of the local-residency scenario, through the mount's

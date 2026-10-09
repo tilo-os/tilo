@@ -88,6 +88,18 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "WARM_THUMBNAIL_SLO"
 
+# One idle anti-entropy pass between two in-sync writers over a 50,000-change
+# namespace (TIL-584): independent of history, since a pass resumes from the
+# heads the last one agreed on.
+[kpi."fs.idle-namespace-pass-resumed-50k"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "IDLE_SYNC_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
 # registry index. Targets from the KPI document (median <= 2 MB, max <= 6 MB,
 # decimal megabytes); reported, not enforced, until TIL-590's per-app ratchet
