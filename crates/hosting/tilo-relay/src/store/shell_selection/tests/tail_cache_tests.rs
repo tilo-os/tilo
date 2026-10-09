@@ -220,8 +220,8 @@ fn tail_cache_publishes_what_a_full_selection_would() {
     let (_fast_tmp, fast) = bound_store(fixture.authority.clone());
     // `full` forgets its cursors before every write, so each retain selects.
     let (_full_tmp, full) = bound_store(fixture.authority.clone());
-    let mut fast_selections = 0;
-    let mut retains = 0;
+    let mut fast_selections = 0_usize;
+    let mut retains = 0_usize;
     let mut retain_both = |bytes: &[u8], seq: u64| {
         retains = retains.saturating_add(1);
         let (fast_outcome, selected, _) = try_retain_frame(&fast, bytes, seq)
