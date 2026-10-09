@@ -11,6 +11,8 @@ pub mod actors;
 pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
+#[path = "each_window.rs"]
+pub mod each_window;
 #[path = "effects.rs"]
 pub mod effects;
 #[path = "framework.rs"]
