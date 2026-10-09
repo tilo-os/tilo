@@ -52,14 +52,16 @@ pub struct HistoryLog {
 }
 
 /// Everything besides the log itself that a reading depends on.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Basis {
     max_entries: usize,
     field_paths: bool,
     /// Whether the document carries the qdoc schema.
     structural: bool,
-    /// Readings carry translated words.
-    locale: u64,
+    /// Readings carry translated words: the active locale, and the
+    /// catalogue revision, which moves whenever a catalogue is added.
+    locale: String,
+    catalogue: u64,
 }
 
 /// One change of the log.
@@ -142,12 +144,13 @@ impl HistoryLog {
             // What `tilo_doc::snapshot::of` checks before it materialises
             // the whole document.
             structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
-            locale: crate::i18n::I18nManager::revision(),
+            locale: crate::i18n::I18nManager::current_locale(),
+            catalogue: crate::i18n::I18nManager::revision(),
         };
         let appended = {
             let log = doc.committed_document().change_hashes();
             let read = self.changes.len();
-            let prefix = self.basis == Some(basis)
+            let prefix = self.basis.as_ref() == Some(&basis)
                 && !self.failed
                 && log.len() >= read
                 && log
@@ -171,13 +174,14 @@ impl HistoryLog {
     /// changes before the window are applied to the replica in one batch,
     /// and only the window is read.
     fn rebuild(&mut self, source: &HistorySource, doc: &mut AutoCommit, basis: Basis) {
+        let max_entries = basis.max_entries;
         *self = Self {
             basis: Some(basis),
             reads: self.reads,
             ..Self::default()
         };
         let metas: Vec<Meta> = doc.get_changes_meta(&[]).iter().map(Meta::of).collect();
-        let start = metas.len().saturating_sub(basis.max_entries);
+        let start = metas.len().saturating_sub(max_entries);
         let mut changes = doc.get_changes(&[]).into_iter();
         let prefix: Vec<_> = changes.by_ref().take(start).collect();
         let mut metas = metas.into_iter();
@@ -297,7 +301,7 @@ impl HistoryLog {
 
     /// The replica's qdoc snapshot, when the document carries that schema.
     fn replica_snapshot(&self) -> Option<DocSnapshot> {
-        (self.basis.is_some_and(|basis| basis.structural) && !self.failed)
+        (self.basis.as_ref().is_some_and(|basis| basis.structural) && !self.failed)
             .then(|| tilo_doc::snapshot::of(&self.replica))
             .flatten()
     }
