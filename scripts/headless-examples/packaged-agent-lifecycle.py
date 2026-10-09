@@ -5485,6 +5485,16 @@ def wait_for_owned_physical_send_control(socket, output, owner, draft, primary, 
     return wait_for("physical Send's exact owned enabled control", observe, process)
 
 
+def wait_for_physical_message_admission(socket, room, record, draft, process, identity):
+    """Observe the saved canonical projection without changing Send or admission."""
+    def observe():
+        if owned_agent_identity(process.pid) != identity:
+            raise RuntimeError("physical Message admission replaced the managed Agent")
+        return canonical_physical_message(socket, room, record, draft, process)
+
+    return wait_for("physical Message's original saved owner projection", observe, process)
+
+
 def physical_send_after_stop(socket, room, record, provider, output, size, process, identity):
     """Supplement, never replace, the semantic lifecycle and physical editor journey."""
     if provider.request_count() != 3 or not provider.original_third_held() \
@@ -5493,12 +5503,11 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
     draft = "Reply after Stop using this physical Send."
 
     def admission():
-        if owned_agent_identity(process.pid) != identity:
-            return None
         # The authenticated model POST is the execution boundary. UI polling
         # may legitimately lag it; require mounted progress before release,
         # not as new authority to admit model execution.
-        return canonical_physical_message(socket, room, record, draft, process)
+        return wait_for_physical_message_admission(
+            socket, room, record, draft, process, identity)
 
     provider.require_fourth_message_admission(admission)
     access = wait_for("returned physical Send editor",
@@ -5538,6 +5547,13 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
                         lambda: canonical_physical_message(socket, room, record, draft, process), process)
     wait_for("new authenticated model request after Stop", lambda: provider.request_count() == 4, process)
     admitted = provider.owner_admission(4)
+    (output / "physical-send-admission-observation.json").write_text(json.dumps({
+        "admitted_present": admitted is not None,
+        "admission_matches_original": admitted == original,
+        "original_third_held": provider.original_third_held(),
+        "provider": provider.admission_diagnostic(),
+        "private_content_recorded": False,
+    }, indent=2) + "\n")
     if admitted != original or not provider.original_third_held():
         raise RuntimeError("fourth model request did not retain this original while the third stayed held")
     wait_for("exact owner receipt clears the captured private draft",

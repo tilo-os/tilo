@@ -26,6 +26,45 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_physical_message_admission_observes_lagging_canonical_projection(self):
+        process = type("ManagedProcess", (), {"pid": 123, "poll": lambda self: None})()
+        identity = {"private_identity": "PRIVATE-CANARY"}
+        original = {"invocation": "PRIVATE-ORIGINAL", "request_row": "PRIVATE-ROW"}
+        with patch.object(PROOF, "owned_agent_identity", return_value=identity) as owner, \
+                patch.object(PROOF, "canonical_physical_message",
+                             side_effect=[None, None, original]) as read, \
+                patch.object(PROOF.time, "sleep"):
+            self.assertEqual(PROOF.wait_for_physical_message_admission(
+                "socket", "room", "record", "PRIVATE-DRAFT", process, identity), original)
+            self.assertEqual(owner.call_count, 3)
+            self.assertEqual(read.call_count, 3)
+            read.assert_called_with("socket", "room", "record", "PRIVATE-DRAFT", process)
+
+    def test_physical_message_admission_rejects_replaced_owner_before_read(self):
+        process = type("ManagedProcess", (), {"pid": 123, "poll": lambda self: None})()
+        identity = {"owner": "original"}
+        with patch.object(PROOF, "owned_agent_identity",
+                          side_effect=[identity, {"owner": "replacement"}]), \
+                patch.object(PROOF, "canonical_physical_message", return_value=None) as read, \
+                patch.object(PROOF.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "replaced the managed Agent"):
+                PROOF.wait_for_physical_message_admission(
+                    "socket", "room", "record", "PRIVATE-DRAFT", process, identity)
+            self.assertEqual(read.call_count, 1)
+
+    def test_physical_message_admission_expires_without_fabricating_admission(self):
+        process = type("ManagedProcess", (), {"pid": 123, "poll": lambda self: None})()
+        identity = {"owner": "original"}
+        with patch.object(PROOF, "owned_agent_identity", return_value=identity) as owner, \
+                patch.object(PROOF, "canonical_physical_message", return_value=None) as read, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_physical_message_admission(
+                    "socket", "room", "record", "PRIVATE-DRAFT", process, identity)
+            self.assertEqual(owner.call_count, 3)
+            self.assertEqual(read.call_count, 3)
+
     def test_native_marker_bootstrap_verdict_requires_three_completed_turns(self):
         # Execute the actual bootstrap entry point and its persisted verdict.
         # Native startup is stubbed here; its boundary is exercised separately
