@@ -116,3 +116,53 @@ unit = "bytes"
 p50 = 2000000.0
 max = 6000000.0
 source = "KPI document: App package size"
+
+# Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
+# the shared `runner` class, a release build with `dev-overrides` and thin
+# LTO, timed from the client's side of the control socket. Targets from the
+# KPI document ("actions invoke round trip, local", "MCP tool call");
+# reported, not enforced, until three nightly records exist (TIL-585).
+# min_delta keeps scheduler jitter on a shared runner from counting as a
+# regression of a sub-millisecond number.
+
+[kpi."agent.list.local"]
+unit = "ms"
+p99 = 10.0
+min_delta = 0.5
+source = "KPI document: actions list p99 <= 10 ms"
+
+# The KPI document names no state-dump target; it is held to the list's.
+[kpi."agent.state_dump.local"]
+unit = "ms"
+p99 = 10.0
+min_delta = 0.5
+source = "provisional: the actions list target"
+
+[kpi."agent.invoke.local.noop.accept"]
+unit = "ms"
+p50 = 1.0
+p99 = 5.0
+min_delta = 0.25
+source = "KPI document: no-op invoke p50 <= 1 ms, p99 <= 5 ms"
+
+[kpi."agent.invoke.local.noop"]
+unit = "ms"
+p50 = 1.0
+p99 = 5.0
+min_delta = 0.25
+source = "KPI document: no-op invoke p50 <= 1 ms, p99 <= 5 ms"
+
+# Microseconds per completed no-op with eight clients at once. A desktop
+# that answers one client in 1 ms must at least keep that rate under load.
+[kpi."agent.invoke.local.throughput"]
+unit = "us"
+p50 = 1000.0
+min_delta = 50.0
+source = "provisional: derived from the no-op p50 target"
+
+[kpi."agent.invoke.mcp.noop"]
+unit = "ms"
+p50 = 3.0
+p99 = 7.0
+min_delta = 0.25
+source = "KPI document: MCP tool call <= local invoke + 2 ms"

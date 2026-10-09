@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint, agent); empty runs all."
         required: false
         default: ""
       accept:
@@ -54,6 +54,7 @@ jobs:
       groups: ${{ steps.select.outputs.groups }}
       fs: ${{ steps.select.outputs.fs }}
       footprint: ${{ steps.select.outputs.footprint }}
+      agent: ${{ steps.select.outputs.agent }}
     steps:
       - name: Select KPI groups
         id: select
@@ -61,7 +62,7 @@ jobs:
           KPIS: ${{ github.event.inputs.kpis }}
         run: |
           set -euo pipefail
-          known=(fs footprint)
+          known=(fs footprint agent)
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -132,6 +133,69 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Agent round trip (scripts/perf/agent_rtt.py): actions list, state dump,
+  # a no-op invoke accepted and completed, throughput under eight clients and
+  # the no-op through the MCP server, against one headless compositor on the
+  # shared `runner` class. The compositor is built once here: release
+  # optimisation, thin LTO as release-apps.yml builds, and `dev-overrides`,
+  # the dev image's feature that serves the control socket in a release
+  # build. Authorization and the capability gate stay on.
+  agent:
+    needs: [plan, builder]
+    if: needs.plan.outputs.agent == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      # The headless backend renders with Mesa's CPU Vulkan driver, as the
+      # nightly headless tests do.
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the compositor
+        run: >-
+          bash scripts/ci-run.sh "agent round trip compositor build" --
+          cargo build --locked --release -p shell --bin shell --features dev-overrides
+
+      - name: Measure and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          # A fresh HOME, XDG tree and runtime directory, no session bus:
+          # the compositor and everything it leaves behind are this run's.
+          bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
+            --spawn target/release/shell --samples 1000 --warmup 100 \
+            --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
+            --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
+          cat perf/agent.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-agent
+          path: perf/
+          if-no-files-found: warn
+
   # App package size: the newest signed tapp of every app in the public
   # registry index, per architecture. A runner-independent byte count.
   footprint:
@@ -168,7 +232,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint]
+    needs: [plan, fs, footprint, agent]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -195,13 +259,14 @@ jobs:
           FACTOR: ${{ github.event.inputs.synthetic_factor }}
           FS_RESULT: ${{ needs.fs.result }}
           FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          AGENT_RESULT: ${{ needs.agent.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
