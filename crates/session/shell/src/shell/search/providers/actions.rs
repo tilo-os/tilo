@@ -7121,7 +7121,7 @@ mod tests {
         );
         let action = catalog
             .select(&resource)
-            .unwrap_or_else(|| panic!("{id} is published"));
+            .ok_or_else(|| ActionError::Refused(format!("{id} is not published")))?;
         action.invoke_json(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
@@ -7244,6 +7244,7 @@ mod tests {
                     CapOverride::membership(Subject::person(FIXTURE_USER), room, Verb::Admin),
                 )
                 .expect("the owner delegates administration");
+                drop(tree);
             }
             invoke_shell_action(
                 &chrome,
