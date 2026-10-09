@@ -247,6 +247,12 @@ pub fn resource_id(id: &AccountId) -> String {
     format!("files.remote-account:{}", hex::encode(id.as_str()))
 }
 
+/// The account id a [`resource_id`] names.
+pub fn account_of_resource(resource: &str) -> Option<String> {
+    let hex_id = resource.strip_prefix("files.remote-account:")?;
+    String::from_utf8(hex::decode(hex_id).ok()?).ok()
+}
+
 pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {
     match kind {
         RemoteAccountKind::WebDav => WEBDAV_TYPE.into(),

@@ -628,6 +628,8 @@ impl ResourceApp for FileExplorerShell {
             },
             (None, None) => FileExplorerWidget::new(),
         };
+        // A search hit, or an agent's `open`, shows the row it names.
+        cx.on_open(widget.opener());
         cx.surface(widget)
     }
 

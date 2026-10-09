@@ -3688,41 +3688,26 @@ mod command_path_tests {
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record action rather than
+        // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = crate::files_app::published::tree(&widget, &doc);
-        resources.push(
-            widget
-                .published_row(&address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut widget,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
