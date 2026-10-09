@@ -145,10 +145,19 @@ impl<W: EditsText, R: Resource<State = R> + Model> TextControl<W, R> {
     /// field edit there (`path.splice(..)`) through `dispatcher`: for a
     /// hand-written surface's own editor.
     pub fn at(control: W, dispatcher: Dispatcher<R>, path: Path<R, String>) -> Self {
+        let mut text = Self::view_only_at(control, path);
+        text.attach(dispatcher);
+        text
+    }
+
+    /// `control` showing the text field at `path`, every edit taken back
+    /// until [`attach`](Self::attach) hands it a dispatcher: for a surface
+    /// that builds its editors before the framework attaches it.
+    pub fn view_only_at(control: W, path: Path<R, String>) -> Self {
         let segments = path.segments().to_vec();
         Self {
             control,
-            dispatch: Some(dispatcher),
+            dispatch: None,
             locate: Box::new(move |doc| text_at(doc, &segments)),
             splice: Box::new(move |dispatch, edits, edit| {
                 let edit = match edit {

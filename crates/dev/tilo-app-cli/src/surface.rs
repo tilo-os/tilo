@@ -295,17 +295,31 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
             keys.push(format!("{app}-{}", kebab(text(verb, "id"))));
         }
     }
-    for field in resource
+    let fields: Vec<&Value> = resource
         .get("fields")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-    {
+        .collect();
+    let readonly = |field: &Value| {
+        field
+            .get("readonly")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    // A field inside a read-only one is changed only by verbs too.
+    let locked: Vec<String> = fields
+        .iter()
+        .filter(|field| readonly(field))
+        .map(|field| format!("{}.", text(field, "path")))
+        .collect();
+    for field in fields {
+        let path = text(field, "path");
         let editable = text(field, "stored") == "value"
-            && !field
-                .get("readonly")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+            && !readonly(field)
+            && !locked
+                .iter()
+                .any(|prefix| path.starts_with(prefix.as_str()));
         if editable {
             let key = text(field, "path").rsplit('.').next().unwrap_or_default();
             keys.push(format!(
@@ -495,6 +509,8 @@ mod tests {
                 {"path": "title", "owner": "book", "title": "Title", "stored": "value", "type": title_type},
                 {"path": "pages", "owner": "book", "title": "Pages", "stored": "collection", "type": "Collection<Page>"},
                 {"path": "pages.*.text", "owner": "page", "title": "Text", "stored": "value", "type": "String", "readonly": true},
+                {"path": "meta", "owner": "book", "title": "Meta", "stored": "record", "type": "Meta", "readonly": true},
+                {"path": "meta.author", "owner": "meta", "title": "Author", "stored": "value", "type": "String"},
             ],
         })
     }
@@ -561,6 +577,7 @@ mod tests {
         assert!(found.findings[2].message.contains("notes-retitle"));
         assert!(found.findings[2].message.contains("notes-book-title"));
         assert!(!found.findings[2].message.contains("notes-page-text"));
+        assert!(!found.findings[2].message.contains("notes-meta-author"));
 
         // With a new storage version the change is drift to commit only.
         let bumped = report(&[resource(2, "Atom", &["rename"])]);

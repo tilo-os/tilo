@@ -130,3 +130,36 @@ fn opening_an_item_shows_it_or_says_why_not() {
         "{gone:?}"
     );
 }
+
+/// Rows that are not items of the resource (a process, a vault entry) are
+/// opened by anchor, and a gone one is refused.
+struct AnchorApp;
+
+impl ResourceApp for AnchorApp {
+    type Resource = Bookmarks;
+    const ID: &'static str = "so.tilo.test-anchors";
+    const TITLE: &'static str = "Bookmarks";
+
+    fn view(cx: &mut ViewCx<Bookmarks>) -> Element {
+        cx.on_open(|anchor| {
+            if anchor == "row:here" {
+                Ok(())
+            } else {
+                Err(Refusal::new("that row is gone"))
+            }
+        });
+        Box::new(Column::new())
+    }
+}
+
+#[test]
+fn opening_an_anchor_may_be_refused() {
+    let mut app = TestApp::<AnchorApp>::new().unwrap();
+    app.call("open", serde_json::json!({ "anchor": "row:here" }))
+        .unwrap();
+    let gone = app.call("open", serde_json::json!({ "anchor": "row:gone" }));
+    assert!(
+        matches!(&gone, Err(error) if error.to_string().contains("that row is gone")),
+        "{gone:?}"
+    );
+}

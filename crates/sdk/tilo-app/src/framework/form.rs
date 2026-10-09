@@ -187,11 +187,11 @@ pub enum Attached<V> {
     Local { id: String, state: LocalState<V> },
 }
 
-/// Marks the [`Bound`](super::Bound) implementation for a record's field.
+/// Marks the [`Bindable`](super::Bindable) implementation for a record's field.
 #[doc(hidden)]
 pub enum RecordField {}
 
-/// Marks the [`Bound`](super::Bound) implementation for a form's field.
+/// Marks the [`Bindable`](super::Bindable) implementation for a form's field.
 #[doc(hidden)]
 pub enum FormField {}
 

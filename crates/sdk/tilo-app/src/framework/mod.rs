@@ -368,7 +368,7 @@ pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
-pub use view::{Bound, EffectsHandle, ViewCx};
+pub use view::{Bindable, EffectsHandle, ViewCx};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_results_tests;

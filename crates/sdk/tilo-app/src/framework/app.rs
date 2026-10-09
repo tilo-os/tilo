@@ -530,9 +530,21 @@ fn write_genesis<A: ResourceApp>(
 fn open_reader<A: ResourceApp>(
     context: &HostContext,
 ) -> Result<Result<Reader<A::Resource>, String>, LaunchError> {
-    let migrated = context.migrate_record(|doc| {
-        tilo_resource::evolution::migrate::<A::Resource>(doc).map_err(|error| error.to_string())
-    });
+    // Only an older document is written to: opening another view of a
+    // current record must not commit what one already open has pending.
+    let stored = context
+        .read_record(tilo_resource::evolution::stored_version)
+        .map_err(LaunchError::Record)?;
+    let migrated = if stored < <A::Resource as Resource>::VERSION {
+        context
+            .migrate_record(|doc| {
+                tilo_resource::evolution::migrate::<A::Resource>(doc)
+                    .map_err(|error| error.to_string())
+            })
+            .map(drop)
+    } else {
+        Ok(())
+    };
     let read = context
         .read_record(|doc| {
             Reader::<A::Resource>::read(doc)
