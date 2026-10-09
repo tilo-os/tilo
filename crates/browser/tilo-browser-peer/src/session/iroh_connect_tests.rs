@@ -62,7 +62,7 @@ async fn unsupported_alpn_identifies_tilo_relay_v1() {
             "the dummy ALPN must reject the dial"
         );
     };
-    let (_, error) = tokio::join!(
+    let ((), error) = tokio::join!(
         tilo_test_env::within("dummy-ALPN rejection", accept),
         dial_error(&server),
     );
@@ -79,7 +79,7 @@ async fn transport_refusal_remains_generic_unavailable() {
     let refuse = async {
         server.accept().await.unwrap().refuse();
     };
-    let (_, error) = tokio::join!(
+    let ((), error) = tokio::join!(
         tilo_test_env::within("QUIC transport refusal", refuse),
         dial_error(&server),
     );
