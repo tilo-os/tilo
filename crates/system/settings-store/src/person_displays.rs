@@ -43,6 +43,7 @@ pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_COORDINATE: i32 = 1_000_000;
 
 /// One display's place in the person's shared layout.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrangedDisplay {
@@ -83,11 +84,15 @@ impl ArrangedDisplay {
 const ORDER_GAP: i64 = 1024;
 
 /// The person's display arrangement.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Arrangement {
     pub displays: Vec<ArrangedDisplay>,
 }
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(Arrangement);
 
 impl Arrangement {
     /// Decode a stored arrangement, or `None` when it is malformed or out of

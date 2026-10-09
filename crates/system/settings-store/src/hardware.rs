@@ -637,6 +637,7 @@ pub const TABLETS_KEY: &str = "tablets";
 /// What a pen barrel button does. `Default` reports the button as itself:
 /// tablet-aware apps see a pen button, everything else a right (lower
 /// button) or middle (upper button) click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StylusButtonAction {
@@ -654,6 +655,7 @@ pub enum StylusButtonAction {
 
 /// What the eraser end of a pen does. `Native` reports it as an eraser:
 /// tablet-aware apps erase with it, everything else sees a left click.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EraserAction {
@@ -672,6 +674,7 @@ pub enum EraserAction {
 /// What turning a pad's touch ring or sliding along its strip does in an app
 /// that does not take tablet input itself. Tablet-aware apps always get the
 /// ring and strip as they are.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PadDialAction {
@@ -748,6 +751,7 @@ pub fn feel_for_pressure_curve(curve: [f64; 4]) -> f64 {
 
 /// One drawing tablet's settings, stored per device identity so each
 /// tablet keeps its own mapping when several are used.
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TabletConfig {
@@ -782,6 +786,9 @@ pub struct TabletConfig {
     /// [`Self::pad_rings`].
     pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
 }
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(TabletConfig);
 
 impl TabletConfig {
     fn dials(&self, dial: PadDial) -> (&BTreeMap<u32, Vec<PadDialAction>>, u32) {
@@ -1182,6 +1189,7 @@ pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "nigh
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
 /// these it supports; the compositor asks only for a supported one.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TouchpadClickMethod {
@@ -1203,6 +1211,7 @@ impl TouchpadClickMethod {
 }
 
 /// When a touchpad produces scrolling instead of pointer motion.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TouchpadScrollMethod {
@@ -1716,6 +1725,7 @@ impl RichInputConfig {
     }
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShortcutAction {

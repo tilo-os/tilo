@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppNotificationRule {
     /// `None` follows the global preference.
@@ -40,6 +41,7 @@ pub struct AppNotificationRule {
     pub muted_until: Option<i64>,
 }
 
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusSchedule {
     #[serde(default)]

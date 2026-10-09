@@ -30,7 +30,9 @@ use crate::widgets::{caption, card, rows, setting_row};
 
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
 pub struct DesktopControls {
     #[serde(default)]
     pub vim_mode: bool,
@@ -39,6 +41,9 @@ pub struct DesktopControls {
 impl ui::storage::SettingsSchema for DesktopControls {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("desktop_controls");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.desktop-controls", label = "Desktop controls")]
+impl DesktopControls {}
 
 /// The section holding the person's shortcut bindings.
 const SHORTCUTS_SECTION: &str = "shortcuts";

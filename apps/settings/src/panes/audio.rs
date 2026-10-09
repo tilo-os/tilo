@@ -70,6 +70,9 @@ impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
 }
 
+#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
+impl AudioPrefs {}
+
 /// What Sound changes: this device's outputs, inputs and app streams, and
 /// the person's audio preferences.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]

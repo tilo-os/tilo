@@ -300,6 +300,9 @@ pub struct ReasoningSetting {
 /// The reasoning efforts a profile may name.
 pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
+#[cfg(feature = "model")]
+tilo_resource::json_model!(ProviderProfile);
+
 impl Default for ProviderProfile {
     fn default() -> Self {
         Self {
@@ -398,6 +401,7 @@ pub struct HostedProfiles {
 /// A portable profile list and the user's deliberate default. Kept separate
 /// from a task: tasks capture a chosen model at start so changing this default
 /// does not change work already in progress.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {

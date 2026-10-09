@@ -11,6 +11,10 @@ pub const ALL: &str = "all";
 pub const OSK: &str = "osk";
 
 /// Editing a configured source changes its options, not the source being typed.
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SourceOptions {
@@ -22,6 +26,10 @@ pub struct SourceOptions {
 }
 
 /// An ordered source assignment. Device keys are discovery identities, never indices.
+#[cfg_attr(
+    feature = "model",
+    derive(tilo_resource::Model, tilo_resource::JsonSchema)
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyboardProfile {
     pub sources: Vec<String>,

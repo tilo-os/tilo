@@ -11,7 +11,7 @@
 //! - **Spell checking** is the `text_assistance` section every app's text
 //!   fields follow.
 
-mod keyboard_editor;
+pub(crate) mod keyboard_editor;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

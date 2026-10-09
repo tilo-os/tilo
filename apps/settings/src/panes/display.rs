@@ -13,7 +13,7 @@
 //! Every change is a [`DisplayEffect`] the area's [`DisplayModel`] carries
 //! out.
 
-mod shared_displays;
+pub(crate) mod shared_displays;
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -48,6 +48,9 @@ use settings_store::hardware::{
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
+
+#[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
+impl DisplayPrefs {}
 
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.

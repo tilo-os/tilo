@@ -120,8 +120,9 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
             prefs.mode = "automatic".into();
             prefs.dark_theme = "custom:private-theme".into();
             prefs.light_theme = "light".into();
-            prefs.custom_themes =
-                vec![serde_json::json!({"private_document_marker":"never-export"})];
+            prefs.custom_themes = vec![crate::prefs::CustomTheme(
+                serde_json::json!({"private_document_marker":"never-export"}),
+            )];
             prefs.schedule = "custom".into();
             prefs.sunrise = "07:00".into();
             prefs.sunset = "22:00".into();
