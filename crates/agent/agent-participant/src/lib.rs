@@ -13,6 +13,10 @@
 //!   resource, looked up by the kind the record names and used only through
 //!   the operations the resource publishes — the same door a person's window
 //!   uses — with no per-app code and nothing rendered ([`apps`]).
+//! - **Confinement.** On a host, each record lives in its own confined app
+//!   worker process, so no app code runs beside the host's and agents'
+//!   keys; the host admits what a worker returns before it signs it
+//!   ([`worker`]).
 //! - **Edits.** Each action's Automerge change is committed through the
 //!   agent's relay session and ordered by the host with everyone else's;
 //!   browsers receive it live, attributed to the agent ([`participant`]).
@@ -40,6 +44,7 @@ pub mod participant;
 pub mod planner;
 pub mod room_actions;
 mod web_apps;
+pub mod worker;
 
 pub use apps::{AppCatalogue, AppError, Replica, Seed, component_apps};
 pub use control::{
@@ -55,3 +60,4 @@ pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
+pub use worker::ConfinedReplica;

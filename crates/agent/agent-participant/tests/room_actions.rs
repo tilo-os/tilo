@@ -42,6 +42,9 @@ mod resource_support;
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
+// Room actions hold each record in a confined app worker: this binary,
+// started again.
+tilo_agent_participant::app_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
