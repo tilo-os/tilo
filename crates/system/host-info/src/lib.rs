@@ -4,5 +4,4 @@
 //! Each fact is answered where the platform can answer it cheaply and
 //! reported as unknown elsewhere, so callers never guess.
 
-pub mod network;
 pub mod process;

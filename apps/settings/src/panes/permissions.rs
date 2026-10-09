@@ -321,12 +321,17 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         }
         // Another app's action this app may use: the consent sheet grants
         // these; the workspace's own Settings lists them under App actions.
-        Scope::Action { app, action } => (
+        Scope::Action {
+            app,
+            resource,
+            action,
+        } => (
             "App action",
             t_args(
                 "perm-action-detail",
                 &[
                     ("action", action.as_str().into()),
+                    ("resource", resource.as_str().into()),
                     ("app", app.as_str().into()),
                 ],
             ),
@@ -420,6 +425,11 @@ fn app_block(grants: &AppGrants) -> El {
 
 pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
     build_view(cx, load_text().as_deref())
+}
+
+/// Include the hosted disk-unlock model beside the device security summary.
+pub(crate) fn build_with_disk_unlock(cx: &PaneCx, disk_unlock: El) -> Box<dyn Widget> {
+    crate::widgets::rows(vec![build(cx), disk_unlock])
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
@@ -760,13 +770,20 @@ mod tests {
                 Subject::app("so.tilo.shortcuts"),
                 Scope::Action {
                     app: "so.tilo.agent".into(),
+                    resource: "agent.transform:freeform".into(),
                     action: "freeform".into(),
                 },
                 Verb::Write,
             ))
             .unwrap();
             assert_eq!(action.kind, "App action");
-            assert!(action.detail.contains("freeform") && action.detail.contains("so.tilo.agent"));
+            assert!(
+                action.detail.contains("freeform")
+                    && action.detail.contains("agent.transform:freeform")
+                    && action.detail.contains("so.tilo.agent"),
+                "{}",
+                action.detail
+            );
             // Read vs write is reflected in the file detail.
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),

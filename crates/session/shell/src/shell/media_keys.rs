@@ -232,20 +232,46 @@ fn current_volume(status: Option<&StatusBridge>) -> Option<os_actions::VolumeSta
 fn step_volume(delta: f32, actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
     let now = current_volume(status)?;
     let next = (now.level + delta).clamp(0.0, 1.0);
-    actions.set_volume(next * 100.0).ok()?;
-    // Nudging the volume un-mutes: reaching for volume-up on a muted sink
-    // means "let me hear it".
-    let muted = if now.muted && delta > 0.0 {
-        actions.set_mute(false).ok()?;
-        false
-    } else {
-        now.muted
-    };
-    let published = os_actions::VolumeState { level: next, muted };
-    if let Some(s) = status {
-        s.set_volume(published);
+    commit_volume(actions, status, Some(now), next)
+        .ok()
+        .map(|(_, osd)| osd)
+}
+
+/// Set the default sink to `level` (`0.0..=1.0`) — the one path behind the
+/// volume keys and the Quick Settings slider, so both answer the same
+/// change with the same sink state, tray reading and readout.
+///
+/// `previous` is the state the change starts from. A change that does not
+/// turn the level down, and leaves it audible, un-mutes: reaching for more
+/// volume on a muted sink means "let me hear it", while turning down is not
+/// a request to hear anything. The tray is updated only from a known
+/// previous state and only once every write succeeded, so a failure never
+/// publishes a state the sink is not in.
+///
+/// # Errors
+///
+/// The daemon's error when setting the level or un-muting failed.
+pub(crate) fn commit_volume(
+    actions: &dyn QsActions,
+    status: Option<&StatusBridge>,
+    previous: Option<os_actions::VolumeState>,
+    level: f32,
+) -> Result<(os_actions::VolumeState, Osd), String> {
+    let level = level.clamp(0.0, 1.0);
+    actions.set_volume(level * 100.0)?;
+    let was_muted = previous.is_some_and(|now| now.muted);
+    let unmute = previous.is_some_and(|now| level > 0.0 && level >= now.level);
+    if was_muted && unmute {
+        actions.set_mute(false)?;
     }
-    Some(Osd::volume(next, muted))
+    let committed = os_actions::VolumeState {
+        level,
+        muted: was_muted && !unmute,
+    };
+    if let (Some(status), Some(_)) = (status, previous) {
+        status.set_volume(committed);
+    }
+    Ok((committed, Osd::volume(level, committed.muted)))
 }
 
 fn toggle_mute(actions: &dyn QsActions, status: Option<&StatusBridge>) -> Option<Osd> {
@@ -324,41 +350,36 @@ fn toggle_airplane_mode(on: bool, actions: &dyn QsActions) -> Option<Osd> {
 
 /// Flip the touchpad preference in the session's settings. The compositor
 /// owns libinput and applies the change on its next settings poll, the
-/// same path a Settings-pane toggle takes.
+/// same path a Settings-pane toggle takes. The flip reads and writes under
+/// the settings lock, so two quick presses flip twice.
 fn toggle_touchpad() -> Option<Osd> {
-    use settings_store::hardware::TOUCHPAD_ENABLED_KEY;
-    let enabled = settings_store::load_section("input")
-        .get(TOUCHPAD_ENABLED_KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(TOUCHPAD_ENABLED_KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section("input", values) {
-        tracing::warn!(%error, "touchpad toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(TOUCHPAD_TOGGLE_ORIGIN);
+    match settings_store::hardware::TOUCHPAD_ENABLED.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::touchpad(next)),
+        Err(error) => {
+            tracing::warn!(%error, "touchpad toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::touchpad(next))
 }
+
+/// The change origin the touchpad-toggle hardware key records.
+const TOUCHPAD_TOGGLE_ORIGIN: &str = "media-key.touchpad-toggle";
+/// The change origin the mouse-keys chord records: its fixed-chord id.
+const MOUSE_KEYS_ORIGIN: &str = "fixed-toggle-mouse-keys";
 
 /// Flip mouse keys in the session's settings, for the Shift+Alt+Num Lock
 /// chord. Like the touchpad key, the compositor picks the change up on its
 /// next settings poll, the path a Settings-pane toggle takes.
 pub fn toggle_mouse_keys() -> Option<Osd> {
-    const SECTION: &str = "accessibility";
-    const KEY: &str = "mouse_keys";
-    let enabled = settings_store::load_section(SECTION)
-        .get(KEY)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let next = !enabled;
-    let mut values = serde_json::Map::new();
-    values.insert(KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section(SECTION, values) {
-        tracing::warn!(%error, "mouse keys toggle could not be saved");
-        return None;
+    let origin = settings_store::ChangeOrigin::local(MOUSE_KEYS_ORIGIN);
+    match settings_store::hardware::MOUSE_KEYS.update_by(&origin, |enabled| !enabled) {
+        Ok(next) => Some(Osd::mouse_keys(next)),
+        Err(error) => {
+            tracing::warn!(%error, "mouse keys toggle could not be saved");
+            None
+        }
     }
-    Some(Osd::mouse_keys(next))
 }
 
 fn transport(
@@ -821,6 +842,23 @@ mod tests {
             );
             let off = toggle_mouse_keys().expect("saved");
             assert_eq!(off.caption(), "Mouse keys off");
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let entries: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+                .collect();
+            assert_eq!(entries.len(), 2, "one entry per flip: {entries:?}");
+            for (entry, after) in entries.iter().zip([true, false]) {
+                assert_eq!(entry["section"], "accessibility");
+                assert_eq!(entry["leaf"], "mouse_keys");
+                assert_eq!(entry["after"], after);
+                assert_eq!(entry["action"], MOUSE_KEYS_ORIGIN, "the chord is named");
+                assert_eq!(
+                    entry["principal"],
+                    settings_store::ChangeOrigin::LOCAL_USER,
+                    "pressed at this device's keyboard"
+                );
+            }
         });
     }
 

@@ -90,3 +90,5 @@ messages-whatsapp-show-code = Show private linking code
 messages-whatsapp-review-storage = Review protected storage access
 messages-whatsapp-refresh-code = Refresh private linking code
 messages-whatsapp-storage-explanation = Review private encrypted storage access before linking. After linking, confirm the identity reported by WhatsApp.
+messages-first-tilo = Use my Tilo identity
+messages-first-account-prepare = Set up a private Messages account

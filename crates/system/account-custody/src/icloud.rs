@@ -9,17 +9,23 @@
 //! short-lived request headers ([`ICloudHeaders`]) for the storage daemon.
 //!
 //! [`ICloudAuth`] is the surface Settings needs. [`WebICloud`] implements it
-//! with `cloud-source-icloud`'s [`Authenticator`]; [`UnavailableICloud`]
+//! with [`auth::Authenticator`], the SRP sign-in, two-factor and renewal
+//! client that lives here, in custody, while the provider only consumes the
+//! resulting session; [`UnavailableICloud`]
 //! reports [`ICloudAuthError::Unavailable`] (Settings shows a clear "not
 //! available" state) for a custodian that was given no `iCloud` sign-in.
 
 use std::fmt;
 
 use cloud_source_icloud::ICloudConfig;
-use cloud_source_icloud::auth::{
-    AuthError, Authenticator, Endpoints, PendingSignIn, SignIn, StoredSession,
-};
+use cloud_source_icloud::auth::{AuthError, Endpoints, StoredSession};
 use zeroize::Zeroizing;
+
+pub mod auth;
+mod credentials;
+
+use auth::{Authenticator, PendingSignIn, SignIn};
+pub use credentials::{SessionCredentials, SessionStatus};
 
 /// Opaque long-lived session state, serialised by the provider. Sealed in
 /// the vault; never handed to the daemon.
@@ -164,7 +170,7 @@ pub trait ICloudAuth: Send + Sync {
     }
 }
 
-/// `iCloud` sign-in through `cloud-source-icloud`'s [`Authenticator`]:
+/// `iCloud` sign-in through [`Authenticator`]:
 /// SRP with Apple ID and password, the two-factor code, and renewal of the
 /// stored session without a person.
 #[derive(Clone, Debug)]

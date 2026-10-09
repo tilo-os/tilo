@@ -27,6 +27,21 @@ pub enum SetupEffect {
     /// Read setup status.
     #[effect(returns, permission = "read")]
     ReadSetupStatus,
+    /// Read this computer's Desktop readiness and current installation phase.
+    #[effect(returns, permission = "read")]
+    ReadDesktopStatus,
+    /// Install the exact reviewed Desktop release after a fresh host probe.
+    #[effect(returns)]
+    InstallDesktop,
+    /// Cancel the current package download; no native transaction is cancelled.
+    #[effect(returns)]
+    CancelDesktopDownload,
+    /// Recheck Desktop availability without installing anything.
+    #[effect(returns, permission = "read")]
+    RecheckDesktop,
+    /// Open the existing USB image writer; writing remains a separate review.
+    #[effect(view, returns, permission = "read")]
+    OpenUsbWizard,
     /// Choose setup experience.
     #[effect(returns, permission = "read")]
     ChooseExperience {
@@ -248,6 +263,8 @@ pub struct SetupProjection {
     pub review: ReviewProjection,
     pub availability: AvailabilityProjection,
     pub internal: InternalProjection,
+    pub desktop: super::desktop_journey::DesktopProjection,
+    pub methods: super::desktop_journey::MethodProjection,
 }
 
 impl SetupProjection {
@@ -527,6 +544,15 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
         "imports_not_on_page",
         "Folder imports are available on the experience and review pages".into(),
     );
+    for (id, _, open) in super::desktop_journey::commands(&state.desktop, &state.methods) {
+        block(
+            &mut blocked,
+            open,
+            id,
+            "desktop_command_unavailable",
+            super::strings::t("imager-setup-desktop-command-unavailable"),
+        );
+    }
     for (id, _, open, code, reason) in internal_commands(&state.internal) {
         block(&mut blocked, open, id, code, super::strings::t(reason));
     }
@@ -547,6 +573,11 @@ pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
                 .map(|(id, label, ..)| {
                     EffectStatus::labelled(effect(id), super::strings::t(label))
                 }),
+        )
+        .chain(
+            super::desktop_journey::commands(&state.desktop, &state.methods)
+                .into_iter()
+                .map(|(id, label, _)| EffectStatus::labelled(effect(id), super::strings::t(label))),
         )
         .collect()
 }
@@ -904,6 +935,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         .row(review)
         .row(availability)
         .row(internal_row(&state.internal))
+        .row(super::desktop_journey::row(&state.desktop, &state.methods))
 }
 
 /// A folder mode as people read it.
@@ -968,6 +1000,8 @@ mod tests {
                 choose_folder: false,
             },
             internal,
+            desktop: crate::setup::desktop_journey::DesktopProjection::default(),
+            methods: crate::setup::desktop_journey::MethodProjection::default(),
         }
     }
 

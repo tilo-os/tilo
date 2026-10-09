@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 import tomllib
 
@@ -76,6 +79,35 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 assert "smithay-clipboard" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
+# Standalone host-session runs build the same immutable app store as releases.
+# Exercise the actual preflight shell before any checkout/download/build step:
+# an absent authority must fail immediately, without weakening staging checks.
+host_session_workflow = (ROOT / ".forgejo/workflows/host-session-e2e.yml").read_text()
+host_rpms = host_session_workflow.split("  rpms:\n", 1)[1].split("  host-session:\n", 1)[0]
+assert "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}" in host_rpms
+preflight, expensive_steps = host_rpms.split("      # A full clone", 1)
+assert "if: ${{ !inputs.rpm-artifact && !inputs.rpm-source-run }}" in preflight
+assert "Fetch the env-runtime environment image" in expensive_steps
+assert "dist/ci/run-package-job.sh" in expensive_steps
+owner_preflight = preflight.split("      - name: Validate the app-store registry owner\n", 1)[1]
+owner_check = textwrap.dedent(owner_preflight.split("        run: |\n", 1)[1])
+for owner, accepted in (
+    (None, False),
+    ("", False),
+    ("invalid", False),
+    ("0" * 64, False),
+    ("ab" * 31, False),
+    ("ab" * 33, False),
+    ("ab" * 32, True),
+    ("AB" * 32, True),
+):
+    check_env = os.environ.copy()
+    check_env.pop("TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY", None)
+    if owner is not None:
+        check_env["TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"] = owner
+    result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
+    assert (result.returncode == 0) == accepted, "host-session registry-owner preflight"
+
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()

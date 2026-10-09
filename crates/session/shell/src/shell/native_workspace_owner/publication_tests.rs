@@ -973,3 +973,49 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
     owner.health().unwrap();
 }
+
+#[test]
+fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_change() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let (witness, before, capabilities) = {
+        let tree = tree.read();
+        (
+            tree.native_runtime.authority_witness(),
+            tree.native_authority.clone(),
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|slot| slot.room == room)
+                .expect("the enrolled owner must project its real room")
+                .capabilities
+                .clone(),
+        )
+    };
+    assert_eq!(witness.authority_status(&before, room), Ok(()));
+    let (request, _) = edit(&owner, room, &key, now, 1);
+    owner.commit_document(request, now).unwrap();
+    let after = tree.read();
+    assert_eq!(
+        after
+            .desktop
+            .workspaces
+            .iter()
+            .find(|slot| slot.room == room)
+            .unwrap()
+            .capabilities,
+        capabilities,
+        "a document checkpoint does not withdraw accepted filesystem grants",
+    );
+    assert_eq!(
+        witness.authority_status(&before, room),
+        Err(store::AuthorityRejection::StaleAcceptedSnapshot),
+        "the original whole-authority snapshot must not renew current policy",
+    );
+    assert!(!witness.authority_is_current(&before, room));
+    assert_eq!(
+        witness.authority_status(&after.native_authority, room),
+        Ok(())
+    );
+    assert!(witness.authority_is_current(&after.native_authority, room));
+}

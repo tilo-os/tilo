@@ -8,6 +8,26 @@ Three layers, each useful on its own:
 2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
+Native application publication also has compositor-free integration fixtures:
+
+```bash
+cargo test --locked -p shell --lib shell::in_process::tests::authorized_
+cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+```
+
+The Browser and Store fixtures provision a disposable identity and run the actual
+identity service, collaboration broker, original application factory and directory
+RPC. Browser retains its primary document, browsing history and address book. All
+three use the certified person's own room, so publication must wait for their
+initial joins to become ready. Store must publish `inspect-catalogue` through the
+same authorized context. No application action is invoked.
+
+This qualifies matching-room publication. It does not qualify an application
+spanning a foreground workspace and a separate person room: a certification for
+one room cannot authorize the other. The broker's cross-workspace rejection stays
+covered independently. Installed control-socket timeouts require separate runtime
+evidence; an empty query alone does not establish absent publication.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.
@@ -473,6 +493,32 @@ contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
 step pass only when the door refuses with that code (`unknown_action`,
 `invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
 `action_failed`), so a scenario can prove a refusal as well as a success.
+An optional `"results":"target/drive-results.json"` retains the actual return
+from each explicit `invoke`, in order. The version 1 JSON envelope contains
+`author` and `entries`; each entry carries its resource/action `address` and
+one `status`: `completed` with the original typed `output` (`value` and
+`resources`), `accepted`, or `refused` with the door's `code` and `message`.
+`accepted` records admission, not background completion. An expected refusal
+still appears as `refused` when its scenario step passes. Arguments and
+confirmation phrases are not copied into this envelope; returned data and
+error messages may themselves be sensitive, so retention is opt-in.
+
+Retention admits at most 4,096 entries and 16 MiB of JSON. Exceeding a limit
+fails the scenario and records `retention_error` with the retained prefix;
+the last operation may already have run, and its omitted result must not be
+interpreted as a refusal. The journal stays failed for subsequent invocations.
+The file records invocations, not overall scenario success; check the exit status
+and audit report as well. Without `results`, the existing behavior is unchanged.
+
+For a framework resource's existing `render` action, the returned content
+address identifies the actual offscreen PNG in the ordinary ContentStore.
+Run with an explicit owned `--data-dir target/drive-profile` to keep those
+bytes after exit (`target/drive-profile/content/<first-two-hash-characters>/<hash>`).
+The default temporary profile is removed on exit. This is a render of the
+imported state, distinct from a seeded `--shots` fixture. The normal desktop's
+`tilo-control` already preserves returned action payloads; this option brings
+the standalone scenario driver to the same semantic result contract.
+
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
 the live host does. `crates/session/installer/tests/headless_wizard.rs` runs

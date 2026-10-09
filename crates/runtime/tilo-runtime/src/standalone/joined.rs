@@ -27,7 +27,7 @@ use tilo_peer_state::{
     InputDisposition, NeighbourMsg,
     owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService},
 };
-use tilo_relay::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
