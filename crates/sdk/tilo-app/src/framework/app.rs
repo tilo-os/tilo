@@ -433,17 +433,19 @@ pub(crate) fn build_root<A: ResourceApp>(
         cx.effects = effects;
     }
     let content = A::view(&mut cx);
+    #[cfg(not(target_family = "wasm"))]
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation(A::local_operations());
     if !A::DOCUMENT_HISTORY {
-        root.without_history()
-    } else if live {
-        root.drawing_past(super::preview::draw_past::<A>)
-    } else {
-        root
+        return root.without_history();
     }
+    #[cfg(not(target_family = "wasm"))]
+    if live {
+        return root.drawing_past(super::preview::draw_past::<A>);
+    }
+    root
 }
 
 /// The decoders of every edit `A`'s document takes: its resource's actions
