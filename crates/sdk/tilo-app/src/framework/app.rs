@@ -433,7 +433,6 @@ pub(crate) fn build_root<A: ResourceApp>(
         cx.effects = effects;
     }
     let content = A::view(&mut cx);
-    #[cfg(not(target_family = "wasm"))]
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
@@ -441,8 +440,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     if !A::DOCUMENT_HISTORY {
         return root.without_history();
     }
-    #[cfg(not(target_family = "wasm"))]
     if live {
+        #[cfg(not(target_family = "wasm"))]
         return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
