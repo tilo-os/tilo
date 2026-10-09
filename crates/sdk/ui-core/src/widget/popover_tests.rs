@@ -3,7 +3,7 @@
 //! for the highlight, painted only in the top layer.
 
 use super::*;
-use automerge::AutoCommit;
+use crate::testing::dispatch;
 use vello_encoding::DrawTag;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -42,29 +42,6 @@ fn key_event(logical: Key) -> WindowEvent {
 
 fn key(named: NamedKey) -> WindowEvent {
     key_event(Key::Named(named))
-}
-
-fn dispatch<C: Widget + 'static>(p: &mut Popover<C>, event: &WindowEvent) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.leaf_node(Style::default());
-    let mut handled = false;
-    let mut focus = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    p.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
 }
 
 /// Paint the top layer over `WINDOW`, as hosts do.

@@ -1114,6 +1114,7 @@ impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
 
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
@@ -1229,23 +1230,7 @@ mod tests {
         node: NodeId,
         event: &WindowEvent,
     ) {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+        Dispatch::new().layout(tree, node).send(s, event);
     }
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {

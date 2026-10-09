@@ -831,14 +831,11 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
-
-    fn modifiers() -> winit::event::Modifiers {
-        winit::event::Modifiers::default()
-    }
 
     #[test]
     fn date_picker_month_navigation_and_selection() {
@@ -884,38 +881,9 @@ mod tests {
                 .expect("June 7 2024 cell exists in the visible grid");
 
             let pt = cell.center();
-            let mut handled = false;
-            let mut focus_target: Option<NodeId> = None;
-            let mods = modifiers();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            dp.handle_event(
-                &cursor_moved(pt.x, pt.y),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            dp.handle_event(
-                &mouse_press(),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let mut at_node = Dispatch::new().layout(&taffy, node);
+            at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
+            at_node.send(&mut dp, &mouse_press());
 
             assert_eq!(dp.selected(), target);
             assert_eq!(*captured.borrow(), Some(target));

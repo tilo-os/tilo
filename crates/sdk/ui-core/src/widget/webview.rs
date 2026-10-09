@@ -860,6 +860,7 @@ impl Widget for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
     use automerge::AutoCommit;
@@ -1160,24 +1161,7 @@ mod tests {
     }
 
     fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus = None;
-        let mods = winit::event::Modifiers::default();
-        w.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+        Dispatch::new().layout(tree, node).send(w, event);
     }
 
     #[test]

@@ -2830,9 +2830,7 @@ mod tests {
             b.apply_layout(&tree, node, Point::ZERO);
 
             let device = winit::event::DeviceId::dummy();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut focus = None;
             let mut handled = false;
 
@@ -2852,19 +2850,9 @@ mod tests {
                     button: MouseButton::Left,
                 },
             ] {
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let sent = at_node.send(&mut b, &ev);
+                handled |= sent.handled;
+                focus = sent.focus_target.or(focus);
             }
 
             assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
@@ -3200,25 +3188,9 @@ mod tests {
             b.apply_layout(&tree, node, Point::ZERO);
 
             let device = winit::event::DeviceId::dummy();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |b: &mut Button, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                at_node.send(b, &ev);
             };
 
             dispatch(

@@ -1195,8 +1195,8 @@ impl crate::widget::controls::ActionControls for NumberInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
-    use winit::event::Modifiers;
 
     fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
         let mut tree = TaffyTree::new();
@@ -1382,28 +1382,6 @@ mod tests {
         // The Regular footprint at 1×, placed without a taffy pass.
         let height = crate::widget::ControlSize::Regular.height(&Theme::dark());
         n.apply_layout_external(Rect::new(x0, y0, x0 + DEFAULT_WIDTH, y0 + height));
-    }
-
-    fn dispatch(n: &mut NumberInput, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        n.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     use crate::synthetic_input::cursor_moved;

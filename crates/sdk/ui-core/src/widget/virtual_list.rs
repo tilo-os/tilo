@@ -1845,9 +1845,10 @@ mod tests {
     use std::rc::Rc;
     use winit::event::MouseScrollDelta;
 
+    use crate::testing::Dispatch;
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, Modifiers};
+    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2100,23 +2101,10 @@ mod tests {
         taffy: &TaffyTree<()>,
         node: NodeId,
     ) -> bool {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        list.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(list, event)
+            .handled
     }
 
     #[test]
