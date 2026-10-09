@@ -867,8 +867,8 @@ mod tests {
 
     /// Waits up to `bound` for `done`, polling the test's own clock.
     fn eventually(bound: std::time::Duration, done: impl Fn() -> bool) -> bool {
-        let deadline = std::time::Instant::now() + bound;
-        while std::time::Instant::now() < deadline {
+        let started = std::time::Instant::now();
+        while started.elapsed() < bound {
             if done() {
                 return true;
             }
