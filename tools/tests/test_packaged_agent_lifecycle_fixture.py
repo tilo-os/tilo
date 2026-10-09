@@ -120,6 +120,96 @@ class FixtureAppearanceTests(unittest.TestCase):
                 evidence.assert_not_called()
 
 
+class FixtureFailureDiagnosticsTests(unittest.TestCase):
+    def test_canonical_read_static_refusal_classes_exclude_private_suffixes(self):
+        cases = {
+            "workspace action admission timed out": "admission_timeout",
+            "workspace action refused: no such action is offered": "unknown_action",
+            "workspace action refused: the caller may not invoke this action": "not_permitted",
+            "workspace action refused: refused: The document has an uncommitted edit; retry the read": "document_edit_pending",
+            "workspace action refused: invalid request: PRIVATE-CANARY": "invalid_request",
+            "workspace action refused: refused: PRIVATE-CANARY": "refused",
+            "workspace action refused: no such action is offered PRIVATE-CANARY": "other",
+        }
+        read = {"application": "so.tilo.chat", "room": "private-room", "record": "private-record",
+                "operation": "read-messages", "provider": "private-provider", "id": "read"}
+        for message, kind in cases.items():
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "actions", return_value=[read]), \
+                    patch.object(PROOF, "call", return_value={"err": {
+                        "code": "action_failed", "message": message}}) as invoke:
+                path = pathlib.Path(directory) / "refusal.json"
+                with self.assertRaises(PROOF.ActionInvocationRefusal) as raised:
+                    PROOF.canonical_physical_message(
+                        "socket", "private-room", "private-record", "PRIVATE-DRAFT", None,
+                        diagnostic_path=path)
+                self.assertEqual(raised.exception.refusal_kind, kind)
+                projected = json.loads(path.read_text())
+                self.assertEqual(projected["refusal_kind"], kind)
+                self.assertNotIn("PRIVATE", path.read_text())
+                self.assertNotIn("private-", path.read_text())
+                self.assertEqual(invoke.call_count, 1)
+        for value in (None, {}, True, "PRIVATE-CANARY"):
+            self.assertEqual(PROOF.canonical_read_refusal_kind(value), "other")
+
+    def test_atomic_return_diagnostic_reads_one_seat_and_excludes_payloads(self):
+        seat = {"text_input_active": True, "input_method_connected": True,
+                "input_method_keyboard_grabbed": True, "input_method_preedit_active": True,
+                "keyboard": {"app_id": "other", "id": "PRIVATE-CANARY"},
+                "text_input": {"app_id": "so.tilo.chat", "text": "PRIVATE-CANARY"}}
+        with patch.object(PROOF, "chrome_state", return_value={"seat_focus": seat}) as read:
+            observed = PROOF.closed_atomic_input_method_observation("socket")
+        read.assert_called_once_with("socket")
+        self.assertTrue(observed["input_method_preedit_accepted"])
+        self.assertFalse(observed["keyboard_is_chat"])
+        self.assertTrue(observed["text_input_is_chat"])
+        self.assertTrue(all(type(value) is bool for value in observed.values()))
+        self.assertNotIn("PRIVATE", json.dumps(observed))
+        with patch.object(PROOF, "chrome_state", side_effect=RuntimeError("PRIVATE-CANARY")):
+            self.assertEqual(PROOF.closed_atomic_input_method_observation("socket"), {"observable": False})
+
+    def test_category_activation_records_refusal_without_replaying_or_changing_result(self):
+        for focus, expected_calls in (("(false,)", 1), ("(true,)", 3)):
+            client = SimpleNamespace(property=lambda *_args: "(<'PRIVATE-CANARY'>,)")
+            with tempfile.TemporaryDirectory() as directory, patch.object(
+                    PROOF.atspi, "AtspiClient", return_value=client), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="owned"):
+                client.call = unittest.mock.Mock(side_effect=[focus, "[('click',)]", "(false,)"])
+                path = pathlib.Path(directory) / "category.json"
+                with self.assertRaises(RuntimeError):
+                    PROOF.activate_accessibility_control(
+                        {"bus": "private-bus", "control": "/private-path"},
+                        "Show conversation navigation", diagnostic_path=path)
+                observed = json.loads(path.read_text())
+                self.assertTrue(observed["identity_observable"])
+                self.assertFalse(observed["expected_name_matches"])
+                self.assertEqual(observed["focus_accepted"], focus == "(true,)")
+                self.assertEqual(client.call.call_count, expected_calls)
+                self.assertNotIn("PRIVATE", path.read_text())
+                self.assertNotIn("private-", path.read_text())
+
+    def test_revocation_float_observes_fresh_control_without_replacing_captured_target(self):
+        owner = {"bus": "private-bus", "control": "/old", "process": 7,
+                 "agent": "Tide", "detached": False}
+        current = {**owner, "control": "/new"}
+        client = SimpleNamespace(property=lambda *_args: "(<'Float conversation'>,)")
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                PROOF, "current_owned_conversation_accessibility", return_value=current), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
+                patch.object(PROOF, "call") as input_call:
+            observed = PROOF.retain_float_control_observation(owner, pathlib.Path(directory))
+            self.assertTrue(observed["same_owned_route"])
+            self.assertTrue(observed["expected_name_matches"])
+            self.assertFalse(observed["same_control_path"])
+            self.assertEqual(owner["control"], "/old")
+            self.assertNotIn("private-", json.dumps(observed))
+            input_call.assert_not_called()
+        source = inspect.getsource(PROOF.native_agent_membership_revocation)
+        self.assertIn('diagnostic_name="revocation-float-native-observations.json"', source)
+        self.assertEqual(source.count('activate_agent_conversation_control(access, "Float")'), 1)
+
+
 class PresentedEditorTargetTests(unittest.TestCase):
     def test_managed_profile_availability_observes_only_exact_fixed_public_state(self):
         windows = [{"address": "owned", "bus": ":1.1", "root": "/workspace"}]
@@ -2708,9 +2798,13 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 "agent_read_only_accessibility", "start_managed_agent",
                 "agent_conversation_accessibility", "private_editor_observation",
                 "provider.request_count() != 4", "provider.overflow_count() != 0",
-                "before-agent-membership-revocation-", "fresh_floating_presentation",
+                "before-agent-membership-revocation-", "wait_for_keyboard_float_presentation",
                 "before_restored_return", "restored_primary_repainted"):
             self.assertIn(required, source)
+        self.assertIn("socket, output, previous_float, primary, process", source)
+        observer = inspect.getsource(PROOF.wait_for_keyboard_float_presentation)
+        self.assertIn('return fresh_floating_presentation(presented_floating_frame(response, "so.tilo.chat"), previous)',
+                      observer)
         for forbidden in ("provider.release_exact(5)", "SetText", "AddSelection", "stage_scenario"):
             self.assertNotIn(forbidden, source)
         bootstrap = inspect.getsource(PROOF.bootstrap)
@@ -3444,7 +3538,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 '"Collapse Agent marker proof", "Expand Agent marker proof"',
                 'marker_binds_presented_category', '"marker_category_bound"',
                 '"marker-category-binding-refusal.json"',
-                'ensure_chat_category_visible(socket, "Lifecycle proof", process)',
+                'ensure_chat_category_visible(socket, "Lifecycle proof", process,',
                 '"category-marker-visible-before-task-',
                 'observe_chat_task_frontier(', 'title="Agent marker proof"',
                 'sample_primed_chat_frontier(',
@@ -5069,6 +5163,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         valid = response(valid_primary, {**child, "transferring": False})
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(PROOF, "call", side_effect=[pending, valid]), \
+                patch.object(PROOF, "closed_atomic_input_method_observation", return_value={"observable": False}), \
                 patch.object(PROOF.time, "sleep"), \
                 patch.object(PROOF, "chat_text_input_active", return_value=True), \
                 patch.object(PROOF, "chat_input_method_preedit_active", return_value=True), \

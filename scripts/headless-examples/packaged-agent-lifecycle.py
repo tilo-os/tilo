@@ -571,7 +571,7 @@ def chat_accessibility_control(label):
     return matches[0] if matches else None
 
 
-def ensure_chat_category_visible(socket, label, process):
+def ensure_chat_category_visible(socket, label, process, *, diagnostic_path=None):
     """Reveal compact navigation through Chat's real shared control when needed."""
     category = chat_category_accessibility(label)
     if category is not None:
@@ -581,7 +581,10 @@ def ensure_chat_category_visible(socket, label, process):
         lambda: chat_accessibility_control("Show conversation navigation"),
         process,
     )
-    activate_accessibility_control(reveal, reveal["label"])
+    if diagnostic_path is None:
+        activate_accessibility_control(reveal, reveal["label"])
+    else:
+        activate_accessibility_control(reveal, reveal["label"], diagnostic_path=diagnostic_path)
     return wait_for(
         "Chat's exact visible marker category",
         lambda: chat_category_accessibility(label),
@@ -623,24 +626,40 @@ def marker_binds_presented_category(marker, category, geometry):
     }
 
 
-def activate_accessibility_control(access, label):
+def activate_accessibility_control(access, label, *, diagnostic_path=None):
     """Focus and activate one exact mounted node through its public AT door."""
     client = atspi.AtspiClient(access.get("address") or atspi.atspi_address(), access["bus"])
-    focused = client.call(
-        access["control"], "org.a11y.atspi.Component.GrabFocus", check=False
-    )
-    if focused.strip() != "(true,)":
-        raise RuntimeError(f"the mounted {label} refused accessibility focus")
-    actions = client.call(
-        access["control"], "org.a11y.atspi.Action.GetActions", check=False
-    )
-    if "'click'" not in actions:
-        raise RuntimeError(f"the mounted {label} has no accessibility action")
-    activated = client.call(
-        access["control"], "org.a11y.atspi.Action.DoAction", "0", check=False
-    )
-    if activated.strip() != "(true,)":
-        raise RuntimeError(f"the mounted {label} refused accessibility activation")
+    observation = {"identity_observable": False, "expected_name_matches": False,
+                   "focus_accepted": None, "click_action_present": None,
+                   "activation_accepted": None, "private_content_recorded": False}
+    if diagnostic_path is not None:
+        try:
+            name = atspi.property_text(client.property(access["control"], "Name"))
+            observation.update(identity_observable=name is not None, expected_name_matches=name == label)
+        except atspi.GateError:
+            pass  # Diagnostic-only read must not change the original activation.
+    try:
+        focused = client.call(
+            access["control"], "org.a11y.atspi.Component.GrabFocus", check=False
+        )
+        observation["focus_accepted"] = focused.strip() == "(true,)"
+        if focused.strip() != "(true,)":
+            raise RuntimeError(f"the mounted {label} refused accessibility focus")
+        actions = client.call(
+            access["control"], "org.a11y.atspi.Action.GetActions", check=False
+        )
+        observation["click_action_present"] = "'click'" in actions
+        if "'click'" not in actions:
+            raise RuntimeError(f"the mounted {label} has no accessibility action")
+        activated = client.call(
+            access["control"], "org.a11y.atspi.Action.DoAction", "0", check=False
+        )
+        observation["activation_accepted"] = activated.strip() == "(true,)"
+        if activated.strip() != "(true,)":
+            raise RuntimeError(f"the mounted {label} refused accessibility activation")
+    finally:
+        if diagnostic_path is not None:
+            diagnostic_path.write_text(json.dumps(observation, indent=2) + "\n")
     return True
 
 
@@ -1566,7 +1585,8 @@ def current_same_floating_presentation(response, previous):
     return current
 
 
-def wait_for_keyboard_float_presentation(socket, output, previous, primary, process):
+def wait_for_keyboard_float_presentation(socket, output, previous, primary, process, *,
+                                         diagnostic_name="keyboard-float-native-observations.json"):
     """Diagnose raw native frames without changing the existing acceptance filter."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
@@ -1611,7 +1631,7 @@ def wait_for_keyboard_float_presentation(socket, output, previous, primary, proc
         if evidence["initial"] is None:
             evidence["initial"] = sample.copy()
         evidence["last"] = sample
-        (output / "keyboard-float-native-observations.json").write_text(
+        (output / diagnostic_name).write_text(
             json.dumps(evidence, indent=2) + "\n")
         return fresh_floating_presentation(presented_floating_frame(response, "so.tilo.chat"), previous)
 
@@ -2307,6 +2327,8 @@ def wait_for_return_input_route(socket, output, primary, child, same_chat, fcitx
             sample["observation_valid"] = True
             return result
         finally:
+            sample.update({"atomic_seat_" + key: value for key, value in
+                           closed_atomic_input_method_observation(socket).items()})
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
@@ -3153,6 +3175,7 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     returned_editor_observation["fresh"] = closed_return_editor_observation(
         fresh_returned_access, committed_before, committed_after,
         fresh_returned_access is not None and fresh_returned_access["process"] == chat_process)
+    returned_editor_observation["atomic_seat"] = closed_atomic_input_method_observation(socket)
     (output / "ime-returned-editor-observations.json").write_text(
         json.dumps(returned_editor_observation, indent=2) + "\n")
     if not private_editor_value_matches(returned_access, committed_before) \
@@ -4006,14 +4029,45 @@ def actions(socket, query=""):
     return response["answer"]["actions"]
 
 
+def canonical_read_refusal_kind(message):
+    """Classify public static messages; no variable reason ever leaves memory."""
+    if not isinstance(message, str):
+        return "other"
+    if message in ("workspace action admission timed out", "directory action admission timed out"):
+        return "admission_timeout"
+    if message.startswith("workspace action refused: "):
+        message = message.removeprefix("workspace action refused: ")
+    exact = {
+        "no such action is offered": "unknown_action",
+        "the caller may not invoke this action": "not_permitted",
+        "the action requires confirmation": "confirmation_required",
+        "no such invocation": "unknown_invocation",
+        "the invocation id was already used for a different request": "invocation_conflict",
+        "The reader's declaration does not match its registration": "read_contract_invalid",
+        "The read request is invalid": "read_request_invalid",
+        "The read exceeds its limits; ask for a smaller page": "read_limit",
+        "The document is not the caller's current canonical record": "read_owner_unavailable",
+        "The document has an uncommitted edit; retry the read": "document_edit_pending",
+        "The document changed since this cursor; read again from the start": "stale_cursor",
+        "The document cannot be read": "document_malformed",
+    }
+    for prefix, kind in (("refused: ", "refused"), ("invalid request: ", "invalid_request"),
+                         ("remote actions are unavailable: ", "unavailable"),
+                         ("the invocation cannot be cancelled: ", "not_cancellable")):
+        if message.startswith(prefix):
+            return exact.get(message.removeprefix(prefix), kind)
+    return exact.get(message, "other")
+
+
 class ActionInvocationRefusal(RuntimeError):
     """Retain only a fixed public transport class for targeted diagnostics."""
-    def __init__(self, action, code):
+    def __init__(self, action, code, message=None):
         self.closed_code = code if isinstance(code, str) and code in {
             "not_permitted", "not_found", "unknown_action", "unknown_provider",
             "invalid_arguments", "invalid_request", "action_failed", "stale_revision",
             "unavailable", "timeout", "internal_error",
         } else "other"
+        self.refusal_kind = canonical_read_refusal_kind(message)
         super().__init__(f"ordinary action {action} refused: {self.closed_code}")
 
 
@@ -4021,7 +4075,8 @@ def invoke(socket, action, args=None):
     response = call(socket, {"op": "actions_invoke", "provider": action["provider"],
                              "id": action["id"], "args": args or {}})
     if "err" in response:
-        raise ActionInvocationRefusal(action["id"], response["err"].get("code"))
+        raise ActionInvocationRefusal(action["id"], response["err"].get("code"),
+                                      response["err"].get("message"))
     if not isinstance(response.get("answer"), dict):
         raise RuntimeError("ordinary semantic action acknowledgement is absent")
     return response["answer"]
@@ -4431,6 +4486,14 @@ def chat_input_method_observation(socket):
         # it does not expose either identifier or claim why acceptance failed.
         "input_method_preedit_accepted": seat["input_method_preedit_active"],
     }
+
+
+def closed_atomic_input_method_observation(socket):
+    """Best-effort diagnostic only: one authoritative seat read, no private fields."""
+    try:
+        return {"observable": True, **chat_input_method_observation(socket)}
+    except Exception:
+        return {"observable": False}
 
 
 def owned_rime_schema_observation(env):
@@ -5398,7 +5461,8 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
                       offered_chat_category_action(
                           socket, room, record, "Lifecycle proof", "rename"
                       ), process)
-    ensure_chat_category_visible(socket, "Lifecycle proof", process)
+    ensure_chat_category_visible(socket, "Lifecycle proof", process,
+        diagnostic_path=output / "marker-category-activation-observation.json")
     require_ok(call(socket, {"op": "snapshot", "path": str(
         output / f"category-marker-visible-before-task-{size}.png"
     )}))
@@ -5471,7 +5535,8 @@ def managed_agent_marker_stage(socket, room, record, provider, output, process, 
     prepared_chat = prime_chat_frontier_access("Agent marker proof", process, output=output)
     # Finish all full-tree and focus work before the real action starts its
     # finite completed-marker dwell. Direct shell children remain live reads.
-    category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process)
+    category_access = ensure_chat_category_visible(socket, "Lifecycle proof", process,
+        diagnostic_path=output / "marker-category-activation-observation.json")
     shell_windows = wait_for("owned compositor accessibility windows",
                              owned_shell_accessibility_windows, process)
     category_access = {**category_access, "address": shell_windows[0]["address"]}
@@ -5736,6 +5801,7 @@ def canonical_physical_message(socket, room, record, expected, process, *, diagn
             if diagnostic_path is not None:
                 diagnostic_path.write_text(json.dumps({
                     "refusal_code": error.closed_code,
+                    "refusal_kind": error.refusal_kind,
                     "read_messages_operation": read.get("operation") == "read-messages",
                     "exact_route_matches": read.get("application") == "so.tilo.chat"
                         and read.get("room") == room and read.get("record") == record,
@@ -6324,6 +6390,28 @@ def current_restored_return_access(owner, draft, before):
     return current
 
 
+def retain_float_control_observation(owner, output):
+    """Observe the fresh owned semantic target without replacing or activating it."""
+    sample = {"observable": False, "same_owned_route": False,
+              "same_control_path": False, "expected_name_matches": False,
+              "private_content_recorded": False}
+    try:
+        current = current_owned_conversation_accessibility(owner)
+        if current is not None:
+            sample["same_owned_route"] = all(current.get(key) == owner.get(key)
+                for key in ("process", "bus", "agent", "detached"))
+            sample["same_control_path"] = current.get("control") == owner.get("control")
+            client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+            name = atspi.property_text(client.property(current["control"], "Name"))
+            sample["observable"] = name is not None
+            sample["expected_name_matches"] = name == "Float conversation"
+    except Exception:
+        pass  # Diagnostic failure must not replace the original handoff result.
+    (output / "revocation-float-control-observation.json").write_text(
+        json.dumps(sample, indent=2) + "\n")
+    return sample
+
+
 def native_agent_membership_revocation(
         socket, room, record, provider, output, size, process, old_identity,
         previous_float):
@@ -6353,15 +6441,11 @@ def native_agent_membership_revocation(
 
     # The existing accessible Float action is the same retained control as the
     # pointer gesture already proven earlier in this run.
+    retain_float_control_observation(access, output)
     activate_agent_conversation_control(access, "Float")
-    frame = wait_for("fresh detached Tide pixels before revocation", lambda: (
-        fresh_floating_presentation(
-            presented_floating_frame(
-                call(socket, {"op": "foreign_frames"}), "so.tilo.chat"
-            ),
-            previous_float,
-        )
-    ), process)
+    frame = wait_for_keyboard_float_presentation(
+        socket, output, previous_float, primary, process,
+        diagnostic_name="revocation-float-native-observations.json")
     frame, detached_access, detached_before = wait_for_semantic_float_editor_continuity(
         socket, output, frame, {"access": access, "draft": draft, "observation": before}, process)
     (output / "revocation-float-editor-continuity.json").write_text(json.dumps(
