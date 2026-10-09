@@ -1,12 +1,10 @@
 //! Tilo-device session route adapter.
 //!
 //! Discovery remains owned by the device-mesh runtime. Remote accepts a
-//! verified snapshot and delegates route selection to the relay's shared
-//! mesh placement (`tilo-relay-protocol`). Only an
-//! exact-target route is accepted for control; a workspace-wide relay is
-//! reported as unavailable rather than leaking input through fan-out.
-
-use tilo_relay_protocol::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
+//! verified snapshot and decides from it: a direct path is the only route
+//! accepted for control. A workspace-wide relay is reported as unavailable
+//! rather than leaking input through fan-out, since no exact-target relayed
+//! route exists yet.
 
 /// Certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -58,8 +56,9 @@ pub struct MeshRouteSnapshot {
     pub workspace_id: u64,
     /// Whether authenticated discovery currently has a direct target path.
     pub direct_reachable: bool,
-    /// Verified same-workspace server advertisements.
-    pub servers: Vec<ServerAdvertisement>,
+    /// Verified, online relays of this workspace that offer the
+    /// remote-control relay service.
+    pub relays: Vec<DeviceKey>,
 }
 
 /// Provider backed by one fresh, authenticated mesh snapshot.
@@ -81,23 +80,33 @@ impl TiloRouteProvider for MeshTiloRouteProvider {
                 "Saved device does not match the authenticated discovery record".to_string(),
             );
         }
-        match route_remote_control(
-            self.snapshot.client,
-            self.snapshot.target,
-            self.snapshot.workspace_id,
-            self.snapshot.direct_reachable,
-            &self.snapshot.servers,
-        ) {
-            RemoteControlRoute::Direct { .. } => Ok(TiloRouteDecision::Direct),
-            RemoteControlRoute::Relayed { .. } => Err(
-                "Workspace control needs an exact-target route; the available relay is workspace-wide"
-                    .to_string(),
-            ),
-            RemoteControlRoute::Unavailable => Err(
+        let MeshRouteSnapshot {
+            client,
+            target,
+            direct_reachable,
+            relays,
+            ..
+        } = &self.snapshot;
+        if client == target {
+            return Err(
                 "No direct path or eligible online server is available for this workspace"
                     .to_string(),
-            ),
+            );
         }
+        if *direct_reachable {
+            return Ok(TiloRouteDecision::Direct);
+        }
+        // A relay is never one end of the session it would carry.
+        if relays
+            .iter()
+            .any(|relay| relay != client && relay != target)
+        {
+            return Err(
+                "Workspace control needs an exact-target route; the available relay is workspace-wide"
+                    .to_string(),
+            );
+        }
+        Err("No direct path or eligible online server is available for this workspace".to_string())
     }
 }
 
@@ -115,38 +124,20 @@ pub fn short_device_id(device: &DeviceKey) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
-    use tilo_relay_protocol::{DeviceRole, ServiceCapabilities};
-
     use super::*;
 
-    fn server(id: u8) -> ServerAdvertisement {
-        ServerAdvertisement {
-            device: [id; 32],
-            role: DeviceRole::AlwaysOnServer,
-            services: ServiceCapabilities::personal_server(),
-            workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::new(),
-            accelerators: BTreeSet::new(),
-            priority: 0,
-            latency_ms: 12,
-            power: tilo_relay_protocol::PowerAvailability::External,
-            energy_saver: false,
-            active_assignments: 0,
-            assignment_capacity: 8,
-            online: true,
-        }
+    fn server(id: u8) -> DeviceKey {
+        [id; 32]
     }
 
-    fn provider(direct: bool, servers: Vec<ServerAdvertisement>) -> MeshTiloRouteProvider {
+    fn provider(direct: bool, relays: Vec<DeviceKey>) -> MeshTiloRouteProvider {
         MeshTiloRouteProvider::new(MeshRouteSnapshot {
             target_hint: "studio-node".to_string(),
             client: [1; 32],
             target: [2; 32],
             workspace_id: 7,
             direct_reachable: direct,
-            servers,
+            relays,
         })
     }
 

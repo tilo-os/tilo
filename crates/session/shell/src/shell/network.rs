@@ -2056,56 +2056,23 @@ impl ShellNetwork {
             .workspace_control_direct
             .lock()
             .is_ok_and(|peers| peers.contains(&(workspace, target)));
-        let relay_ids = self
-            .workspace_control_relays
-            .lock()
-            .map(|relays| {
-                relays
-                    .iter()
-                    .filter_map(|(relay_ws, relay)| (*relay_ws == workspace).then_some(*relay))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let candidates = relay_ids
-            .iter()
-            .map(|relay| tilo_relay_protocol::ServerAdvertisement {
-                device: *relay.as_bytes(),
-                role: tilo_relay_protocol::DeviceRole::AlwaysOnServer,
-                services: tilo_relay_protocol::ServiceCapabilities::relay_only(),
-                workspaces: std::collections::BTreeSet::from([workspace]),
-                apps: std::collections::BTreeSet::new(),
-                accelerators: std::collections::BTreeSet::new(),
-                priority: 0,
-                latency_ms: 0,
-                power: tilo_relay_protocol::PowerAvailability::Unknown,
-                energy_saver: false,
-                active_assignments: 0,
-                assignment_capacity: u32::MAX,
-                online: true,
-            })
-            .collect::<Vec<_>>();
-        let route = match tilo_relay_protocol::route_remote_control(
-            *self.local_peer_id.as_bytes(),
-            *target.as_bytes(),
-            workspace,
-            direct_reachable,
-            &candidates,
-        ) {
-            tilo_relay_protocol::RemoteControlRoute::Direct { .. } => {
-                WorkspaceControlRoute::Direct { target }
+        if !direct_reachable {
+            // A relay that is neither end of the session could carry it, but
+            // relays only fan out workspace-wide; there is no exact-target
+            // relayed route yet, so name that instead of a missing path.
+            let relay_online = self.workspace_control_relays.lock().is_ok_and(|relays| {
+                relays.iter().any(|(relay_ws, relay)| {
+                    *relay_ws == workspace && *relay != self.local_peer_id && *relay != target
+                })
+            });
+            return Err(if relay_online {
+                "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
+            } else {
+                "no authenticated direct workspace-control path is online"
             }
-            tilo_relay_protocol::RemoteControlRoute::Relayed { via, .. } => {
-                let _via = iroh::EndpointId::from_bytes(&via)
-                    .map_err(|_| "mesh selected an invalid relay identity")?;
-                return Err(
-                    "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
-                        .into(),
-                );
-            }
-            tilo_relay_protocol::RemoteControlRoute::Unavailable => {
-                return Err("no authenticated direct workspace-control path is online".into());
-            }
-        };
+            .into());
+        }
+        let route = WorkspaceControlRoute::Direct { target };
         Ok(crate::network::WorkspaceControlSession::new(
             workspace,
             self.local_peer_hash,
@@ -9557,6 +9524,37 @@ mod tests {
         a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt();
         remote_actions_from_unauthenticated_devices_are_dropped();
         workspace_control_uses_exact_target_direct_and_refuses_fanout_relay();
+    }
+
+    #[test]
+    fn workspace_control_with_only_relays_reports_fan_out_error() {
+        const FAN_OUT: &str = "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out";
+        const NO_PATH: &str = "no authenticated direct workspace-control path is online";
+        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xFA11);
+        let target = iroh::SecretKey::generate().public();
+        let relay = iroh::SecretKey::generate().public();
+        let open = || {
+            net.open_workspace_control(DEFAULT_WS_TOPIC, target)
+                .map(|_| ())
+        };
+        let relays = || net.workspace_control_relays.lock().expect("relay routes");
+
+        assert_eq!(open(), Err(NO_PATH.into()), "neither direct nor relay");
+
+        relays().insert((DEFAULT_WS_TOPIC, relay));
+        assert_eq!(open(), Err(FAN_OUT.into()), "only a workspace relay");
+
+        // A relay is never one end of the session it would carry, and a relay
+        // bound to another workspace does not count.
+        relays().clear();
+        relays().insert((DEFAULT_WS_TOPIC, target));
+        relays().insert((DEFAULT_WS_TOPIC, net.local_peer_id));
+        relays().insert((DEFAULT_WS_TOPIC + 1, relay));
+        assert_eq!(
+            open(),
+            Err(NO_PATH.into()),
+            "no relay distinct from both ends"
+        );
     }
 
     fn personal_continuity_network_for_test(
