@@ -16246,6 +16246,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "tokio-rustls",
+ "tracing-subscriber",
  "url",
  "web-time",
  "workspace-hack",

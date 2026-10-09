@@ -48,6 +48,7 @@ toolkit = ["dep:ui"]
 net = ["dep:tilo-net"]
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 tilo-automerge-isolate.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

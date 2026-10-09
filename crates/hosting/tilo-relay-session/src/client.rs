@@ -1151,6 +1151,11 @@ where
     }
 }
 
+/// Closed vocabulary only: no wire bytes, grant, identity or peer-supplied reason.
+pub(crate) fn trace_session_end(reason: &'static str) {
+    tracing::debug!(target: "tilo_relay::session_end", reason);
+}
+
 async fn run_v2_writer<W>(
     send: &mut W,
     states: &mut mpsc::Receiver<Envelope>,
@@ -1167,6 +1172,7 @@ where
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::trace_native_publication("client_write_started", &env, None);
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
+                    trace_session_end("client_write_state_outside_scope");
                     return false;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1181,34 +1187,49 @@ where
                 }
                 let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode_state(&env, true)
                 else {
+                    trace_session_end("client_write_state_encode_error");
                     return false;
                 };
                 if tokio::io::AsyncWriteExt::write_all(send, &bytes)
                     .await
                     .is_err()
                 {
+                    trace_session_end("client_write_state_io_error");
                     return false;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 crate::trace_native_publication("client_written", &env, None);
             }
-            ClientEvent::State(None) => return true,
+            ClientEvent::State(None) => {
+                trace_session_end("client_state_producer_closed");
+                return true;
+            }
             ClientEvent::Action(Some(action)) => {
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
+                    trace_session_end("client_write_private_outside_scope");
                     return false;
                 }
                 let Ok(bytes) = tilo_delivery_protocol::transport_v2::encode(&action) else {
+                    trace_session_end("client_write_private_encode_error");
                     return false;
                 };
                 if tokio::io::AsyncWriteExt::write_all(send, &bytes)
                     .await
                     .is_err()
                 {
+                    trace_session_end("client_write_private_io_error");
                     return false;
                 }
             }
             // The v2 writer only selects outbound events; fail closed otherwise.
-            ClientEvent::Action(None) | ClientEvent::Inbound(_) => return false,
+            ClientEvent::Action(None) => {
+                trace_session_end("client_private_producer_closed");
+                return false;
+            }
+            ClientEvent::Inbound(_) => {
+                trace_session_end("client_writer_unexpected_inbound");
+                return false;
+            }
         }
     }
 }
@@ -1227,6 +1248,7 @@ async fn run_v2_reader<R>(
         match reader.read_next().await {
             Ok(Some(EnvelopeV2::State(env))) => {
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
+                    trace_session_end("client_read_state_outside_scope");
                     return;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1243,20 +1265,44 @@ async fn run_v2_reader<R>(
                 // inbound state allowance. Do not read the next wire frame
                 // until the application has accepted this exact frame.
                 if state_sink.send(env).await.is_err() {
+                    trace_session_end("client_state_receiver_closed");
                     return;
                 }
             }
             Ok(Some(action)) => {
                 if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
+                    trace_session_end("client_read_private_outside_scope");
                     return;
                 }
                 // Closing on bounded receiver overflow makes loss explicit;
                 // the future journal owner can recover status on reconnect.
-                if action_sink.try_send(action).is_err() {
+                if let Err(error) = action_sink.try_send(action) {
+                    trace_session_end(match error {
+                        mpsc::error::TrySendError::Full(_) => "client_private_receiver_full",
+                        mpsc::error::TrySendError::Closed(_) => "client_private_receiver_closed",
+                    });
                     return;
                 }
             }
-            Ok(None) | Err(_) => return,
+            Ok(None) => {
+                trace_session_end("client_read_eof");
+                return;
+            }
+            Err(error) => {
+                use tilo_relay_client::frame::FrameError;
+                trace_session_end(match error {
+                    FrameError::Io(_) => "client_read_io_error",
+                    FrameError::Truncated => "client_read_truncated",
+                    FrameError::Closed => "client_read_closed",
+                    FrameError::EmptyFrame => "client_read_empty_frame",
+                    FrameError::TooLarge(_) => "client_read_frame_too_large",
+                    FrameError::PayloadTooLarge(_) => "client_read_payload_too_large",
+                    FrameError::Encode(_) => "client_read_encode_error",
+                    FrameError::Decode(_) => "client_read_decode_error",
+                    _ => "client_read_other_frame_error",
+                });
+                return;
+            }
         }
     }
 }

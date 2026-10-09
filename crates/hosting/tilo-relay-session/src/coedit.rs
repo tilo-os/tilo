@@ -454,6 +454,7 @@ impl RelayCoeditSession {
                 | Envelope::Ready { workspace_id, .. }
                 if *workspace_id != self.workspace_id)
             {
+                crate::client::trace_session_end("coedit_workspace_mismatch");
                 return None;
             }
             match envelope {
@@ -524,7 +525,10 @@ impl RelayCoeditSession {
                 } if workspace_id == self.workspace_id => {
                     return Some(Inbound::Voice(VoiceEvent::Refused { call, reason }));
                 }
-                Envelope::NotAuthorised { .. } => return None,
+                Envelope::NotAuthorised { .. } => {
+                    crate::client::trace_session_end("coedit_authorization_refused");
+                    return None;
+                }
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}

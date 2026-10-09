@@ -382,6 +382,21 @@ fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
+    use tracing_subscriber::prelude::*;
+    // Only closed-vocabulary termination events enter failure artifacts. The
+    // normal relay logs may contain peer-supplied text and stay disabled.
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(std::io::stderr)
+                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.target() == "tilo_relay::session_end"
+                })),
+        )
+        .try_init()
+        .unwrap();
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let bob = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());

@@ -383,10 +383,26 @@ impl Worker {
     /// Kill the worker if it still runs, and say whether it had instead
     /// ended itself for being idle.
     fn kill_after_idle(mut self) -> bool {
+        let was_running = matches!(self.child.try_wait(), Ok(None));
         let _ = self.child.kill();
-        self.child
-            .wait()
-            .is_ok_and(|status| status.signal() == Some(libc::SIGALRM))
+        match self.child.wait() {
+            Ok(status) if status.signal() == Some(libc::SIGALRM) => true,
+            Ok(status) => {
+                // A failed request used to discard this status. Keep only
+                // numeric process information, never its input or document.
+                eprintln!(
+                    "automerge worker failed: pid={} exit_code={:?} signal={:?} was_running_before_cleanup={was_running}",
+                    self.child.id(),
+                    status.code(),
+                    status.signal(),
+                );
+                false
+            }
+            Err(error) => {
+                eprintln!("automerge worker wait failed: kind={:?}", error.kind());
+                false
+            }
+        }
     }
 }
 

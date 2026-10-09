@@ -845,12 +845,24 @@ where
         )]
         Ok::<(), PeerError>(())
     };
-    let outcome = tokio::select! {
-        _ = &mut closed => Ok(()),
-        _ = disconnect_rx.recv() => Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into())),
-        result = reading => result,
-        result = writing => result,
+    let (end_path, outcome) = tokio::select! {
+        _ = &mut closed => ("transport_closed", Ok(())),
+        _ = disconnect_rx.recv() => ("subscriber_disconnect", Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))),
+        result = reading => ("reader", result),
+        result = writing => ("writer", result),
     };
+    // Preserve the ending half and error class without recording certificates,
+    // workspace IDs, frames or peer-supplied error text.
+    let reason = match &outcome {
+        Ok(()) => "finished",
+        Err(PeerError::Frame(_)) => "frame_error",
+        Err(PeerError::Io(_)) => "io_error",
+        Err(PeerError::Encode(_)) => "encode_error",
+        Err(PeerError::Store(_)) => "store_error",
+        Err(PeerError::Protocol(_)) => "protocol_error",
+        Err(PeerError::Superseded) => "superseded",
+    };
+    tracing::debug!(target: "tilo_relay::session_end", end_path, reason);
 
     connection_live
         .0
