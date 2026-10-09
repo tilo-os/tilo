@@ -204,12 +204,14 @@ const LEGACY_DELTA_LOG: &str = "log.jsonl";
 
 fn remove_legacy_delta_log(root: &Path) {
     match fs::remove_file(root.join(LEGACY_DELTA_LOG)) {
-        Ok(()) => tracing::info!(root = %root.display(), "removed the legacy per-delta log"),
+        Ok(()) => {
+            tracing::info!(root = %root.display(), "removed the legacy per-delta log");
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         // Best effort: the file is inert, and opening the store must not
         // depend on reclaiming it.
         Err(error) => {
-            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed")
+            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed");
         }
     }
 }

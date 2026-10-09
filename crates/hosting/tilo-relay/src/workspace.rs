@@ -650,10 +650,6 @@ impl WorkspaceRuntime {
     /// Returns an error if `envelope` can't be re-encoded for the
     /// durable queue, or if persisting it (pending, checkpoint, or
     /// retained tail) fails.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],

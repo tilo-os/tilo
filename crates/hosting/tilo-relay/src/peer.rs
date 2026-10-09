@@ -5079,10 +5079,6 @@ async fn enqueue_state_inner(
     })
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
 /// `envelope` in the framing `session` negotiated: on the compact protocol a
 /// zero-signature delta goes without its signature.
 fn encode_for_session(
@@ -5092,6 +5088,10 @@ fn encode_for_session(
     tilo_delivery_protocol::transport_v2::encode_state_framed(envelope, session.framing)
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
 async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     delivery: StateDelivery,
     peer: &AuthenticatedPeer,
