@@ -332,6 +332,14 @@ type = [
     "null",
 ]
 
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+description = "The id the run takes: the request's when one asked for it, so its answer names the run."
+type = "string"
+
 [[resources.verbs]]
 description = "Record where the session runs."
 id = "record-target"
@@ -375,4 +383,141 @@ required = true
 
 [resources.verbs.params.schema]
 description = "The pane's id"
+type = "string"
+
+[[resources]]
+kind = "terminal.history"
+label = "Command history"
+version = 1
+
+[[resources.fields]]
+owner = "command-history"
+path = "runs"
+readonly = true
+stored = "collection"
+title = "Runs, oldest first. Only the sessions that ran them add them"
+type = "Collection<Remembered>"
+
+[[resources.fields]]
+label = true
+owner = "remembered"
+path = "runs.*.command"
+stored = "value"
+title = "Command"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.cwd"
+stored = "value"
+title = "Working directory"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.environment"
+stored = "value"
+title = "Where it ran: the session's encoded target"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.exit"
+stored = "value"
+title = "Exit status"
+type = "i32"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.ended_ms"
+stored = "value"
+title = "Ended, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.actor"
+stored = "value"
+title = "Who ran it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.session"
+stored = "value"
+title = "The session that ran it: its record's address"
+type = "Atom"
+
+[[resources.fields]]
+owner = "remembered"
+path = "runs.*.run"
+stored = "value"
+title = "The run, an item of the session's `runs`"
+type = "Id"
+
+[[resources.verbs]]
+description = "Remember a run a session recorded.  The terminal keeping the person's history, not an edit of theirs to take back."
+id = "remember"
+kind = "undoable"
+label = "Remember a run a session recorded"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cwd"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "environment"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "exit"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params]]
+name = "ended_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "actor"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "session"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
 type = "string"

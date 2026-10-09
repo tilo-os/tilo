@@ -197,6 +197,9 @@ pub struct Finished {
     /// The request it carried out, if `run` asked for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Id>,
+    /// The id the run takes: the request's when one asked for it, so its
+    /// answer names the run.
+    pub run: Id,
 }
 
 /// The longest command line `run` takes.
@@ -255,7 +258,12 @@ impl Terminal {
     }
 }
 
-#[resource(kind = "terminal.session", label = "Terminal", params = session)]
+#[resource(
+    kind = "terminal.session",
+    label = "Terminal",
+    params = session,
+    effects = TerminalEffect
+)]
 impl Terminal {
     /// Run a command line in the session.
     ///
@@ -330,12 +338,10 @@ impl Terminal {
         };
         let mut items = run.items;
         items.truncate(crate::parse::MAX_ITEMS);
-        // A run asked for is the item of its request's id, which the
-        // request's answer names.
-        let id = match run.request {
-            Some(request) if self.runs.get(&request).is_none() => request,
-            _ => cx.id(),
-        };
+        if run.run.as_str().is_empty() || self.runs.contains(&run.run) {
+            return Err(Refusal::new("a run takes an id of its own"));
+        }
+        let id = run.run;
         self.runs.push(
             id,
             Run {
@@ -572,6 +578,17 @@ pub enum TerminalEffect {
     /// Return to live output
     #[effect(kind = "read")]
     HistoryLive,
+    /// Show item
+    ///
+    /// Shows one thing a run's parsers found: a link opens in the browser,
+    /// a location or a diagnostic opens its file.
+    #[effect(row, item = runs)]
+    OpenItem {
+        #[param("The run")]
+        run: String,
+        #[param("Which of the run's items, counting from 0")]
+        position: u32,
+    },
     /// Open link
     ///
     /// Opens a public web link the process printed.
@@ -597,6 +614,10 @@ impl ResourceApp for TerminalShell {
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
+    }
+
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.person::<crate::history::CommandHistory>();
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -643,10 +664,24 @@ impl ResourceApp for TerminalShell {
             Terminal::paths().requests,
             move |_, request: &RunRequest| owner.runs(&request.pane.0),
             move |id, request, cx: &mut EffectCx<Terminal>| {
-                queue.ask(id.clone(), request.command.0, cx.reply());
+                queue.ask(crate::runs::Asked {
+                    request: id.clone(),
+                    command: request.command.0,
+                    requested_by: request.requested_by.0,
+                    reply: cx.reply(),
+                });
                 Ok(Effected::Pending)
             },
         );
+        // A run is shown by the session that ran it: its view is this one.
+        let live = cx.live().clone();
+        cx.on_open_item(move |run| {
+            if live.get().runs.contains(run) {
+                Ok(())
+            } else {
+                Err(Refusal::new("the session has no such run"))
+            }
+        });
         cx.surface(crate::TerminalView::new(widget))
     }
 
@@ -681,6 +716,16 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if cx.mode().is_live()
+            && let (Some(history), Some(record)) =
+                (cx.person::<crate::history::CommandHistory>(), cx.record())
+        {
+            self.remember_in(
+                history,
+                record.uri(),
+                cx.me().unwrap_or_default().to_owned(),
+            );
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -739,6 +784,16 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
+        if cx.mode().is_live()
+            && let (Some(history), Some(record)) =
+                (cx.person::<crate::history::CommandHistory>(), cx.record())
+        {
+            self.remember_in(
+                history,
+                record.uri(),
+                cx.me().unwrap_or_default().to_owned(),
+            );
+        }
     }
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(name) = scenario {

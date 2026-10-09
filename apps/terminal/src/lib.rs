@@ -32,6 +32,7 @@
 
 pub mod actions;
 mod graphics;
+pub mod history;
 pub mod parse;
 pub mod resource;
 pub mod runs;

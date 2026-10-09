@@ -31,22 +31,15 @@ struct RunQueueState {
 pub struct Asked {
     pub request: ui::tilo_resource::Id,
     pub command: String,
+    /// Who asked: whom the run is attributed to.
+    pub requested_by: String,
     pub reply: ui::framework::EffectReply,
 }
 
 impl RunQueue {
-    /// Ask for `command` to run, answering `reply` with its run.
-    pub fn ask(
-        &self,
-        request: ui::tilo_resource::Id,
-        command: String,
-        reply: ui::framework::EffectReply,
-    ) {
-        self.inner.borrow_mut().waiting.push(Asked {
-            request,
-            command,
-            reply,
-        });
+    /// Ask for a command line to run, answering its reply with the run.
+    pub fn ask(&self, asked: Asked) {
+        self.inner.borrow_mut().waiting.push(asked);
     }
 
     /// What was asked since the last call.

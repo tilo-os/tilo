@@ -102,11 +102,17 @@ fn shell(
 /// A terminal on its session record whose process is a marking shell:
 /// what it printed so far goes through `print`; every line typed runs.
 fn marked_session(output: &'static str) -> (App, Sender<Vec<u8>>, Receiver<String>) {
+    let mut app = App::new().expect("terminal");
+    let (print, lines) = run_shell(&mut app, output);
+    (app, print, lines)
+}
+
+/// Give the session `app` shows a marking shell as its process.
+fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<String>) {
     let (print, printed) = channel();
     let (typed_tx, typed) = channel();
     let (lines_tx, lines) = channel();
     shell(typed, print.clone(), output, lines_tx);
-    let mut app = App::new().expect("terminal");
     let mut parts = Some((printed, typed_tx));
     let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
         let (printed, typed) = parts.take().expect("one process");
@@ -120,7 +126,7 @@ fn marked_session(output: &'static str) -> (App, Sender<Vec<u8>>, Receiver<Strin
         .expect("the terminal surface is hosted");
     app.settle();
     print.send(prompt().into_bytes()).unwrap();
-    (app, print, lines)
+    (print, lines)
 }
 
 /// Settle `app` until its session record satisfies `done`.
@@ -168,6 +174,17 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         .collect();
     assert_eq!(failed.len(), 1, "{:#?}", run.items);
     let test = failed[0].code.clone().unwrap();
+    let item = item_resource_id::<Terminal>("runs", first);
+    let offered: Vec<String> = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .filter(|action| action.address.resource == item)
+        .map(|action| action.address.action)
+        .collect();
+    for verb in ["rerun", "rerun-test", "open-item", "open"] {
+        assert!(offered.iter().any(|id| id == verb), "{verb}: {offered:?}");
+    }
 
     let agent = ActionInvoker::actor("agent:helper").with_kind(ActorKind::Agent);
     app.call_by(
@@ -232,4 +249,85 @@ fn run_takes_one_command_line_for_a_running_session() {
         .expect("runs");
     assert_eq!(lines.recv_timeout(HANG_BOUND).unwrap(), "ls -la");
     settle_until(&mut app, |state| state.runs.len() == 1);
+}
+
+/// Runs of two sessions are one history: the person's own record keeps
+/// both, each naming its session and run and who ran it, and its search
+/// finds a command whichever session ran it.
+#[test]
+fn two_sessions_are_searchable_together() {
+    use crate::history::CommandHistory;
+    use ui::tilo_resource::Resource as _;
+
+    let (mut app, print, _lines) = marked_session("");
+    print
+        .send(ran("cargo build -p first", "Finished\r\n", 0))
+        .unwrap();
+    settle_until(&mut app, |state| state.runs.len() == 1);
+    let first = app.record().uri();
+    let catalogue = tilo_history::Catalogue::new("en-US", &[crate::resource::LOCALES[0].1]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert!(
+        sentences
+            .iter()
+            .any(|sentence| sentence == "Ran cargo build -p first"),
+        "{sentences:?}"
+    );
+
+    // A new terminal in the same window is a new session.
+    app.open_here(&[]).expect("a second session");
+    let second = app.record().uri();
+    assert_ne!(second, first, "a new terminal starts a new session");
+    assert!(
+        app.state().runs.is_empty(),
+        "the new session ran nothing yet"
+    );
+    let (print, _lines) = run_shell(&mut app, "");
+    print
+        .send(ran("cargo test -p second", "test result: ok\r\n", 0))
+        .unwrap();
+    settle_until(&mut app, |state| state.runs.len() == 1);
+
+    let history = app
+        .person::<CommandHistory>()
+        .expect("the person's history");
+    let history = history.get();
+    let sessions: Vec<(&str, &str)> = history
+        .runs
+        .values()
+        .map(|run| (run.command.0.as_str(), run.session.0.as_str()))
+        .collect();
+    assert_eq!(
+        sessions,
+        [
+            ("cargo build -p first", first.as_str()),
+            ("cargo test -p second", second.as_str()),
+        ]
+    );
+    let me = app.state().runs.values().next().unwrap().actor.clone();
+    assert!(!me.0.is_empty());
+    assert!(history.runs.values().all(|run| run.actor == me));
+    assert_eq!(
+        history
+            .matching("cargo")
+            .map(|run| run.command.0.as_str())
+            .collect::<Vec<_>>(),
+        ["cargo test -p second", "cargo build -p first"],
+        "newest first"
+    );
+    let found: Vec<String> = CommandHistory::search(&history)
+        .into_iter()
+        .map(|entry| entry.title)
+        .collect();
+    assert!(
+        found.iter().any(|title| title == "cargo build -p first")
+            && found.iter().any(|title| title == "cargo test -p second"),
+        "{found:?}"
+    );
 }

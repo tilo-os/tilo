@@ -432,5 +432,47 @@ pub fn rerun_test(command: &str, test: &str) -> Option<String> {
     Some(format!("{program} test{package} -- --exact {test}"))
 }
 
+/// What showing one of a run's items opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// A web page, in the browser.
+    Page(String),
+    /// A file at a line, a path relative to the run's directory made
+    /// absolute.
+    File {
+        path: std::path::PathBuf,
+        line: Option<u32>,
+        column: Option<u32>,
+    },
+}
+
+/// What showing the item at `position` of a run in `cwd` opens.
+///
+/// # Errors
+/// Returns why the item shows nothing: there is none at `position`, or it
+/// names neither a page nor a file.
+pub fn shown(cwd: &str, items: &[RunItem], position: usize) -> Result<Shown, String> {
+    let item = items
+        .get(position)
+        .ok_or_else(|| format!("the run has {} items", items.len()))?;
+    let path = item
+        .path
+        .as_deref()
+        .ok_or("this item names neither a page nor a file")?;
+    if item.kind == ItemKind::Url {
+        return Ok(Shown::Page(path.to_owned()));
+    }
+    let path = std::path::Path::new(path);
+    Ok(Shown::File {
+        path: if path.is_absolute() {
+            path.to_owned()
+        } else {
+            std::path::Path::new(cwd).join(path)
+        },
+        line: item.line,
+        column: item.column,
+    })
+}
+
 #[cfg(test)]
 mod tests;

@@ -159,3 +159,39 @@ fn every_run_gets_links_locations_and_errors_without_escapes() {
     );
     assert_eq!(kinds(&found, ItemKind::Error).len(), 1);
 }
+
+/// "Open the second diagnostic" finds it among a run's items and opens its
+/// file at its line, relative to where the run ran; a link opens as a page.
+#[test]
+fn an_item_shows_its_file_at_its_line_or_its_page() {
+    let output = format!(
+        "{CARGO_WARNING}{CARGO_ERROR}see https://doc.rust-lang.org/error_codes/E0308.html\n"
+    );
+    let found = items("cargo check -p terminal", output.as_bytes());
+    let diagnostics: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| matches!(item.kind, ItemKind::Error | ItemKind::Warning))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(diagnostics.len(), 2, "{found:#?}");
+    assert_eq!(
+        shown("/src/tilo", &found, diagnostics[1]),
+        Ok(Shown::File {
+            path: "/src/tilo/apps/terminal/src/parse.rs".into(),
+            line: Some(389),
+            column: Some(5),
+        })
+    );
+    let link = found
+        .iter()
+        .position(|item| item.kind == ItemKind::Url)
+        .expect("the link is an item");
+    assert_eq!(
+        shown("/src/tilo", &found, link),
+        Ok(Shown::Page(
+            "https://doc.rust-lang.org/error_codes/E0308.html".into()
+        ))
+    );
+    assert!(shown("/src/tilo", &found, found.len()).is_err());
+}

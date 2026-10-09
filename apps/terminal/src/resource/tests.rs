@@ -194,7 +194,11 @@ fn the_session_publishes_its_effects_and_the_links_on_screen() {
     app.settle();
 
     let published = app.agent_surface().to_string();
-    for effect in TerminalEffect::declarations() {
+    // Showing a run's item is offered on the runs (run_tests).
+    for effect in TerminalEffect::declarations()
+        .into_iter()
+        .filter(|effect| effect.id != "open-item")
+    {
         assert!(
             published.contains(&format!("\"{}\"", effect.id)),
             "`{}` is published: {published}",

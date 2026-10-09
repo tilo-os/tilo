@@ -749,6 +749,15 @@ pub struct TerminalWidget {
     runs: RunState,
 }
 
+/// The person's command history this terminal adds its runs to.
+struct RunHistory {
+    record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+    /// The address of the session record its runs name.
+    session: String,
+    /// Who types at this terminal.
+    me: String,
+}
+
 /// Where this terminal is with its process's command runs
 /// (docs/app-model/ush.md, "Command runs").
 #[derive(Default)]
@@ -770,6 +779,12 @@ struct RunState {
     ended: Vec<(crate::runs::FinishedRun, Option<crate::runs::Asked>)>,
     /// The shell showed its prompt and has not started a run since.
     at_prompt: bool,
+    /// The person's command history, and the address of the session record
+    /// its runs name.
+    history: Option<RunHistory>,
+    /// The session as its record was last presented: the runs to show
+    /// items of.
+    session: Option<std::rc::Rc<crate::resource::Terminal>>,
 }
 
 impl TerminalWidget {
@@ -2159,6 +2174,7 @@ impl TerminalWidget {
                 }
                 open_url(&url);
             }
+            E::OpenItem { run, position } => self.show_item(&run, position)?,
             E::OpenIn { target } => self.open_in(&target)?,
             E::CreateEnvironment { name } => {
                 self.sessions.create_environment(&name)?;
@@ -2265,6 +2281,21 @@ impl TerminalWidget {
     pub(crate) fn run_through(&mut self, queue: crate::runs::RunQueue) {
         queue.set_pane(if self.emulating { &self.pane_id } else { "" });
         self.runs.queue = queue;
+    }
+
+    /// Remember every run this terminal records in the person's `history`,
+    /// as runs of the session record at `session`.
+    pub(crate) fn remember_in(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::history::CommandHistory>,
+        session: String,
+        me: String,
+    ) {
+        self.runs.history = Some(RunHistory {
+            record,
+            session,
+            me,
+        });
     }
 
     /// A new process takes the session: what was asked of the last one and
@@ -2393,6 +2424,9 @@ impl TerminalWidget {
                 }
             };
             let request = asked.as_ref().map(|asked| asked.request.clone());
+            let id = request.clone().unwrap_or_else(|| {
+                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            });
             let finished = crate::resource::Finished {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
                 items: crate::parse::items(&run.command, &run.output),
@@ -2409,11 +2443,30 @@ impl TerminalWidget {
                 exit: run.exit,
                 truncated: run.truncated,
                 request: request.clone(),
+                run: id.clone(),
+            };
+            let ran = crate::history::Ran {
+                command: finished.command.clone(),
+                cwd: finished.cwd.clone(),
+                environment: self
+                    .sessions
+                    .target
+                    .as_ref()
+                    .map(crate::target::SessionTarget::encode),
+                exit: finished.exit,
+                ended_ms: finished.ended_ms,
+                actor: asked
+                    .as_ref()
+                    .map(|asked| asked.requested_by.clone())
+                    .unwrap_or_default(),
+                session: String::new(),
+                run: id.clone(),
             };
             let recorded =
                 dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
-            if let Err(error) = &recorded {
-                tracing::warn!(%error, "terminal session record refused a run");
+            match &recorded {
+                Ok(()) => self.remember(ran),
+                Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
             }
             if let Some(asked) = asked {
                 let answer = crate::resource::RunAnswer {
@@ -2425,6 +2478,52 @@ impl TerminalWidget {
                     resources: Vec::new(),
                 }));
             }
+        }
+    }
+
+    /// Show the item at `position` of the run `run`: open its page or its
+    /// file.
+    fn show_item(&self, run: &str, position: u32) -> Result<(), String> {
+        let session = self
+            .runs
+            .session
+            .as_ref()
+            .ok_or("the session's runs are not here")?;
+        let run = session
+            .runs
+            .get(&ui::tilo_resource::Id::from_raw(run))
+            .ok_or("no such run")?;
+        let position = usize::try_from(position).unwrap_or(usize::MAX);
+        match crate::parse::shown(&run.cwd.0, &run.items, position)? {
+            crate::parse::Shown::Page(url) => {
+                if !is_public_web_link(&url) {
+                    return Err("the link is not a public web page".into());
+                }
+                open_url(&url);
+            }
+            crate::parse::Shown::File { path, .. } => {
+                if !path.is_file() {
+                    return Err(format!("{} is not a file on this device", path.display()));
+                }
+                ui::widget::open_external_url(&format!("file://{}", path.display()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Remember `ran`, which the session record now holds, in the person's
+    /// history.
+    fn remember(&self, mut ran: crate::history::Ran) {
+        let Some(history) = &self.runs.history else {
+            return;
+        };
+        if ran.actor.is_empty() {
+            ran.actor.clone_from(&history.me);
+        }
+        ran.session.clone_from(&history.session);
+        let remember = crate::history::CommandHistory::REMEMBER.with(ran);
+        if let Err(error) = history.record.invoke(&remember) {
+            tracing::warn!(%error, "the command history refused a run");
         }
     }
 
@@ -2468,7 +2567,8 @@ impl TerminalWidget {
 
     /// Follow the session as its record holds it: where it runs, the relay
     /// session it re-attaches to and the pane presence is scoped to.
-    pub(crate) fn present_session(&mut self, state: &crate::resource::Terminal) {
+    pub(crate) fn present_session(&mut self, state: &std::rc::Rc<crate::resource::Terminal>) {
+        self.runs.session = Some(std::rc::Rc::clone(state));
         self.recorded_target = state.session_target();
         self.recorded_relay_session = state.relay().map(str::to_owned);
         if !state.pane_id().is_empty() {
