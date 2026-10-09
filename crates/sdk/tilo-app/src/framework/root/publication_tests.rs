@@ -7,6 +7,7 @@
 //! own), edits two surfaces bind to rows (one offered by both, where the
 //! first surface's stays), edits bound to the view and to the viewer, and
 //! the framework's own operations.
+#![cfg(all(test, not(target_arch = "wasm32")))]
 
 use std::cell::Cell;
 use std::rc::Rc;
