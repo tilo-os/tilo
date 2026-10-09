@@ -284,11 +284,61 @@ fn flatpak_catalogue_from(
     remote: &str,
     user_managed: bool,
 ) -> Result<String, Error> {
+    flatpak_catalogue_with_timeout(
+        binary,
+        remote,
+        user_managed,
+        std::time::Duration::from_secs(8),
+    )
+}
+
+fn flatpak_catalogue_with_timeout(
+    binary: &std::path::Path,
+    remote: &str,
+    user_managed: bool,
+    timeout: std::time::Duration,
+) -> Result<String, Error> {
     require_flatpak_selector(remote)?;
+    let started = std::time::Instant::now();
+    let cached = flatpak_catalogue_read(binary, remote, user_managed, true, timeout)?;
+    let missing = format!("No cached summary for remote '{remote}'");
+    let output =
+        if !cached.status.success() && String::from_utf8_lossy(&cached.stderr).contains(&missing) {
+            // A newly configured remote may not have a summary yet. Flatpak's normal
+            // fetch verifies it with the configured GPG policy; never install apps or
+            // change remote settings here. Both reads share the same bounded deadline.
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(Error::failed("Flatpak repository query timed out".into()));
+            }
+            flatpak_catalogue_read(binary, remote, user_managed, false, remaining)?
+        } else {
+            cached
+        };
+    if !output.status.success() {
+        return Err(Error::failed(format!(
+            "Flatpak repository query failed: {}",
+            safe_host_diagnostic(&output.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn flatpak_catalogue_read(
+    binary: &std::path::Path,
+    remote: &str,
+    user_managed: bool,
+    cached: bool,
+    timeout: std::time::Duration,
+) -> Result<bounded_command::Output, Error> {
     let mut command = std::process::Command::new(binary);
+    // Classify only Flatpak's explicit cache absence, independently of the user's
+    // locale. No diagnostic text is used as catalogue or authority data.
+    command.env("LC_ALL", "C").arg("remote-ls");
+    if cached {
+        command.arg("--cached");
+    }
     command.args([
-        "remote-ls",
-        "--cached",
         if user_managed { "--user" } else { "--system" },
         "--app",
         "--arch",
@@ -297,20 +347,7 @@ fn flatpak_catalogue_from(
         "--",
         remote,
     ]);
-    let output = bounded_command::run_prepared(
-        command,
-        None,
-        4 * 1024 * 1024,
-        std::time::Duration::from_secs(8),
-    )
-    .map_err(failed)?;
-    if !output.status.success() {
-        return Err(Error::failed(format!(
-            "Flatpak repository query failed: {}",
-            safe_host_diagnostic(&output.stderr)
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    bounded_command::run_prepared(command, None, 4 * 1024 * 1024, timeout).map_err(failed)
 }
 
 fn flatpak_remote_enabled_from(
@@ -1386,6 +1423,120 @@ exit 1
                 .to_string()
                 .contains("repository is unavailable")
         );
+    }
+
+    #[test]
+    fn cold_configured_catalogue_fetches_summary_then_reuses_cached_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(&binary, r#"#!/bin/sh
+root=$(dirname "$0")
+printf '%s\n' "$*" >> "$root/calls"
+case "$*" in
+  *--cached*)
+    if [ ! -f "$root/summary" ]; then
+      echo "error: Unable to load summary from remote tools: No cached summary for remote 'tools'" >&2
+      exit 1
+    fi;;
+  *) touch "$root/summary";;
+esac
+printf 'org.example.Editor\tEditor\tA signed editor\t1.0\tstable\ttools\n'
+"#).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        let first = super::flatpak_catalogue_from(&binary, "tools", true).unwrap();
+        assert!(first.starts_with("org.example.Editor\tEditor"));
+        assert_eq!(
+            super::flatpak_catalogue_from(&binary, "tools", true).unwrap(),
+            first
+        );
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        let calls: Vec<_> = calls.lines().collect();
+        assert_eq!(calls.len(), 3);
+        assert!(calls[0].contains("--cached --user"));
+        assert!(!calls[1].contains("--cached"));
+        assert!(calls[1].contains("--user --app --arch"));
+        assert!(calls[2].contains("--cached --user"));
+        assert!(calls.iter().all(|call| call.ends_with("-- tools")));
+    }
+
+    fn catalogue_fixture(dir: &std::path::Path, script: &str) -> std::path::PathBuf {
+        let binary = dir.join("flatpak");
+        std::fs::write(&binary, format!("#!/bin/sh\n{script}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&binary, permissions).unwrap();
+        binary
+    }
+
+    #[test]
+    fn catalogue_does_not_retry_verification_disabled_or_foreign_cache_errors() {
+        for diagnostic in [
+            "GPG verification failed",
+            "Remote tools is disabled",
+            "No cached summary for remote 'other'",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                r#"printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+echo "{diagnostic}" >&2
+exit 1"#
+            );
+            let binary = catalogue_fixture(dir.path(), &script);
+            let error = super::flatpak_catalogue_from(&binary, "tools", false).unwrap_err();
+            assert!(error.to_string().contains(diagnostic));
+            let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+            assert_eq!(calls.lines().count(), 1);
+            assert!(calls.contains("--cached --system"));
+        }
+    }
+
+    #[test]
+    fn cold_catalogue_preserves_verified_fetch_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = catalogue_fixture(
+            dir.path(),
+            r#"
+case "$*" in
+  *--cached*) echo "No cached summary for remote 'tools'" >&2;;
+  *) echo "GPG verification failed" >&2;;
+esac
+exit 1
+"#,
+        );
+        assert!(
+            super::flatpak_catalogue_from(&binary, "tools", true)
+                .unwrap_err()
+                .to_string()
+                .contains("GPG verification failed")
+        );
+    }
+
+    #[test]
+    fn cold_catalogue_fetch_is_killed_at_the_shared_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = catalogue_fixture(
+            dir.path(),
+            r#"
+case "$*" in
+  *--cached*) echo "No cached summary for remote 'tools'" >&2; exit 1;;
+  *) sleep 10; touch "$(dirname "$0")/late-write";;
+esac
+"#,
+        );
+        let started = std::time::Instant::now();
+        assert!(
+            super::flatpak_catalogue_with_timeout(
+                &binary,
+                "tools",
+                true,
+                std::time::Duration::from_millis(100)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(!dir.path().join("late-write").exists());
     }
 
     #[test]
