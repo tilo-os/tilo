@@ -1357,6 +1357,44 @@ def focus_agent_conversation_control(access, path, label):
     return {"keyboard_focus": label, "accepted": True}
 
 
+def wait_for_floating_return_control_focus(owner, output, process):
+    """Observe, without repairing focus, the current exact owned Return control."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = {"accessibility_observable": False, "same_owned_route": False,
+                  "known_stale_object": False, "control_focused": False}
+        evidence["observation_count"] += 1
+        try:
+            current = agent_conversation_accessibility(owner["agent"], detached=True)
+            if current is None:
+                return None
+            sample["accessibility_observable"] = True
+            sample["same_owned_route"] = all(current.get(field) == owner.get(field)
+                for field in ("process", "bus", "agent", "detached")) \
+                and current.get("detached") is True
+            if not sample["same_owned_route"]:
+                raise RuntimeError("keyboard Return control changed the owned Chat route")
+            sample["control_focused"] = _editor_accessibility_focus({
+                "bus": current["bus"], "composer": current["control"]})
+            return current if sample["control_focused"] else None
+        except atspi.GateError as error:
+            if not re.search(
+                    r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                    str(error)):
+                raise
+            sample["known_stale_object"] = True
+            return None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "keyboard-return-control-focus.json").write_text(
+                json.dumps(evidence, indent=2) + "\n")
+
+    return wait_for("keyboard Return's current actual control focus", observe, process)
+
+
 def presented_primary_frame(response, app_id):
     """A retained buffer or another presentation is not the launched window."""
     rows = [row for row in foreign_frames(response)
@@ -3007,8 +3045,10 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
     )
     if not private_editor_value_matches(keyboard_access, ""):
         raise RuntimeError("keyboard Float changed the editor after Rime undo")
+    keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
     focus_agent_conversation_control(keyboard_access, keyboard_access["control"], "Return")
     keyboard_frame = wait_for_floating_keyboard_seat(socket, keyboard_frame, output, process)
+    keyboard_access = wait_for_floating_return_control_focus(keyboard_access, output, process)
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     wait_for(
         "keyboard Rime proof Float withdrawal",
@@ -5283,7 +5323,8 @@ def latest_chat_input_state(output):
         if not line.startswith("[app so.tilo.chat stderr] "):
             continue
         for marker, key in [("tilo-physical-input ", "after"),
-                            ("tilo-physical-frame ", "state")]:
+                            ("tilo-physical-frame ", "state"),
+                            ("tilo-physical-poll ", "state")]:
             if marker not in line:
                 continue
             try:
@@ -5676,11 +5717,10 @@ def native_agent_membership_revocation(
             previous_float,
         )
     ), process)
-    detached_access = wait_for(
-        "detached Tide editor before membership revocation",
-        lambda: agent_conversation_accessibility("Tide", detached=True), process,
-    )
-    detached_before = private_editor_observation(detached_access, draft)
+    frame, detached_access, detached_before = wait_for_semantic_float_editor_continuity(
+        socket, output, frame, {"access": access, "draft": draft, "observation": before}, process)
+    (output / "revocation-float-editor-continuity.json").write_text(json.dumps(
+        closed_editor_continuity(before, detached_before), indent=2) + "\n")
     if detached_before != before:
         raise RuntimeError("detaching before revocation changed private editor state")
     require_ok(call(socket, {"op": "snapshot", "path": str(

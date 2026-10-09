@@ -26,6 +26,80 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_return_control_focus_observes_current_bit_after_known_stale_object(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide",
+                 "detached": True, "control": "/retired"}
+        current = {**owner, "control": "/current"}
+        stale = PROOF.atspi.GateError(
+            "call failed: Error: GDBus.Error:org.freedesktop.DBus.Error.UnknownObject: PRIVATE")
+        client = PROOF.atspi.AtspiClient("address", "owned")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility",
+                             side_effect=[owner, current, current]), \
+                patch.object(PROOF.atspi, "AtspiClient", return_value=client), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(client, "call", side_effect=[stale, "([uint32 0, 0],)",
+                    f"([uint32 {PROOF.atspi.FOCUSED_STATE_BIT}, 0],)"]) as read, \
+                patch.object(PROOF.time, "sleep"):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_floating_return_control_focus(
+                owner, output, None), current)
+            self.assertEqual(read.call_args_list, [
+                call("/retired", "org.a11y.atspi.Accessible.GetState"),
+                call("/current", "org.a11y.atspi.Accessible.GetState"),
+                call("/current", "org.a11y.atspi.Accessible.GetState")])
+            receipt = json.loads((output / "keyboard-return-control-focus.json").read_text())
+            self.assertEqual(receipt["observation_count"], 3)
+            self.assertTrue(receipt["initial"]["known_stale_object"])
+            self.assertTrue(receipt["last"]["control_focused"])
+            self.assertNotIn("PRIVATE", json.dumps(receipt))
+            self.assertNotIn("/current", json.dumps(receipt))
+
+    def test_return_control_missing_focus_expires_and_foreign_owner_refuses(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide",
+                 "detached": True, "control": "/return"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "_editor_accessibility_focus", return_value=False) as read, \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_floating_return_control_focus(owner, pathlib.Path(directory), None)
+            self.assertEqual(read.call_count, 3)
+        for changed in ({"process": 8}, {"bus": "foreign"},
+                        {"agent": "Other"}, {"detached": False}):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "agent_conversation_accessibility",
+                                 return_value={**owner, **changed}), \
+                    patch.object(PROOF, "_editor_accessibility_focus") as read:
+                with self.assertRaisesRegex(RuntimeError, "changed the owned Chat route"):
+                    PROOF.wait_for_floating_return_control_focus(owner, pathlib.Path(directory), None)
+                read.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "_editor_accessibility_focus",
+                             side_effect=PROOF.atspi.GateError("unrelated refusal")):
+            with self.assertRaises(PROOF.atspi.GateError):
+                PROOF.wait_for_floating_return_control_focus(owner, pathlib.Path(directory), None)
+
+    def test_ime_keyboard_return_and_revocation_use_existing_native_continuity_gates(self):
+        source = inspect.getsource(PROOF.native_ime_float_return)
+        branch = source[source.index('"keyboard-activated Rime proof Float"'):]
+        before = branch.index("wait_for_floating_keyboard_seat(")
+        focus = branch.index("focus_agent_conversation_control(")
+        after = branch.index("wait_for_floating_keyboard_seat(", before + 1)
+        observed = branch.index("wait_for_floating_return_control_focus(")
+        enter = branch.index('"key": "Enter"')
+        self.assertLess(before, focus)
+        self.assertLess(focus, after)
+        self.assertLess(after, observed)
+        self.assertLess(observed, enter)
+        revocation = inspect.getsource(PROOF.native_agent_membership_revocation)
+        self.assertLess(revocation.index("wait_for_semantic_float_editor_continuity("),
+                        revocation.index("if detached_before != before:"))
+        self.assertLess(revocation.index('"revocation-float-editor-continuity.json"'),
+                        revocation.index("if detached_before != before:"))
+
     def test_message_phase_reads_only_exact_request_description(self):
         access = {"bus": "owned", "window": "/window"}
         client = PROOF.atspi.AtspiClient("address", "owned")
@@ -1886,6 +1960,22 @@ class PresentedEditorTargetTests(unittest.TestCase):
                 + '[app so.tilo.store stderr] tilo-physical-input ' + json.dumps({
                     "after": {"app": "so.tilo.chat", "foreign": True}}) + "\n")
             self.assertEqual(PROOF.latest_chat_input_state(output), newest)
+
+    def test_latest_mounted_poll_snapshot_needs_no_new_input_or_paint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            latest = {"app": "so.tilo.chat", "agent_message_progress": [
+                {"phase": "committed", "generation": 4}]}
+            (output / "shell.log").write_text(
+                '[app so.tilo.chat stderr] tilo-physical-frame ' + json.dumps({
+                    "state": {"app": "so.tilo.chat", "old": True}}) + "\n"
+                + '[app so.tilo.chat stderr] tilo-physical-poll ' + json.dumps({"state": latest}) + "\n"
+                + '[app so.tilo.chat stderr] tilo-physical-poll malformed\n'
+                + '[app so.tilo.chat stderr] tilo-physical-poll ' + json.dumps({
+                    "state": {"app": "so.tilo.store", "foreign": True}}) + "\n"
+                + '[app so.tilo.store stderr] tilo-physical-poll ' + json.dumps({
+                    "state": {"app": "so.tilo.chat", "foreign": True}}) + "\n")
+            self.assertEqual(PROOF.latest_chat_input_state(output), latest)
 
     def test_physical_message_original_is_derived_from_saved_canonical_person_row(self):
         request = {"id": "m_00000000000000000000000000000021", "author": "person:fixture",
