@@ -477,8 +477,13 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
                 Ok(revision) => self.revisions.borrow_mut().push(revision),
                 Err(error) => return Promise::err(error),
             }
-            write_directory_row(results.get().init_resolution().init_found(), &self.row);
-            Promise::ok(())
+            match runtime_collab::write_action_directory_row(
+                results.get().init_resolution().init_found(),
+                &self.row,
+            ) {
+                Ok(()) => Promise::ok(()),
+                Err(error) => Promise::err(error),
+            }
         }
     }
     tokio::task::LocalSet::new()
