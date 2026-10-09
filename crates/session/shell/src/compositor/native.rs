@@ -1231,8 +1231,12 @@ fn pump_floating_surface_service(
     let mut changed = false;
     for event in service.drain() {
         match event {
-            FloatingServiceEvent::Connected { connection, app_id } => {
-                appearance.connected(connection, &app_id);
+            FloatingServiceEvent::Connected {
+                connection,
+                app_id,
+                network_status_allowed,
+            } => {
+                appearance.connected(connection, &app_id, network_status_allowed);
                 if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
                     && let Some(writer) = service.reply_writer(connection)
                 {
@@ -8648,6 +8652,9 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    if let Some(bridge) = frame_builder.host().status_bridge() {
+        bridge.wake_network_changes(Arc::clone(&session_wake));
+    }
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     notif_bridge.set_wake(Arc::clone(&session_wake));
@@ -9254,6 +9261,11 @@ pub fn run() {
             window_appearances.publish(
                 |app_id| frame_builder.window_appearance_for_app(app_id),
                 frame_builder.configured_app_theme(),
+                frame_builder
+                    .host()
+                    .status_bridge()
+                    .map(crate::shell::status::StatusBridge::network_status)
+                    .unwrap_or_default(),
                 |connection, message| service.send(connection, message),
             );
         }
