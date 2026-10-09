@@ -3938,6 +3938,7 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
+    _checks: Option<super::approved_checks::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -4073,6 +4074,12 @@ async fn ensure_sdk_route(
         tracing::warn!(%error, "collab: late-join snapshot request failed");
     }
 
+    let checks = super::approved_checks::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: approved project check lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -4085,6 +4092,7 @@ async fn ensure_sdk_route(
     routes.insert(
         channel_id,
         SdkRoute {
+            _checks: checks,
             spec: spec.clone(),
             channel,
             presence,

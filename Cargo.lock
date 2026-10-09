@@ -19902,6 +19902,7 @@ name = "ush"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bounded-command",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -19916,6 +19917,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "strsim",
  "tempfile",
  "thiserror 2.0.21",
