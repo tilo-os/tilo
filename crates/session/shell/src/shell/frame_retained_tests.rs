@@ -877,6 +877,9 @@ fn foreign_replacement_pixel_oracle(
     clock.set("TILO_SHOTS_THEME", "dark");
     fixture.night_light = true;
     fixture.watch_configured_theme = true;
+    // What `enable_configured_theme` reads from that variable once, when
+    // watching starts; the settings file stays unwatched.
+    fixture.shots_theme_pinned = true;
     assert!(
         fixture.paint_with_damage().damage_regions.is_none(),
         "global filters require dense repair"
