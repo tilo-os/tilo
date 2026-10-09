@@ -442,6 +442,20 @@ pub fn app_id(app_dir: &Path) -> Result<String> {
     Ok(manifest.package.id)
 }
 
+/// Write the surface of the app containing `start` from the report its
+/// binary printed for [`FLAG`], saved at `report`.
+///
+/// # Errors
+/// Returns why the report does not read or the file cannot be written.
+pub fn write_reported(start: &Path, report: &Path) -> Result<(PathBuf, SurfaceReport)> {
+    let app_dir = crate::resolve_app_dir(start)?;
+    let text =
+        std::fs::read_to_string(report).with_context(|| format!("reading {}", report.display()))?;
+    let report = parse_report(&text)?;
+    let path = write(&app_dir, &report.resources)?;
+    Ok((path, report))
+}
+
 /// Check the surface of the app containing `start` against its committed
 /// [`FILE`]; `None` for an app whose binary reports none.
 ///

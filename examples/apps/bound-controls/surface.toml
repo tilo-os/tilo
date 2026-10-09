@@ -1,0 +1,50 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "example.preferences"
+label = "Preferences"
+version = 1
+
+[[resources.fields]]
+owner = "preferences"
+path = "name"
+stored = "value"
+title = "Collaborative text: concurrent typing merges"
+type = "String"
+
+[[resources.fields]]
+owner = "preferences"
+path = "updates"
+stored = "value"
+title = "Updates"
+type = "bool"
+
+[[resources.fields]]
+owner = "preferences"
+path = "refresh_minutes"
+stored = "value"
+title = "Refresh minutes"
+type = "f64"
+
+[[resources.fields]]
+owner = "preferences"
+path = "volume"
+stored = "value"
+title = "Volume"
+type = "f64"
+
+[[resources.fields]]
+owner = "preferences"
+path = "region"
+stored = "value"
+title = "A code rather than prose, so it is an `Atom`: written whole, last"
+type = "Atom"
+
+[[resources.verbs]]
+description = "Restore every preference to its default."
+id = "reset"
+kind = "undoable"
+label = "Restore every preference to its default"
+params = []
