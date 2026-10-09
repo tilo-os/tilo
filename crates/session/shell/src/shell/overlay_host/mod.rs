@@ -15196,6 +15196,35 @@ impl ShellOverlayHost {
             *handled = true;
             return;
         }
+        if let CollaboratorsHit::OpenSettings(index) = hit {
+            let target = self
+                .collaborators_overlay
+                .settings_target(index)
+                .map(|(id, is_agent)| (id.to_string(), is_agent));
+            if let (Some((target_id, target_is_agent)), Some(chrome)) =
+                (target, self.chrome.clone())
+            {
+                let mut state = chrome.borrow_mut();
+                let local_user = state.active_local_user();
+                let current = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &state.tree().desktop,
+                    &local_user,
+                )
+                .into_iter()
+                .find(|row| row.id == target_id && row.is_agent == target_is_agent);
+                if current.is_some() {
+                    state.open_workspace_settings(if target_is_agent {
+                        tilo_desktop::workspace_settings::WsTab::Agents
+                    } else {
+                        tilo_desktop::workspace_settings::WsTab::Members
+                    });
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+            }
+            *handled = true;
+            return;
+        }
         match hit {
             CollaboratorsHit::EditStatus => {
                 self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
@@ -15238,6 +15267,7 @@ impl ShellOverlayHost {
                     state.bump();
                 }
                 CollaboratorsHit::ToggleFollow(_)
+                | CollaboratorsHit::OpenSettings(_)
                 | CollaboratorsHit::PreviousPeople
                 | CollaboratorsHit::NextPeople
                 | CollaboratorsHit::EditStatus

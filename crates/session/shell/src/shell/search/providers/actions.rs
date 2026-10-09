@@ -179,6 +179,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "desktop-tour.open"
         | "settings.open"
         | "settings.members.open"
+        | "settings.agents.open"
         | "settings.privacy.open"
         | "settings.apps.open"
         | "quick-settings.open"
@@ -275,6 +276,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "overview.toggle"
         | "settings.open"
         | "settings.members.open"
+        | "settings.agents.open"
         | "settings.privacy.open"
         | "settings.apps.open"
         | "quick-settings.open"
@@ -1040,6 +1042,15 @@ impl Action {
             "search-action-settings-members-open-subtitle",
             |st, _| {
                 st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Members);
+                Ok(())
+            },
+        ),
+        chrome(
+            "settings.agents.open",
+            "search-action-settings-agents-open",
+            "search-action-settings-agents-open-subtitle",
+            |st, _| {
+                st.open_workspace_settings(tilo_desktop::workspace_settings::WsTab::Agents);
                 Ok(())
             },
         ),
@@ -5244,6 +5255,44 @@ mod tests {
             assert_eq!(
                 state.ws_settings_tab,
                 tilo_desktop::workspace_settings::WsTab::Permissions
+            );
+        }
+
+        // Phase `agent_access_search_result_deep_links_to_exact_lens_tab`.
+        {
+            let p = ActionsProvider::new();
+            let c = chrome_with_room();
+            let mut doc = AutoCommit::new();
+            let out = {
+                let state = c.borrow();
+                p.query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "agent access",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+            };
+            let result = out
+                .iter()
+                .find(|result| result.id == "settings.agents.open")
+                .expect("agent access governance is directly searchable");
+
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            )
+            .unwrap();
+
+            let state = c.borrow();
+            assert!(state.overlays.ws_settings);
+            assert_eq!(
+                state.ws_settings_tab,
+                tilo_desktop::workspace_settings::WsTab::Agents
             );
         }
 

@@ -17,6 +17,7 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
             color: theme.tokens.colors.presence.of_rgb((114, 139, 180)),
             is_agent: false,
             role: None,
+            authority: None,
             invited: false,
             activity: None,
             status: None,

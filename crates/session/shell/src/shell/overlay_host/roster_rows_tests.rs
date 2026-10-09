@@ -7,6 +7,7 @@ use crate::shell::state::{
 use ui::theme::Theme;
 use ui::widget::Container;
 use vello::kurbo::{Affine, Rect};
+use vello::peniko::Color;
 
 fn tree_with_room() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
@@ -23,7 +24,7 @@ fn tree_with_room() -> WorkspaceTree {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() {
+fn roster_agent_rows_report_only_granted_live_agents_with_capability_presets() {
     fn an_ungranted_room_contributes_no_agent_row() {
         let mut tree = tree_with_room();
         tree.desktop
@@ -107,11 +108,10 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
         );
     }
 
-    /// A row shows what its participant may do here, and nothing where
-    /// the room says nothing — an agent's role is the verb on the
-    /// capability that admitted it; a peer's comes from the room's own
-    /// `Collaborator` list, never a default.
-    fn a_row_carries_the_role_the_room_recorded_and_no_other() {
+    /// A person row reports the role the room recorded. An agent row never
+    /// promotes its admission verb into a human role; it reports the explicit
+    /// capability preset that Workspace Settings will review instead.
+    fn rows_separate_human_roles_from_agent_capability_presets() {
         let mut tree = tree_with_room();
         {
             let ws = tree
@@ -141,17 +141,136 @@ fn roster_agent_rows_report_only_granted_live_agents_with_their_recorded_role() 
         );
         assert_eq!(rows[1].role.as_deref(), Some("Editor"));
         assert_eq!(
-            rows[2].role.as_deref(),
-            Some("Commenter"),
-            "an agent's row must show the verb its membership grant carries, \
-             which is the whole of what revoking it takes back: {rows:?}",
+            rows[2].role, None,
+            "an agent must not be presented as inheriting a human role: {rows:?}",
+        );
+        assert_eq!(
+            rows[2].authority.as_deref(),
+            Some("Capability preset: Contributor"),
+            "the admission marker is described as a reviewable capability preset: {rows:?}",
         );
     }
 
     an_ungranted_room_contributes_no_agent_row();
     a_granted_but_absent_agent_is_not_reported_as_live();
     a_connected_headless_agent_is_tagged_without_a_fake_follow_target();
-    a_row_carries_the_role_the_room_recorded_and_no_other();
+    rows_separate_human_roles_from_agent_capability_presets();
+}
+
+#[test]
+fn live_roster_rows_open_their_durable_settings_destination() {
+    fn paint_people(host: &mut ShellOverlayHost, rows: &[RosterRow]) {
+        host.collaborators_overlay.draw(
+            &mut vello::Scene::new(),
+            Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &Theme::dark(),
+            &tilo_desktop::collaborators::CollaboratorsModel {
+                host: Rect::new(0.0, 0.0, 1200.0, 800.0),
+                rows,
+                own_initial: 'Q',
+                own_color: Color::from_rgb8(114, 139, 180),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &[],
+                own_status: None,
+                own_activity: None,
+                own_status_automatic: false,
+                status_sharing: ui::StatusSharing::Automatic,
+                status_editing: false,
+                screen_exposure: None,
+            },
+            None,
+        );
+    }
+
+    fn person_opens_members_and_agent_opens_agents() {
+        let mut tree = tree_with_room();
+        {
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has a room");
+            workspace
+                .collaborators
+                .push(Collaborator::new("ada", "Ada"));
+            let room = workspace.id.raw().to_string();
+            workspace
+                .grant_as(
+                    &"quinten".to_string(),
+                    CapOverride::membership(Subject::agent("scribe"), room, Verb::Read),
+                )
+                .expect("the owner may admit an agent");
+            workspace
+                .collaborators
+                .push(Collaborator::new("agent@9", "scribe"));
+        }
+        let chrome = ChromeState::new(tree);
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.borrow().tree().desktop,
+            "quinten",
+        );
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        paint_people(&mut host, &rows);
+
+        let mut handled = false;
+        host.apply_collaborators_hit(CollaboratorsHit::OpenSettings(0), &mut handled);
+        assert!(handled);
+        assert_eq!(
+            chrome.borrow().ws_settings_tab,
+            tilo_desktop::workspace_settings::WsTab::Members
+        );
+
+        chrome.borrow_mut().overlays.collaborators = true;
+        paint_people(&mut host, &rows);
+        handled = false;
+        host.apply_collaborators_hit(CollaboratorsHit::OpenSettings(1), &mut handled);
+        assert!(handled);
+        assert_eq!(
+            chrome.borrow().ws_settings_tab,
+            tilo_desktop::workspace_settings::WsTab::Agents
+        );
+        assert!(!chrome.borrow().overlays.collaborators);
+    }
+
+    fn a_stale_row_cannot_open_settings_for_a_replaced_identity() {
+        let mut tree = tree_with_room();
+        tree.desktop
+            .active_workspace_mut()
+            .expect("fixture has a room")
+            .collaborators
+            .push(Collaborator::new("ada", "Ada"));
+        let chrome = ChromeState::new(tree);
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
+        let rows = tilo_desktop::collaborators::collaborator_roster_rows(
+            &chrome.borrow().tree().desktop,
+            "quinten",
+        );
+        paint_people(&mut host, &rows);
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture has a room")
+            .collaborators
+            .clear();
+
+        let mut handled = false;
+        host.apply_collaborators_hit(CollaboratorsHit::OpenSettings(0), &mut handled);
+        assert!(handled, "the stale overlay action is still absorbed");
+        assert!(
+            !chrome.borrow().overlays.ws_settings,
+            "a stale row cannot navigate using its former identity"
+        );
+    }
+
+    person_opens_members_and_agent_opens_agents();
+    a_stale_row_cannot_open_settings_for_a_replaced_identity();
 }
 
 #[test]
