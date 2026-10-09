@@ -211,8 +211,8 @@ impl ConfinedReplica {
     /// Where the agent's last operation left it: [`crate::Replica::presence`].
     #[must_use]
     pub fn presence(&self) -> Option<(LiveAnchor, LiveAnchor)> {
-        let mut inner = self.lock();
-        match self.call(&mut inner, &Request::Presence).ok()? {
+        let reply = self.call(&mut self.lock(), &Request::Presence).ok()?;
+        match reply {
             Reply::Presence(Some(text)) => serde_json::from_str(&text).ok(),
             _ => None,
         }
@@ -222,8 +222,8 @@ impl ConfinedReplica {
     /// [`crate::Replica::survey`]. Empty when the worker cannot answer.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
-        let mut inner = self.lock();
-        match self.call(&mut inner, &Request::Survey) {
+        let reply = self.call(&mut self.lock(), &Request::Survey);
+        match reply {
             Ok(Reply::Descriptors(text)) => serde_json::from_str(&text).unwrap_or_default(),
             _ => Vec::new(),
         }
@@ -251,9 +251,12 @@ impl ConfinedReplica {
             arguments: serde_json::to_string(arguments).map_err(|e| unavailable(e.to_string()))?,
             confirm,
         };
-        let mut inner = self.lock();
-        inner.dirty = true;
-        match self.call(&mut inner, &request) {
+        let reply = {
+            let mut inner = self.lock();
+            inner.dirty = true;
+            self.call(&mut inner, &request)
+        };
+        match reply {
             Ok(Reply::Output(text)) => serde_json::from_str(&text)
                 .map_err(|error| DoorError::Failed(format!("the output did not decode: {error}"))),
             Ok(Reply::Refused(error)) => Err(error.into_door(address)),
@@ -281,10 +284,11 @@ impl ConfinedReplica {
     pub fn take_mutation(&self) -> Result<Option<DocumentMutation>, AppError> {
         let mut inner = self.lock();
         let own = self.collect(&mut inner)?;
-        if std::mem::take(&mut inner.fresh) {
-            return Ok(Some(DocumentMutation::Snapshot(inner.mirror.save())));
-        }
-        Ok(own.map(DocumentMutation::Incremental))
+        let whole = std::mem::take(&mut inner.fresh).then(|| inner.mirror.save());
+        drop(inner);
+        Ok(whole
+            .map(DocumentMutation::Snapshot)
+            .or_else(|| own.map(DocumentMutation::Incremental)))
     }
 
     /// Ask the worker for its changes and admit them to the mirror.
@@ -359,25 +363,29 @@ impl ConfinedReplica {
             admit_incoming(&mut inner.mirror, bytes)?;
             None
         };
-        match self.call(
+        let reply = self.call(
             &mut inner,
             &Request::Apply {
                 snapshot,
                 bytes: bytes.clone(),
             },
-        )? {
-            Reply::Done => {
+        );
+        let result = match reply {
+            Ok(Reply::Done) => {
                 if let Some(candidate) = candidate {
                     inner.mirror = candidate;
                 }
                 Ok(())
             }
-            Reply::Failed(reason) => Err(AppError::Merge(reason)),
-            _ => {
+            Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
+            Ok(_) => {
                 inner.process = None;
                 Err(worker_error("the worker answered out of turn"))
             }
-        }
+            Err(error) => Err(error),
+        };
+        drop(inner);
+        result
     }
 }
 

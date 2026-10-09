@@ -45,7 +45,7 @@ impl Process {
     /// an app runs then.
     pub(crate) fn start(mode: Mode) -> Result<Self, String> {
         let (ours, theirs) = UnixStream::pair().map_err(|error| error.to_string())?;
-        let mut command = Command::new(executable()?);
+        let mut command = Command::new(executable());
         command
             .args([ARG, "--nocapture", "--test-threads=1", "--quiet"])
             .env_clear()
@@ -119,15 +119,14 @@ impl Drop for Process {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn executable() -> Result<std::path::PathBuf, String> {
-    // The running image, even if the file on disk was replaced since.
-    Ok(std::path::PathBuf::from("/proc/self/exe"))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn executable() -> Result<std::path::PathBuf, String> {
-    std::env::current_exe().map_err(|error| error.to_string())
+/// The running image: on Linux even if the file on disk was replaced since.
+/// An empty path where it cannot be named, which then fails to start.
+fn executable() -> std::path::PathBuf {
+    if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe().unwrap_or_default()
+    }
 }
 
 fn not_serving() -> String {
