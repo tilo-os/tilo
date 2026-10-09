@@ -11695,6 +11695,7 @@ dependencies = [
  "tempfile",
  "tilo-app",
  "tilo-doc-pdf",
+ "tilo-history",
  "tilo-ocr",
  "tilo-thumbnail",
  "tilo-vello",
