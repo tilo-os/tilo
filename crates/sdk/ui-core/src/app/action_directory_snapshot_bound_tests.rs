@@ -107,3 +107,41 @@ fn directory_snapshot_bound_projection_expires_or_revises_on_owner_changes() {
         ));
     }
 }
+
+/// Resolving with no revision reads the directory as it is now: an agent
+/// that names an action it already knows reaches it after its own edit moved
+/// the revision, without reading the revision first. A named revision that
+/// moved is still refused.
+#[test]
+fn directory_resolution_without_a_revision_reads_the_directory_as_it_is_now() {
+    let mut fixture = ActionFixture::broker();
+    let before = capture_bound_directory(&mut fixture);
+    let alias = fixture
+        .app
+        .actions
+        .bound_publication
+        .alias(&fixture.bindings[1], "bound:probe")
+        .unwrap();
+    let target = fixture.target(0, "apply");
+    fixture
+        .app
+        .invoke_bound_target(
+            &target,
+            &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+        )
+        .unwrap();
+    let now = capture_bound_directory(&mut fixture);
+    assert_ne!(now, before, "the edit moved the revision");
+    assert!(matches!(
+        fixture
+            .app
+            .resolve_action_directory(&before, &alias, "follow-up"),
+        runtime_collab::ActionDirectoryResolution::StaleRevision
+    ));
+    assert!(matches!(
+        fixture
+            .app
+            .resolve_action_directory("", &alias, "follow-up"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+}
