@@ -80,6 +80,15 @@ pub enum StoreError {
     Payload(String),
     #[error("content store: {0}")]
     Content(String),
+    /// Installation selected the package, but the final content-store close
+    /// failed. The selected row remains committed; this is not a rollback.
+    #[error("selected {id} {version} ({root}), but closing the content store failed: {source}")]
+    CommittedSelection {
+        id: String,
+        version: String,
+        root: String,
+        source: Box<StoreError>,
+    },
     #[error("{0} is not installed")]
     NotInstalled(String),
     #[error("refusing to remove pinned package {0}")]
