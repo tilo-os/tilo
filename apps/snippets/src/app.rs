@@ -19,8 +19,8 @@ use std::rc::Rc;
 use std::collections::HashSet;
 
 use taffy::{NodeId, TaffyTree};
+use ui::framework::TextControl;
 use ui::framework::{Dispatcher, Submit};
-use ui::framework::{ResourceApp, TextControl};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -42,7 +42,7 @@ use crate::expand::ExpandModal;
 use crate::highlight;
 use crate::list_pane::{ListPane, ListState};
 use crate::model::{Language, Selection, SmartFolder, Snippet, SnippetId, SnippetPaths, Snippets};
-use crate::resource::{SnippetsShell, SnippetsView, snippets};
+use crate::resource::{SnippetsView, snippets};
 use crate::{tr, tr_with};
 
 /// The core every part of the window reads and changes.
@@ -190,10 +190,7 @@ impl Core {
         let mut core = Self {
             library: Rc::default(),
             selection: Selection::default(),
-            body: Self::body_control(
-                Dispatcher::detached(<SnippetsShell as ResourceApp>::ID, ""),
-                None,
-            ),
+            body: Self::body_control(None, None),
             body_identity: None,
             open: None,
             pending_open: None,
@@ -398,16 +395,21 @@ impl Core {
         self.sync_body_editor(None);
     }
 
-    /// The body editor over snippet `open`'s body, through `dispatch`.
+    /// The body editor over snippet `open`'s body, through `dispatch` once
+    /// the view has one.
     fn body_control(
-        dispatch: Dispatcher<Snippets>,
+        dispatch: Option<Dispatcher<Snippets>>,
         open: Option<&SnippetId>,
     ) -> TextControl<CodeEditor, Snippets> {
         let editor = CodeEditor::local()
             .with_id("snippets.body")
             .with_placeholder("snippets-body-placeholder");
         let open = open.cloned().unwrap_or_else(|| SnippetId::from_raw(""));
-        TextControl::at(editor, dispatch, Self::paths(&open).body)
+        let mut body = TextControl::view_only_at(editor, Self::paths(&open).body);
+        if let Some(dispatch) = dispatch {
+            body.attach(dispatch);
+        }
+        body
     }
 
     /// Follow the open snippet: its body, its language's highlighter, and
@@ -421,11 +423,8 @@ impl Core {
         let same_snippet =
             self.body_identity.as_ref().map(|(id, _)| id) == identity.as_ref().map(|(id, _)| id);
         if !same_snippet {
-            let dispatch = self
-                .dispatch
-                .clone()
-                .unwrap_or_else(|| Dispatcher::detached(<SnippetsShell as ResourceApp>::ID, ""));
-            self.body = Self::body_control(dispatch, identity.as_ref().map(|(id, _)| id));
+            self.body =
+                Self::body_control(self.dispatch.clone(), identity.as_ref().map(|(id, _)| id));
         }
         if !same_snippet || self.body_identity != identity {
             self.body
