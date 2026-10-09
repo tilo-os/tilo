@@ -3546,6 +3546,32 @@ mod tests {
         // A collaborator's device on the same room, kept in sync by hand.
         let mut peer = tree.clone();
         peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
+        let receipt = || {
+            tilo_actions::ActionContext::for_resource(
+                "Export",
+                "document:brief",
+                "document",
+                "Release brief",
+            )
+            .with_app("org.tilo.Writer", "Writer")
+        };
+
+        // Every kind of row the steps make, once, before reads are counted:
+        // the first row of a kind can load a catalogue, which moves the
+        // i18n revision, and the log then rightly reads its window again in
+        // the new words.
+        let heads = tree.doc.get_heads();
+        assert!(peer.append_workspace_effect_receipt(
+            home,
+            tilo_actions::InvocationId::new(),
+            "bea",
+            receipt(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        tree.apply_changes(&peer.export_changes_since(&heads))
+            .expect("the peer's change merges");
+        pane.refresh(&mut tree);
+        native_pane().refresh(&mut tree.clone());
 
         let mut next_tab = 92_000_u64;
         for step in 0..24_u32 {
@@ -3575,21 +3601,13 @@ mod tests {
                 2 => {
                     // The peer acts while this device switches back: two
                     // concurrent changes, merged in either order.
-                    assert!(
-                        peer.append_workspace_effect_receipt(
-                            home,
-                            tilo_actions::InvocationId::new(),
-                            "bea",
-                            tilo_actions::ActionContext::for_resource(
-                                "Export",
-                                "document:brief",
-                                "document",
-                                "Release brief",
-                            )
-                            .with_app("org.tilo.Writer", "Writer"),
-                            tilo_actions::EffectReceiptStatus::Succeeded,
-                        )
-                    );
+                    assert!(peer.append_workspace_effect_receipt(
+                        home,
+                        tilo_actions::InvocationId::new(),
+                        "bea",
+                        receipt(),
+                        tilo_actions::EffectReceiptStatus::Succeeded,
+                    ));
                     tree.set_active(home);
                     tree.commit_room_change();
                     let theirs = peer.export_changes_since(&synced);
@@ -3620,11 +3638,14 @@ mod tests {
             };
             let appended = tree.doc.get_changes(&synced).len();
             let read = pane.history_log.changes_read();
+            let catalogue = ui::I18nManager::revision();
             pane.refresh(&mut tree);
             assert_eq!(
                 pane.history_log.changes_read() - read,
                 appended,
-                "step {step} ({kind}): the refresh reads only the appended changes"
+                "step {step} ({kind}): the refresh reads only the appended changes \
+                 (i18n revision {catalogue} -> {})",
+                ui::I18nManager::revision()
             );
 
             // What a pane that reads the whole log once derives.
