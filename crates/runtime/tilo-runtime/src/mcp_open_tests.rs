@@ -980,6 +980,7 @@ fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
         assert!(
             matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
         );
+        drop(mutations);
     });
 }
 
@@ -1077,6 +1078,7 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
         assert!(
             matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
         );
+        drop(mutations);
     });
 }
 
