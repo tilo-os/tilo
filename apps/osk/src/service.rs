@@ -15,13 +15,11 @@
 //! [serves](serve) the session: a test or a host that mounts the keyboard
 //! draws it without typing into anyone's field.
 
-use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
+use tilo_input_context::wait::{ConnectionWait, Woken};
 use ui::WakeHandle;
 
 use crate::imclient::{ImEvent, ImState, ImTransition, InputMethodClient, try_input_method};
@@ -128,11 +126,7 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
                 .to_owned()
         })?),
     };
-    let im = match im.map(|im| {
-        im.connection_fd()
-            .and_then(FocusWait::new)
-            .map(|wait| (im, wait))
-    }) {
+    let im = match im.map(|im| im.connection_wait().map(|wait| (im, wait))) {
         None => None,
         Some(Ok(followed)) => Some(followed),
         Some(Err(error)) if choice == InputMethodChoice::Require => {
@@ -207,119 +201,13 @@ impl FocusSource for InputMethodClient {
     }
 }
 
-/// Why [`FocusWait::wait`] returned.
-#[derive(Debug, PartialEq, Eq)]
-enum Woken {
-    /// The socket is readable, or the UI thread read it for the focus thread.
-    Ready,
-    /// The compositor or the keyboard's own UI side went away.
-    Closed,
-}
-
-/// Where the focus thread sleeps: on the input method's socket, outside the
-/// lock the UI thread takes to commit text, and on a nudge from that thread.
-///
-/// The nudge closes the one gap the socket leaves: the UI thread's
-/// [`InputMethodClient::sync`] reads the socket itself, so events it pulls in
-/// wait in the client's queue while the socket reads empty.
-struct FocusWait {
-    socket: OwnedFd,
-    nudged: UnixStream,
-    /// The socket hung up and the reads after it have been allowed once.
-    hung_up: std::cell::Cell<bool>,
-}
-
-/// The UI thread's end of [`FocusWait`]'s nudge. Dropping it ends the focus
-/// thread.
-struct Nudge(UnixStream);
-
-impl Nudge {
-    fn nudge(&self) {
-        // A full buffer already holds a pending nudge, which is all one needs.
-        let _ = (&self.0).write(&[1]);
-    }
-}
-
-impl FocusWait {
-    fn new(socket: OwnedFd) -> std::io::Result<(Self, Nudge)> {
-        let (nudged, nudge) = UnixStream::pair()?;
-        nudged.set_nonblocking(true)?;
-        nudge.set_nonblocking(true)?;
-        Ok((
-            Self {
-                socket,
-                nudged,
-                hung_up: std::cell::Cell::new(false),
-            },
-            Nudge(nudge),
-        ))
-    }
-
-    /// Sleep until the socket is readable or the UI thread nudges.
-    fn wait(&self) -> Woken {
-        if self.hung_up.get() {
-            return Woken::Closed;
-        }
-        let mut fds = [
-            libc::pollfd {
-                fd: self.socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.nudged.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        loop {
-            // SAFETY: `fds` is a live array of two initialised `pollfd`s whose
-            // descriptors `self` owns for the duration of the call.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-            if ready >= 0 {
-                break;
-            }
-            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-                return Woken::Closed;
-            }
-        }
-        let [socket, nudged] = fds;
-        if nudged.revents != 0 && !self.drain_nudges() {
-            return Woken::Closed;
-        }
-        if socket.revents & libc::POLLNVAL != 0 {
-            return Woken::Closed;
-        }
-        // A hung-up socket stays readable at end of file, so waiting on it
-        // again would spin: read what the compositor sent before hanging up
-        // (one last `Ready`), then stop.
-        if socket.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
-            self.hung_up.set(true);
-        }
-        Woken::Ready
-    }
-
-    /// Read every pending nudge; `false` once the UI side is gone.
-    fn drain_nudges(&self) -> bool {
-        let mut buffer = [0u8; 64];
-        loop {
-            match (&self.nudged).read(&mut buffer) {
-                Ok(0) => return false,
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return true,
-            }
-        }
-    }
-}
-
 /// Read the input method's focus events on a thread of their own, folded
 /// through an [`ImState`] into the changes the keyboard follows. The thread
-/// sleeps in [`FocusWait::wait`] between batches: no input-method event, no
-/// wakeup.
+/// sleeps in [`ConnectionWait::wait`] between batches: no input-method event,
+/// no wakeup.
 fn follow_focus<S: FocusSource>(
     im: Arc<Mutex<S>>,
-    waiter: FocusWait,
+    waiter: ConnectionWait,
     wake: WakeHandle,
     context_send: std::sync::mpsc::Sender<ContextTransition>,
 ) -> Receiver<ImTransition> {
@@ -398,6 +286,9 @@ fn deliver(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
@@ -465,7 +356,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             thread: Arc::clone(&thread),
         };
-        let (waiter, nudge) = FocusWait::new(OwnedFd::from(client)).expect("wait");
+        let (waiter, nudge) = ConnectionWait::for_socket(OwnedFd::from(client)).expect("wait");
         let (context_send, _contexts) = std::sync::mpsc::channel();
         let changes = follow_focus(
             Arc::new(Mutex::new(source)),
@@ -541,7 +432,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             thread: Arc::default(),
         };
-        let (waiter, nudge) = FocusWait::new(OwnedFd::from(client)).expect("wait");
+        let (waiter, nudge) = ConnectionWait::for_socket(OwnedFd::from(client)).expect("wait");
         let (context_send, _contexts) = std::sync::mpsc::channel();
         let changes = follow_focus(
             Arc::new(Mutex::new(source)),

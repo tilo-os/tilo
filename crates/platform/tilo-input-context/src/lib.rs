@@ -87,6 +87,9 @@ pub struct ContextSlot {
 pub use wayland_client;
 
 #[cfg(feature = "client")]
+pub mod wait;
+
+#[cfg(feature = "client")]
 pub mod client {
     use wayland_client;
     use wayland_client::protocol::wl_surface;

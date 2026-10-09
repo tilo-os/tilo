@@ -10,7 +10,7 @@ description = "Bounded focused-field action metadata over Tilo's authenticated W
 
 [features]
 native-client = ["client", "wayland-client/system"]
-client = ["dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend"]
+client = ["dep:wayland-client", "dep:wayland-scanner", "dep:wayland-backend", "dep:libc"]
 server = ["dep:wayland-server", "dep:wayland-scanner", "dep:wayland-backend"]
 
 [dependencies]
@@ -21,6 +21,8 @@ wayland-client = { workspace = true, optional = true }
 wayland-server = { version = "=0.31.13", optional = true }
 wayland-backend = { version = "0.3", optional = true }
 wayland-scanner = { version = "0.31", optional = true }
+# poll(2) for `wait`: an input method sleeps on its socket outside the client lock.
+libc = { workspace = true, optional = true }
 
 [lints]
 workspace = true
