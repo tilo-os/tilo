@@ -1,4 +1,5 @@
 use super::*;
+use crate::setup::test_support::isolated;
 fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
 }
@@ -2815,19 +2816,4 @@ pub(in crate::setup) fn with_checkpoint_interval<T>(value: u64, run: impl FnOnce
     }
     let _reset = Reset(CHECKPOINT_INTERVAL.replace(Some(value)));
     run()
-}
-
-/// Runs one merged phase on a fresh thread so the thread-local fault hooks,
-/// scripts and counters start clean, exactly as when the phase was its own
-/// test; a failing phase re-raises its original panic payload.
-fn isolated(phase: &str, body: impl FnOnce() + Send) {
-    std::thread::scope(|scope| {
-        let handle = std::thread::Builder::new()
-            .name(phase.to_owned())
-            .spawn_scoped(scope, body)
-            .expect("spawn isolated test phase");
-        if let Err(panic) = handle.join() {
-            std::panic::resume_unwind(panic);
-        }
-    });
 }

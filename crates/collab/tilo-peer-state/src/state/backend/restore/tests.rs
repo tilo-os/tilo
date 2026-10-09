@@ -134,6 +134,23 @@ fn checked(
     );
     native
 }
+/// `peer`'s durable state restored as a bounded peer under `limits`.
+pub(in crate::state) fn restore_bounded(
+    peer: &StatePeer,
+    now: SystemTime,
+    limits: &PeerLimits,
+) -> BoundedStatePeer {
+    BoundedStatePeer::restore(
+        &peer.durable().unwrap(),
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        limits,
+    )
+    .unwrap()
+}
 pub(in crate::state) fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
     let (source, key, _, _, now) = crate::admission_tests::seeded();
     let cert = source.authority().clone();

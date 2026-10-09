@@ -37,6 +37,6 @@ pub mod model;
 mod nofollow;
 pub mod staging;
 pub(crate) mod strings;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod test_support;
 pub mod view;

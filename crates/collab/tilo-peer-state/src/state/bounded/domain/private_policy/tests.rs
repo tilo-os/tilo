@@ -1,10 +1,10 @@
 use super::*;
 use crate::BoundedPeerInvalid;
-use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
 use crate::StatePeer;
 use crate::TransportOrigin;
+use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
 use tilo_user_identity::RevocationList;
@@ -55,22 +55,10 @@ fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     .unwrap();
     (peer, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        limits,
-    )
-    .unwrap()
-}
 #[test]
 fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
     let (peer, now) = fixture(false);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(
         basis.revision(),
@@ -84,7 +72,7 @@ fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
 #[test]
 fn actual_private_basis_rejects_nonpersistent_governed_caps() {
     let (peer, now) = fixture(true);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     assert!(matches!(
         native.read().private_policy_basis(),
         Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
@@ -141,7 +129,7 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
     assert_ne!(expected, original);
     assert_eq!(peer.certificates().len(), 4);
     assert_eq!(peer.revocations().len(), 2);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(basis.revision(), expected);
 }
@@ -164,12 +152,12 @@ fn private_basis_missing_room_and_closed_decode_limits_preserve_typed_refusals()
         } else {
             limits.governance_collection_bytes = 1;
         }
-        let empty = restore(&empty, now, &limits);
+        let empty = restore_bounded(&empty, now, &limits);
         assert!(matches!(
             empty.read().private_policy_basis(),
             Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
         ));
-        let native = restore(&source, now, &limits);
+        let native = restore_bounded(&source, now, &limits);
         let result = native.read().private_policy_basis();
         if decode {
             assert!(matches!(result, Err(BoundedPeerError::Decode(_))));
