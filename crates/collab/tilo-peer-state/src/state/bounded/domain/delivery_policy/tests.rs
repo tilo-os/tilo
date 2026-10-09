@@ -1,5 +1,4 @@
 use super::*;
-use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
 use crate::SeedDocument;
@@ -7,21 +6,10 @@ use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
 use crate::seed_room;
+use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
-fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        limits,
-    )
-    .unwrap()
-}
 fn expected(peer: &StatePeer, host: &DeviceCert, device: &DeviceCert, now: SystemTime) -> [u8; 32] {
     use crate::room::{
         delivery_policy::{self, Error, Metadata},
@@ -76,7 +64,7 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
             .digest(),
         digest
     );
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     ROUTE_CHECKS.with(|n| n.set(0));
     let got = read.delivery_policy(37, &host, &device, now).unwrap();
@@ -164,7 +152,7 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
             peer.delivery_policy_unqualified(37, peer.authority(), &device, at),
             Err(PeerDeliveryPolicyError::CurrentDenied)
         ));
-        let native = restore(&peer, now, &PeerLimits::default());
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         assert!(matches!(
             read.delivery_policy(37, peer.authority(), &device, at),
@@ -195,8 +183,8 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_limit_refusals() {
             now,
         )
         .unwrap();
-    let native = restore(&empty, now, &PeerLimits::default());
-    let missing = restore(&missing, now, &PeerLimits::default());
+    let native = restore_bounded(&empty, now, &PeerLimits::default());
+    let missing = restore_bounded(&missing, now, &PeerLimits::default());
     let read = native.read();
     // The old projection has no independent membership gate with no routes.
     // This is why its result cannot stand in for authenticated session proof.
@@ -222,7 +210,7 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_limit_refusals() {
             limits.governance_collection_bytes = 1;
         }
         // Restoring this room reads no governance JSON; the policy read does.
-        let with_routes = restore(&source, now, &limits);
+        let with_routes = restore_bounded(&source, now, &limits);
         let result = with_routes
             .read()
             .delivery_policy(37, source.authority(), &device, now);
@@ -292,7 +280,7 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
     // consumer's authorization view (v2): admitting or revoking them must not
     // reset this consumer's delivery session.
     assert_eq!(digest, original);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     let policy = read
         .delivery_policy(37, peer.authority(), &device, now)
@@ -351,7 +339,7 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
                 PeerDeliveryPolicyError::UnsupportedPolicy
             }
         );
-        let native = restore(&peer, now, &PeerLimits::default());
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         ROUTE_CHECKS.with(|n| n.set(0));
         let result = read.delivery_policy(37, peer.authority(), &device, now);
@@ -400,7 +388,7 @@ fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
     .unwrap();
     peer.delivery_policy_unqualified(37, peer.authority(), &device, now)
         .unwrap();
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     native
         .read()
         .delivery_policy(37, peer.authority(), &device, now)
