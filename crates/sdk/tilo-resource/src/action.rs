@@ -116,6 +116,24 @@ impl ActionCx {
         uuid
     }
 
+    /// The person the invoker acted for (an agent's or a Shortcut's person),
+    /// as the envelope pinned it; `None` when someone acted for themselves.
+    #[must_use]
+    pub fn for_person(&self) -> Option<String> {
+        tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .and_then(|invoker| invoker.on_behalf_of)
+    }
+
+    /// What kind of actor invoked the action (a person, an agent, a
+    /// Shortcut), as the envelope pinned it.
+    #[must_use]
+    pub fn actor_kind(&self) -> Option<tilo_actions::ActorKind> {
+        tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .map(|invoker| invoker.kind)
+    }
+
     /// When the action was authored, in milliseconds since the Unix epoch, as
     /// read once on the origin.
     pub fn now_ms(&self) -> i64 {

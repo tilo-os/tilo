@@ -31,6 +31,8 @@ pub struct Replica<R: Resource> {
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
     author: Option<String>,
+    /// The person the author acts for, when the author is an agent.
+    acting_for: Option<String>,
     /// Who invokes from this replica when it acts as its own device
     /// ([`Self::as_invoker`]).
     invoker: Option<String>,
@@ -73,6 +75,7 @@ impl<R: Resource> Replica<R> {
             registry,
             log: Vec::new(),
             author: None,
+            acting_for: None,
             invoker: None,
             now_ms: 1_700_000_000_000,
             reader: None,
@@ -110,6 +113,15 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn as_invoker(mut self, author: &str) -> Self {
         self.invoker = Some(author.to_owned());
+        self
+    }
+
+    /// Attribute later actions to the agent `agent` acting for `person`, as
+    /// a host does for an agent's calls.
+    #[must_use]
+    pub fn as_agent_for(mut self, agent: &str, person: &str) -> Self {
+        self.author = Some(agent.to_owned());
+        self.acting_for = Some(person.to_owned());
         self
     }
 
@@ -186,8 +198,14 @@ impl<R: Resource> Replica<R> {
             .as_ref()
             .or(self.invoker.as_ref())
             .map(|author| {
-                tilo_actions::ActionContext::default()
-                    .with_invoker(tilo_actions::ActionInvoker::actor(author.clone()))
+                let invoker = tilo_actions::ActionInvoker::actor(author.clone());
+                let invoker = match &self.acting_for {
+                    Some(person) => invoker
+                        .with_kind(tilo_actions::ActorKind::Agent)
+                        .acting_for(person.clone()),
+                    None => invoker,
+                };
+                tilo_actions::ActionContext::default().with_invoker(invoker)
             });
         let mut transport = LocalTransport::new();
         let (doc, registry) = (&mut self.doc, &self.registry);

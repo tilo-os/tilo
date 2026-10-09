@@ -95,6 +95,17 @@ impl Board {
         }
     }
 
+    /// Note who a card was added for, and by what.
+    #[action]
+    pub fn add_card_for(&mut self, cx: &mut ActionCx) {
+        self.cards = self.cards.saturating_add(1);
+        self.author = format!(
+            "{:?} for {}",
+            cx.actor_kind().unwrap_or_default(),
+            cx.for_person().unwrap_or_default()
+        );
+    }
+
     /// Add a card, signed by whoever adds it.
     #[action]
     pub fn add_card(&mut self, cx: &mut ActionCx) {
@@ -701,4 +712,11 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
         .unwrap()
         .x;
     assert_eq!(x, 5.0);
+}
+
+#[test]
+fn a_verb_reads_who_its_invoker_acted_for() {
+    let mut board = Replica::<Board>::new().as_agent_for("claude", "quinten");
+    board.apply(Board::ADD_CARD_FOR.with(())).unwrap();
+    assert_eq!(board.state().unwrap().author, "Agent for quinten");
 }
