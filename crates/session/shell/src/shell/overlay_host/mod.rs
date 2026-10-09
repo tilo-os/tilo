@@ -14030,6 +14030,22 @@ impl ShellOverlayHost {
         if self.status_editing && matches!(event, WindowEvent::KeyboardInput { .. }) {
             return false;
         }
+        if self.status_editing
+            && let Some(selection) =
+                self.collaborators_overlay
+                    .status_pointer_selection(event, ctx, self.last_cursor)
+        {
+            self.status_selection = ui::text_selection::Selection {
+                anchor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.anchor,
+                ),
+                cursor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.cursor,
+                ),
+            };
+        }
         let hit = self
             .collaborators_overlay
             .handle_event(event, ctx, open, self.last_cursor);
@@ -14045,6 +14061,9 @@ impl ShellOverlayHost {
     }
 
     fn begin_status_edit(&mut self) {
+        if self.status_editing {
+            return;
+        }
         self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual) {
             self.local_status.clone().unwrap_or_default()
         } else {
@@ -18028,6 +18047,9 @@ impl Widget for ShellOverlayHost {
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.collaborators {
+            return self.collaborators_overlay.primary_vertical_scroll();
+        }
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
@@ -18047,7 +18069,12 @@ impl Widget for ShellOverlayHost {
         if self.primary_vertical_scroll().is_none() {
             return ui::widget::PrimaryScrollResult::Unsupported;
         }
-        let result = self.notification_center.apply_reading_scroll(action);
+        let result = if self.overlay_flags().collaborators {
+            self.collaborators_overlay
+                .apply_primary_vertical_scroll(action)
+        } else {
+            self.notification_center.apply_reading_scroll(action)
+        };
         if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
             && let Some(chrome) = &self.chrome
         {
@@ -20004,7 +20031,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 11] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20024,6 +20051,16 @@ impl ShellOverlayHost {
                 self.onboarding
                     .as_ref()
                     .and_then(Widget::next_wake_deadline),
+            ),
+            (
+                "people",
+                self.chrome.as_ref().and_then(|chrome| {
+                    if chrome.borrow().overlays.collaborators {
+                        self.collaborators_overlay.next_wake_deadline()
+                    } else {
+                        None
+                    }
+                }),
             ),
             ("content", self.content.next_wake_deadline()),
             (
@@ -20170,6 +20207,7 @@ impl ShellOverlayHost {
             || mirror_frame
             || markup_frame
             || notification_frame
+            || (self.overlay_flags().collaborators && self.collaborators_overlay.needs_animation_frame())
             || osd_frame
             || self.window_previews.changed()
     }
@@ -21365,6 +21403,7 @@ impl ShellOverlayHost {
                     ),
                     status_sharing: self.status_sharing,
                     status_editing: self.status_editing,
+                    status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
                 },
                 self.last_cursor,
