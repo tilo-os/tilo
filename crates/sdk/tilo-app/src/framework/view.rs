@@ -3,7 +3,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::ActionBinding;
@@ -854,32 +853,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.effects.view_jobs()
     }
 
-    /// Drain a projection: what the resource's actions queued for the world
-    /// outside the document — an outbox entry, a filesystem operation, the
-    /// device configuration the document describes.
-    ///
-    /// `pending` lists the entries waiting in a state, each under a stable
-    /// key; `run` carries one out, at once or as a job through its
-    /// [`EffectCx`], and records the outcome with an action (acknowledging
-    /// the entry, so it is no longer pending). The framework runs it in the
-    /// live app after every change, on every participant's device — never
-    /// in History mode — and runs an entry again only when the document
-    /// changed and still lists it, so `run` should be safe to repeat. A
-    /// drain that compares the document against something outside it (what
-    /// a service reports back) looks again when the [`Projection`] it
-    /// answers is told the outside changed.
-    pub fn drain<K, I>(
-        &self,
-        pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
-        run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) -> Projection
-    where
-        K: Eq + Hash + Clone + 'static,
-        I: 'static,
-    {
-        self.effects.drain(self.alive.clone(), pending, run)
-    }
-
     /// Carry out the entries of the [`Outbox`](tilo_resource::Outbox) at
     /// `outbox` that this device owns, and record how each settled.
     ///
@@ -932,21 +905,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     {
         self.effects
             .outbox(self.alive.clone(), outbox, owns, run, true)
-    }
-
-    /// Drain only consequences newly queued by an actual local Document
-    /// invocation. Delayed work keeps that invocation's checked custody, and
-    /// the caller receives success only after every consequence settles.
-    /// Remote/replayed/previously pending entries acquire no caller authority.
-    pub fn drain_causal<K, I>(
-        &self,
-        pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
-        run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) where
-        K: Eq + Hash + Clone + 'static,
-        I: 'static,
-    {
-        self.effects.drain_causal(self.alive.clone(), pending, run);
     }
 
     /// A button that invokes one effect, through the same door (and the

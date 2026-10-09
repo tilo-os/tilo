@@ -2,7 +2,6 @@
 //! resource: collaboration, history, undo, permissions and the action door.
 
 use std::cell::RefCell;
-use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
@@ -591,20 +590,6 @@ impl<R: Resource> SurfaceCx<R> {
             .map_or_else(WakeHandle::new, |env| env.wake.clone())
     }
 
-    /// Drain a projection the resource's actions queue, as
-    /// [`ViewCx::drain`](super::ViewCx::drain).
-    pub fn drain<K, T>(
-        &self,
-        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
-        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) -> Projection
-    where
-        K: Eq + Hash + Clone + 'static,
-        T: 'static,
-    {
-        self.effects.drain(self.alive.clone(), pending, run)
-    }
-
     /// Carry out the entries of an outbox this device owns, as
     /// [`ViewCx::outbox`](super::ViewCx::outbox).
     pub fn outbox<E, O>(
@@ -636,18 +621,6 @@ impl<R: Resource> SurfaceCx<R> {
     {
         self.effects
             .outbox(self.alive.clone(), outbox, owns, run, true)
-    }
-
-    /// Caller-authorized document consequences, as [`ViewCx::drain_causal`](super::ViewCx::drain_causal).
-    pub fn drain_causal<K, T>(
-        &self,
-        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
-        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) where
-        K: Eq + Hash + Clone + 'static,
-        T: 'static,
-    {
-        self.effects.drain_causal(self.alive.clone(), pending, run);
     }
 }
 

@@ -1507,69 +1507,6 @@ trait Drainer<R: Resource> {
     fn forget_settled(&mut self);
 }
 
-type Pending<R, K, T> = Box<dyn Fn(&<R as Resource>::State) -> Vec<(K, T)>>;
-
-struct Drain<R: Resource, K, T> {
-    env: EffectEnv<R>,
-    pending: Pending<R, K, T>,
-    run: Handle<R, T>,
-    jobs: Running<R, (), K>,
-    /// Entries whose run finished, and the revision it finished at: they run
-    /// again only once the document moved on and still lists them.
-    settled: HashMap<K, u64>,
-}
-
-impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Drain<R, K, T> {
-    fn run(&mut self, state: &R::State, revision: u64) {
-        let pending = (self.pending)(state);
-        self.settled
-            .retain(|key, _| pending.iter().any(|(entry, _)| entry == key));
-        for (key, entry) in pending {
-            if self.jobs.contains(&key) || self.settled.get(&key) == Some(&revision) {
-                continue;
-            }
-            let mut cx = EffectCx::new(self.env.clone(), None);
-            let answer = (self.run)(entry, &mut cx);
-            match (answer, cx.started.take()) {
-                (Ok(Effected::Pending), Some(started)) => self.jobs.insert(key, started),
-                (answer, started) => {
-                    if let Some(started) = started {
-                        started.stop();
-                    }
-                    if let Err(error) = answer {
-                        tracing::warn!(%error, kind = R::KIND, "a projection entry failed");
-                    }
-                    self.settled.insert(key, revision);
-                }
-            }
-        }
-    }
-
-    fn poll(&mut self, revision: u64) -> bool {
-        let mut settled = false;
-        for key in self.jobs.keys() {
-            while let Some(polled) = self.jobs.poll(&key, &mut (), &self.env, None) {
-                let Polled::Finished(result) = polled else {
-                    continue;
-                };
-                if let Some(result) = result {
-                    if let Err(error) = result {
-                        tracing::warn!(error = %error.message, kind = R::KIND, "a projection entry failed");
-                    }
-                    self.settled.insert(key.clone(), revision);
-                    settled = true;
-                }
-                break;
-            }
-        }
-        settled
-    }
-
-    fn forget_settled(&mut self) {
-        self.settled.clear();
-    }
-}
-
 type Owns<R, T> = Box<dyn Fn(&<R as Resource>::State, &T) -> bool>;
 type RunEntry<R, T> = Box<dyn FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer>;
 
@@ -1921,33 +1858,6 @@ impl<R: Resource> Effects<R> {
         });
     }
 
-    pub(crate) fn drain<K: Eq + Hash + Clone + 'static, T: 'static>(
-        &self,
-        alive: Weak<()>,
-        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
-        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) -> Projection {
-        let Some(env) = self.env.clone() else {
-            return Projection::default();
-        };
-        let mut inner = self.inner.borrow_mut();
-        inner.drains.push(Drains {
-            alive,
-            drain: Box::new(Drain {
-                env,
-                pending: Box::new(pending),
-                run: Box::new(run),
-                jobs: Running::default(),
-                settled: HashMap::new(),
-            }),
-        });
-        // A new drain looks at the document as it stands.
-        inner.drained = None;
-        Projection {
-            outside_changed: Some(Rc::clone(&inner.outside_changed)),
-        }
-    }
-
     pub(crate) fn outbox<T, O>(
         &self,
         alive: Weak<()>,
@@ -2062,20 +1972,6 @@ impl<R: Resource> Effects<R> {
         applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner.borrow_mut().causal.start(operation, applied)
-    }
-
-    pub(crate) fn drain_causal<K: Eq + Hash + Clone + 'static, T: 'static>(
-        &self,
-        alive: Weak<()>,
-        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
-        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) {
-        if let Some(env) = self.env.clone() {
-            self.inner
-                .borrow_mut()
-                .causal
-                .register(alive, env, pending, run);
-        }
     }
 
     /// Write the outbox settlements learned since the last settle pass, then

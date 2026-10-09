@@ -2,8 +2,8 @@
 
 //! Effects on the real component runtime: a typed vocabulary published on
 //! the resource, answered by the view or surface that registered it, its
-//! jobs reporting progress and finishing with actions; and a projection the
-//! resource's actions queue, drained after every change.
+//! jobs reporting progress and finishing with actions; and the outbox the
+//! resource's actions queue, carried out after every change.
 
 use std::cell::RefCell;
 
@@ -16,7 +16,7 @@ use tilo_resource::Effect;
 
 thread_local! {
     static CAUSAL_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
-    static CAUSAL_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
+    static CAUSAL_CALLERS: RefCell<Vec<Option<tilo_actions::InvocationId>>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_REPLIES: RefCell<Vec<tilo_app::framework::EffectReply>> = const { RefCell::new(Vec::new()) };
     static RECEIPT_CALLERS: RefCell<Vec<tilo_actions::InvocationId>> = const { RefCell::new(Vec::new()) };
 }
@@ -29,15 +29,11 @@ impl ResourceApp for CausalMailApp {
     const TITLE: &'static str = "Mailbox";
 
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
-        cx.drain_causal(
-            |mail: &Mailbox| {
-                mail.outbox
-                    .iter()
-                    .map(|(id, text)| (id.clone(), text.clone()))
-                    .collect()
-            },
-            |_, cx| {
-                CAUSAL_CALLERS.with(|callers| callers.borrow_mut().push(cx.invocation().unwrap()));
+        cx.outbox_awaited(
+            Mailbox::paths().outbox,
+            |_, _: &String| true,
+            |_, _, cx| {
+                CAUSAL_CALLERS.with(|callers| callers.borrow_mut().push(cx.invocation()));
                 CAUSAL_REPLIES.with(|replies| replies.borrow_mut().push(cx.reply()));
                 Ok(Effected::Pending)
             },
@@ -79,15 +75,13 @@ fn semantic_undo_consequences_keep_undos_own_new_invocation() {
         .with(|replies| replies.borrow_mut().pop().unwrap())
         .finish(Ok(tilo_actions::ActionOutput::default()));
     app.settle();
-    let entry = app.state().outbox.iter().next().unwrap().0.clone();
-    app.call("delivered", serde_json::json!({"entry": entry}))
-        .unwrap();
-    assert!(app.state().outbox.is_empty());
+    assert_eq!(app.state().outbox.pending().count(), 0);
+    // Undoing the send queues its recall, carried out under the undo.
     let undo = start_causal_action(&mut app, "undo", &serde_json::json!({}));
     assert_ne!(undo, original);
     assert_eq!(
         CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
-        vec![original, undo]
+        vec![Some(original), Some(undo)]
     );
     app.settle();
     assert!(
@@ -118,7 +112,7 @@ fn causal_document_jobs_keep_the_actual_invocation_and_wait_for_terminal_receipt
     let invocation = start_causal(&mut app, "first");
     assert_eq!(
         CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
-        vec![invocation]
+        vec![Some(invocation)]
     );
     app.settle();
     assert!(
@@ -133,19 +127,10 @@ fn causal_document_jobs_keep_the_actual_invocation_and_wait_for_terminal_receipt
     app.settle();
     assert!(app.harness().job_updates(invocation).iter()
         .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. } if *actual == invocation)));
-    // The old outbox entry remains pending. Another caller's edit must not
-    // adopt it, even though an ordinary drain would retry pending work.
-    app.call("fetched", serde_json::json!({"text": "unrelated"}))
-        .unwrap();
-    app.settle();
-    assert_eq!(
-        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
-        vec![invocation]
-    );
     let second = start_causal(&mut app, "second");
     assert_eq!(
         CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
-        vec![invocation, second]
+        vec![Some(invocation), Some(second)]
     );
     CAUSAL_REPLIES
         .with(|replies| replies.borrow_mut().pop().unwrap())
@@ -153,11 +138,21 @@ fn causal_document_jobs_keep_the_actual_invocation_and_wait_for_terminal_receipt
     app.settle();
     assert!(app.harness().job_updates(second).iter()
         .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.message.contains("compensation refused"))));
+    // The failed entry stays pending. Another caller's edit does not adopt
+    // it: it runs again as nobody's, the way any pending entry does.
+    app.call("fetched", serde_json::json!({"text": "unrelated"}))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        CAUSAL_CALLERS.with(|callers| callers.borrow().clone()),
+        vec![Some(invocation), Some(second), None]
+    );
 }
 
 #[test]
 fn causal_document_job_cancellation_stops_the_same_delayed_consequence() {
     let mut app = TestApp::<CausalMailApp>::new().unwrap();
+    CAUSAL_CALLERS.with(|callers| callers.borrow_mut().clear());
     let invocation = start_causal(&mut app, "cancel");
     assert!(app.harness().cancel_job(invocation).is_some());
     let reply = CAUSAL_REPLIES.with(|replies| replies.borrow_mut().pop().unwrap());
@@ -170,11 +165,22 @@ fn causal_document_job_cancellation_stops_the_same_delayed_consequence() {
             .iter()
             .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
     );
+    // Abandoned, it is settled so, not carried out later as nobody's.
+    let state = app.state();
+    let (_, entry) = state.outbox.entries().next().unwrap();
+    assert_eq!(
+        entry
+            .settled
+            .as_ref()
+            .and_then(tilo_app::tilo_resource::Settled::reason),
+        Some("cancelled")
+    );
+    assert_eq!(CAUSAL_CALLERS.with(|callers| callers.borrow().len()), 1);
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Mailbox {
-    pub outbox: Collection<String>,
+    pub outbox: Outbox<String>,
     pub sent: Collection<String>,
     pub fetched: String,
 }
@@ -182,15 +188,24 @@ pub struct Mailbox {
 #[resource(kind = "test.mailbox", label = "Mailbox")]
 impl Mailbox {
     /// Queue a message for delivery.
-    #[action]
-    pub fn send(&mut self, cx: &mut ActionCx, text: String) {
-        self.outbox.push(cx.id(), text);
+    #[action(undo = Self::unsend)]
+    pub fn send(&mut self, cx: &mut ActionCx, outbox: &mut Outbox<String>, text: String) {
+        outbox.push(cx.id(), text);
+    }
+
+    fn unsend(undoing: Undoing<'_, Self, mailbox::Send>) -> Option<Invoke<Self>> {
+        let sent = undoing.after.outbox.get(undoing.minted.first()?)?;
+        Some(Self::SEND.with(format!("recall {}", sent.value)))
     }
 
     /// Record that a queued message was delivered.
     #[action(item = outbox)]
     pub fn delivered(&mut self, cx: &mut ActionCx, entry: Id) -> Result<(), &'static str> {
-        let text = self.outbox.remove(&entry).ok_or("no such message")?;
+        let text = self
+            .outbox
+            .get(&entry)
+            .map(|queued| queued.value.clone())
+            .ok_or("no such message")?;
         self.sent.push(cx.id(), text);
         Ok(())
     }
@@ -302,16 +317,12 @@ impl ResourceApp for MailApp {
                 ]
             }
         });
-        cx.drain(
-            |mail: &Mailbox| {
-                mail.outbox
-                    .iter()
-                    .map(|(id, text)| (id.clone(), (id.clone(), text.clone())))
-                    .collect()
-            },
-            |(id, text), cx| {
+        cx.outbox(
+            Mailbox::paths().outbox,
+            |_, _: &String| true,
+            |id, text, cx| {
                 DELIVERED.with(|delivered| delivered.borrow_mut().push(text));
-                cx.invoke(Mailbox::DELIVERED.with(id));
+                cx.invoke(Mailbox::DELIVERED.with(id.clone()));
                 Ok(Effected::done())
             },
         );
@@ -506,11 +517,11 @@ fn history_renders_effect_controls_without_replaying_outside_consequences() {
         ["delivered once"],
         "History must not replay an external drain"
     );
-    assert!(app.state().outbox.is_empty());
+    assert_eq!(app.state().outbox.pending().count(), 0);
 }
 
 #[test]
-fn a_projection_drains_each_queued_entry_once_on_every_change() {
+fn an_outbox_carries_out_each_queued_entry_once() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());
     let mut app = TestApp::<MailApp>::new().unwrap();
 
@@ -519,7 +530,11 @@ fn a_projection_drains_each_queued_entry_once_on_every_change() {
     let delivered = || DELIVERED.with(|delivered| delivered.borrow().clone());
     assert_eq!(delivered(), ["first"]);
     let state = app.state();
-    assert!(state.outbox.is_empty(), "the drain acknowledged its entry");
+    assert_eq!(
+        state.outbox.pending().count(),
+        0,
+        "the drain settled its entry"
+    );
     assert_eq!(state.sent.values().collect::<Vec<_>>(), ["first"]);
 
     // A collaborator's queued message is drained here too.
@@ -533,7 +548,7 @@ fn a_projection_drains_each_queued_entry_once_on_every_change() {
     });
     app.settle();
     assert_eq!(delivered(), ["first", "from a peer"]);
-    assert!(app.state().outbox.is_empty());
+    assert_eq!(app.state().outbox.pending().count(), 0);
 
     // Unrelated changes deliver nothing again.
     app.invoke(Mailbox::FETCHED.with("x")).unwrap();
@@ -873,10 +888,11 @@ fn a_surface_answers_its_effects_and_completes_them_with_its_own_state() {
 }
 
 thread_local! {
-    /// What a service reports it holds: the outside a mirror drain compares
-    /// the document's sent messages against.
+    /// What the service received.
     static MIRRORED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    /// The mirror drain's handle, as the view registered it.
+    /// Whether the service can be reached.
+    static MIRROR_DOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The outbox drain's handle, as the view registered it.
     static MIRROR: RefCell<Option<tilo_app::framework::Projection>> = const { RefCell::new(None) };
 }
 
@@ -888,16 +904,13 @@ impl ResourceApp for MirrorApp {
     const TITLE: &'static str = "Mirror";
 
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
-        let projection = cx.drain(
-            |mail: &Mailbox| {
-                let mirrored = MIRRORED.with(|mirrored| mirrored.borrow().clone());
-                mail.sent
-                    .iter()
-                    .filter(|(_, text)| !mirrored.contains(text))
-                    .map(|(_, text)| (text.clone(), text.clone()))
-                    .collect()
-            },
-            |text, _| {
+        let projection = cx.outbox(
+            Mailbox::paths().outbox,
+            |_, _: &String| true,
+            |_, text, _| {
+                if MIRROR_DOWN.with(std::cell::Cell::get) {
+                    return Err("the service is unreachable".into());
+                }
                 MIRRORED.with(|mirrored| mirrored.borrow_mut().push(text));
                 Ok(Effected::done())
             },
@@ -908,18 +921,17 @@ impl ResourceApp for MirrorApp {
 }
 
 #[test]
-fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
+fn an_outbox_looks_again_when_the_outside_it_could_not_reach_changed() {
     MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    MIRROR_DOWN.with(|down| down.set(true));
     let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
     let mut app = TestApp::<MirrorApp>::new().unwrap();
     app.invoke(Mailbox::SEND.with("hello")).unwrap();
-    let entry = app.state().outbox.iter().next().unwrap().0.clone();
-    app.invoke(Mailbox::DELIVERED.with(entry)).unwrap();
     app.settle();
-    assert_eq!(mirrored(), ["hello"]);
+    assert!(mirrored().is_empty());
 
-    // The service lost what it held; the document did not move.
-    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    // The service is back; the document did not move.
+    MIRROR_DOWN.with(|down| down.set(false));
     app.settle();
     assert!(
         mirrored().is_empty(),
@@ -929,6 +941,7 @@ fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
     MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
     app.settle();
     assert_eq!(mirrored(), ["hello"]);
+    assert_eq!(app.state().outbox.pending().count(), 0);
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1129,7 +1142,11 @@ fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
         "the stale fetch was stopped"
     );
     assert_eq!(
-        state.outbox.values().cloned().collect::<Vec<_>>(),
+        state
+            .outbox
+            .entries()
+            .map(|(_, entry)| entry.value.clone())
+            .collect::<Vec<_>>(),
         ["queued by the view"]
     );
 
