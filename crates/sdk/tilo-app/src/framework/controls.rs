@@ -66,6 +66,22 @@ thread_local! {
     /// Such controls, while a surface report collects them.
     static UNBOUND: std::cell::RefCell<Option<Vec<String>>> =
         const { std::cell::RefCell::new(None) };
+    /// The surfaces of the other records the views open (the person's own),
+    /// while a surface report collects them.
+    static OPENED: std::cell::RefCell<Option<Vec<tilo_resource::Surface>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A view opened a record of `P` beside the app's own: a surface report
+/// lists its surface too.
+pub(crate) fn opened<P: Resource>() {
+    OPENED.with(|opened| {
+        if let Some(opened) = opened.borrow_mut().as_mut()
+            && !opened.iter().any(|surface| surface.kind == P::KIND)
+        {
+            opened.push(P::surface());
+        }
+    });
 }
 
 /// Collects the controls bound to something the resource does not publish
@@ -75,21 +91,25 @@ pub(crate) struct Collecting(());
 /// Start collecting unbound controls on this thread.
 pub(crate) fn collect_unbound() -> Collecting {
     UNBOUND.with(|unbound| *unbound.borrow_mut() = Some(Vec::new()));
+    OPENED.with(|opened| *opened.borrow_mut() = Some(Vec::new()));
     Collecting(())
 }
 
 impl Collecting {
-    /// What was collected, one sentence per control.
-    pub(crate) fn finish(self) -> Vec<String> {
-        let collected = UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
+    /// What was collected: one sentence per unbound control, and the
+    /// surfaces of the other records the views opened.
+    pub(crate) fn finish(self) -> (Vec<String>, Vec<tilo_resource::Surface>) {
+        let unbound = UNBOUND.with(|unbound| unbound.borrow_mut().take().unwrap_or_default());
+        let opened = OPENED.with(|opened| opened.borrow_mut().take().unwrap_or_default());
         drop(self);
-        collected
+        (unbound, opened)
     }
 }
 
 impl Drop for Collecting {
     fn drop(&mut self) {
         UNBOUND.with(|unbound| *unbound.borrow_mut() = None);
+        OPENED.with(|opened| *opened.borrow_mut() = None);
     }
 }
 

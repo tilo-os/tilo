@@ -21,6 +21,15 @@ impl Counter {
     }
 }
 
+/// A record the person keeps beside the app's own.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Prefs {
+    pub compact: bool,
+}
+
+#[resource(kind = "test.counter-prefs", label = "Counter preferences")]
+impl Prefs {}
+
 struct GoodApp;
 
 impl ResourceApp for GoodApp {
@@ -29,6 +38,7 @@ impl ResourceApp for GoodApp {
     const TITLE: &'static str = "Counter";
 
     fn view(cx: &mut ViewCx<Counter>) -> Element {
+        let _prefs = cx.person::<Prefs>();
         Box::new(cx.button("bump", Counter::BUMP.invoke()))
     }
 }
@@ -66,6 +76,10 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
             .any(|field| field["path"] == "count")
     );
     assert_eq!(report["unbound"], serde_json::json!([]));
+    assert_eq!(
+        report["resources"][1]["kind"], "test.counter-prefs",
+        "the person's records the view opens are part of the surface: {report}"
+    );
     assert!(report["view"].is_null(), "{report}");
 
     let report = tilo_app::framework::testing::surface_report::<TypoApp>();

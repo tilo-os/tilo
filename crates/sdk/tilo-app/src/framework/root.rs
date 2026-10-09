@@ -1563,18 +1563,24 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             Some(current) => R::child(current, id),
             None => R::child(&self.live.get(), id),
         };
-        if child.is_some() {
-            return child;
-        }
         let mut row = None;
         self.surfaces(&mut |surface| {
             if row.is_none() {
                 row = surface.live_row(id).map(super::LiveRow::into_resource);
             }
         });
-        if let Some(mut row) = row {
-            self.bind_row_declarations(std::slice::from_mut(&mut row));
-            return Some(row);
+        // An item past the published page is resolved on its own, and the row
+        // a surface shows for it joins it as it does in the page.
+        let resolved = match (child, row) {
+            (Some(mut child), Some(row)) => {
+                join(&mut child, row);
+                Some(child)
+            }
+            (child, row) => child.or(row),
+        };
+        if let Some(mut resolved) = resolved {
+            self.bind_row_declarations(std::slice::from_mut(&mut resolved));
+            return Some(resolved);
         }
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document

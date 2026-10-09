@@ -37,6 +37,8 @@ pub mod item_actions;
 pub mod kinds;
 #[path = "launch.rs"]
 pub mod launch;
+#[path = "lazy_rows.rs"]
+pub mod lazy_rows;
 #[path = "live_permissions.rs"]
 pub mod live_permissions;
 #[path = "live_rows.rs"]

@@ -135,6 +135,7 @@ impl ViewStorage {
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
+        super::controls::opened::<P>();
         self.person.as_ref()?.open::<P>()
     }
 
@@ -142,6 +143,7 @@ impl ViewStorage {
     pub(crate) fn shared_person<P: tilo_resource::SharedRecord>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
+        super::controls::opened::<P>();
         self.person.as_ref()?.open_shared::<P>()
     }
 
