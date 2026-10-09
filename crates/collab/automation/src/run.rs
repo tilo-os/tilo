@@ -25,6 +25,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tilo_actions::ActionKey;
 use tilo_actions::context::{ActionContext, ActionFacet};
 use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
@@ -44,8 +45,7 @@ use crate::shortcut::{
 };
 use crate::template::{self, Piece, render_value};
 use crate::{
-    AGENT_APP_ID, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec,
-    shortcut_id_of,
+    AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
 
 /// How many catalogue pages the interpreter reads looking for one action.
@@ -419,14 +419,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     async fn step(&mut self, step: &'a Step, path: StepPath) -> Result<(), Stop> {
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
                 action,
+                resource,
                 args,
             } => {
-                let done = self
-                    .invoke(step, &path, app_id, resource, action, args)
-                    .await;
+                let done = self.invoke(step, &path, action, resource, args).await;
                 self.record(step, &path, done)
             }
             StepKind::Ai { transform, input } => {
@@ -441,9 +438,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     .invoke(
                         step,
                         &path,
-                        AGENT_APP_ID,
+                        &transform.key(),
                         &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
-                        transform.action(),
                         &transform.arguments(input),
                     )
                     .await;
@@ -545,15 +541,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &self,
         step: &Step,
         path: &StepPath,
-        app_id: &str,
+        key: &ActionKey,
         selector: &Selector,
-        action: &str,
         args: &BTreeMap<String, Binding>,
     ) -> Done {
-        let prepared = match self
-            .prepare(step, path, app_id, selector, action, args)
-            .await
-        {
+        let prepared = match self.prepare(step, path, key, selector, args).await {
             Ok(prepared) => prepared,
             Err(failure) => return Done::local(Err(failure)),
         };
@@ -577,11 +569,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &self,
         step: &Step,
         path: &StepPath,
-        app_id: &str,
+        key: &ActionKey,
         selector: &Selector,
-        action: &str,
         args: &BTreeMap<String, Binding>,
     ) -> Result<Prepared, StepFailure> {
+        let (app_id, action) = (key.app.as_str(), key.action.as_str());
         let resource = match selector {
             Selector::Fixed(id) => Some(id.clone()),
             Selector::FirstOfKind(_) => None,
@@ -608,7 +600,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             (None, Selector::FirstOfKind(kind)) => ResourceTarget::Kind(kind),
             (None, _) => ResourceTarget::Any,
         };
-        let row = self.find(app_id, target, action).await?;
+        let row = self.find(key, target).await?;
         let Some(descriptor) = row.action.as_ref() else {
             return Err(StepFailure::Unresolved {
                 app_id: app_id.to_string(),
@@ -762,18 +754,17 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     /// run acts on what the person is offered at this moment.
     async fn find(
         &self,
-        app_id: &str,
+        key: &ActionKey,
         target: ResourceTarget<'_>,
-        action: &str,
     ) -> Result<CatalogueRow, StepFailure> {
         let unresolved = |reason: String| StepFailure::Unresolved {
-            app_id: app_id.to_string(),
-            action: action.to_string(),
+            app_id: key.app.clone(),
+            action: key.action.clone(),
             reason,
         };
         let mut query = CatalogueQuery {
             target: match target {
-                ResourceTarget::Id(id) => Some(ActionAddress::new(id, action)),
+                ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
                 ResourceTarget::Kind(_) | ResourceTarget::Any => None,
             },
             max_results: MAX_CATALOGUE_PAGE,
@@ -788,7 +779,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 .map_err(|error| StepFailure::Host {
                     error: Box::new(error),
                 })?;
-            if let Some(row) = find_row(&page.rows, app_id, target, action) {
+            if let Some(row) = find_row(&page.rows, key, target) {
                 return Ok(row.clone());
             }
             if page.exhausted || page.next_cursor.is_empty() {

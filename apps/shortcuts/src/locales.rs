@@ -16,9 +16,12 @@ pub fn install() {
 pub mod keys {
     use ui::i18n::LabelKey;
     pub const SHORTCUTS_ADD_INPUT: LabelKey = LabelKey::new("shortcuts-add-input");
+    pub const SHORTCUTS_ADD_INPUT_BUTTON: LabelKey = LabelKey::new("shortcuts-add-input-button");
     pub const SHORTCUTS_ADD_STEP: LabelKey = LabelKey::new("shortcuts-add-step");
+    pub const SHORTCUTS_ADD_STEP_BUTTON: LabelKey = LabelKey::new("shortcuts-add-step-button");
     pub const SHORTCUTS_AI_INPUT: LabelKey = LabelKey::new("shortcuts-ai-input");
     pub const SHORTCUTS_AI_PROMPT: LabelKey = LabelKey::new("shortcuts-ai-prompt");
+    pub const SHORTCUTS_BIND_ARGUMENT: LabelKey = LabelKey::new("shortcuts-bind-argument");
     pub const SHORTCUTS_BLOCKS: LabelKey = LabelKey::new("shortcuts-blocks");
     pub const SHORTCUTS_CANCEL: LabelKey = LabelKey::new("shortcuts-cancel");
     pub const SHORTCUTS_CATALOGUE_EMPTY: LabelKey = LabelKey::new("shortcuts-catalogue-empty");
@@ -31,8 +34,11 @@ pub mod keys {
     pub const SHORTCUTS_DESCRIBE_PLACEHOLDER: LabelKey =
         LabelKey::new("shortcuts-describe-placeholder");
     pub const SHORTCUTS_DISCARD: LabelKey = LabelKey::new("shortcuts-discard");
+    pub const SHORTCUTS_DISCARD_BUTTON: LabelKey = LabelKey::new("shortcuts-discard-button");
     pub const SHORTCUTS_DRAFT_FAILED: LabelKey = LabelKey::new("shortcuts-draft-failed");
     pub const SHORTCUTS_DRAFT_IT: LabelKey = LabelKey::new("shortcuts-draft-it");
+    pub const SHORTCUTS_DRAFT_NAME: LabelKey = LabelKey::new("shortcuts-draft-name");
+    pub const SHORTCUTS_DRAFT_OUTPUT: LabelKey = LabelKey::new("shortcuts-draft-output");
     pub const SHORTCUTS_DRAFT_PROBLEMS: LabelKey = LabelKey::new("shortcuts-draft-problems");
     pub const SHORTCUTS_DRAFTING: LabelKey = LabelKey::new("shortcuts-drafting");
     pub const SHORTCUTS_EDIT: LabelKey = LabelKey::new("shortcuts-edit");
@@ -50,14 +56,20 @@ pub mod keys {
         LabelKey::new("shortcuts-library-unavailable");
     pub const SHORTCUTS_LOADING: LabelKey = LabelKey::new("shortcuts-loading");
     pub const SHORTCUTS_MOVE_DOWN: LabelKey = LabelKey::new("shortcuts-move-down");
+    pub const SHORTCUTS_MOVE_STEP: LabelKey = LabelKey::new("shortcuts-move-step");
     pub const SHORTCUTS_MOVE_UP: LabelKey = LabelKey::new("shortcuts-move-up");
     pub const SHORTCUTS_NAME: LabelKey = LabelKey::new("shortcuts-name");
+    pub const SHORTCUTS_NEW_DRAFT: LabelKey = LabelKey::new("shortcuts-new-draft");
     pub const SHORTCUTS_OPEN_DRAFTED: LabelKey = LabelKey::new("shortcuts-open-drafted");
+    pub const SHORTCUTS_OPEN_SHORTCUT: LabelKey = LabelKey::new("shortcuts-open-shortcut");
     pub const SHORTCUTS_OTHERWISE: LabelKey = LabelKey::new("shortcuts-otherwise");
     pub const SHORTCUTS_OUTPUT: LabelKey = LabelKey::new("shortcuts-output");
     pub const SHORTCUTS_QUESTION: LabelKey = LabelKey::new("shortcuts-question");
     pub const SHORTCUTS_REMOVE: LabelKey = LabelKey::new("shortcuts-remove");
+    pub const SHORTCUTS_REMOVE_INPUT: LabelKey = LabelKey::new("shortcuts-remove-input");
+    pub const SHORTCUTS_REMOVE_STEP: LabelKey = LabelKey::new("shortcuts-remove-step");
     pub const SHORTCUTS_REPEAT: LabelKey = LabelKey::new("shortcuts-repeat");
+    pub const SHORTCUTS_REPLACE_STEP: LabelKey = LabelKey::new("shortcuts-replace-step");
     pub const SHORTCUTS_REVIEW: LabelKey = LabelKey::new("shortcuts-review");
     pub const SHORTCUTS_RUN: LabelKey = LabelKey::new("shortcuts-run");
     pub const SHORTCUTS_RUNS: LabelKey = LabelKey::new("shortcuts-runs");

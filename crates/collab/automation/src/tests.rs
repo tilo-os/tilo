@@ -8,6 +8,7 @@ use std::task::{Context, Poll, Waker};
 
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use serde_json::{Value, json};
+use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
 use tilo_actions::contract::{ActionContract, ConfirmationPolicy, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -342,13 +343,15 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
     }
 }
 
+/// A step invoking `action` of `app` on the resource `resource` selects. Its
+/// key names the app's root kind, so it reaches any kind the app publishes.
 fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, Binding)]) -> Step {
+    let kind = app.rsplit('.').next().unwrap_or(app);
     Step::new(
         id,
         StepKind::Invoke {
-            app_id: app.into(),
+            action: ActionKey::new(app, kind, action),
             resource,
-            action: action.into(),
             args: args
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
@@ -1391,4 +1394,24 @@ fn a_host_without_next_change_still_completes_via_settle() {
     // then the one that finds it finished: each after a poll interval.
     assert_eq!(host.observes(), 4);
     assert_eq!(hooks.settles.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn a_step_reaches_only_the_app_and_kind_its_key_names() {
+    let catalog = ActionCatalog::new(vec![row(
+        NOTES,
+        INBOX,
+        "notes.folder",
+        "list",
+        Vec::new(),
+        ActionContract::default(),
+    )]);
+    let inbox = crate::ResourceTarget::Id(INBOX);
+    let found = |key: ActionKey| catalog.find(&key, inbox).is_some();
+    assert!(found(ActionKey::new(NOTES, "notes.folder", "list")));
+    assert!(found(ActionKey::new(NOTES, "notes", "list")), "a sub-kind");
+    assert!(!found(ActionKey::new(NOTES, "notes.note", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folderish", "list")));
+    assert!(!found(ActionKey::new(MAIL, "notes.folder", "list")));
+    assert!(!found(ActionKey::new(NOTES, "notes.folder", "delete")));
 }

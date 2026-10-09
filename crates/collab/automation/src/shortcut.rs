@@ -9,12 +9,13 @@ use std::collections::BTreeMap;
 
 use collab_types::PermissionProfileRule;
 use serde::{Deserialize, Serialize};
+use tilo_actions::ActionKey;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
 
 use crate::{
-    AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION,
-    SHORTCUT_RUN_ACTION, shortcut_resource_id,
+    AGENT_APP_ID, AGENT_CLASSIFY_ACTION, AGENT_EXTRACT_ACTION, AGENT_FREEFORM_ACTION,
+    AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, shortcut_resource_id,
 };
 
 /// One saved shortcut.
@@ -116,11 +117,11 @@ impl Step {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum StepKind {
-    /// Invoke one published action.
+    /// Invoke one published action: the app, the resource kind that
+    /// publishes it and its public id, on the resource `resource` selects.
     Invoke {
-        app_id: String,
+        action: ActionKey,
         resource: Selector,
-        action: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         args: BTreeMap<String, Binding>,
     },
@@ -239,6 +240,12 @@ pub enum AiTransform {
 
 impl AiTransform {
     /// The agent transform action this lowers to.
+    #[must_use]
+    pub fn key(&self) -> ActionKey {
+        ActionKey::new(AGENT_APP_ID, AGENT_TRANSFORM_KIND, self.action())
+    }
+
+    /// The public id of the agent transform action this lowers to.
     #[must_use]
     pub const fn action(&self) -> &'static str {
         match self {

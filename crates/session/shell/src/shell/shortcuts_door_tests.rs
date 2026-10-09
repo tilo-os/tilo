@@ -637,9 +637,8 @@ fn invoke_step(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
     Step::new(
         id,
         StepKind::Invoke {
-            app_id: FIXTURE.into(),
+            action: tilo_actions::ActionKey::new(FIXTURE, "fixture.drafts", action),
             resource: Selector::Fixed(INBOX.into()),
-            action: action.into(),
             args: args
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))

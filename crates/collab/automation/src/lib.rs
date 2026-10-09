@@ -91,6 +91,16 @@ pub const AGENT_CLASSIFY_ACTION: &str = "classify";
 /// Answer a free-form prompt about the input.
 pub const AGENT_FREEFORM_ACTION: &str = "freeform";
 
+/// The action a step invokes to run a saved shortcut.
+#[must_use]
+pub fn shortcut_run_key() -> tilo_actions::ActionKey {
+    tilo_actions::ActionKey::new(
+        SHORTCUTS_APP_ID,
+        SHORTCUT_RESOURCE_KIND,
+        SHORTCUT_RUN_ACTION,
+    )
+}
+
 /// The stable resource id under which shortcut `id` is published.
 #[must_use]
 pub fn shortcut_resource_id(id: &str) -> String {

@@ -14,7 +14,7 @@ use tilo_automation::{
     UnattendedConsent,
 };
 use ui::prelude::*;
-use ui::tilo_actions::{ActionParam, ParamType};
+use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
 /// The program a draft holds: everything of a shortcut but its identity,
 /// name and grant, which the draft and the save step supply.
@@ -43,6 +43,8 @@ pub struct Program {
 /// [`Self::program`] reads it back as one [`Program`].
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Draft {
+    /// Name
+    #[model(label)]
     pub name: String,
     /// The id the shortcut is saved under.
     pub shortcut_id: String,
@@ -51,6 +53,7 @@ pub struct Draft {
     /// Every step at every depth, in program order; a step names the block
     /// it is in ([`StepNode::parent`], [`StepNode::branch`]).
     pub steps: Collection<StepNode>,
+    /// What a finished run reports back.
     pub output: Json<Option<Binding>>,
     /// Carried unchanged from the saved shortcut, so editing its steps
     /// keeps when it runs on its own and what it may do then.
@@ -83,9 +86,8 @@ pub struct StepNode {
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum Head {
     Invoke {
-        app_id: String,
+        action: ActionKey,
         resource: Selector,
-        action: String,
     },
     If {
         cond: Condition,
@@ -119,15 +121,13 @@ impl Head {
     fn split(kind: &StepKind) -> (Self, BTreeMap<String, Binding>, Blocks<'_>) {
         match kind {
             StepKind::Invoke {
-                app_id,
-                resource,
                 action,
+                resource,
                 args,
             } => (
                 Self::Invoke {
-                    app_id: app_id.clone(),
-                    resource: resource.clone(),
                     action: action.clone(),
+                    resource: resource.clone(),
                 },
                 args.clone(),
                 Vec::new(),
@@ -183,14 +183,9 @@ impl Head {
         mut block: impl FnMut(&str) -> Vec<Step>,
     ) -> StepKind {
         match self {
-            Self::Invoke {
-                app_id,
-                resource,
+            Self::Invoke { action, resource } => StepKind::Invoke {
                 action,
-            } => StepKind::Invoke {
-                app_id,
                 resource,
-                action,
                 args,
             },
             Self::If { cond } => StepKind::If {
@@ -445,18 +440,11 @@ impl Workbench {
         Ok(())
     }
 
-    /// Rename a draft.
-    #[action]
-    pub fn rename(&mut self, draft: Id, #[param("New name")] name: String) -> Result<(), Refusal> {
-        draft_mut(self, &draft)?.name = name;
-        Ok(())
-    }
-
     /// Discard a draft. A saved shortcut it was editing stays as it was.
     #[action]
-    pub fn discard(&mut self, draft: Id) -> Result<(), Refusal> {
+    pub fn discard(&mut self, draft: &Id) -> Result<(), Refusal> {
         self.drafts
-            .remove(&draft)
+            .remove(draft)
             .map(drop)
             .ok_or_else(|| Refusal::from("there is no such draft"))
     }
@@ -467,13 +455,13 @@ impl Workbench {
     pub fn add_step(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("Block to add to: empty for the top level, or like 2.then")] block: String,
         #[param("The step, as JSON with a `step` kind")] step: serde_json::Value,
     ) -> Result<(), Refusal> {
         let kind: StepKind = serde_json::from_value(step)
             .map_err(|error| Refusal::new(format!("not a step: {error}")))?;
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             let id = fresh_step_id(&program.steps, &kind);
             block_mut(&mut program.steps, &block)
                 .ok_or_else(|| format!("there is no block `{block}`"))?
@@ -484,16 +472,16 @@ impl Workbench {
 
     /// Replace what a step does, keeping its id.
     #[action]
-    pub fn set_step(
+    pub fn replace_step(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("The step's position, like 0 or 2.then.1")] path: String,
         #[param("What the step does, as JSON with a `step` kind")] step: serde_json::Value,
     ) -> Result<(), Refusal> {
         let kind: StepKind = serde_json::from_value(step)
             .map_err(|error| Refusal::new(format!("not a step: {error}")))?;
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             step_mut(&mut program.steps, &path)
                 .ok_or_else(|| format!("there is no step `{path}`"))?
                 .kind = kind;
@@ -503,16 +491,16 @@ impl Workbench {
 
     /// Bind one argument of an action step, or clear it.
     #[action]
-    pub fn set_argument(
+    pub fn bind_argument(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("The step's position, like 0 or 2.then.1")] path: String,
         #[param("The parameter to bind")] param: String,
         #[param("Where the value comes from, as binding JSON; empty clears it")] binding: String,
     ) -> Result<(), Refusal> {
         let binding = parse_binding(&binding)?;
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             let step = step_mut(&mut program.steps, &path)
                 .ok_or_else(|| format!("there is no step `{path}`"))?;
             let StepKind::Invoke { args, .. } = &mut step.kind else {
@@ -535,10 +523,10 @@ impl Workbench {
     pub fn remove_step(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("The step's position, like 0 or 2.then.1")] path: String,
     ) -> Result<(), Refusal> {
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             let (block, index) = split_path(&path).ok_or_else(|| format!("no step `{path}`"))?;
             let steps = block_mut(&mut program.steps, block)
                 .ok_or_else(|| format!("there is no step `{path}`"))?;
@@ -555,11 +543,11 @@ impl Workbench {
     pub fn move_step(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("The step's position, like 0 or 2.then.1")] path: String,
         #[param("True to move it earlier, false to move it later")] earlier: bool,
     ) -> Result<(), Refusal> {
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             let (block, index) = split_path(&path).ok_or_else(|| format!("no step `{path}`"))?;
             let steps = block_mut(&mut program.steps, block)
                 .ok_or_else(|| format!("there is no step `{path}`"))?;
@@ -583,12 +571,12 @@ impl Workbench {
     pub fn add_input(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         #[param("Name of the input: letters, digits, - or _")] name: String,
         #[param("text, number, integer, boolean, date-time or resource")] kind: String,
     ) -> Result<(), Refusal> {
         let ty = param_type(&kind).ok_or_else(|| Refusal::new(format!("unknown type `{kind}`")))?;
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             if program
                 .inputs
                 .iter()
@@ -608,30 +596,15 @@ impl Workbench {
     pub fn remove_input(
         &mut self,
         cx: &mut ActionCx,
-        draft: Id,
+        draft: &Id,
         name: String,
     ) -> Result<(), Refusal> {
-        edit_program(self, cx, &draft, |program| {
+        edit_program(self, cx, draft, |program| {
             let before = program.inputs.len();
             program.inputs.retain(|input| input.name != name.as_str());
             if program.inputs.len() == before {
                 return Err(format!("there is no input `{name}`"));
             }
-            Ok(())
-        })
-    }
-
-    /// Choose what a finished run reports back, or nothing.
-    #[action]
-    pub fn set_output(
-        &mut self,
-        cx: &mut ActionCx,
-        draft: Id,
-        #[param("Where the result comes from, as binding JSON; empty for none")] binding: String,
-    ) -> Result<(), Refusal> {
-        let binding = parse_binding(&binding)?;
-        edit_program(self, cx, &draft, |program| {
-            program.output = binding;
             Ok(())
         })
     }
@@ -673,6 +646,7 @@ fn param_type(kind: &str) -> Option<ParamType> {
 fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
     let base: String = match kind {
         StepKind::Invoke { action, .. } => action
+            .action
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '-' || c == '_' {

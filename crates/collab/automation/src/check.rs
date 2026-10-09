@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::Value;
+use tilo_actions::ActionKey;
 use tilo_actions::door::ActionDescriptor;
 use tilo_actions::params::ActionParam;
 
@@ -25,9 +26,7 @@ use crate::shortcut::{
 };
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
-use crate::{
-    AGENT_APP_ID, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of,
-};
+use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -157,13 +156,10 @@ fn unused_consents(shortcut: &Shortcut) -> Vec<CheckError> {
     fn reaches(steps: &[Step], consent: &UnattendedConsent) -> bool {
         steps.iter().any(|step| match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
-                action,
-                ..
+                action, resource, ..
             } => {
-                *app_id == consent.app_id
-                    && *action == consent.action
+                (action.app.as_str(), action.action.as_str())
+                    == (consent.app_id.as_str(), consent.action.as_str())
                     && match resource {
                         Selector::Fixed(id) => *id == consent.resource,
                         Selector::FromBinding(_) | Selector::FirstOfKind(_) => true,
@@ -327,11 +323,10 @@ impl Checker<'_> {
     fn step(&mut self, step: &Step, path: &StepPath, scope: &mut Scope) -> Output {
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
                 action,
+                resource,
                 args,
-            } => self.invoke(path, scope, app_id, resource, action, args),
+            } => self.invoke(path, scope, action, resource, args),
             StepKind::Ai { transform, input } => Some(self.ai(path, scope, transform, input)),
             StepKind::If {
                 cond,
@@ -428,9 +423,8 @@ impl Checker<'_> {
         self.invoke(
             path,
             scope,
-            AGENT_APP_ID,
+            &transform.key(),
             &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
-            transform.action(),
             &transform.arguments(input),
         );
         match transform {
@@ -445,11 +439,11 @@ impl Checker<'_> {
         &mut self,
         path: &StepPath,
         scope: &Scope,
-        app_id: &str,
+        key: &ActionKey,
         selector: &Selector,
-        action: &str,
         args: &BTreeMap<String, Binding>,
     ) -> Output {
+        let (app_id, action) = (key.app.as_str(), key.action.as_str());
         let unknown = Some((Ty::Any, None));
         let target = self.selector(selector, scope, path);
         if app_id == SHORTCUTS_APP_ID
@@ -459,7 +453,7 @@ impl Checker<'_> {
             self.fail(path, CheckErrorKind::UnresolvableShortcut);
         }
         let target = target.unwrap_or(Target::Any);
-        let row = self.catalog.find(app_id, target.as_ref(), action);
+        let row = self.catalog.find(key, target.as_ref());
         let Some(descriptor) = row.and_then(|row| row.action.as_ref()) else {
             let resource = match &target {
                 Target::Id(id) => format!("`{id}`"),
@@ -772,11 +766,10 @@ fn shortcut_calls(steps: &[Step], path: &StepPath, out: &mut Vec<(StepPath, Stri
         let path = path.child(index);
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource: Selector::Fixed(resource),
                 action,
+                resource: Selector::Fixed(resource),
                 ..
-            } if app_id == SHORTCUTS_APP_ID && action == SHORTCUT_RUN_ACTION => {
+            } if action.app == SHORTCUTS_APP_ID && action.action == SHORTCUT_RUN_ACTION => {
                 if let Some(id) = shortcut_id_of(resource) {
                     out.push((path, id.to_string()));
                 }

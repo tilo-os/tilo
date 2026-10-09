@@ -7,10 +7,10 @@
 
 use collab_types::{PermissionProfileRule, Scope, Verb};
 use tilo_automation::{
-    AGENT_APP_ID, AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step,
-    StepKind, required_verb,
+    AGENT_TRANSFORM_KIND, ActionCatalog, Binding, ResourceTarget, Selector, Step, StepKind,
+    required_verb,
 };
-use ui::tilo_actions::PermissionRequirement;
+use ui::tilo_actions::{ActionKey, PermissionRequirement};
 
 /// The resources a permission reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,10 +71,7 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
     for step in steps {
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
-                action,
-                ..
+                action, resource, ..
             } => {
                 let target = match resource {
                     Selector::Fixed(id)
@@ -84,13 +81,12 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
                     Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
                     Selector::FromBinding(_) => ResourceTarget::Any,
                 };
-                add(catalog, app_id, target, action, out);
+                add(catalog, action, target, out);
             }
             StepKind::Ai { transform, .. } => add(
                 catalog,
-                AGENT_APP_ID,
+                &transform.key(),
                 ResourceTarget::Kind(AGENT_TRANSFORM_KIND),
-                transform.action(),
                 out,
             ),
             StepKind::If {
@@ -107,12 +103,12 @@ fn collect(steps: &[Step], catalog: &ActionCatalog, out: &mut Vec<Permission>) {
 
 fn add(
     catalog: &ActionCatalog,
-    app_id: &str,
+    key: &ActionKey,
     target: ResourceTarget<'_>,
-    action: &str,
     out: &mut Vec<Permission>,
 ) {
-    let row = catalog.find(app_id, target, action);
+    let (app_id, action) = (key.app.as_str(), key.action.as_str());
+    let row = catalog.find(key, target);
     let descriptor = row.and_then(|row| row.action.as_ref());
     let reach = match target {
         ResourceTarget::Id(id) => Reach::Resource(id.to_owned()),

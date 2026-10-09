@@ -926,9 +926,8 @@ async fn shortcut_step_observes_once_per_change() {
         steps: vec![tilo_automation::Step::new(
             "update",
             tilo_automation::StepKind::Invoke {
-                app_id: "so.tilo.test".into(),
+                action: tilo_actions::ActionKey::new("so.tilo.test", "test.block", "update"),
                 resource: tilo_automation::Selector::Fixed("test:block-a".into()),
-                action: "update".into(),
                 args: std::collections::BTreeMap::new(),
             },
         )],

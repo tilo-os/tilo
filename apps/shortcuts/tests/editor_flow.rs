@@ -196,10 +196,10 @@ impl ActionHost for FakeHost {
             "freeform" => Some(json!({
                 "name": "Note the inbox",
                 "steps": [
-                    {"id": "list", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "list"},
-                    {"id": "note", "step": "invoke", "app_id": NOTES,
-                     "resource": {"fixed": INBOX}, "action": "create",
+                    {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                     "resource": {"fixed": INBOX}},
+                    {"id": "note", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                     "resource": {"fixed": INBOX},
                      "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
                 ],
                 "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}]
@@ -299,7 +299,7 @@ fn every_operation_is_a_published_action() {
     for action in [
         "new-draft",
         "add-step",
-        "set-argument",
+        "bind-argument",
         "remove-step",
         "move-step",
     ] {
@@ -414,10 +414,10 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
                 "nullable": false
             }],
             "steps": [
-                {"id": "list", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "list"},
-                {"id": "create", "step": "invoke", "app_id": NOTES,
-                 "resource": {"fixed": INBOX}, "action": "create",
+                {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": INBOX}},
+                {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": INBOX},
                  "args": {"pinned": {"literal": true}, "title": {"input": "who"}}}
             ],
             "grant": [
@@ -540,8 +540,8 @@ fn with_saved_note() -> FakeHost {
             "description": "Note title", "nullable": false
         }],
         "steps": [
-            {"id": "create", "step": "invoke", "app_id": NOTES,
-             "resource": {"fixed": INBOX}, "action": "create",
+            {"id": "create", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "create"},
+             "resource": {"fixed": INBOX},
              "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
         ]
     }));
