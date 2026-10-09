@@ -100,6 +100,11 @@ impl OwnerCommitService for Governor {
             super::refresh::publish_committed(state, &self.publisher);
             Ok(receipt)
         })();
+        // The broker answers every refusal with one opaque code; keep the
+        // actual reason in the test output.
+        if let Err(error) = &result {
+            eprintln!("receipt governor refused a member audit: {error}");
+        }
         Box::pin(async move { result })
     }
 }
