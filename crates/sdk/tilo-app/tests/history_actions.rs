@@ -10,6 +10,7 @@ use tilo_app::prelude::*;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
+    /// Board name
     pub title: String,
     pub cards: Collection<Card>,
 }
@@ -566,4 +567,16 @@ fn an_agents_edit_is_recorded_as_the_agent_acting_for_its_person() {
     let listed = newest(&mut app);
     assert_eq!(listed["actor"]["kind"], "agent", "{listed}");
     assert_eq!(listed["actor"]["for"], "person:quinten", "{listed}");
+}
+
+#[test]
+fn a_field_edit_without_a_message_is_named_by_the_fields_title() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.invoke(Invoke::edit(&Board::paths().title.replace("Plan")).unwrap())
+        .unwrap();
+    let edited = newest(&mut app);
+    assert_eq!(edited["what"]["did"], "edit", "{edited}");
+    let sentence = edited["sentence"].as_str().unwrap();
+    assert!(sentence.contains("Board name"), "{sentence}");
+    assert!(!sentence.contains("title"), "{sentence}");
 }

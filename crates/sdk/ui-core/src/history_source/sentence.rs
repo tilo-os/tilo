@@ -46,6 +46,10 @@ pub fn step_summary(entry: &ActionContext) -> Option<String> {
 thread_local! {
     /// The labels of the actions this thread's app publishes, by action id:
     /// each with the kind of the resource that publishes it.
+    /// The titles of the fields this thread's app stores, by owner type and
+    /// key.
+    static FIELD_TITLES: std::cell::RefCell<std::collections::HashMap<(String, String), String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static ACTION_LABELS: std::cell::RefCell<std::collections::HashMap<String, Vec<(String, String)>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
@@ -76,10 +80,50 @@ pub fn learn_labels(resources: &[tilo_actions::Resource]) {
     });
 }
 
+/// Remember the titles of the fields `shape` lays out (and those of its
+/// nested records and items), so entries name a field by its title.
+pub fn learn_field_titles(shape: &tilo_resource::Shape) {
+    fn walk(
+        shape: &tilo_resource::Shape,
+        titles: &mut std::collections::HashMap<(String, String), String>,
+        depth: usize,
+    ) {
+        if depth > 16 {
+            return;
+        }
+        match shape {
+            tilo_resource::Shape::Record(fields) => {
+                for field in *fields {
+                    titles.insert(
+                        (field.owner.to_owned(), field.key.to_owned()),
+                        field.title.to_owned(),
+                    );
+                    walk(&field.shape, titles, depth.saturating_add(1));
+                }
+            }
+            tilo_resource::Shape::Collection(item) | tilo_resource::Shape::Keyed(item) => {
+                walk(item, titles, depth.saturating_add(1));
+            }
+            tilo_resource::Shape::Value => {}
+        }
+    }
+    FIELD_TITLES.with(|titles| walk(shape, &mut titles.borrow_mut(), 0));
+}
+
 /// The published labels learned on this thread.
 struct ThreadLabels;
 
 impl tilo_history::Labels for ThreadLabels {
+    fn field(&self, ty: &str, field: &str) -> Option<String> {
+        FIELD_TITLES.with(|titles| {
+            titles
+                .borrow()
+                .get(&(ty.to_owned(), field.to_owned()))
+                .filter(|title| !title.trim().is_empty())
+                .cloned()
+        })
+    }
+
     fn action(&self, key: &tilo_actions::ActionKey) -> Option<String> {
         ACTION_LABELS.with(|labels| {
             let labels = labels.borrow();

@@ -399,6 +399,10 @@ pub(crate) fn build_root<A: ResourceApp>(
     storage: AppStorage,
     hosted: super::settings::Hosted,
 ) -> ResourceRoot<A::Resource> {
+    // History names this app's fields by their titles.
+    if let Some(shape) = <A::Resource as Resource>::shape() {
+        ui_core::history_source::sentence::learn_field_titles(&shape);
+    }
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
         Editing::Live {

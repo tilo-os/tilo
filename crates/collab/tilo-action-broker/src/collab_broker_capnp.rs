@@ -5018,7 +5018,15 @@ impl CapnpBrokerState {
             &offered.1.resource_kind,
             &offered.1.resource_label,
         )
-        .with_app(&offered.0.app_id, &offered.0.app_id);
+        .with_app(&offered.0.app_id, &offered.0.app_id)
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.action,
+            ),
+            [],
+        )));
         if let Some(ambient) = &context {
             receipt_context = receipt_context.enriched_by(ambient);
         }
