@@ -1825,6 +1825,10 @@ fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
 }
 
 fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
+    pump_at_scale(h, event, modifiers, 1.0)
+}
+
+fn pump_at_scale(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers, scale: f64) -> bool {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT.clone();
     let mut focus: Option<NodeId> = None;
@@ -1832,7 +1836,7 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
     h.host.handle_event(
         event,
         &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
+            scale_factor: scale,
             modifiers: &modifiers,
             state: ui::widget::Edits::lend(&mut doc),
             path: &root,
@@ -3385,5 +3389,423 @@ fn people_status_activity_transition_discards_only_the_unpublished_draft() {
     assert!(
         crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
             .is_some()
+    );
+}
+
+fn people_viewport_probe_fixture() -> Harness {
+    let mut h = roster_follow_fixture();
+    adopt_rooms(&h);
+    {
+        let mut state = h.chrome.borrow_mut();
+        state.peer_sync_enabled = true;
+        state
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture room")
+            .collaborators = (0_usize..13)
+            .map(|i| {
+                crate::shell::state::Collaborator::new(
+                    format!("fixture-{i}"),
+                    format!("Participant {}", i.saturating_add(1)),
+                )
+            })
+            .collect();
+    }
+    paint(&mut h);
+    h
+}
+
+#[test]
+fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+    paint(&mut h);
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::End)),
+        Modifiers::default()
+    ));
+    let tree = h.host.collaborators_overlay.accessibility_snapshot();
+    assert!(tree.children.last().expect("Activity").state.focused);
+    assert!(
+        h.host
+            .rect
+            .contains(h.host.collaborators_overlay.activity_rect().center()),
+        "End selects Activity outside the visible output"
+    );
+}
+
+#[test]
+fn people_viewport_probe_keyboard_paging_keeps_a_usable_pager_focus() {
+    let mut h = people_viewport_probe_fixture();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
+    assert_eq!(
+        h.host
+            .collaborators_overlay
+            .key(&Key::Named(NamedKey::Enter), false),
+        Some(CollaboratorsHit::NextPeople),
+        "the fixture selects Next People"
+    );
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    paint(&mut h);
+    let tree = h.host.collaborators_overlay.accessibility_snapshot();
+    assert!(
+        tree.children.iter().any(|node| node.state.focused),
+        "paging drops all keyboard focus, making the next page require restarting navigation"
+    );
+}
+
+#[test]
+fn people_status_pointer_reentry_preserves_the_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let expected = h.host.status_draft.clone();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert_eq!(
+        h.host.status_draft, expected,
+        "clicking the active field must not reload the saved status"
+    );
+    assert!(
+        h.host.status_selection.cursor < expected.len(),
+        "TextInput places the caret at the pointer"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_viewport_keyboard_visits_every_page_and_returns_to_status() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[8]));
+    for page in 1..=4 {
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+        let mut release = key_press(Key::Named(NamedKey::Enter));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+            event.state = ElementState::Released;
+        }
+        assert!(pump(&mut h, &release, mods));
+        paint(&mut h);
+        let tree = h.host.collaborators_overlay.accessibility_snapshot();
+        let focused = tree
+            .children
+            .iter()
+            .position(|node| node.state.focused)
+            .expect("pager focus survives");
+        let rect = h
+            .host
+            .collaborators_overlay
+            .accessibility_rect_for_path(&[focused])
+            .expect("focused target");
+        assert!(h.host.rect.contains(rect.center()));
+        let expected = if page == 4 {
+            CollaboratorsHit::PreviousPeople
+        } else {
+            CollaboratorsHit::NextPeople
+        };
+        assert_eq!(
+            h.host
+                .collaborators_overlay
+                .key(&Key::Named(NamedKey::Enter), false),
+            Some(expected)
+        );
+    }
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(h.host.rect.contains(rect.origin()));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
+}
+
+#[test]
+fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(center), mods));
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    assert!(pump(&mut h, &wheel, mods));
+    let scrolled = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    assert_ne!(initial, scrolled);
+    let result = h
+        .host
+        .apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End);
+    assert!(matches!(
+        result,
+        ui::widget::PrimaryScrollResult::Changed(_) | ui::widget::PrimaryScrollResult::Unchanged(_)
+    ));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(h.host.rect.contains(activity.center()));
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+}
+
+#[test]
+fn people_status_pointer_drag_selection_edits_the_host_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(rect.x1 - 8.0, rect.center().y)),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert_ne!(
+        h.host.status_selection.anchor,
+        h.host.status_selection.cursor
+    );
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café".into())),
+        mods
+    ));
+    assert_eq!(h.host.status_draft, "café");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+}
+
+#[test]
+fn people_status_pointer_places_unicode_caret_at_physical_scale_two() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café👩‍💻".into())),
+        mods
+    ));
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    let point = Point::new(
+        (rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5) * 2.0,
+        rect.center().y * 2.0,
+    );
+    assert!(pump_at_scale(&mut h, &cursor_moved_at(point), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &left_button_pressed(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &left_button_released(), mods, 2.0));
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::collapsed(0)
+    );
+    assert!(pump(&mut h, &key_press(Key::Character("✓".into())), mods));
+    assert_eq!(h.host.status_draft, "✓Reviewing draftcafé👩‍💻");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
+
+#[test]
+fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let rect = h.host.collaborators_overlay.panel_rect();
+    let lane_x = rect.x1 - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter) / 2.0;
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
+        mods
+    ));
+    let scrolled = h
+        .host
+        .primary_vertical_scroll()
+        .expect("drag scrolls People");
+    assert_ne!(scrolled, initial);
+    assert!(
+        h.host
+            .rect
+            .contains(h.host.collaborators_overlay.activity_rect().center())
+    );
+    pump(&mut h, &WindowEvent::Focused(false), mods);
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert_eq!(
+        h.host.primary_vertical_scroll(),
+        Some(scrolled),
+        "focus loss ends the shared scrollbar drag"
+    );
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(h.host.followed_peer.is_none());
+}
+
+#[test]
+fn people_viewport_reopen_scrolls_under_a_stationary_pointer() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    paint(&mut h);
+    pump(&mut h, &cursor_moved_at(center), Modifiers::default());
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    let initial = h
+        .host
+        .primary_vertical_scroll()
+        .expect("People scroll region");
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    assert!(pump(&mut h, &wheel, Modifiers::default()));
+    assert_ne!(
+        h.host.primary_vertical_scroll(),
+        Some(initial),
+        "reopened People must use the host's existing pointer position without waiting for movement"
+    );
+}
+
+#[test]
+fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let rect = h.host.collaborators_overlay.panel_rect();
+    let lane_x = rect.x1 - f64::from(Theme::dark().tokens.metrics.scrollbar_gutter) / 2.0;
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &left_button_pressed(), mods));
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
+    paint(&mut h);
+    let after_resize = h.host.primary_vertical_scroll().expect("resized People");
+    let rect = h.host.collaborators_overlay.panel_rect();
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
+        mods
+    ));
+    assert_eq!(
+        h.host.primary_vertical_scroll(),
+        Some(after_resize),
+        "resize cancels the old thumb drag"
+    );
+    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(h.chrome.borrow().overlays.collaborators);
+    assert!(h.host.followed_peer.is_none());
+}
+
+#[test]
+fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
+    let mut h = people_viewport_probe_fixture();
+    h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+    paint(&mut h);
+    let mods = Modifiers::default();
+    let center = h.host.collaborators_overlay.panel_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(center), mods));
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    assert!(pump(&mut h, &wheel, mods));
+    let deadline = h
+        .host
+        .wake_deadline_sources(Instant::now())
+        .into_iter()
+        .find(|(name, _)| *name == "people")
+        .expect("People contributes its child widget deadline")
+        .1;
+    assert!(
+        deadline.is_some(),
+        "the shared scrollbar fade must wake an otherwise idle compositor"
+    );
+    assert!(
+        !h.host.collaborators_overlay.needs_animation_frame(),
+        "the idle interval before a scroll fade uses a deadline rather than busy frames"
+    );
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Escape)),
+        Modifiers::default()
+    ));
+    paint(&mut h);
+    assert!(h.host.collaborators_overlay.next_wake_deadline().is_none());
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    assert!(
+        h.host
+            .wake_deadline_sources(Instant::now())
+            .into_iter()
+            .find(|(name, _)| *name == "people")
+            .expect("People deadline source")
+            .1
+            .is_none()
     );
 }
