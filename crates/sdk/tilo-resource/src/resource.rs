@@ -863,14 +863,14 @@ fn rooted_edit_spec<R: Resource>(
         ],
         move |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
-                return refused::<R>("missing edit");
+                return refused("missing edit");
             };
             match read(value) {
                 Ok(mut action) => {
                     R::stamp(&mut action, origin_now_ms());
-                    encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
+                    encode::<R>(&action).unwrap_or_else(|error| refused(&error.to_string()))
                 }
-                Err(reason) => refused::<R>(&reason),
+                Err(reason) => refused(&reason),
             }
         },
     )
@@ -1517,15 +1517,14 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
 /// carries the builder's reason.
 pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
     match built {
-        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string())),
-        Err(reason) => refused::<R>(&reason),
+        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused(&error.to_string())),
+        Err(reason) => refused(&reason),
     }
 }
 
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
-pub(crate) fn refused<R: Resource>(reason: &str) -> EncodedAction {
-    let _ = R::ACTION_TYPE;
+pub(crate) fn refused(reason: &str) -> EncodedAction {
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
         payload: reason.as_bytes().to_vec(),
@@ -1540,9 +1539,54 @@ pub(crate) fn refused<R: Resource>(reason: &str) -> EncodedAction {
 /// moment it is taken, so two invocations make two distinct actions.
 pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let encoded =
-        move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
-    let spec = if let Some(prompt) = &decl.content {
+    let encoded: Encoder = Arc::new(move |args| encode_built::<R>(build(args, origin_now_ms())));
+    spec_of_declaration(&decl.meta(), R::KIND, R::ACTION_TYPE, encoded)
+}
+
+/// How a declared action turns arguments into its encoded action.
+type Encoder = Arc<dyn Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync>;
+
+/// What [`declaration_spec`] reads of a declaration besides its build.
+struct DeclMeta<'a> {
+    id: &'static str,
+    label: &'a str,
+    description: Option<&'a String>,
+    params: &'a [ActionParam],
+    kind: ActionKind,
+    field: Option<&'static str>,
+    destructive: bool,
+    result: Option<&'a tilo_actions::ResultSpec>,
+    tags: &'a [String],
+    content: Option<&'a String>,
+}
+
+impl<R: Resource> ActionDecl<R> {
+    fn meta(&self) -> DeclMeta<'_> {
+        DeclMeta {
+            id: self.id,
+            label: &self.label,
+            description: self.description.as_ref(),
+            params: &self.params,
+            kind: self.kind,
+            field: self.field,
+            destructive: self.destructive,
+            result: self.result.as_ref(),
+            tags: &self.tags,
+            content: self.content.as_ref(),
+        }
+    }
+}
+
+/// [`declaration_spec`] past its one generic step: compiled once, not per
+/// resource.
+fn spec_of_declaration(
+    decl: &DeclMeta<'_>,
+    kind: &'static str,
+    action_type: &'static str,
+    encoded: Encoder,
+) -> ActionSpec {
+    let encoded = move |args: &tilo_actions::ActionArgs| encoded(args);
+    let spec = if let Some(prompt) = decl.content {
         let param = ActionParam::required_owned(
             tilo_actions::PROMPTED_PARAM,
             ParamType::Text,
@@ -1550,7 +1594,7 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
         );
         ActionSpec::prompted_content(
             decl.id,
-            decl.label.clone(),
+            decl.label.to_owned(),
             prompt.clone(),
             "content hash",
             ExecutionLocus::ClientLocal,
@@ -1561,7 +1605,7 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
                 )];
                 match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
                     Ok(args) => encoded(&args),
-                    Err(error) => refused::<R>(&error.to_string()),
+                    Err(error) => refused(&error.to_string()),
                 }
             },
         )
@@ -1569,12 +1613,12 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
         // Built when taken, so it reads the clock and mints its ids then; a
         // destructive one is held for confirmation as the same verb of the
         // same kind of record.
-        let domain = format!("{}#{}", R::KIND, decl.id);
+        let domain = format!("{kind}#{}", decl.id);
         ActionSpec::deferred(
             decl.id,
-            decl.label.clone(),
+            decl.label.to_owned(),
             ExecutionLocus::ClientLocal,
-            R::ACTION_TYPE,
+            action_type,
             move || encoded(&tilo_actions::ActionArgs::none()),
         )
         .with_continuation_identity(move |query| match query {
@@ -1586,7 +1630,7 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
                     ),
                     handler: tilo_actions::ContinuationKey::new(
                         "action-type",
-                        [R::ACTION_TYPE.as_bytes()],
+                        [action_type.as_bytes()],
                     ),
                 })
             }
@@ -1595,10 +1639,10 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     } else {
         ActionSpec::typed(
             decl.id,
-            decl.label.clone(),
-            decl.label.clone(),
+            decl.label.to_owned(),
+            decl.label.to_owned(),
             ExecutionLocus::ClientLocal,
-            decl.params.clone(),
+            decl.params.to_vec(),
             encoded,
         )
     };
@@ -1611,16 +1655,16 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     if let Some(field) = decl.field {
         spec = spec.below_field(field);
     }
-    if let Some(description) = &decl.description {
+    if let Some(description) = decl.description {
         spec = spec.with_description(description.clone());
     }
     if decl.destructive {
         spec = spec.destructive();
     }
-    if let Some(result) = &decl.result {
+    if let Some(result) = decl.result {
         spec.contract.result = result.clone();
     }
-    for tag in &decl.tags {
+    for tag in decl.tags {
         if !spec.contract.tags.contains(tag) {
             spec.contract.tags.push(tag.clone());
         }
@@ -1813,14 +1857,14 @@ fn apply_spec<R: Resource>() -> ActionSpec {
         vec![apply_param::<R>()],
         |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
-                return refused::<R>("missing action");
+                return refused("missing action");
             };
             match read_apply::<R>(serde_json::Value::Object(value.clone())) {
                 Ok(mut action) => {
                     R::stamp(&mut action, origin_now_ms());
-                    encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
+                    encode::<R>(&action).unwrap_or_else(|error| refused(&error.to_string()))
                 }
-                Err(reason) => refused::<R>(&reason),
+                Err(reason) => refused(&reason),
             }
         },
     )
@@ -1913,8 +1957,8 @@ fn group_spec<R: Resource>() -> ActionSpec {
         vec![group_param::<R>()],
         |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
             Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
-                .unwrap_or_else(|error| refused::<R>(&error.to_string())),
-            Err(reason) => refused::<R>(&reason),
+                .unwrap_or_else(|error| refused(&error.to_string())),
+            Err(reason) => refused(&reason),
         },
     )
     .with_description(

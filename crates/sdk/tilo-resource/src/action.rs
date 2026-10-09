@@ -841,7 +841,7 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         if let Some(edit) = self.operation.edit() {
             return crate::describe::edit(doc, shape, edit);
         }
-        let value = serde_json::to_value(&self.operation).ok()?;
+        let value = crate::__private::json_via_bytes(&self.operation).ok()?;
         crate::describe::verb(doc, shape, O::KIND, &value)
     }
 }
@@ -903,27 +903,11 @@ impl<R, A: Serialize> ActionRef<R, A> {
         input: &A,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let id = self.id;
-        let value = serde_json::to_value(input).map_err(|error| format!("`{id}`: {error}"))?;
-        match (self.params, value) {
-            // An absent option is left out, as a parameter not given.
-            ([], serde_json::Value::Object(fields)) => Ok(fields
-                .into_iter()
-                .filter(|(_, value)| !value.is_null())
-                .collect()),
-            ([], serde_json::Value::Null) => Ok(serde_json::Map::new()),
-            ([], other) => Err(format!("`{id}` takes named arguments, not `{other}`")),
-            ([single], value) => Ok(serde_json::Map::from_iter([((*single).to_owned(), value)])),
-            (names, serde_json::Value::Array(values)) if values.len() == names.len() => Ok(names
-                .iter()
-                .map(|name| (*name).to_owned())
-                .zip(values)
-                .collect()),
-            (names, other) => Err(format!(
-                "`{id}` takes {} arguments ({}), not `{other}`",
-                names.len(),
-                names.join(", ")
-            )),
-        }
+        // Through bytes: the serializer writing recorded actions serves
+        // here too, rather than one more per parameter type.
+        let value =
+            crate::__private::json_via_bytes(input).map_err(|error| format!("`{id}`: {error}"))?;
+        bind_arguments(id, self.params, value)
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
@@ -955,6 +939,35 @@ impl<R, A: Serialize> ActionRef<R, A> {
             Some(refusal) => Err(refusal),
             None => Ok(invoke),
         }
+    }
+}
+
+/// The arguments `value` (an input in JSON form) binds to under the
+/// declared parameter names: one compiled copy for every action reference.
+fn bind_arguments(
+    id: &str,
+    params: &[&str],
+    value: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match (params, value) {
+        // An absent option is left out, as a parameter not given.
+        ([], serde_json::Value::Object(fields)) => Ok(fields
+            .into_iter()
+            .filter(|(_, value)| !value.is_null())
+            .collect()),
+        ([], serde_json::Value::Null) => Ok(serde_json::Map::new()),
+        ([], other) => Err(format!("`{id}` takes named arguments, not `{other}`")),
+        ([single], value) => Ok(serde_json::Map::from_iter([((*single).to_owned(), value)])),
+        (names, serde_json::Value::Array(values)) if values.len() == names.len() => Ok(names
+            .iter()
+            .map(|name| (*name).to_owned())
+            .zip(values)
+            .collect()),
+        (names, other) => Err(format!(
+            "`{id}` takes {} arguments ({}), not `{other}`",
+            names.len(),
+            names.join(", ")
+        )),
     }
 }
 

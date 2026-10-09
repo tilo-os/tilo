@@ -255,8 +255,33 @@ impl<R, T> Serialize for Path<R, T> {
 
 impl<'de, R, T> Deserialize<'de> for Path<R, T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<Segment>::deserialize(deserializer).map(Self::from_segments)
+        let value = serde_json::Value::deserialize(deserializer)?;
+        segments_from_json(value)
+            .map(Self::from_segments)
+            .map_err(serde::de::Error::custom)
     }
+}
+
+// Paths and edits are decoded in every crate naming a record type, and serde
+// instantiates a generic decoder per calling crate. Going through JSON values
+// keeps one decoder, compiled here.
+#[inline(never)]
+fn segments_from_json(value: serde_json::Value) -> Result<Vec<Segment>, serde_json::Error> {
+    Vec::<Segment>::deserialize(value)
+}
+
+#[inline(never)]
+fn edit_from_json(value: serde_json::Value) -> Result<(Vec<Segment>, EditOp), serde_json::Error> {
+    use serde::de::Error as _;
+    let serde_json::Value::Object(mut map) = value else {
+        return Err(serde_json::Error::custom("an edit is a JSON object"));
+    };
+    let path = map
+        .remove("path")
+        .ok_or_else(|| serde_json::Error::missing_field("path"))?;
+    let path = segments_from_json(path)?;
+    let op = EditOp::deserialize(serde_json::Value::Object(map))?;
+    Ok((path, op))
 }
 
 /// Values a path can [`set`](Path::set) whole: scalars, enums, text, short
@@ -971,48 +996,57 @@ impl<R> PartialEq for Edit<R> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct EditForm {
-    path: Vec<Segment>,
-    #[serde(flatten)]
-    op: EditOp,
-}
-
 impl<R> Serialize for Edit<R> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        EditForm {
-            path: self.path.clone(),
-            op: self.op.clone(),
-        }
-        .serialize(serializer)
+        edit_to_json(&self.path, &self.op).serialize(serializer)
     }
+}
+
+#[inline(never)]
+fn edit_to_json(path: &[Segment], op: &EditOp) -> serde_json::Value {
+    let mut form = serde_json::to_value(op).expect("an edit op is JSON");
+    if let serde_json::Value::Object(map) = &mut form {
+        map.insert(
+            "path".into(),
+            serde_json::to_value(path).expect("a path is JSON"),
+        );
+    }
+    form
 }
 
 impl<'de, R> Deserialize<'de> for Edit<R> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        EditForm::deserialize(deserializer).map(|form| Self::new(form.path, form.op))
+        let value = serde_json::Value::deserialize(deserializer)?;
+        edit_from_json(value)
+            .map(|(path, op)| Self::new(path, op))
+            .map_err(serde::de::Error::custom)
     }
 }
 
 impl<R> crate::JsonSchema for Edit<R> {
     fn json_schema() -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "description": "A field edit: the path from the record's root (fields by name, items by id) and an operation the field's type supports",
-            "properties": {
-                "path": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                },
-                "op": {"type": "string", "enum": [
-                    "set", "splice", "replace", "add", "insert", "remove", "insert-item",
-                    "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
-                    "insert-column", "remove-row", "remove-column", "settle", "rich",
-                ]},
-            },
-            "required": ["path", "op"],
-        })
+        edit_schema()
     }
+}
+
+#[inline(never)]
+fn edit_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": "A field edit: the path from the record's root (fields by name, items by id) and an operation the field's type supports",
+        "properties": {
+            "path": {
+                "type": "array",
+                "items": {"type": "object"},
+            },
+            "op": {"type": "string", "enum": [
+                "set", "splice", "replace", "add", "insert", "remove", "insert-item",
+                "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
+                "insert-column", "remove-row", "remove-column", "settle", "rich",
+            ]},
+        },
+        "required": ["path", "op"],
+    })
 }
 
 /// The paths of a type whose values are edited only as a whole or through

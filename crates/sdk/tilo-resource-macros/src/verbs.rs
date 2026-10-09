@@ -1099,6 +1099,24 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .prepare
             .as_ref()
             .map(|path| quote!(#path(&mut params)?;));
+        // Without a `prepare` hook, the arguments decode as a recorded
+        // action does: one shared decoder per resource, not one per verb.
+        let build_body = match &prepare {
+            None => {
+                quote!(#krate::__private::build_stamped::<#action_enum>(#id, arguments, now_ms))
+            }
+            Some(prepare) => quote! {
+                let mut params: #params_mod::#variant = #krate::__private::serde_json::from_value(
+                    #krate::__private::serde_json::Value::Object(arguments),
+                )
+                .map_err(|error| ::std::string::ToString::to_string(&error))?;
+                #prepare
+                ::core::result::Result::Ok(#krate::Stamped {
+                    operation: #action_enum::#variant(params),
+                    now_ms,
+                })
+            },
+        };
         let (collects, prompted) =
             match verb.params.iter().find(|param| param.role == Role::Content) {
                 Some(param) => {
@@ -1141,16 +1159,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     let mut arguments = args.to_json();
                     let _ = &mut arguments;
                     #prompted
-                    #[allow(unused_mut, reason = "a verb with a `prepare` hook resolves its arguments")]
-                    let mut params: #params_mod::#variant = #krate::__private::serde_json::from_value(
-                        #krate::__private::serde_json::Value::Object(arguments),
-                    )
-                    .map_err(|error| ::std::string::ToString::to_string(&error))?;
-                    #prepare
-                    ::core::result::Result::Ok(#krate::Stamped {
-                        operation: #action_enum::#variant(params),
-                        now_ms,
-                    })
+                    #build_body
                 },
             )
             #describe

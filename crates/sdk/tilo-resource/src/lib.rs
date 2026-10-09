@@ -429,6 +429,37 @@ pub mod __private {
             .collect()
     }
 
+    /// `value` in its JSON form, written as bytes and read back: the
+    /// byte serializer every recorded action already has serves, rather
+    /// than one more per type for `serde_json::to_value`.
+    ///
+    /// # Errors
+    /// Why `value` does not serialize.
+    pub fn json_via_bytes<T: serde::Serialize + ?Sized>(
+        value: &T,
+    ) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::to_vec(value).and_then(|bytes| serde_json::from_slice(&bytes))
+    }
+
+    /// The action `id` with `arguments`, stamped `now_ms`, decoded as a
+    /// recorded action is (`{"op": {"action", "args"}, "at"}` from bytes):
+    /// one decoder per resource serves building and replaying.
+    ///
+    /// # Errors
+    /// Why the arguments do not decode as the action's parameters.
+    pub fn build_stamped<O: serde::de::DeserializeOwned>(
+        id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        now_ms: i64,
+    ) -> Result<crate::Stamped<O>, String> {
+        let wire = serde_json::json!({
+            "op": { "action": id, "args": arguments },
+            "at": now_ms,
+        });
+        let bytes = serde_json::to_vec(&wire).map_err(|error| error.to_string())?;
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+    }
+
     pub use crate::resource::default_search;
 
     /// The label an item is offered under: its `#[model(label)]`, else its
