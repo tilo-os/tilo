@@ -662,9 +662,7 @@ impl PairingHandshake {
             PairingBackend::Memory(_) => true,
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                let now = crate::time::wall()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(u64::MAX, |duration| duration.as_secs());
+                let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
                 now < backend.expires_unix && !backend.root.join("cancelled").exists()
             }
             PairingBackend::Remote { .. } => false,
@@ -795,9 +793,7 @@ impl PairingHandshake {
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
     ) -> Option<PairingChannelState> {
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(u64::MAX, |duration| duration.as_secs());
+        let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
             return None;
         }
@@ -814,9 +810,7 @@ impl PairingHandshake {
         nonce: &[u8; 16],
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(u64::MAX, |duration| duration.as_secs());
+        let now = crate::time::try_unix_now().unwrap_or(u64::MAX);
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
             return false;
         }
@@ -1608,9 +1602,7 @@ impl InviteRedemptionAuthority {
         // across processes. `File`'s OS lock is released automatically after
         // a crash, unlike a sentinel lockfile.
         let _issue_lock = self.issue_lock()?;
-        let now = crate::time::wall()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |value| value.as_secs());
+        let now = crate::time::unix_now();
         for entry in std::fs::read_dir(&self.root)?
             .filter_map(Result::ok)
             .take(512)

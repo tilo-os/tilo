@@ -280,7 +280,7 @@ impl HistoryHost {
             review: None,
             review_request: None,
             review_node: None,
-            clock: review::unix_now,
+            clock: crate::time::try_unix_now,
             controller,
             files: None,
             retired_files: vec![],
