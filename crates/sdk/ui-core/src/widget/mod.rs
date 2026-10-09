@@ -1616,6 +1616,26 @@ pub trait Widget {
         None
     }
 
+    /// Whether the original focused editor accepts line feeds as text. This is
+    /// field policy, never inferred from a multiline accessibility presentation.
+    /// Wrappers inherit only one unambiguous child at their active IME caret.
+    fn ime_multiline(&self) -> bool {
+        let Some(caret) = self.ime_cursor_rect() else {
+            return false;
+        };
+        let mut matching = 0_usize;
+        let mut multiline = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == Some(caret)
+                && child.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+            {
+                matching = matching.saturating_add(1);
+                multiline = child.ime_multiline();
+            }
+        });
+        matching == 1 && multiline
+    }
+
     /// Opaque local invalidation of deferred input, including selection edits
     /// that leave the caret rectangle unchanged. The host supplies an ephemeral
     /// secret key; no text or selection is retained in the resulting digest.

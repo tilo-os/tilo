@@ -752,6 +752,10 @@ impl Widget for CodeEditor {
         self.inner.ime_purpose()
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.ime_purpose().is_some() && self.inner.ime_multiline()
+    }
+
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_purpose()?;
         self.inner.ime_edit_fingerprint(key)

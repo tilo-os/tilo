@@ -113,6 +113,7 @@ pub struct WindowState {
 
     /// The current IME purpose.
     ime_purpose: ImePurpose,
+    ime_multiline: bool,
 
     /// The text inputs observed on the window.
     text_inputs: Vec<ZwpTextInputV3>,
@@ -212,6 +213,7 @@ impl WindowState {
             has_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
+            ime_multiline: false,
             last_configure: None,
             max_inner_size: None,
             min_inner_size: MIN_WINDOW_SIZE,
@@ -1082,7 +1084,7 @@ impl WindowState {
             applied = true;
             if allowed {
                 text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose);
+                text_input.set_content_type_by_purpose(self.ime_purpose, self.ime_multiline);
             } else {
                 text_input.disable();
             }
@@ -1110,7 +1112,7 @@ impl WindowState {
         self.ime_purpose = purpose;
 
         for text_input in &self.text_inputs {
-            text_input.set_content_type_by_purpose(purpose);
+            text_input.set_content_type_by_purpose(purpose, self.ime_multiline);
             text_input.commit();
         }
     }
@@ -1118,6 +1120,21 @@ impl WindowState {
     /// Get the IME purpose.
     pub fn ime_purpose(&self) -> ImePurpose {
         self.ime_purpose
+    }
+
+    pub fn set_ime_multiline(&mut self, multiline: bool) {
+        if self.ime_multiline == multiline {
+            return;
+        }
+        self.ime_multiline = multiline;
+        for text_input in &self.text_inputs {
+            text_input.set_content_type_by_purpose(self.ime_purpose, multiline);
+            text_input.commit();
+        }
+    }
+
+    pub fn ime_multiline(&self) -> bool {
+        self.ime_multiline
     }
 
     /// Set the scale factor for the given window.

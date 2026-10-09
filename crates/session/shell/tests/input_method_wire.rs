@@ -607,6 +607,7 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
@@ -651,6 +652,7 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
@@ -860,16 +862,61 @@ fn public_aot_transcripts_reach_native_notes_with_selection_undo_and_redo() {
 }
 
 fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
-    use shell::compositor::shell_text_input::{FieldRequest, ShellTextInput};
-    let mut h = Harness::new();
-    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
-    let field = FieldRequest {
+    let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
         height: 24,
     };
+    let committed = receive_native_dictation(drafts, final_text, field);
+    assert_native_field_selection_and_undo(&committed);
+}
+
+#[test]
+fn native_multiline_intent_reaches_dictation_through_the_existing_bridge() {
+    use ui::Widget;
+    struct ParagraphField(ui::widget::TextInput);
+    impl ui::widget::Decorator for ParagraphField {
+        type Inner = ui::widget::TextInput;
+        fn inner(&self) -> &Self::Inner {
+            &self.0
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.0
+        }
+    }
+    let mut input = ui::widget::TextInput::local().multiline(true);
+    input.set_focus(true);
+    let mut decorated = ParagraphField(ui::widget::TextInput::local().multiline(true));
+    Widget::set_focus(&mut decorated, true);
+    let mut editor = ui::widget::CodeEditor::local();
+    editor.set_focused(true);
+    editor.set_rect(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 200.0));
+    let paragraph = "Premier paragraphe.\n\nDeuxième paragraphe 👋";
+    for widget in [
+        &input as &dyn Widget,
+        &decorated as &dyn Widget,
+        &editor as &dyn Widget,
+    ] {
+        let field = ui::ime::ImeWindowState::from_widget(widget).unwrap();
+        assert!(field.multiline);
+        assert_eq!(
+            receive_native_dictation(&["Provisional\nparagraph".into()], paragraph, field),
+            paragraph
+        );
+    }
+}
+
+fn receive_native_dictation(
+    drafts: &[String],
+    final_text: &str,
+    field: shell::compositor::shell_text_input::FieldRequest,
+) -> String {
+    use shell::compositor::shell_text_input::ShellTextInput;
+    let mut h = Harness::new();
+    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
     let deadline = tilo_test_env::hang_deadline();
     while !proxy.holds_focus(&h.state) {
         assert!(
@@ -933,7 +980,6 @@ fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
         }
     }
     assert_eq!(commits, [final_text]);
-    assert_native_field_selection_and_undo(commits.first().unwrap());
     assert!(
         h.state
             .check_dictation(id, std::time::Instant::now())
@@ -944,6 +990,7 @@ fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
     assert!(!proxy.holds_focus(&h.state));
     drop(proxy);
     drop(h);
+    commits.into_iter().next().unwrap()
 }
 
 /// Use the event produced by the actual Wayland bridge, then Notes' owned
@@ -1112,6 +1159,7 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
     let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
     let field = FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,

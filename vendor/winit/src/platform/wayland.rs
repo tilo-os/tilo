@@ -121,6 +121,9 @@ pub type WaylandPresentationObserver = Box<dyn FnOnce(WaylandPresentation) + Sen
 ///
 /// [`Window`]: crate::window::Window
 pub trait WindowExtWayland {
+    /// Publish whether the original IME field accepts line feeds as text.
+    /// Password and terminal purposes never gain the multiline hint.
+    fn set_ime_multiline(&self, multiline: bool);
     /// Publish a private, ephemeral equality stamp for the original editable field.
     /// An empty stamp disables admission. Does not grant microphone or IME ownership.
     fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool;
@@ -167,6 +170,12 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn set_ime_multiline(&self, multiline: bool) {
+        match &self.window {
+            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
+        }
+    }
     fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
         match &self.window {
             #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => false,

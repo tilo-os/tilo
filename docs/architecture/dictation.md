@@ -81,8 +81,12 @@ is for the trusted local speech service; it is not an unprivileged socket operat
   local metadata; recognition results cannot enable it. Changing the field's
   content hint invalidates the session. Single-line fields reject line feeds;
   every field rejects carriage returns, tabs, escapes, NUL and other controls.
-  Native and browser field metadata still need to propagate multiline intent
-  before their paragraph journeys can be qualified. Spoken paragraph commands
+  Shared TextInput and CodeEditor now publish multiline intent through both
+  the shell bridge and native Wayland window bridge. Wrappers inherit it only
+  from one unambiguous active child at their IME caret; no text value or
+  accessibility presentation is read for this policy. Block-document and
+  deferred browser fields still need their own original-subfield policy before
+  their paragraph journeys can be qualified. Spoken paragraph commands
   remain unbuilt; multiline never makes a Terminal-purpose field eligible.
 - Oversized finals remain under their original session ID in zeroizing memory
   for ten minutes. The local controls visibly offer Copy transcript and Discard
@@ -213,6 +217,26 @@ only under the captured field policy, rejects CR/ESC/NUL and single-line LF,
 and observes every child being reaped. Four focused actor tests and seventeen
 dictation wire tests passed on 2026-10-09. These synthetic peers do not establish
 recognizer-generated paragraph commands or native/browser multiline propagation.
+
+The subsequent native intent extension adds a boolean to the existing IME
+window state and a Wayland window extension that forwards it as the standard
+Multiline hint with Normal purpose. Password and Terminal purpose never gain
+that hint. Native windows resend it on text-input enter and enable; shell
+fields include it in their committed content type. No toolkit crate movement,
+new text control, microphone grant or accessibility-value clone is introduced.
+The browser runtime's semantics fixture explicitly remains single-line; a DOM
+lease must establish browser multiline intent before that path is admitted.
+
+Native-intent qualification on 2026-10-09 passed the real shell Wayland bridge
+with plain TextInput, decorated TextInput and CodeEditor policy, literal Unicode
+paragraph delivery once and zero provisional edits. The actual shared TextInput
+IME-event test replaces a selection without firing its submit signal and checks
+single-line, blurred and password intent. The existing decorator forwarding
+contract, three shell content-type tests and all five production-output editing
+regressions pass. The final required remote shell all-test compile passed in
+1m05s. A live standalone winit window, browser paragraph edit, paragraph-only
+input, paragraph-specific undo and microphone capture were not run by this
+increment; those remain separate journeys.
 
 The bookmarks behind this research were identified on 2026-10-07 from the
 owner's X bookmarks (research comment on issue #3543). The candidates below are

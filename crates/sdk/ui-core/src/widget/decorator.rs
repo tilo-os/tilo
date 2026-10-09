@@ -514,6 +514,10 @@ pub trait Decorator {
         self.inner().ime_purpose()
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.inner().ime_multiline()
+    }
+
     fn presented(&self) -> bool {
         self.inner().presented()
     }
@@ -1150,6 +1154,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         Decorator::ime_purpose(self)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        Decorator::ime_multiline(self)
     }
 
     fn presented(&self) -> bool {

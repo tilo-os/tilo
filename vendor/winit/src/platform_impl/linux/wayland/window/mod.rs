@@ -659,6 +659,10 @@ impl Window {
         self.window_state.lock().unwrap().set_ime_purpose(purpose);
     }
 
+    pub fn set_ime_multiline(&self, multiline: bool) {
+        self.window_state.lock().unwrap().set_ime_multiline(multiline);
+    }
+
     #[inline]
     pub fn focus_window(&self) {}
 

@@ -281,7 +281,7 @@ impl ShellTextInput {
             let _ = self.conn.flush();
             return;
         };
-        let (hint, purpose) = content_type(field.purpose);
+        let (hint, purpose) = content_type(field.purpose, field.multiline);
         if self.enabled.is_none() {
             text_input.enable();
         }
@@ -354,6 +354,7 @@ impl Drop for ShellTextInput {
 /// nothing from it.
 fn content_type(
     purpose: winit::window::ImePurpose,
+    multiline: bool,
 ) -> (
     zwp_text_input_v3::ContentHint,
     zwp_text_input_v3::ContentPurpose,
@@ -365,6 +366,9 @@ fn content_type(
             ContentPurpose::Password,
         ),
         winit::window::ImePurpose::Terminal => (ContentHint::None, ContentPurpose::Terminal),
+        winit::window::ImePurpose::Normal if multiline => {
+            (ContentHint::Multiline, ContentPurpose::Normal)
+        }
         _ => (ContentHint::None, ContentPurpose::Normal),
     }
 }
@@ -491,13 +495,33 @@ mod tests {
     #[test]
     fn a_password_field_asks_for_the_hidden_password_layout() {
         use zwp_text_input_v3::{ContentHint, ContentPurpose};
-        let (hint, purpose) = content_type(winit::window::ImePurpose::Password);
+        let (hint, purpose) = content_type(winit::window::ImePurpose::Password, false);
         assert_eq!(purpose, ContentPurpose::Password);
         assert!(hint.contains(ContentHint::HiddenText | ContentHint::SensitiveData));
         assert_eq!(
-            content_type(winit::window::ImePurpose::Normal),
+            content_type(winit::window::ImePurpose::Normal, false),
             (ContentHint::None, ContentPurpose::Normal)
         );
+    }
+
+    #[test]
+    fn multiline_hint_never_changes_password_or_terminal_purpose() {
+        use zwp_text_input_v3::{ContentHint, ContentPurpose};
+        assert_eq!(
+            content_type(winit::window::ImePurpose::Normal, true),
+            (ContentHint::Multiline, ContentPurpose::Normal)
+        );
+        for purpose in [
+            winit::window::ImePurpose::Password,
+            winit::window::ImePurpose::Terminal,
+        ] {
+            assert_eq!(content_type(purpose, true), content_type(purpose, false));
+            assert!(
+                !content_type(purpose, true)
+                    .0
+                    .contains(ContentHint::Multiline)
+            );
+        }
     }
 
     #[test]
