@@ -17,6 +17,9 @@ pub mod relay;
 pub mod live;
 
 #[cfg(feature = "relay")]
+mod session_authority;
+
+#[cfg(feature = "relay")]
 pub mod client;
 
 /// `at + age`, or `at` when the clock cannot represent the sum: an

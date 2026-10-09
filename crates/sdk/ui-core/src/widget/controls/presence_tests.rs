@@ -169,3 +169,43 @@ fn presence_preserves_custom_capability_inventory_fallback() {
         );
     }
 }
+
+#[test]
+fn action_inventory_matches_full_inventory_without_semantic_allocations() {
+    let calls = Rc::new(Cell::new(0));
+    let root = Column::new()
+        .push(Box::new(semantic(Rc::clone(&calls))))
+        .push(Box::new(action_button()));
+    let expected = control_action_bindings(&root)
+        .into_iter()
+        .filter(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+        .collect::<Vec<_>>();
+    assert!(!expected.is_empty());
+    calls.set(0);
+    assert_eq!(action_control_bindings(&root), expected);
+    assert_eq!(calls.get(), 0);
+    let mut private = PrivateProducer {
+        inner: Text::new("Private control"),
+        active: false,
+    };
+    for active in [true, false, true] {
+        private.active = active;
+        let expected = control_action_bindings(&private)
+            .into_iter()
+            .filter(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(action_control_bindings(&private), expected);
+    }
+    let mut exposure = Exposure {
+        inner: action_button(),
+        exposed: true,
+    };
+    for exposed in [true, false, true] {
+        exposure.exposed = exposed;
+        let expected = control_action_bindings(&exposure)
+            .into_iter()
+            .filter(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(action_control_bindings(&exposure), expected);
+    }
+}

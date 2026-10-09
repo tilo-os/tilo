@@ -186,18 +186,29 @@ impl Widget for SemanticCountingPublisher {
     }
 }
 
+/// One counted inventory read: `Publisher`'s resources while `visible`,
+/// listed twice when `duplicate`.
+fn counted_resources(
+    counts: &[Cell<usize>; 2],
+    visible: &Cell<bool>,
+    duplicate: bool,
+    doc: &AutoCommit,
+) -> Vec<Resource> {
+    counts[0].set(counts[0].get() + 1);
+    let mut resources = if visible.get() {
+        crate::resources::PublishesResources::resources(&Publisher, doc)
+    } else {
+        Vec::new()
+    };
+    if duplicate {
+        resources.extend(resources.clone());
+    }
+    resources
+}
+
 impl crate::resources::PublishesResources for SemanticCountingPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -376,17 +387,8 @@ impl Widget for InventoryOnlyPublisher {
 }
 
 impl crate::resources::PublishesResources for InventoryOnlyPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
@@ -453,17 +455,8 @@ impl Widget for FastInventoryPublisher {
 }
 
 impl crate::resources::PublishesResources for FastInventoryPublisher {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        self.counts[0].set(self.counts[0].get() + 1);
-        let mut resources = if self.visible.get() {
-            Publisher.resources(_doc)
-        } else {
-            Vec::new()
-        };
-        if self.duplicate {
-            resources.extend(resources.clone());
-        }
-        resources
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        counted_resources(&self.counts, &self.visible, self.duplicate, doc)
     }
 }
 
