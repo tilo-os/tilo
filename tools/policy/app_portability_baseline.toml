@@ -45,9 +45,6 @@ D2 = 3
 D1 = 2
 D2 = 3
 
-[apps.db-client]
-D2 = 1
-
 [apps.disks]
 D1 = 2
 D2 = 3
@@ -85,9 +82,6 @@ D2 = 2
 [apps.mail]
 D1 = 1
 D2 = 9
-
-[apps.maps]
-D2 = 2
 
 [apps.monitor]
 D1 = 2
