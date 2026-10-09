@@ -856,11 +856,21 @@ impl<R> Edit<R> {
     where
         R: Model,
     {
-        match self.op {
-            EditOp::RemoveItem { .. } if R::SHAPE.removal_asks(&self.path) => {
-                tilo_actions::RiskLevel::Destructive
-            }
-            _ => tilo_actions::RiskLevel::Low,
+        use tilo_action_policy::edits::{EditStep, field_edit_asks};
+        let steps: Vec<EditStep<'_>> = self
+            .path
+            .iter()
+            .map(|segment| match segment {
+                Segment::Field(key) => EditStep::Field(key),
+                Segment::Item(_) | Segment::Key(_) | Segment::Cell { .. } => EditStep::Item,
+            })
+            .collect();
+        let quiet = R::SHAPE.quiet_removals();
+        let quiet: Vec<&str> = quiet.iter().map(String::as_str).collect();
+        if field_edit_asks(self.op.name(), &steps, &quiet) {
+            tilo_actions::RiskLevel::Destructive
+        } else {
+            tilo_actions::RiskLevel::Low
         }
     }
 

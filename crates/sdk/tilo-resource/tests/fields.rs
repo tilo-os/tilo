@@ -217,6 +217,57 @@ fn removing_an_item_by_field_edit_asks_unless_the_collection_is_quiet() {
     assert!(state.notes.is_empty() && state.drafts.is_empty());
 }
 
+/// A door without the app's code — the broker, a relay — decides from the
+/// published field edit alone, and as the app does: only removing an item of
+/// a collection not marked quiet asks.
+#[test]
+fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
+    use tilo_actions::ConfirmationPolicy;
+    let board = Replica::<Board>::new();
+    let published = board.published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let paths = Board::paths();
+    let note = Id::from_raw("n");
+    let door = |edit: &dyn erased_edit::Encode| {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({ "edit": edit.encode() })
+        );
+        spec.contract.confirmation_for_argument(Some(&argument))
+    };
+    assert_eq!(
+        door(&paths.notes.remove(&note)),
+        ConfirmationPolicy::Confirm
+    );
+    assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
+    assert_eq!(
+        door(&paths.title.set("Plan".to_owned())),
+        ConfirmationPolicy::None
+    );
+    assert_eq!(
+        spec.contract.confirmation_for_argument(Some("not an edit")),
+        ConfirmationPolicy::Confirm,
+        "an argument nobody can read asks"
+    );
+}
+
+/// The JSON form of an edit, whatever record it is of.
+mod erased_edit {
+    pub trait Encode {
+        fn encode(&self) -> serde_json::Value;
+    }
+    impl<R> Encode for tilo_resource::Edit<R> {
+        fn encode(&self) -> serde_json::Value {
+            serde_json::to_value(self).unwrap()
+        }
+    }
+}
+
 #[test]
 fn a_path_names_the_object_its_value_is_stored_in() {
     let mut board = Replica::<Board>::new();

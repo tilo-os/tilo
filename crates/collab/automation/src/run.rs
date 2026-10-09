@@ -686,7 +686,15 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         bound: &ActionArgs,
         granted: &StepGrant,
     ) -> Result<Option<Confirmation>, StepFailure> {
-        let policy = match descriptor.contract.advertised_confirmation() {
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(bound.to_json())
+        );
+        let policy = match descriptor
+            .contract
+            .confirmation_for_argument(Some(&argument))
+        {
             ConfirmationPolicy::None if granted.answer == Answer::Ask => {
                 ConfirmationPolicy::Confirm
             }

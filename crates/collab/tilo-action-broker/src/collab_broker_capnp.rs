@@ -887,15 +887,15 @@ fn refused(
     }
 }
 
-/// Whether `evidence` is what `offered`'s confirmation policy asks for.
-/// Minting the grant that binds it to one delivery is
+/// Whether `evidence` is what the confirmation `policy` asks for. Minting
+/// the grant that binds it to one delivery is
 /// [`CapnpBrokerState::confirmation_token`]'s job.
 fn confirmation_satisfied(
-    offered: &PublishedAction,
+    policy: &tilo_actions::ConfirmationPolicy,
     evidence: Option<&tilo_actions::remote::Confirmation>,
 ) -> bool {
     use tilo_actions::remote::Confirmation;
-    match (&offered.contract.advertised_confirmation(), evidence) {
+    match (policy, evidence) {
         (tilo_actions::ConfirmationPolicy::None, _)
         | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => true,
         (
@@ -5604,16 +5604,16 @@ impl CapnpBrokerState {
             _ => false,
         };
         let own = actor.direct().then_some(evidence).flatten();
-        if matches!(
-            offered.contract.advertised_confirmation(),
-            tilo_actions::ConfirmationPolicy::None
-        ) {
+        // Decided from the arguments, without the app's code: a field edit
+        // asks only when it removes what a person may want back.
+        let policy = offered.contract.confirmation_for_argument(argument);
+        if matches!(policy, tilo_actions::ConfirmationPolicy::None) {
             // A confirmation given anyway answers the room's ask, if the
             // grants ask; admission decides whether they do.
             if !witnessed && !matches!(own, Some(Confirmation::Confirmed)) {
                 return Ok(None);
             }
-        } else if !witnessed && !confirmation_satisfied(offered, own) {
+        } else if !witnessed && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let unavailable = || ActionHostError::Unavailable {

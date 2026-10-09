@@ -745,7 +745,7 @@ fn edit_paths(
 /// The published spec of [`FIELD_EDIT`].
 fn field_edit_spec<R: Resource>() -> ActionSpec {
     rooted_edit_spec::<R>(
-        Vec::new(),
+        (Vec::new(), R::shape()),
         edit_schema::<R>(),
         format!("Edit a {} field", R::LABEL),
         "The path of the field from the record's root, and the operation",
@@ -806,7 +806,7 @@ pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<Ac
     }
     let schema = described_edit::<R>(&alternatives, &ops);
     Some(rooted_edit_spec::<R>(
-        prefix,
+        (prefix, Some(shape)),
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",
@@ -815,6 +815,29 @@ pub fn field_edit_spec_at<R: Resource>(prefix: Vec<crate::Segment>) -> Option<Ac
 
 /// The field edit at paths under `prefix`, described by `schema`.
 fn rooted_edit_spec<R: Resource>(
+    (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
+    schema: serde_json::Value,
+    label: String,
+    description: &'static str,
+) -> ActionSpec {
+    let mut spec = edit_spec::<R>(prefix, schema, label, description);
+    // Any door reads the edit without this record's code: it is a field
+    // edit, and these collections' removals ask nothing.
+    spec.contract
+        .tags
+        .push(tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned());
+    if let Some(root) = root {
+        spec.contract.tags.extend(
+            root.quiet_removals()
+                .into_iter()
+                .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
+        );
+    }
+    spec
+}
+
+/// The field edit at paths under `prefix`, described by `schema`.
+fn edit_spec<R: Resource>(
     prefix: Vec<crate::Segment>,
     schema: serde_json::Value,
     label: String,

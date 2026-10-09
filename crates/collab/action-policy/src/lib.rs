@@ -16,6 +16,7 @@
 
 mod decide;
 pub mod describe;
+pub mod edits;
 mod grant;
 mod kind;
 mod path;

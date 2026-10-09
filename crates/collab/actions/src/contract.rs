@@ -79,6 +79,31 @@ pub const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 
+/// The parameter of a generic field edit that carries the edit.
+pub const FIELD_EDIT_PARAM: &str = "edit";
+
+/// The operation and path of a field edit in its JSON form
+/// (`{path: [{field: name} | {item: id} | {key: k} | {cell: ..}], op, ..}`).
+fn edit_parts(
+    edit: &serde_json::Value,
+) -> Option<(&str, Vec<tilo_action_policy::edits::EditStep<'_>>)> {
+    use tilo_action_policy::edits::EditStep;
+    let op = edit.get("op")?.as_str()?;
+    let path = edit
+        .get("path")?
+        .as_array()?
+        .iter()
+        .map(|step| {
+            let (kind, value) = step.as_object()?.iter().next()?;
+            Some(match kind.as_str() {
+                "field" => EditStep::Field(value.as_str()?),
+                _ => EditStep::Item,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((op, path))
+}
+
 /// [`ActionContract::tags`] entry of the read-only action that answers, when
 /// invoked with no arguments, the first page of the document an app has
 /// open (a word processor's text, a sheet's used cells, a deck's outline).
@@ -357,6 +382,39 @@ impl ActionContract {
             ConfirmationPolicy::Confirm
         } else {
             self.confirmation.clone()
+        }
+    }
+
+    /// The confirmation an invocation with `argument` (the wire argument:
+    /// typed JSON behind [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX))
+    /// needs, decided without the publishing app's code: the declared
+    /// policy; for a generic field edit, the edit itself read by
+    /// [`tilo_action_policy::edits::field_edit_asks`]; for any other action
+    /// whose risk depends on its arguments, [`Self::advertised_confirmation`].
+    pub fn confirmation_for_argument(&self, argument: Option<&str>) -> ConfirmationPolicy {
+        if self.confirmation != ConfirmationPolicy::None
+            || !self.confirmation_depends_on_arguments()
+            || !self
+                .tags
+                .iter()
+                .any(|tag| tag == tilo_action_policy::edits::FIELD_EDIT_TAG)
+        {
+            return self.advertised_confirmation();
+        }
+        let edit = argument
+            .and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|arguments| arguments.get(FIELD_EDIT_PARAM).cloned());
+        let quiet: Vec<&str> = self
+            .tags
+            .iter()
+            .filter_map(|tag| tag.strip_prefix(tilo_action_policy::edits::QUIET_REMOVAL_TAG))
+            .collect();
+        match edit.as_ref().and_then(edit_parts) {
+            Some((op, path)) if !tilo_action_policy::edits::field_edit_asks(op, &path, &quiet) => {
+                ConfirmationPolicy::None
+            }
+            _ => ConfirmationPolicy::Confirm,
         }
     }
 

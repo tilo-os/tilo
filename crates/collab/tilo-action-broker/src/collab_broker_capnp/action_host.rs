@@ -1416,7 +1416,13 @@ impl CapnpBrokerState {
                     ) {
                         return Err(ActionHostError::UnknownAction);
                     }
-                    if !confirmation_satisfied(action, request.confirmation.as_ref()) {
+                    let argument = request.argument.to_slot();
+                    if !confirmation_satisfied(
+                        &action
+                            .contract
+                            .confirmation_for_argument(argument.as_deref()),
+                        request.confirmation.as_ref(),
+                    ) {
                         return Err(ActionHostError::ConfirmationRequired);
                     }
                 }
@@ -1876,7 +1882,8 @@ impl CapnpBrokerState {
         // from the action as it is now, so only reads and plain edits act on
         // the directory as it is now.
         if request.revision.is_none()
-            && offered.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None
+            && offered.contract.confirmation_for_argument(argument)
+                != tilo_actions::ConfirmationPolicy::None
         {
             return Err(ActionHostError::InvalidRequest {
                 reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),

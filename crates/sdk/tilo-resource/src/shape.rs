@@ -159,30 +159,38 @@ impl Shape {
         unit
     }
 
-    /// Whether removing an item of the collection at `path` asks first: it
-    /// does unless the collection's field is `#[model(remove = "quiet")]`.
+    /// The collections below this shape whose removals ask nothing
+    /// (`#[model(remove = "quiet")]`), by their dotted paths (`*` for an
+    /// item), as [`tilo_action_policy::edits::dotted`] spells them.
     #[must_use]
-    pub fn removal_asks(&self, path: &[crate::path::Segment]) -> bool {
-        use crate::path::Segment;
-        let mut shape = *self;
-        let mut quiet = false;
-        for segment in path {
-            match (shape, segment) {
-                (Self::Record(fields), Segment::Field(key)) => {
-                    let Some(field) = fields.iter().find(|field| field.key == key) else {
-                        return true;
-                    };
-                    quiet = field.quiet_remove;
-                    shape = field.shape;
+    pub fn quiet_removals(&self) -> Vec<String> {
+        fn walk(shape: Shape, prefix: &str, out: &mut Vec<String>, depth: usize) {
+            if depth > 16 {
+                return;
+            }
+            match shape {
+                Shape::Record(fields) => {
+                    for field in fields {
+                        let path = if prefix.is_empty() {
+                            field.key.to_owned()
+                        } else {
+                            format!("{prefix}.{}", field.key)
+                        };
+                        if field.quiet_remove {
+                            out.push(path.clone());
+                        }
+                        walk(field.shape, &path, out, depth + 1);
+                    }
                 }
-                (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => {
-                    quiet = false;
-                    shape = *item;
+                Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
+                    walk(*item, &format!("{prefix}.*"), out, depth + 1);
                 }
-                _ => return true,
+                Shape::Value => {}
             }
         }
-        !quiet
+        let mut out = Vec::new();
+        walk(*self, "", &mut out, 0);
+        out
     }
 
     /// Whether the field at `path` is `#[model(readonly)]`.

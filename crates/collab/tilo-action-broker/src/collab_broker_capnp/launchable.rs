@@ -701,6 +701,71 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
+    /// The broker reads a field edit without the app's code: only removing
+    /// an item of a collection not published as quiet asks for confirmation;
+    /// sets and an outbox's settle do not.
+    #[test]
+    fn a_field_edit_asks_only_when_it_removes_from_a_loud_collection() {
+        let workspace = workspace();
+        let (state, room) = broker(&workspace);
+        let mut edits = surface(5, &room);
+        let mut field_edit = action("field-edit", tilo_actions::ConfirmationPolicy::None);
+        field_edit.contract.tags = vec![
+            tilo_actions::ARGUMENT_RISK_TAG.to_owned(),
+            tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
+            format!("{}drafts", tilo_action_policy::edits::QUIET_REMOVAL_TAG),
+        ];
+        edits.actions = vec![field_edit];
+        state.surfaces.lock().expect("surfaces").insert(5, edits);
+        let mut app = state.capture_invocations_for_test(5);
+        let owner = Caller::local_person("owner").in_room(&room);
+        let edit = |edit: serde_json::Value| {
+            state
+                .action_invoke(
+                    &owner,
+                    None,
+                    None,
+                    &InvokeRequest {
+                        on_behalf_of: None,
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: RemoteActionTarget {
+                            provider: "5".into(),
+                            address: tilo_actions::ActionAddress::new("files.app", "field-edit"),
+                        },
+                        argument: InvokeArgument::Json(
+                            serde_json::json!({ "edit": edit })
+                                .as_object()
+                                .cloned()
+                                .expect("an object"),
+                        ),
+                        context: None,
+                        confirmation: None,
+                        revision: None,
+                        wait_ms: None,
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("answered")
+        };
+        edit(serde_json::json!({"path": [{"field": "title"}], "op": "set", "value": "Plan"}))
+            .expect("a set asks nothing");
+        edit(serde_json::json!({"path": [{"field": "outbox"}], "op": "settle", "id": "e1", "outcome": {}}))
+            .expect("settling asks nothing");
+        edit(serde_json::json!({"path": [{"field": "drafts"}], "op": "remove-item", "id": "d1"}))
+            .expect("a quiet collection's removal asks nothing");
+        assert_eq!(app.try_recv().expect("delivered").action, "field-edit");
+        assert_eq!(
+            edit(
+                serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
+            )
+            .err(),
+            Some(ActionHostError::ConfirmationRequired),
+            "removing a note asks, as a delete verb does"
+        );
+    }
+
     /// Work done in a task is bounded by the task's grant set: what the
     /// agent may otherwise do, it does in the task only where the task's
     /// grants allow it.
