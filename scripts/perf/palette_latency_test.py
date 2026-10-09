@@ -13,8 +13,10 @@ from palette_latency import summarize_palette_latency, json_rows
 SESSION = '2bd78136-4c17-4853-9d7c-7442274a7059'
 QUERY = 'a' * 64
 REVISION = 'b' * 64
-PROVIDER = 'settings'
-ACTION = 'open-bluetooth'
+# Exact LiveAppActionsProvider::directory_action_result identity, including U+001F.
+# Fixture peer/revision stand in for the authenticated runtime row discovered by callers.
+PROVIDER = 'app-actions'
+ACTION = f'directory\x1f2\x1f{REVISION}\x1fsettings.section:bluetooth\x1fopen-pane'
 
 
 def state(**changes):
@@ -264,6 +266,8 @@ class PaletteLatency(unittest.TestCase):
         self.assertEqual(result['latency']['p50_ms'], 5)
         self.assertEqual(result['stages']['dispatch_end_to_settings_kms_ns']['p50_ms'], 3)
         sample = result['frames'][0]
+        self.assertEqual(result['target_action'], ACTION)
+        self.assertEqual(ACTION.count('\x1f'), 4)
         self.assertEqual(sample['invocation'], INVOCATION)
         self.assertEqual(sample['activation']['pane'], 'bluetooth')
         self.assertEqual(sample['activation']['cpu_frame_id'], 17)
@@ -275,7 +279,7 @@ class PaletteLatency(unittest.TestCase):
     def test_click_exact_target_origin_worker_draw_and_kms_cannot_be_substituted(self):
         submission_index = 4
         for key, value in (
-                ('palette_target_provider', 'foreign'), ('palette_target_action', 'other-pane'),
+                ('palette_target_provider', 'foreign'), ('palette_target_action', 'settings.section:bluetooth/open-pane'),
                 ('palette_input_id', 2), ('palette_input_id', True), ('palette_observer_session', SETTINGS_SESSION),
                 ('input_time_ns', 1000001), ('activation_dispatch_ns', 2000001),
                 ('process_id', 43), ('source', 'physical_key'), ('source', 'controlled_input')):
@@ -309,6 +313,7 @@ class PaletteLatency(unittest.TestCase):
             first = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertEqual(os.stat(out).st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(out.read_text())['target_action'], ACTION)
             original = out.read_bytes()
             second = subprocess.run(command, capture_output=True, text=True)
             self.assertNotEqual(second.returncode, 0)
