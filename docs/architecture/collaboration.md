@@ -261,6 +261,13 @@ This gives three deployments without three protocols:
 - Private actions: the v2 envelope (`tilo_delivery_protocol::transport_v2`)
   on `tilo-relay/3`, and on `tilo-relay/4`, where each action is signed by the
   device that sends it (below).
+- Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
+  A caller follows an invocation with one waiting request at a time —
+  `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the
+  host holds on its change signal, holding no thread, until the invocation
+  moves or the wait (at most 10 s) runs out. The answer is read when it is
+  sent, as the caller is then. A host that predates the fields ignores them and
+  answers at once, and its callers fall back to polling.
 
 Automerge remains the convergence layer. Transport events never decide
 authority: room governance, signed operations, device certificates, and

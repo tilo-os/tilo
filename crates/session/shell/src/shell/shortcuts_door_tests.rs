@@ -505,6 +505,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         ))?;
         Ok((invocation, receipt.status))
@@ -1460,6 +1461,7 @@ impl AppConnection {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }),
             |message| {
                 matches!(
@@ -1927,6 +1929,7 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
                     context: None,
                     confirmation,
                     revision: None,
+                    wait_ms: None,
                 },
             ),
         )
