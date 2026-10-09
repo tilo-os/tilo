@@ -346,6 +346,22 @@ Verify the received catalog locally without a network using
 Tests and executables running on the builder use its catalog directly.
 Applications do not download fonts at runtime.
 
+For optimized application iteration, use the existing `thin-app` profile:
+
+```sh
+cargo run --locked --profile thin-app -p ebook
+```
+
+This also builds standalone apps: no `thin` feature or dynamic SDK is required.
+It keeps optimization level 3, omits whole-program LTO, and compiles `tilo-ui`
+with sixteen codegen units. `cargo run --release -p ebook` uses the shipping
+profile's fat LTO and one codegen unit; every app edit repeats that final
+whole-program optimization even when the toolkit is fresh. Use `--release`
+for shipping-profile acceptance and measurements. Keep the same worktree and
+profile between edits so Cargo can reuse their outputs. The first `thin-app`
+build needs its own artifacts; it is not a warm edit measurement. The profile
+remains non-incremental and eligible for sccache.
+
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
 ```sh
