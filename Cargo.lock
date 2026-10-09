@@ -16319,6 +16319,7 @@ version = "0.1.0"
 dependencies = [
  "tilo-files",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-process",
  "tilo-rt",
  "workspace-hack",
@@ -16345,6 +16346,7 @@ dependencies = [
  "os-actions",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-platform-caps",
  "tilo-rt",
  "wasm-bindgen",
  "workspace-hack",
@@ -16397,6 +16399,7 @@ dependencies = [
  "smithay-client-toolkit",
  "smithay-clipboard",
  "tilo-clock",
+ "tilo-platform-caps",
  "tilo-rt",
  "tilo-test-env",
  "tracing",
@@ -16677,6 +16680,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-platform-caps",
  "tilo-rt",
  "tracing",
  "url",
@@ -16834,6 +16838,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-test-env",
  "url",
  "wasm-bindgen",
@@ -17106,6 +17111,7 @@ dependencies = [
  "objc2-core-location 0.3.2",
  "objc2-foundation 0.3.2",
  "tilo-clock",
+ "tilo-platform-caps",
  "tilo-rt",
  "tokio",
  "wasm-bindgen",
@@ -17148,6 +17154,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
+ "tilo-platform-caps",
  "tilo-test-env",
  "tracing",
  "tracing-subscriber",
@@ -17267,6 +17274,7 @@ dependencies = [
  "test-http",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-platform-caps",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
@@ -17303,6 +17311,7 @@ dependencies = [
  "objc2-user-notifications 0.3.2",
  "tempfile",
  "tilo-clock",
+ "tilo-platform-caps",
  "tilo-rt",
  "tracing",
  "url",
@@ -17429,6 +17438,7 @@ dependencies = [
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
+ "tilo-platform-caps",
  "windows-sys 0.61.2",
  "workspace-hack",
 ]
@@ -17497,6 +17507,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-platform-caps"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
@@ -17533,6 +17550,7 @@ dependencies = [
  "runtime-portal",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-platform-caps",
  "workspace-hack",
 ]
 
@@ -17836,6 +17854,7 @@ dependencies = [
  "rayon",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tilo-platform-caps",
  "tilo-test-env",
  "tokio",
  "tracing",
@@ -17934,6 +17953,7 @@ dependencies = [
  "libc",
  "memmap2",
  "thiserror 2.0.21",
+ "tilo-platform-caps",
  "tilo-sandbox-core",
  "workspace-hack",
 ]
@@ -18009,6 +18029,7 @@ dependencies = [
  "security-framework",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-platform-caps",
  "tilo-rt",
  "tilo-seal",
  "tilo-test-env",

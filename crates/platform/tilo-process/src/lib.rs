@@ -10,6 +10,7 @@
 
 #[cfg(feature = "native-editor")]
 pub mod editor;
+pub use tilo_platform_caps::Availability;
 pub mod rendezvous;
 
 /// A capability of this crate.
@@ -19,13 +20,6 @@ pub enum Feature {
     ProcessId,
     /// Processes meet at a [`rendezvous::Rendezvous`] beside a resource.
     Rendezvous,
-}
-
-/// Whether a feature works on this target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    Unsupported(&'static str),
 }
 
 /// Each feature's availability on Linux, macOS and the web, in that order.
