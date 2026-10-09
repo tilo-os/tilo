@@ -1663,14 +1663,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.desktop.active;
 
-        let week_ago = SystemTime::now() - Duration::from_secs(604_800);
-        let week_ago_secs = i64::try_from(
-            week_ago
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+        let week_ago_secs = i64::try_from(ui::time::try_unix_now().unwrap() - 604_800).unwrap();
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/quinten/last-week".to_string()),
@@ -3696,13 +3689,8 @@ mod task_review_tests {
         ] {
             for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
                 let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs = i64::try_from(
-                    SystemTime::now()
-                        .duration_since(ui::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                )
-                .unwrap();
+                host.snapshot.borrow_mut().sampled_at_secs =
+                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
                 pane.refresh(&mut tree);
                 pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
                 paint_header_fixture(&mut pane, &Theme::light());

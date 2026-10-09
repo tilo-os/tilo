@@ -297,7 +297,7 @@ impl RelayClient {
             &ack,
             &expected_server_user,
             &revocations,
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &nonce,
         )?;
         if ack.cert.device_public_key != expected_server_device {
@@ -445,19 +445,12 @@ impl RelayClient {
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
         match expected_server.as_ref() {
-            Some((user, _)) => auth::verify_hello_ack(
-                &ack,
-                user,
-                &revocations,
-                tilo_delivery_protocol::clock::now_ns(),
-                &nonce,
-            )?,
-            None => auth::verify_pinned_host_ack(
-                &ack,
-                &revocations,
-                tilo_delivery_protocol::clock::now_ns(),
-                &nonce,
-            )?,
+            Some((user, _)) => {
+                auth::verify_hello_ack(&ack, user, &revocations, tilo_clock::unix_now_ns(), &nonce)?
+            }
+            None => {
+                auth::verify_pinned_host_ack(&ack, &revocations, tilo_clock::unix_now_ns(), &nonce)?
+            }
         };
         if let Some((_, expected_device)) = expected_server
             && ack.cert.device_public_key != expected_device
@@ -795,7 +788,7 @@ impl RelayClient {
         let ack_bytes = read_frame(&mut recv, MAX_FRAME_BYTES).await?;
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
-        let now_ns = tilo_delivery_protocol::clock::now_ns();
+        let now_ns = tilo_clock::unix_now_ns();
         let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
             auth::verify_interactive_owner_ack(
                 &ack,
@@ -1063,11 +1056,8 @@ impl RelayClient {
                     || action.source != cert.device_public_key
                     || !action.validate()
                     || cert.capabilities.can_act_as_host
-                    || tilo_user_identity::verify_device_cert_at(
-                        &cert,
-                        tilo_delivery_protocol::clock::now_ns(),
-                    )
-                    .is_err()
+                    || tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
+                        .is_err()
                 {
                     return None;
                 }
@@ -2058,7 +2048,7 @@ mod session_carrier_tests {
             &ack,
             &host_cert.user_public_key,
             &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &[1; 32],
         )
         .unwrap();

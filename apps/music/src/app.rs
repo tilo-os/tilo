@@ -5189,10 +5189,7 @@ fn home_item_to_hit(item: &HomeItem) -> TrackHit {
 /// A wall-clock-derived seed for the shuffle PRNG, so each session's shuffle
 /// order differs. Never zero (the xorshift step guards against it anyway).
 fn seed_rng() -> u64 {
-    use ui::time::UNIX_EPOCH;
-    let nanos = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0x1234_5678, |d| d.as_nanos() as u64);
+    let nanos = ui::time::try_unix_now_ns().unwrap_or(0x1234_5678);
     nanos ^ 0x9E37_79B9_7F4A_7C15
 }
 

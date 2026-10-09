@@ -26,8 +26,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
-use ui::clock::{Duration, Instant, SystemTime};
 use ui::i18n::ArgValue;
+use ui::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};

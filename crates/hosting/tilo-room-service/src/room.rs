@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, broadcast};
@@ -41,14 +41,6 @@ pub struct Room {
     history: std::sync::Mutex<Vec<serde_json::Value>>,
     tickets: std::sync::Mutex<Vec<Ticket>>,
     directory: PathBuf,
-}
-
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -172,7 +164,7 @@ impl Room {
             port,
             uuid: uuid_v4(),
             user_public_key,
-            expires_at_ms: now_ms()
+            expires_at_ms: tilo_clock::unix_now_ms()
                 .saturating_add(u64::try_from(config.ttl.as_millis()).unwrap_or(u64::MAX)),
             stdin: Mutex::new(stdin),
             events,
@@ -189,7 +181,7 @@ impl Room {
                 if field(&value, "event") == "member_certified" {
                     let member = serde_json::json!({
                         "label": field(&value, "label"), "device": field(&value, "device"),
-                        "pairingCode": field(&value, "pairingCode"), "at": now_ms(),
+                        "pairingCode": field(&value, "pairingCode"), "at": tilo_clock::unix_now_ms(),
                     });
                     if let Ok(mut history) = reader.history.lock() {
                         history.push(member.clone());
