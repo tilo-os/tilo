@@ -22,3 +22,11 @@ push_only = """
 (package(tilo-fs) and binary(collab_release_matrix)) or
 (package(tilo-rollback) and binary(mechanism))
 """
+
+# Quarantined: intermittent sync stalls tracked in #4001. Required shards
+# (pull requests and pushes to main) skip them; nightly still runs them, so
+# the stall stays visible. The fix removes its entry; the last removal also
+# drops this key and the check.yml clause, since nextest rejects "not ()".
+quarantine = """
+(package(shell) and test(/^network::invite::exchange_tests::mounted_code::/))
+"""
