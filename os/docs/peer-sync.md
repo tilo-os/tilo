@@ -107,3 +107,76 @@ existing record without creating or migrating trust, pass
 must still match this person's verified certificate, exact enrolled device
 and service, and saved room. The command neither copies the legacy record nor
 changes which registry other services use.
+
+## Fedora primary Files service and explicit first run
+
+The Fedora host payload includes the existing `fs` daemon and
+`tilo-relay-admin`, plus the user service `tilo-files-workspace.service`.
+It belongs to `tilo-graphical-session.target`; installation alone does not
+initialize storage, enroll a device, or grant Files access. The image's system
+`fs.service` remains the image path.
+
+The standard host cache is `$XDG_STATE_HOME/tilo/files`, normally
+`~/.local/state/tilo/files`. Its saved `namespace.bin` and signed
+`workspace-authority.bin` must already exist. Before mounting, the entry point
+checks the existing certified person/device, signed revocations, matching
+namespace authority, and an explicit read/write Files path capability. A room
+administration grant is insufficient. Failed readiness exits without making
+an empty mount. The service suppresses the daemon's ticket-bearing stdout.
+
+For an already prepared primary:
+
+```sh
+tilo-relay-admin files-workspace-check \
+  --identity-root "$HOME/.local/share/tilo" \
+  --cache-dir "$HOME/.local/state/tilo/files"
+systemctl --user start tilo-files-workspace.service
+```
+
+The host shell points its existing content finder, Files blob socket and
+local authority publisher at the same host paths. Its native app launcher
+continues to require an actual path grant before binding the Files mount into
+an app; discovering a same-person peer is never that grant. This service uses
+the default Fedora user-manager XDG paths. For a custom XDG profile, its unit
+conditions, cleanup and the user manager's environment must match that profile
+through an explicit service override; changing only the shell environment is
+insufficient.
+
+When recovery cannot supply a verified copy and the user has explicitly chosen
+a new empty primary namespace, the source controller supports:
+
+```sh
+tilo-relay-admin files-workspace-initialize \
+  --identity-root "$HOME/.local/share/tilo" \
+  --identity-dir "$HOME/.config/tilo/identity" \
+  --cache-dir "$HOME/.local/state/tilo/files" \
+  --acl "$HOME/.config/tilo/fs-capabilities.json" \
+  --confirm-new-workspace --acknowledge-unavailable-recovery
+```
+
+This is an explicit operation, not part of package installation or service
+startup. It refuses any existing destination, preserves remembered recovery
+candidates, requires the person's existing Files capability and opens the
+existing protected single-device signing session. It signs that existing
+policy without exporting the person's root key or creating credentials. It
+writes a real empty Automerge namespace last so partial preparation cannot
+pass service readiness. The Files workspace identifier remains the existing
+certified device's topic-derived identifier; this does not recover historical
+resources or allocate a distinct workspace identity. A threshold identity
+still requires its existing signing ceremony.
+
+Saved signed authority can now resume in the daemon without a raw root key
+file. Subsequent ordinary permission publication uses the host's existing
+protected signing session through `tilo-relay-admin publish-authority --acl`;
+concurrent revision conflicts fail and retry rather than overwriting newer
+signed policy.
+
+This slice does not provide a new recovery/join controller: the read-only
+candidate probe still discards returned tickets. Restoring a remote-only
+namespace remains a separate authorized operation. It also does not provide
+new sync or cache eviction mechanisms: native CRDT namespaces/resources,
+Iroh content fetch and existing cache policy continue to own those behaviors.
+Device identities, mountpoints, sockets and rendering remain device-local. The
+Settings Storage pane still selects the image storage socket in this slice;
+its host accounting/eviction endpoint wiring is pending and is not implied by
+creating the local service socket.
