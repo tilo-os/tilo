@@ -11,6 +11,8 @@
     )
 )]
 
+mod workspace_startup;
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
@@ -369,8 +371,16 @@ fn parse_owner(spec: &str) -> Result<(u32, u32)> {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Inspect saved workspace bindings without starting transport or exposing tickets.
+    WorkspaceStatus {
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
     /// Host a collaborative workspace and mount it locally.
     Serve {
+        /// Refuse a fresh namespace; resume saved state or an authenticated discovered workspace only.
+        #[arg(long)]
+        require_existing_workspace: bool,
         /// Where to mount the workspace.
         #[arg(short, long)]
         mount_point: PathBuf,
@@ -599,7 +609,15 @@ async fn run_command() -> Result<()> {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
     match cli.command {
+        Command::WorkspaceStatus { cache_dir } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&workspace_startup::inspect(&cache_dir)?)?
+            );
+            Ok(())
+        }
         Command::Serve {
+            require_existing_workspace,
             mount_point,
             cache_dir,
             seed,
@@ -609,6 +627,12 @@ async fn run_command() -> Result<()> {
             acl,
             data_plane,
         } => {
+            if require_existing_workspace {
+                let cache = cache_dir
+                    .as_deref()
+                    .context("recovery requires --cache-dir")?;
+                workspace_startup::inspect(cache)?.require_existing()?;
+            }
             serve(
                 mount_point,
                 cache_dir,
@@ -1731,37 +1755,30 @@ async fn serve(
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
     if remote_ticket.is_none()
-        && let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
-            record_services.as_mut(),
-            cache_dir.as_ref(),
-            acl_args.acl.as_ref(),
-            share_issuer.as_ref(),
-        )
+        && let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref())
     {
-        let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
-            .context("parse workspace authority bootstrap capabilities")?;
         let principals = acl_args
             .principals
             .iter()
             .map(|principal| parse_principal(principal))
             .collect::<Result<Vec<_>>>()?;
-        let authority = Arc::new(WorkspaceAuthority::open(
-            cache_dir.join("workspace-authority.bin"),
+        let bootstrap = acl_args
+            .acl
+            .as_ref()
+            .zip(share_issuer.as_ref())
+            .map(|(path, signer)| -> Result<_> {
+                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
+                    .context("parse workspace authority bootstrap capabilities")?;
+                Ok((capabilities, signer))
+            })
+            .transpose()?;
+        records.workspace_authority = workspace_startup::owner_authority(
+            cache_dir,
             workspace_id,
-            governor.verifying_key().to_bytes(),
             credentials.user_public_key(),
             principals,
-        )?);
-        if authority.current().is_none() {
-            authority.apply(WorkspaceAuthorityEnvelope::sign(
-                workspace_id,
-                1,
-                capabilities,
-                false,
-                governor,
-            )?)?;
-        }
-        records.workspace_authority = Some(authority);
+            bootstrap,
+        )?;
     }
     let record_publisher = record_repository
         .clone()
