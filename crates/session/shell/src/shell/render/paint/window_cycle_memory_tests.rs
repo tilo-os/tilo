@@ -183,3 +183,80 @@ fn window_cycle_memory_returns_to_the_bare_desktop() {
         assert_eq!(store().frame_seq(id), 0, "surface {id:#x} is tracked again");
     }
 }
+
+/// Set in the child process [`closed_windows_heap_goes_back_to_the_kernel`]
+/// runs its cycles in.
+const HEAP_TRIM_CHILD: &str = "TILO_HEAP_TRIM_TEST_CHILD";
+
+/// What closed windows freed goes back to the kernel (TIL-705). glibc kept it
+/// before: 61–75 MiB free in its arenas stayed in the compositor's anonymous
+/// RSS. Closing a window asks the heap trimmer to return it; once the
+/// trimmer has served the closes, a further `malloc_trim` has nothing left
+/// to give back.
+///
+/// The cycles run in a child process of their own, so no test beside this
+/// one allocates or frees while its RSS is read.
+#[test]
+fn closed_windows_heap_goes_back_to_the_kernel() {
+    if std::env::var_os(HEAP_TRIM_CHILD).is_none() {
+        let name = format!(
+            "{}::closed_windows_heap_goes_back_to_the_kernel",
+            module_path!()
+                .split_once("::")
+                .map_or(module_path!(), |(_, path)| path)
+        );
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(HEAP_TRIM_CHILD, "1")
+            .output()
+            .expect("the child test runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "the isolated run failed ({:?}):\n{stdout}\n{stderr}",
+            output.status
+        );
+        eprint!("{stderr}");
+        return;
+    }
+    let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
+    for _ in 0..IDLE_PAINTS {
+        paint(&mut bridge, &wallpaper, None);
+    }
+    let trims_before = crate::shell::heap_trim::trims_completed();
+    for cycle in 0..3 {
+        let id: SurfaceId = 0x0705_0000 + cycle;
+        store().forget(id);
+        for frame in 0..COMMITS {
+            commit(id, frame.wrapping_mul(23));
+            let (window, _) = store().frame_image(id).expect("a published frame draws");
+            paint(&mut bridge, &wallpaper, Some(&window));
+        }
+        store().forget(id);
+        for _ in 0..IDLE_PAINTS {
+            paint(&mut bridge, &wallpaper, None);
+        }
+    }
+    assert!(
+        crate::shell::heap_trim::settle(Duration::from_secs(30)),
+        "the heap trimmer never served the closes"
+    );
+    let trims = crate::shell::heap_trim::trims_completed() - trims_before;
+    assert!(trims >= 1, "closing three windows asked for no heap trim");
+    let before = rss_anon_kib();
+    // SAFETY: malloc_trim only releases memory the allocator holds free.
+    unsafe { libc::malloc_trim(0) };
+    let left_kib = before.saturating_sub(rss_anon_kib());
+    let (arena, mmapped, in_use, free) = malloc_kib();
+    eprintln!(
+        "after {trims} trim(s): rss_anon_kib {before} arena_kib {arena} mmapped_kib {mmapped} \
+         in_use_kib {in_use} free_kib {free}; a further trim returned {left_kib} KiB"
+    );
+    assert!(
+        before > 0 && left_kib <= 2048,
+        "{left_kib} KiB the closed windows freed were still resident after the heap trimmer ran"
+    );
+}

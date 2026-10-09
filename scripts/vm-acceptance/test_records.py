@@ -201,6 +201,33 @@ class Gates(unittest.TestCase):
         self.assertIsNone(startup.open_times(1_000_000, None))
         self.assertEqual(startup.median([5.0, 1.0, 9.0, 7.0]), 5.0)
 
+    def test_the_compositor_memory_breakdown_names_its_largest_anonymous_mappings(self):
+        text = "\n".join([
+            "S VmRSS: 1253068", "S RssAnon: 598118", "S RssFile: 650000", "S Threads: 87",
+            "R Rss: 1253068", "R Pss_Anon: 598000", "R Anonymous: 598118", "R Swap: 0",
+            "A 262144 7f0000000000-7f0010000000 [anon]",
+            "A 65536 55d000000000-55d004000000 [heap]",
+            "A 4096 7f1000000000-7f1000400000 /memfd:wayland-shm (deleted)",
+        ])
+        m = resources.core.parse_shell_memory(text)
+        self.assertEqual(m["status_kib"], {"VmRSS": 1253068, "RssAnon": 598118, "RssFile": 650000, "Threads": 87})
+        self.assertEqual(m["smaps_rollup_kib"]["Anonymous"], 598118)
+        self.assertEqual([t["name"] for t in m["top_anon_mappings"]],
+                         ["[anon]", "[heap]", "/memfd:wayland-shm (deleted)"])
+        self.assertEqual(m["top_anon_mappings"][0]["anon_kib"], 262144)
+
+    def test_an_unreadable_compositor_breakdown_is_unobservable(self):
+        class Vm:
+            def root_exec(self, script):
+                assert "pid=42" in script
+                return "S VmRSS: 10\n"
+
+        class Ctx:
+            vm = Vm()
+
+        with self.assertRaises(resources.core.Unobservable):
+            resources.core.shell_memory(Ctx(), 42)
+
     def test_the_new_checks_are_in_the_run_order(self):
         for cid in ("R06", "A15", "R07", "A16"):
             self.assertIn(cid, run.ORDER)

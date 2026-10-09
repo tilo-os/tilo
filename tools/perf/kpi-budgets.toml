@@ -409,6 +409,12 @@ max = 250.0
 min_delta = 32.0
 source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
 
+[kpi."memory.shell_anon_mib.empty"]
+unit = "MiB"
+max = 250.0
+min_delta = 32.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open; no target of its own yet, so the four-app KPI caps it"
+
 [kpi."memory.session_mib"]
 unit = "MiB"
 max = 2500.0
