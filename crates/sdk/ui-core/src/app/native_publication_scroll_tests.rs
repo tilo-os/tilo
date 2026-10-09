@@ -52,11 +52,12 @@ impl crate::resources::PublishesResources for PublicationProbeRoot {
 #[test]
 fn connected_native_long_document_wheel_publication_probe() {
     crate::i18n::I18nManager::init("en-US");
-    // Keep the benchmark-sized document: shorter text can fit entirely in
-    // the editor layout and would not exercise actual scrolling.
+    // Keep the ordinary regression bounded while ensuring its document
+    // overflows. The recorded hardware-sized benchmark explicitly selects
+    // 180 paragraphs and retains its original viewport and wheel step.
     let paragraphs = std::env::var("TILO_NATIVE_SCROLL_PROBE_PARAGRAPHS")
         .map(|raw| raw.parse::<usize>().expect("integer paragraph count"))
-        .unwrap_or(180);
+        .unwrap_or(32);
     assert!((32..=180).contains(&paragraphs));
     let body = (0..paragraphs)
         .map(|index| {
@@ -66,6 +67,11 @@ fn connected_native_long_document_wheel_publication_probe() {
             )
         })
         .collect::<String>();
+    let (viewport, wheel_step) = if paragraphs == 180 {
+        ((1051, 952), -1.0)
+    } else {
+        ((1051, 240), -0.25)
+    };
     let offset = Rc::new(Cell::new((0.0, 0.0)));
     let inner = crate::widget::Scrollable::new_vertical()
         .with_persisted_offset(Rc::clone(&offset))
@@ -75,7 +81,7 @@ fn connected_native_long_document_wheel_publication_probe() {
     app.collaboration.manager =
         CollaborationManager::with_peer_transport(PublicationProbeTransport);
     let region = Region {
-        size: (1051, 952),
+        size: viewport,
         redraw: Cell::new(false),
     };
     let mut scene = Scene::new();
@@ -91,7 +97,7 @@ fn connected_native_long_document_wheel_publication_probe() {
         &region,
         WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(400.0, 400.0),
+            position: winit::dpi::PhysicalPosition::new(400.0, f64::from(viewport.1) / 2.0),
         },
         false,
     );
@@ -102,7 +108,7 @@ fn connected_native_long_document_wheel_publication_probe() {
             &region,
             WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, wheel_step),
                 phase: winit::event::TouchPhase::Moved
             },
             false
@@ -118,7 +124,7 @@ fn connected_native_long_document_wheel_publication_probe() {
                 "sample": sample, "input_ns": input_ns,
                 "frame_ns": started.elapsed().as_nanos(),
                 "paragraphs": paragraphs, "markdown_bytes": body.len(),
-                "viewport": [1051, 952], "architecture": std::env::consts::ARCH,
+                "viewport": [viewport.0, viewport.1], "wheel_line_delta": wheel_step, "architecture": std::env::consts::ARCH,
                 "profile": if cfg!(debug_assertions) { "debug" } else { "optimized" },
                 "connected_publication": true, "notes_framework": false,
                 "gpu_or_scanout": false,
