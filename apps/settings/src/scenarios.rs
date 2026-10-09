@@ -88,6 +88,7 @@ pub struct CaptureScene {
     pub account_form: Option<AccountKind>,
     /// Synthetic certified-peer observations; available only to capture fixtures.
     pub device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    pub person_devices: Vec<settings_store::person_displays::PersonDevice>,
     /// Synthetic attached keyboards; captures never discover the real host.
     pub input_hardware: Option<settings_store::hardware::InputHardwareSnapshot>,
 }
@@ -104,6 +105,11 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         account_root,
         account_form,
         input_hardware: keyboard_fixture(fixture.scenario()),
+        person_devices: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
+            person_display_fixture()
+        } else {
+            Vec::new()
+        },
         device_displays: if fixture.scenario() == Some(DEVICE_DISPLAYS) {
             device_display_fixture()
         } else {
@@ -130,6 +136,35 @@ fn codec_status(scenario: Option<&str>) -> Option<crate::codec_pack::CodecPackSt
         _ => return None,
     };
     Some(crate::codec_pack::CodecPackStatus::parse(json))
+}
+
+/// Rich synthetic observations for the explicit display capture only.
+fn person_display_fixture() -> Vec<settings_store::person_displays::PersonDevice> {
+    use settings_store::person_displays::{DeviceOutput, PersonDevice};
+    device_display_fixture()
+        .into_iter()
+        .map(|screen| PersonDevice {
+            device: screen.device,
+            label: screen.device_label,
+            local: screen.local,
+            online: screen.online,
+            outputs: vec![DeviceOutput {
+                id: screen.connector,
+                name: screen.label,
+                builtin: screen.local,
+                x: 0,
+                y: 0,
+                width: screen.width,
+                height: screen.height,
+                mode_width: screen.width * u32::from(screen.scale_milli) / 1000,
+                mode_height: screen.height * u32::from(screen.scale_milli) / 1000,
+                refresh_mhz: 60_000,
+                scale_milli: screen.scale_milli,
+                connected: true,
+                enabled: true,
+            }],
+        })
+        .collect()
 }
 
 /// Two fixture devices with device-qualified connector identities and logical sizes.

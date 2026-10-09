@@ -116,7 +116,7 @@ impl RemoteInputInjectorHandle {
         Self { inner }
     }
 
-    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. `--portal-server-only`).
+    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. tests).
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullInjector),

@@ -249,6 +249,7 @@ fn role_authority_stops_at_the_room_boundary() {
         (
             ResourceRef::Action {
                 app: "a".into(),
+                resource: "a.book".into(),
                 action: "turn-page".into(),
             },
             true,
@@ -417,6 +418,7 @@ fn a_scope_reaches_its_contents_and_nothing_else() {
             &bob,
             &ResourceRef::Action {
                 app: "org.tilo.Ebook".into(),
+                resource: "ebook.book".into(),
                 action: "annotate".into()
             },
             Verb::Write,
@@ -458,6 +460,55 @@ fn a_scope_reaches_its_contents_and_nothing_else() {
 /// A capability serves exactly its subject: one app, a role's people (never
 /// its apps or agents), a bearer token, a room's members, or one person
 /// however they are named.
+/// An action grant names one resource's action. The same action id on
+/// another resource of the same app (a page body's `apply` and the
+/// notebook's `apply`) is not covered, and neither is another action on the
+/// granted resource.
+#[test]
+fn an_action_grant_covers_that_resources_action_only() {
+    let action = |resource: &str, action: &str| ResourceRef::Action {
+        app: "so.tilo.notes".into(),
+        resource: resource.into(),
+        action: action.into(),
+    };
+    let caps = vec![CapOverride::grant(
+        Subject::app("so.tilo.agent"),
+        Scope::Action {
+            app: "so.tilo.notes".into(),
+            resource: "notes.notebook/page/1/body".into(),
+            action: "apply".into(),
+        },
+        Verb::Write,
+    )];
+    let agent = Actor::app("so.tilo.agent");
+    assert_eq!(
+        decide(
+            &agent,
+            &action("notes.notebook/page/1/body", "apply"),
+            Verb::Write,
+            &caps
+        ),
+        CapDecision::Allow
+    );
+    for (other, why) in [
+        (action("notes.notebook", "apply"), "the notebook's apply"),
+        (
+            action("notes.notebook/page/2/body", "apply"),
+            "another page body's apply",
+        ),
+        (
+            action("notes.notebook/page/1/body", "delete"),
+            "another action on the granted body",
+        ),
+    ] {
+        assert_eq!(
+            decide(&agent, &other, Verb::Write, &caps),
+            CapDecision::DeniedByRole,
+            "{why} is not granted"
+        );
+    }
+}
+
 #[test]
 fn a_capability_serves_only_its_subject() {
     // Case: a capability granted to one app does not serve another.

@@ -52,6 +52,7 @@ pub struct ContinuityPolicySnapshot {
     wifi_settings: bool,
     media: bool,
     display_input: bool,
+    automatic_display_input: bool,
     file_transfer: bool,
     realtime_sessions: bool,
     typed_gamepad: bool,
@@ -73,6 +74,7 @@ impl ContinuityPolicySnapshot {
             wifi_settings: flag("wifi_settings"),
             media: flag("media"),
             display_input: flag("display_input"),
+            automatic_display_input: flag("automatic_display_input"),
             file_transfer: flag("file_transfer"),
             realtime_sessions: flag("realtime_sessions"),
             typed_gamepad: flag("typed_gamepad"),
@@ -83,6 +85,12 @@ impl ContinuityPolicySnapshot {
     #[must_use]
     pub fn load() -> Self {
         Self::from_document(&settings_store::load())
+    }
+
+    /// Automatic leases require a separate literal device-local opt-in.
+    #[must_use]
+    pub const fn automatic_display_input(self) -> bool {
+        self.automatic_display_input
     }
 
     #[must_use]
@@ -218,6 +226,34 @@ mod tests {
 
     fn document(value: &Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn automatic_display_input_requires_a_literal_separate_opt_in() {
+        for value in [
+            json!(null),
+            json!(false),
+            json!(1),
+            json!("true"),
+            json!({}),
+        ] {
+            let policy = ContinuityPolicySnapshot::from_document(&document(
+                &json!({"continuity": {"enabled":true, "display_input":true, "automatic_display_input":value}}),
+            ));
+            assert!(!policy.automatic_display_input());
+        }
+        let absent = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"enabled":true,"display_input":true}}),
+        ));
+        assert!(!absent.automatic_display_input());
+        let explicit = ContinuityPolicySnapshot::from_document(&document(
+            &json!({"continuity": {"automatic_display_input":true}}),
+        ));
+        assert!(explicit.automatic_display_input());
+        assert!(
+            !explicit.permits(ContinuityCapability::DisplayInput),
+            "the separate choice cannot enable its master capability"
+        );
     }
 
     #[test]

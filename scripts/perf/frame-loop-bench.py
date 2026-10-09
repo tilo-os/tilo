@@ -40,6 +40,7 @@ appears on the operator's desktop. `--backend drm` needs a free TTY.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import signal
@@ -90,26 +91,53 @@ def stop_process_group(proc: subprocess.Popen) -> None:
 # Column order is defined by `metrics::CSV_HEADER`; we read the header
 # rather than hard-coding indices so a new column can't silently shift
 # every number this script prints.
+TEXT_TRACE_COLUMNS = {"wake", "input_step"}
+REQUIRED_TRACE_COLUMNS = {
+    "start_us", "period_us", "input_us", "pump_us", "layout_us", "scene_us",
+    "submit_us", "clients_us", "sleep_us", "painted", "present_async",
+}
+
+
 def read_trace(path: Path) -> tuple[list[str], list[dict]]:
     rows: list[dict] = []
-    with path.open() as fh:
-        header = fh.readline().strip().split(",")
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh, strict=True)
+        try:
+            header = next(reader, [])
+        except csv.Error:
+            raise ValueError("Malformed frame trace CSV header") from None
         if not all(header) or len(set(header)) != len(header):
             raise ValueError("Missing or duplicate frame trace columns")
-        for line_number, line in enumerate(fh, start=2):
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(",")
-            if len(parts) != len(header):
-                raise ValueError(
-                    f"Incomplete frame trace row {line_number}: "
-                    f"expected {len(header)} fields, found {len(parts)}"
-                )
-            row = {}
-            for k, v in zip(header, parts):
-                row[k] = int(v) if v else None
-            rows.append(row)
+        missing = REQUIRED_TRACE_COLUMNS.difference(header)
+        if missing:
+            raise ValueError(f"Missing required frame trace columns: {', '.join(sorted(missing))}")
+        try:
+            for parts in reader:
+                if not parts:
+                    continue
+                if len(parts) != len(header):
+                    raise ValueError(
+                        f"Incomplete frame trace row {reader.line_num}: "
+                        f"expected {len(header)} fields, found {len(parts)}"
+                    )
+                row = {}
+                for key, value in zip(header, parts):
+                    if key in TEXT_TRACE_COLUMNS:
+                        row[key] = value
+                    elif not value and key in REQUIRED_TRACE_COLUMNS:
+                        raise ValueError(
+                            f"Missing required frame trace value for {key} at row {reader.line_num}"
+                        )
+                    else:
+                        try:
+                            row[key] = int(value) if value else None
+                        except ValueError:
+                            raise ValueError(
+                                f"Invalid numeric frame trace value for {key} at row {reader.line_num}"
+                            ) from None
+                rows.append(row)
+        except csv.Error:
+            raise ValueError(f"Malformed frame trace CSV at row {reader.line_num}") from None
     if not rows:
         raise ValueError("No frame trace samples were recorded")
     return header, rows

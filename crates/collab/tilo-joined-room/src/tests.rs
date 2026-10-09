@@ -188,32 +188,38 @@ fn edit_with(
     now: SystemTime,
     topic: &str,
 ) -> OwnerCommitRequest {
-    let message = owner
-        .with_current(room, |view| {
-            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
-            let before = chat.get_heads();
-            chat.put(ROOT, "topic", topic).unwrap();
-            chat.commit();
-            view.peer().clone().publish_incremental(
-                APP,
-                "",
-                chat.save_after(&before),
-                &member(),
-                now,
-            )
-        })
-        .unwrap();
+    owner
+        .with_current(room, |view| edit_from_view(view, now, topic))
+        .unwrap()
+}
+
+fn edit_from_view(
+    view: &crate::NativeCommittedView,
+    now: SystemTime,
+    topic: &str,
+) -> Result<OwnerCommitRequest, String> {
+    let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+    let before = chat.get_heads();
+    chat.put(ROOT, "topic", topic).unwrap();
+    chat.commit();
+    let message = view.peer().clone().publish_incremental(
+        APP,
+        "",
+        chat.save_after(&before),
+        &member(),
+        now,
+    )?;
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
-        panic!("a signed document write")
+        return Err("test edit was not a signed document write".into());
     };
-    OwnerCommitRequest {
+    Ok(OwnerCommitRequest {
         room: ROOM.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
             envelope,
         },
-    }
+    })
 }
 
 #[test]
@@ -576,6 +582,44 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     assert_eq!(outgoing(&joined.owner), 1);
     drop(joined.owner);
     assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
+}
+
+#[test]
+fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
+    let joined = enrolled();
+    let stale = edit_with(&joined.owner, joined.room, joined.now, "stale edit");
+    let first = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "first committed edit",
+    );
+    joined.owner.commit_document(first, joined.now).unwrap();
+    assert_eq!(
+        joined.owner.commit_document(stale, joined.now).unwrap_err(),
+        "signed operation conflicts with exact admitted sequence"
+    );
+
+    let receipt = joined
+        .owner
+        .commit_document_with_current(
+            joined.room,
+            |view| edit_from_view(view, joined.now, "edit from current owner turn"),
+            joined.now,
+        )
+        .unwrap();
+    assert!(receipt.generation > 1);
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("edit from current owner turn")
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -1280,4 +1324,72 @@ fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carrier
         joined.owner.workspace_task_snapshot(joined.room).unwrap(),
         before
     );
+}
+
+/// What the owner file held before byte fields became base64: the same
+/// record pretty-printed, every byte a JSON integer.
+fn legacy_owner_file(current: &[u8]) -> Vec<u8> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let mut value: serde_json::Value = serde_json::from_slice(current).unwrap();
+    let rooms = value["rooms"].as_object_mut().unwrap();
+    assert!(!rooms.is_empty());
+    for room in rooms.values_mut() {
+        for field in ["peer", "invitation", "enrollment_intent"] {
+            let text = room[field].as_str().expect("byte fields are base64 text");
+            room[field] = serde_json::to_value(STANDARD.decode(text).unwrap()).unwrap();
+        }
+    }
+    serde_json::to_vec_pretty(&value).unwrap()
+}
+
+#[test]
+fn legacy_int_array_owner_file_still_loads() {
+    let joined = enrolled();
+    let current = std::fs::read(&joined.path).unwrap();
+    let legacy = legacy_owner_file(&current);
+    assert!(
+        current.len() * 3 < legacy.len(),
+        "base64 compact record {} bytes against legacy {} bytes",
+        current.len(),
+        legacy.len()
+    );
+    let legacy_path = joined.path.with_file_name("legacy-joined-rooms.json");
+    std::fs::write(&legacy_path, &legacy).unwrap();
+    let reopened = open_file(&legacy_path).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&*reopened.0.authority.read()).unwrap(),
+        current,
+        "the legacy record loads to exactly the record the current file holds"
+    );
+    // A restored peer's durable() bytes order per-author watermarks by hash,
+    // so compare what the room holds rather than a re-encoding of it.
+    let state = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(joined.room, |view| {
+                Ok((
+                    view.peer().rows(),
+                    view.peer().document_heads(APP, ""),
+                    view.generation(),
+                    view.continuity(),
+                ))
+            })
+            .unwrap()
+    };
+    assert_eq!(state(&reopened), state(&joined.owner));
+    // The next publication rewrites the legacy file in the current format.
+    let request = edit(&reopened, joined.room, joined.now);
+    reopened.commit_document(request, joined.now).unwrap();
+    let rewritten = std::fs::read(&legacy_path).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
+    assert!(value["rooms"][joined.room.to_string()]["peer"].is_string());
+    assert!(!rewritten.contains(&b'\n'), "the owner file is compact");
+    let after = state(&reopened);
+    assert_ne!(after, state(&joined.owner));
+    drop(reopened);
+    let reread = open_file(&legacy_path).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&*reread.0.authority.read()).unwrap(),
+        rewritten
+    );
+    assert_eq!(state(&reread), after);
 }

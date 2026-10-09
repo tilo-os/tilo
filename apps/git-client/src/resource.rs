@@ -233,6 +233,29 @@ mod tests {
         (dir, path)
     }
 
+    #[test]
+    fn ordinary_primary_repository_declares_identity_in_native_tree_and_actions() {
+        let (_dir, path) = scratch_repository("primary-identity");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "git_client.repo")
+            .expect("normal primary repository resource");
+        let expected =
+            ui::tilo_actions::ResourceSemanticIdentity::new("git_client.repo", "git_client.repo");
+        assert_eq!(root.semantic_identity, expected);
+        let actions = app.actions().unwrap();
+        let primary = actions
+            .iter()
+            .find(|action| {
+                action.address.resource.as_str() == "git_client.repo"
+                    && action.address.action == ui::tilo_resource::APPLY
+            })
+            .expect("normal primary repository document action");
+        assert_eq!(primary.semantic_identity, expected);
+    }
+
     /// The repository door carries the projection's history, branches and
     /// remotes with their item effects; the working tree is not document
     /// state.

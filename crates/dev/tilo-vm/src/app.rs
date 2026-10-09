@@ -952,12 +952,14 @@ impl App {
                 features,
                 source_inventory,
                 cached_layer,
+                binary,
             } => Self::packed(crate::builderlayer::pack_with_source(
                 &component,
                 &profile,
                 &features,
                 source_inventory.as_deref(),
                 &cached_layer,
+                binary,
             )),
             Command::AppPack {
                 app,
@@ -4566,7 +4568,7 @@ impl App {
                     }
                 }
             }
-            Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Host => self.install_app_from_host(&mut remote, &vm, &worktree, slot, dir)?,
             Builder::Remote => {
                 let command = configured
                     .filter(|line| !line.is_empty())
@@ -4592,6 +4594,7 @@ impl App {
     fn install_app_from_host(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         worktree: &Worktree,
         slot: &str,
         dir: &str,
@@ -4601,18 +4604,35 @@ impl App {
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
         let package = build::app_package(&target, dir, &tapp);
+        self.install_host_app_package(
+            remote,
+            slot,
+            |runner| {
+                if !runner.interactive(&package)? {
+                    return Err(CliError::CommandFailed {
+                        command: package.display(),
+                        status: "failed".into(),
+                        stderr: String::new(),
+                    });
+                }
+                Ok(tapp)
+            },
+            |app| app.connect(vm),
+        )
+    }
+
+    fn install_host_app_package(
+        &mut self,
+        remote: &mut Remote,
+        slot: &str,
+        build: impl FnOnce(&mut SystemRunner) -> Result<PathBuf, CliError>,
+        reconnect: impl FnOnce(&mut Self) -> Result<Remote, CliError>,
+    ) -> Result<AppInstallResult, CliError> {
         let runner = &mut self.runner;
-        let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            if !runner.interactive(&package)? {
-                return Err(CliError::CommandFailed {
-                    command: package.display(),
-                    status: "failed".into(),
-                    stderr: String::new(),
-                });
-            }
-            Ok(())
-        });
-        built?;
+        let tapp = self.receipt.phase("build", || build(runner))?;
+        // Packaging may outlast the transport's idle lifetime. Open the usual
+        // authenticated route again before any upload; never replay AppInstall.
+        *remote = reconnect(self)?;
         let upload = self
             .receipt
             .phase("transfer", || -> Result<String, CliError> {

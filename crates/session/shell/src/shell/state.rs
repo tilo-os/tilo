@@ -8568,6 +8568,7 @@ mod permission_profile_assignment {
                 PermissionProfileRule::grant(
                     Scope::Action {
                         app: "org.tilo.Builds".into(),
+                        resource: "builds.release".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -8599,6 +8600,7 @@ mod permission_profile_assignment {
                 &Actor::person(None, "ada"),
                 &ResourceRef::Action {
                     app: "org.tilo.Builds".into(),
+                    resource: "builds.release".into(),
                     action: "release.approve".into(),
                 },
                 Verb::Write,

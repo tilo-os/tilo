@@ -18,24 +18,36 @@ pub(crate) fn watch(root: &Path, path: &VPath) -> Result<Watch, FsError> {
     let rescan = path.clone();
     let sink = Arc::clone(&inbox);
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
-        let Ok(event) = event else {
-            sink.push(Change {
-                path: rescan.clone(),
-                kind: ChangeKind::Rescan,
-            });
-            return;
-        };
-        for (path, kind) in changes(&event) {
-            if let Some(path) = relative(&root, &path) {
-                sink.push(Change { path, kind });
-            }
-        }
+        deliver(&sink, &root, &rescan, event);
     })
     .map_err(error)?;
     watcher
         .watch(&target, RecursiveMode::Recursive)
         .map_err(error)?;
     Ok(Watch::new(inbox, Box::new(watcher)))
+}
+
+/// Queue what one native event says changed. A failed event, and a native
+/// queue overflow (inotify's `IN_Q_OVERFLOW`, `FSEvents`' dropped events),
+/// both mean changes were missed: the watch reports a rescan of `rescan`, the
+/// watched path. The overflow arrives as an event without paths, so it must
+/// be recognised by its flag; otherwise it would vanish without a trace.
+fn deliver(sink: &Inbox, root: &Path, rescan: &VPath, event: notify::Result<Event>) {
+    let event = match event {
+        Ok(event) if !event.need_rescan() => event,
+        _ => {
+            sink.push(Change {
+                path: rescan.clone(),
+                kind: ChangeKind::Rescan,
+            });
+            return;
+        }
+    };
+    for (path, kind) in changes(&event) {
+        if let Some(path) = relative(root, &path) {
+            sink.push(Change { path, kind });
+        }
+    }
 }
 
 fn error(error: notify::Error) -> FsError {
@@ -115,4 +127,31 @@ fn relative(root: &Path, path: &Path) -> Option<VPath> {
         .map(|component| component.as_os_str().to_str())
         .collect();
     VPath::new(&parts?.join("/")).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::Flag;
+
+    #[test]
+    fn a_native_queue_overflow_asks_for_a_rescan() {
+        let inbox = Arc::new(Inbox::default());
+        let watched = VPath::new("w").unwrap();
+        deliver(
+            &inbox,
+            Path::new("/root"),
+            &watched,
+            Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)),
+        );
+        let watch = Watch::new(inbox, Box::new(()));
+        assert_eq!(
+            watch.try_next(),
+            Some(Change {
+                path: watched,
+                kind: ChangeKind::Rescan
+            })
+        );
+        assert_eq!(watch.try_next(), None);
+    }
 }
