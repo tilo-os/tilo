@@ -5,6 +5,8 @@
 //! `status` combines configuration, workspace state, and the daemon's
 //! periodically persisted metrics snapshot.
 
+mod files_probe;
+
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -30,6 +32,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Query an already-enrolled home peer for public Files binding metadata, without updating local state.
+    HomePeerFilesStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        workspace_id: u64,
+    },
     /// Retry durable removals queued while a home peer was offline.
     HomePeerRetryRemovals {
         #[arg(long)]
@@ -163,6 +176,12 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::HomePeerFilesStatus {
+            identity_root,
+            device,
+            service,
+            workspace_id,
+        } => files_probe::run(&identity_root, &device, &service, workspace_id),
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
         Cmd::HomePeerStatus {
             identity_root,
