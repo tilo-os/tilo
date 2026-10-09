@@ -62,10 +62,18 @@ fn resources() -> Vec<Resource> {
     ]
 }
 
+/// Add the diagnostics rows to a listing's last page, so a caller following
+/// `next_cursor` sees them once.
 pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     let Response::Answer(answer) = response else {
         return;
     };
+    if answer
+        .get("next_cursor")
+        .is_some_and(|cursor| !cursor.is_null())
+    {
+        return;
+    }
     let rows = console_control::enumerate(PROVIDER, &resources(), query);
     let Some(actions) = answer
         .get_mut("actions")
@@ -73,11 +81,18 @@ pub(super) fn append_catalogue(response: &mut Response, query: &str) {
     else {
         return;
     };
-    if let Some(rows) = rows.get("actions").and_then(serde_json::Value::as_array) {
-        actions.extend(rows.iter().cloned());
-    }
+    let added = rows
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, |rows| {
+            actions.extend(rows.iter().cloned());
+            rows.len()
+        });
     let count = actions.len();
     answer["count"] = json!(count);
+    if let Some(total) = answer.get("total").and_then(serde_json::Value::as_u64) {
+        answer["total"] = json!(total.saturating_add(u64::try_from(added).unwrap_or(u64::MAX)));
+    }
 }
 
 /// Native control calls this only after admin peer authentication, without

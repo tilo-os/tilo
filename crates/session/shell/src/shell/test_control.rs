@@ -191,11 +191,15 @@ pub enum Command {
         primary: bool,
     },
     /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults.
+    ///
+    /// The answer is one page of the listing ([`ListingRequest`]); a request without paging fields gets the first.
     ActionsEnumerate {
         #[serde(default)]
         query: String,
         #[serde(default)]
         include_programmatic: bool,
+        #[serde(flatten)]
+        page: ListingRequest,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -292,6 +296,182 @@ pub enum Response {
     Answer(serde_json::Value),
     /// `clipboard_paste` response. `None` means nothing has been copied — distinct from `Some("")`, an owned empty selection.
     Clipboard { text: Option<String> },
+}
+
+/// Rows an `actions_enumerate` page holds when the request names no `limit`.
+/// A stock desktop's whole surface fits, so a client that predates paging
+/// still sees all of it there, and `truncated` says when it does not.
+pub const DEFAULT_LISTING_LIMIT: usize = 200;
+/// Most rows one `actions_enumerate` page holds, whatever `limit` asks.
+pub const MAX_LISTING_LIMIT: usize = 2_000;
+
+/// Which page of an `actions_enumerate` listing to answer, and how much of
+/// each row. Every field is optional on the wire.
+///
+/// The answer carries `count` (rows in this page), `total` (rows in the
+/// listing), `truncated` and `next_cursor`: while `truncated`, send the same
+/// query again with `cursor` set to `next_cursor` for the next page. A
+/// cursor names a position in one listing; if the listing has changed since,
+/// the request is refused with `stale_cursor` and the caller starts again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListingRequest {
+    /// Rows in the page: [`DEFAULT_LISTING_LIMIT`] when absent, at least one
+    /// and at most [`MAX_LISTING_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// How much of each row: `full` (the default) or `compact`, which leaves
+    /// out each row's `contract`, most of a row's size. Every other field,
+    /// including `params`, stays, so a compact row can still be invoked.
+    #[serde(default, skip_serializing_if = "ListingDetail::is_full")]
+    pub detail: ListingDetail,
+}
+
+/// How much of each row a listing carries; see [`ListingRequest::detail`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingDetail {
+    #[default]
+    Full,
+    Compact,
+}
+
+impl ListingDetail {
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+/// The rows of a listing one page holds, as [`ListingRequest::window`] cut it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingWindow {
+    /// Indices of this page's rows in the whole listing.
+    pub rows: std::ops::Range<usize>,
+    /// Rows in the whole listing.
+    pub total: usize,
+    /// Where the next page starts; `None` on the last page.
+    pub next_cursor: Option<String>,
+}
+
+impl ListingWindow {
+    /// Record this page's place in `answer`: `count`, `total`, `truncated`
+    /// and `next_cursor`.
+    pub fn describe(&self, answer: &mut serde_json::Map<String, serde_json::Value>) {
+        answer.insert("count".into(), self.rows.len().into());
+        answer.insert("total".into(), self.total.into());
+        answer.insert("truncated".into(), self.next_cursor.is_some().into());
+        answer.insert(
+            "next_cursor".into(),
+            self.next_cursor
+                .clone()
+                .map_or(serde_json::Value::Null, Into::into),
+        );
+    }
+}
+
+/// An identity for one listing: its rows' addresses, in order. A cursor cut
+/// from one listing is stale against any other.
+pub fn listing_fingerprint<'a>(addresses: impl IntoIterator<Item = (&'a str, &'a str)>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (provider, id) in addresses {
+        provider.hash(&mut hasher);
+        id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+impl ListingRequest {
+    /// The rows of a listing of `total` rows, identified by `fingerprint`
+    /// ([`listing_fingerprint`]), that this page holds.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_arguments` for a cursor this socket never handed out, and
+    /// `stale_cursor` for one cut from a listing that has changed since.
+    pub fn window(&self, total: usize, fingerprint: u64) -> Result<ListingWindow, ActionRefusal> {
+        let start = match self.cursor.as_deref() {
+            None => 0,
+            Some(cursor) => {
+                let (offset, listing) = cursor
+                    .split_once('.')
+                    .and_then(|(offset, listing)| {
+                        Some((
+                            offset.parse::<usize>().ok()?,
+                            u64::from_str_radix(listing, 16).ok()?,
+                        ))
+                    })
+                    .ok_or_else(|| {
+                        ActionRefusal::invalid_arguments(
+                            "cursor is not a next_cursor this listing handed out",
+                        )
+                    })?;
+                if listing != fingerprint || offset > total {
+                    return Err(ActionRefusal::stale_cursor());
+                }
+                offset
+            }
+        };
+        let limit = self
+            .limit
+            .unwrap_or(DEFAULT_LISTING_LIMIT)
+            .clamp(1, MAX_LISTING_LIMIT);
+        let end = start.saturating_add(limit).min(total);
+        Ok(ListingWindow {
+            rows: start..end,
+            total,
+            next_cursor: (end < total).then(|| format!("{end}.{fingerprint:016x}")),
+        })
+    }
+
+    /// Cut this page out of a whole listing already in `answer` — `actions`,
+    /// one row per action — and describe it there ([`ListingWindow::describe`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::window`].
+    pub fn apply(&self, answer: &mut serde_json::Value) -> Result<(), ActionRefusal> {
+        let Some(answer) = answer.as_object_mut() else {
+            return Ok(());
+        };
+        let mut rows = match answer.remove("actions") {
+            Some(serde_json::Value::Array(rows)) => rows,
+            _ => Vec::new(),
+        };
+        let field = |row: &serde_json::Value, name: &str| {
+            row.get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let addresses: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (field(row, "provider"), field(row, "id")))
+            .collect();
+        let window = self.window(
+            rows.len(),
+            listing_fingerprint(
+                addresses
+                    .iter()
+                    .map(|(provider, id)| (provider.as_str(), id.as_str())),
+            ),
+        )?;
+        rows.truncate(window.rows.end);
+        let mut page: Vec<serde_json::Value> = rows.drain(window.rows.clone()).collect();
+        if !self.detail.is_full() {
+            for row in &mut page {
+                if let Some(row) = row.as_object_mut() {
+                    row.remove("contract");
+                }
+            }
+        }
+        answer.insert("actions".into(), page.into());
+        window.describe(answer);
+        Ok(())
+    }
 }
 
 /// JSON text serialised once, straight from a typed value, and written into
@@ -445,20 +625,30 @@ pub trait ControlState {
         Err("no live action registry on this control state".to_string())
     }
 
-    /// Enumerate the bounded machine catalogue only when explicitly supported.
+    /// One `page` of the listing for `query`, with the bounded machine
+    /// catalogue only when explicitly supported. The default impl pages
+    /// [`Self::enumerate_actions`]' whole listing.
     ///
     /// # Errors
-    /// Returns a refusal if this state does not support programmatic discovery,
-    /// or if the underlying action catalogue is unavailable.
+    /// `enumerate_failed` if this state does not support programmatic
+    /// discovery, or if the underlying action catalogue is unavailable; a
+    /// cursor refusal from [`ListingRequest::window`].
     fn enumerate_actions_with_programmatic(
         &self,
         query: &str,
         include_programmatic: bool,
-    ) -> Result<serde_json::Value, String> {
+        page: &ListingRequest,
+    ) -> Result<serde_json::Value, ActionRefusal> {
         if include_programmatic {
-            return Err("this control state cannot enumerate programmatic actions".into());
+            return Err(ActionRefusal::listing_failed(
+                "this control state cannot enumerate programmatic actions",
+            ));
         }
-        self.enumerate_actions(query)
+        let mut answer = self
+            .enumerate_actions(query)
+            .map_err(ActionRefusal::listing_failed)?;
+        page.apply(&mut answer)?;
+        Ok(answer)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -509,6 +699,26 @@ impl ActionRefusal {
         Self {
             code: "action_failed",
             message: message.into(),
+        }
+    }
+
+    /// The listing could not be enumerated at all.
+    pub fn listing_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "enumerate_failed",
+            message: message.into(),
+        }
+    }
+
+    /// A listing cursor names a place in a listing that has changed since it
+    /// was handed out; list again from the start.
+    #[must_use]
+    pub fn stale_cursor() -> Self {
+        Self {
+            code: "stale_cursor",
+            message:
+                "the listing changed since this cursor was handed out; list again without a cursor"
+                    .into(),
         }
     }
 }
@@ -853,11 +1063,15 @@ pub fn dispatch_command<S: ControlState>(
         Command::ActionsEnumerate {
             query,
             include_programmatic,
+            page,
         } => (
-            answer_or_err(
-                state.enumerate_actions_with_programmatic(query, *include_programmatic),
-                "enumerate_failed",
-            ),
+            match state.enumerate_actions_with_programmatic(query, *include_programmatic, page) {
+                Ok(answer) => Response::Answer(answer),
+                Err(refusal) => Response::Err {
+                    code: refusal.code.to_string(),
+                    message: refusal.message,
+                },
+            },
             Vec::new(),
         ),
         // How long the answer waits is the transport's: it holds the reply.
@@ -2941,6 +3155,164 @@ mod tests {
         assert!(effects.is_empty());
     }
 
+    /// A listing of `rows` actions, each with a contract, or of the
+    /// `renamed` set when the listing has changed under a cursor.
+    struct ManyActions {
+        rows: usize,
+        renamed: std::cell::Cell<bool>,
+    }
+
+    impl ControlState for ManyActions {
+        fn widget_registry(&self) -> HashMap<String, Rect> {
+            HashMap::new()
+        }
+
+        fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+            let prefix = if self.renamed.get() {
+                "renamed"
+            } else {
+                "action"
+            };
+            let actions: Vec<_> = (0..self.rows)
+                .map(|n| {
+                    serde_json::json!({
+                        "provider": "shell.actions",
+                        "id": format!("{prefix}.{n}"),
+                        "params": [],
+                        "contract": { "permission": "write" },
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "query": query, "count": actions.len(), "actions": actions }))
+        }
+    }
+
+    fn list(page: ListingRequest) -> Command {
+        Command::ActionsEnumerate {
+            query: String::new(),
+            include_programmatic: false,
+            page,
+        }
+    }
+
+    fn answer(response: Response) -> serde_json::Value {
+        let Response::Answer(answer) = response else {
+            panic!("expected an answer, got {response:?}");
+        };
+        answer
+    }
+
+    #[test]
+    fn listings_come_in_pages_an_old_client_sees_the_first_of() {
+        let state = ManyActions {
+            rows: 450,
+            renamed: std::cell::Cell::new(false),
+        };
+        // A request without paging fields parses and is answered as before,
+        // as the first page, which says the listing goes on.
+        let old = parse_command(r#"{"op":"actions_enumerate","query":""}"#).unwrap();
+        assert_eq!(old, list(ListingRequest::default()));
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+        );
+        let first = answer(dispatch_command(&old, &state).0);
+        assert_eq!(first["count"], DEFAULT_LISTING_LIMIT);
+        assert_eq!(
+            first["actions"].as_array().unwrap().len(),
+            DEFAULT_LISTING_LIMIT
+        );
+        assert_eq!(first["total"], 450);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["actions"][0]["contract"]["permission"], "write");
+
+        // Following `next_cursor` visits every row once, in order.
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request = parse_command(
+                &serde_json::json!({
+                    "op": "actions_enumerate", "limit": 100, "cursor": cursor, "detail": "compact",
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let page = answer(dispatch_command(&request, &state).0);
+            for row in page["actions"].as_array().unwrap() {
+                assert!(
+                    row.get("contract").is_none(),
+                    "compact rows carry no contract"
+                );
+                assert!(
+                    row.get("params").is_some(),
+                    "compact rows can still be invoked"
+                );
+                seen.push(row["id"].as_str().unwrap().to_owned());
+            }
+            assert_eq!(page["count"], page["actions"].as_array().unwrap().len());
+            if page["truncated"] == false {
+                assert!(page["next_cursor"].is_null());
+                break;
+            }
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+        }
+        let expected: Vec<String> = (0..450).map(|n| format!("action.{n}")).collect();
+        assert_eq!(seen, expected);
+
+        // A cursor into a listing that has since changed is refused, not
+        // silently applied to the new one; a made-up one is a bad argument.
+        let page = answer(
+            dispatch_command(
+                &list(ListingRequest {
+                    limit: Some(10),
+                    ..ListingRequest::default()
+                }),
+                &state,
+            )
+            .0,
+        );
+        let cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        state.renamed.set(true);
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some(cursor),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "stale_cursor"),
+            "{response:?}"
+        );
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some("nonsense".into()),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "invalid_arguments"),
+            "{response:?}"
+        );
+
+        // `limit` is clamped, never trusted to size a reply.
+        let window = ListingRequest {
+            limit: Some(usize::MAX),
+            ..ListingRequest::default()
+        }
+        .window(10_000, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..MAX_LISTING_LIMIT);
+        let window = ListingRequest {
+            limit: Some(0),
+            ..ListingRequest::default()
+        }
+        .window(5, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..1);
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2979,6 +3351,7 @@ mod tests {
                     &Command::ActionsEnumerate {
                         include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
                     },
                     &ActionState,
                 );
@@ -3112,6 +3485,7 @@ mod tests {
                     &Command::ActionsEnumerate {
                         include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
                     },
                     &state,
                 );
@@ -3131,7 +3505,8 @@ mod tests {
                     enumerate,
                     Command::ActionsEnumerate {
                         include_programmatic: false,
-                        query: "settings".to_string()
+                        query: "settings".to_string(),
+                        page: ListingRequest::default(),
                     }
                 );
 
@@ -3141,7 +3516,8 @@ mod tests {
                     bare,
                     Command::ActionsEnumerate {
                         include_programmatic: false,
-                        query: String::new()
+                        query: String::new(),
+                        page: ListingRequest::default(),
                     }
                 );
 

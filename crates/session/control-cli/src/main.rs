@@ -105,6 +105,9 @@ fn error_hint(code: &str) -> Option<&'static str> {
              as --args-json '{\"name\": value}'",
         ),
         "session_locked" => Some("unlock the session at the device, then retry"),
+        "stale_cursor" => {
+            Some("the actions changed while you paged; list again from the first page")
+        }
         _ => None,
     }
 }
@@ -178,6 +181,7 @@ enum Command {
         query: String,
         json: bool,
         include_programmatic: bool,
+        page: ListPage,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address — no synthetic input, no window, no scene.
@@ -230,6 +234,15 @@ impl Command {
                 | Self::Read { .. }
         )
     }
+}
+
+/// Which page of `actions list` to ask for: `--limit ROWS` and `--cursor
+/// NEXT`, the `next_cursor` the previous page answered. Neither means the
+/// desktop's default first page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ListPage {
+    limit: Option<usize>,
+    cursor: Option<String>,
 }
 
 /// Top-level CLI invocation — the `--socket` override, if given, + the
@@ -460,6 +473,7 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
                     include_programmatic: false,
                     query: "read".into(),
                     json,
+                    page: ListPage::default(),
                 },
                 &response,
             );
@@ -822,12 +836,33 @@ fn parse_actions_command<'a>(
             // the caller having to quote it.
             let mut json = false;
             let mut include_programmatic = false;
+            let mut page = ListPage::default();
             let mut words: Vec<String> = Vec::new();
-            for rest in iter.by_ref() {
+            while let Some(rest) = iter.next() {
                 if rest == "--json" {
                     json = true;
                 } else if rest == "--programmatic" {
                     include_programmatic = true;
+                } else if rest == "--limit" {
+                    let raw = iter.next().ok_or_else(|| {
+                        ParseError::Usage("actions list --limit needs a number of rows".into())
+                    })?;
+                    page.limit = Some(raw.parse::<usize>().map_err(|_| {
+                        ParseError::Usage(format!(
+                            "actions list --limit: `{raw}` is not a number of rows"
+                        ))
+                    })?);
+                } else if rest == "--cursor" {
+                    page.cursor = Some(
+                        iter.next()
+                            .ok_or_else(|| {
+                                ParseError::Usage(
+                                    "actions list --cursor needs the next_cursor a page gave"
+                                        .into(),
+                                )
+                            })?
+                            .clone(),
+                    );
                 } else {
                     words.push(rest.clone());
                 }
@@ -836,6 +871,7 @@ fn parse_actions_command<'a>(
                 query: words.join(" "),
                 json,
                 include_programmatic,
+                page,
             })
         }
         "invoke" => parse_action_invocation(iter),
@@ -968,12 +1004,31 @@ fn action_arguments(
         .map(|value| value.unwrap_or_else(|| serde_json::json!({})))
 }
 
-fn actions_list_wire(query: &str, include_programmatic: bool) -> serde_json::Value {
-    if include_programmatic {
-        serde_json::json!({ "op": "actions_enumerate", "query": query, "include_programmatic": true })
-    } else {
-        serde_json::json!({ "op": "actions_enumerate", "query": query })
+/// `actions list`'s request. The table prints no contracts, so it asks for
+/// compact rows; `--json` prints what the desktop answers, so it asks for
+/// full ones.
+fn actions_list_wire(
+    query: &str,
+    include_programmatic: bool,
+    json: bool,
+    page: &ListPage,
+) -> serde_json::Value {
+    let mut wire = serde_json::json!({ "op": "actions_enumerate", "query": query });
+    if let Some(object) = wire.as_object_mut() {
+        if include_programmatic {
+            object.insert("include_programmatic".into(), true.into());
+        }
+        if !json {
+            object.insert("detail".into(), "compact".into());
+        }
+        if let Some(limit) = page.limit {
+            object.insert("limit".into(), limit.into());
+        }
+        if let Some(cursor) = &page.cursor {
+            object.insert("cursor".into(), cursor.clone().into());
+        }
     }
+    wire
 }
 
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
@@ -1039,8 +1094,9 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::ActionsList {
             query,
             include_programmatic,
-            ..
-        } => actions_list_wire(query, *include_programmatic),
+            json,
+            page,
+        } => actions_list_wire(query, *include_programmatic, *json, page),
         Command::ActionsInvoke {
             provider,
             id,
@@ -1173,6 +1229,14 @@ fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
         let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let address = format!("{provider}:{id}");
         println!("{address:<width$}  {kind:<12}  {title}");
+    }
+    if let Some(next) = answer.get("next_cursor").and_then(|v| v.as_str()) {
+        let total = answer.get("total").and_then(serde_json::Value::as_u64);
+        eprintln!(
+            "showing {} of {} actions; the next page: --cursor {next}",
+            actions.len(),
+            total.map_or_else(|| "more".to_string(), |total| total.to_string()),
+        );
     }
     0
 }
@@ -1402,6 +1466,9 @@ fn print_usage() {
          \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
+         \x20              [--limit ROWS] [--cursor NEXT]\n\
+         \x20                               one page at a time (default 200 rows); a\n\
+         \x20                               longer listing names its next page's cursor\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
          \x20               [--wait[=MS]]   run one action by its address; answers the\n\
          \x20                               typed receipt. --wait answers once it has\n\
@@ -1646,6 +1713,24 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// The table asks for compact rows; paging flags pass through.
+    #[test]
+    fn actions_list_pages_and_asks_for_compact_rows_for_the_table() {
+        let table = parse(&[
+            "actions", "list", "open", "--limit", "50", "--cursor", "50.ab",
+        ])
+        .unwrap();
+        assert_eq!(
+            wire(&table.command),
+            serde_json::json!({
+                "op": "actions_enumerate", "query": "open", "detail": "compact",
+                "limit": 50, "cursor": "50.ab",
+            })
+        );
+        assert!(parse(&["actions", "list", "--limit", "many"]).is_err());
+        assert!(parse(&["actions", "list", "--cursor"]).is_err());
     }
 
     #[test]

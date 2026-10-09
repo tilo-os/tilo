@@ -2565,6 +2565,93 @@ impl FrameBuilderControlState<'_> {
         drop(chrome);
         displays
     }
+
+    /// The action listing for `query` through the *same* provider registry
+    /// that feeds the Ctrl+K palette — but rendering nothing. With `page`,
+    /// that page of it ([`test_control::ListingRequest`]); without, all of it.
+    /// Only the answered rows become JSON: describing every row of a large
+    /// catalogue cost more than building it.
+    fn listing(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+        page: Option<&test_control::ListingRequest>,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
+        let (doc, root) = self.doc.ok_or_else(|| {
+            test_control::ActionRefusal::listing_failed("control state has no live document")
+        })?;
+        let chrome_handle = self.fb.chrome_handle();
+        // The borrow lives only for the closure; `ActionCatalog` owns its results
+        // outright, so the catalogue outlives the guards it was built through.
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog_query(
+                &crate::shell::search::QueryArgs {
+                    needle: query,
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root: root,
+                },
+                gate,
+                include_programmatic,
+            )
+        })
+        .map_err(test_control::ActionRefusal::listing_failed)?;
+        let window = page
+            .map(|page| {
+                page.window(
+                    catalog.len(),
+                    test_control::listing_fingerprint(catalog.addresses()),
+                )
+            })
+            .transpose()?;
+        let compact = page.is_some_and(|page| !page.detail.is_full());
+        let rows = window
+            .as_ref()
+            .map_or(0..catalog.len(), |window| window.rows.clone());
+        let actions: Vec<serde_json::Value> = catalog
+            .enumerate_rows(rows)
+            .into_iter()
+            .map(|a| {
+                let hierarchy = a.hierarchy.as_ref();
+                let mut row = serde_json::json!({
+                    "provider": a.resource.provider,
+                    "id": a.resource.id,
+                    "kind": a.kind.id(),
+                    "operation_kind": a.operation_kind,
+                    "title": a.title,
+                    "subtitle": a.subtitle,
+                    "score": a.score,
+                    // What to pass; empty for the nullary majority. A parameter list describes
+                    // an invocation, it is not one, so enumeration stays side-effect-free.
+                    "params": params_json(&a.params),
+                    "contract": a.contract,
+                    // The provider resolves identity from its authenticated source;
+                    // opaque invocation IDs and presentation labels stay independent.
+                    "application": hierarchy.map(|value| &value.application),
+                    "room": hierarchy.map(|value| &value.room),
+                    "record": hierarchy.map(|value| &value.record),
+                    "resource": hierarchy.map(|value| &value.resource),
+                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
+                    "operation": hierarchy.map(|value| &value.operation),
+                });
+                if compact && let Some(row) = row.as_object_mut() {
+                    row.remove("contract");
+                }
+                row
+            })
+            .collect();
+        let mut answer = serde_json::Map::new();
+        answer.insert("query".into(), query.into());
+        answer.insert("count".into(), actions.len().into());
+        answer.insert("actions".into(), actions.into());
+        if let Some(window) = window {
+            window.describe(&mut answer);
+        }
+        Ok(serde_json::Value::Object(answer))
+    }
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -2886,69 +2973,19 @@ impl ControlState for FrameBuilderControlState<'_> {
 
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
+    /// The whole listing, unpaged.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
-        self.enumerate_actions_with_programmatic(query, false)
+        self.listing(query, false, None)
+            .map_err(|refusal| refusal.message)
     }
 
     fn enumerate_actions_with_programmatic(
         &self,
         query: &str,
         include_programmatic: bool,
-    ) -> Result<serde_json::Value, String> {
-        let (doc, root) = self
-            .doc
-            .ok_or_else(|| "control state has no live document".to_string())?;
-        let chrome_handle = self.fb.chrome_handle();
-        // The borrow lives only for the closure; `ActionCatalog` owns its results
-        // outright, so the catalogue outlives the guards it was built through.
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb.host().action_catalog_query(
-                &crate::shell::search::QueryArgs {
-                    needle: query,
-                    scope: crate::shell::chrome_state::SearchScope::All,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome,
-                    doc,
-                    doc_root: root,
-                },
-                gate,
-                include_programmatic,
-            )
-        })?;
-        let actions: Vec<serde_json::Value> = catalog
-            .enumerate()
-            .into_iter()
-            .map(|a| {
-                let hierarchy = a.hierarchy.as_ref();
-                serde_json::json!({
-                    "provider": a.resource.provider,
-                    "id": a.resource.id,
-                    "kind": a.kind.id(),
-                    "operation_kind": a.operation_kind,
-                    "title": a.title,
-                    "subtitle": a.subtitle,
-                    "score": a.score,
-                    // What to pass; empty for the nullary majority. A parameter list describes
-                    // an invocation, it is not one, so enumeration stays side-effect-free.
-                    "params": params_json(&a.params),
-                    "contract": a.contract,
-                    // The provider resolves identity from its authenticated source;
-                    // opaque invocation IDs and presentation labels stay independent.
-                    "application": hierarchy.map(|value| &value.application),
-                    "room": hierarchy.map(|value| &value.room),
-                    "record": hierarchy.map(|value| &value.record),
-                    "resource": hierarchy.map(|value| &value.resource),
-                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
-                    "operation": hierarchy.map(|value| &value.operation),
-                })
-            })
-            .collect();
-        Ok(serde_json::json!({
-            "query": query,
-            "count": actions.len(),
-            "actions": actions,
-        }))
+        page: &test_control::ListingRequest,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
+        self.listing(query, include_programmatic, Some(page))
     }
 
     /// Resolve one `(provider, id)` address against a fresh catalogue,
@@ -17212,6 +17249,63 @@ mod tests {
             );
             assert!(chrome.is_object(), "chrome should be an object");
         }
+    }
+
+    /// A page of the live listing is a slice of the whole one, in its order,
+    /// and following `next_cursor` walks all of it.
+    #[test]
+    fn the_live_listing_pages_through_every_row_once() {
+        let fb = FrameBuilder::new((1600, 900));
+        let doc = AutoCommit::new();
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: Some((&doc, &automerge::ROOT)),
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+        };
+        let whole = state.enumerate_actions("").expect("the whole listing");
+        let ids = |answer: &serde_json::Value| -> Vec<String> {
+            answer["actions"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| format!("{}:{}", row["provider"], row["id"]))
+                .collect()
+        };
+        let expected = ids(&whole);
+        assert!(expected.len() > 3, "the demo desktop exports actions");
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = state
+                .enumerate_actions_with_programmatic(
+                    "",
+                    false,
+                    &test_control::ListingRequest {
+                        limit: Some(3),
+                        cursor: cursor.take(),
+                        detail: test_control::ListingDetail::Compact,
+                    },
+                )
+                .expect("a page");
+            assert_eq!(page["total"], expected.len());
+            assert!(page["actions"].as_array().expect("rows").len() <= 3);
+            assert!(
+                page["actions"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .all(|row| row.get("contract").is_none() && row.get("params").is_some())
+            );
+            seen.extend(ids(&page));
+            match page["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, expected);
     }
 
     /// The state dump is the desktop as it is: its size does not grow with
