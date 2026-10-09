@@ -8,7 +8,6 @@
 //! └── workspaces/
 //!     └── <workspace_id>/
 //!         ├── snapshot.automerge    # full pinned CRDT snapshot
-//!         ├── log.jsonl             # append-only delta metadata (audit)
 //!         ├── retained/v2/<author>-<channel>/
 //!         │   ├── CURRENT          # atomic generation selector
 //!         │   └── <generation>/    # shared checkpoint + immutable tail
@@ -46,9 +45,6 @@ use thiserror::Error;
 /// Filename used for the pinned Automerge snapshot inside a
 /// workspace directory.
 pub const SNAPSHOT_FILE: &str = "snapshot.automerge";
-
-/// Filename used for the append-only audit log.
-pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
@@ -106,25 +102,9 @@ pub enum StoreError {
     /// I/O failure.
     #[error("io: {0}")]
     Io(#[from] io::Error),
-    /// JSON encode/decode failure for the audit log.
+    /// JSON encode/decode failure for a metadata file.
     #[error("json: {0}")]
     Json(String),
-}
-
-/// One line in `log.jsonl` — an audit trail of every delta the
-/// relay received.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LogEntry {
-    /// Workspace id.
-    pub workspace_id: u64,
-    /// Received-at nanoseconds since epoch (relay clock).
-    pub received_at_ns: u64,
-    /// Author device pubkey, hex-encoded.
-    pub author_device_hex: String,
-    /// Author's own authored-at timestamp.
-    pub authored_at_ns: u64,
-    /// Delta size in bytes.
-    pub delta_len: u64,
 }
 
 /// Ledger of admitted `Commit`s, see [`CommitRecord`].
@@ -217,6 +197,23 @@ pub(crate) struct PendingEntry {
     pub bytes: Vec<u8>,
 }
 
+/// Older relays appended one JSON line per admitted delta to this file and
+/// never read it back, so it only grew (~170 B per keystroke). Nothing writes
+/// it any more; [`WorkspaceStore::open`] reclaims what an older relay left.
+const LEGACY_DELTA_LOG: &str = "log.jsonl";
+
+fn remove_legacy_delta_log(root: &Path) {
+    match fs::remove_file(root.join(LEGACY_DELTA_LOG)) {
+        Ok(()) => tracing::info!(root = %root.display(), "removed the legacy per-delta log"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        // Best effort: the file is inert, and opening the store must not
+        // depend on reclaiming it.
+        Err(error) => {
+            tracing::warn!(root = %root.display(), %error, "legacy per-delta log not removed")
+        }
+    }
+}
+
 impl WorkspaceStore {
     /// Open (creating if necessary) the on-disk state for
     /// `workspace_id` under `state_root/workspaces/<id>/`.
@@ -237,6 +234,7 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(RETAINED_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
+        remove_legacy_delta_log(&root);
         Ok(Self {
             root,
             workspace_id,
@@ -611,25 +609,6 @@ impl WorkspaceStore {
         }
     }
 
-    /// Append an audit log entry. Non-fatal if the log file fails —
-    /// the audit trail is best-effort, forwarding must not depend
-    /// on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the log file can't be opened for append,
-    /// `entry` can't be JSON-encoded, or the write fails.
-    pub fn append_log(&self, entry: &LogEntry) -> Result<(), StoreError> {
-        let path = self.root.join(LOG_FILE);
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let line = serde_json::to_string(entry).map_err(|e| StoreError::Json(e.to_string()))?;
-        writeln!(file, "{line}")?;
-        Ok(())
-    }
-
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
     /// enqueue produces a new file `<seq>.delta` where seq is a
     /// monotonically increasing hex nanosecond timestamp; the
@@ -954,21 +933,14 @@ mod tests {
             store.save_snapshot(b"HELLO").unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
         }
-        // Phase `log_append`.
+        // Phase `open_reclaims_the_legacy_delta_log`.
         {
             let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("workspaces").join("7");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join(LEGACY_DELTA_LOG), b"{\"workspace_id\":7}\n").unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-            store
-                .append_log(&LogEntry {
-                    workspace_id: 7,
-                    received_at_ns: 1,
-                    author_device_hex: "aa".repeat(32),
-                    authored_at_ns: 0,
-                    delta_len: 42,
-                })
-                .unwrap();
-            let text = fs::read_to_string(store.root().join(LOG_FILE)).unwrap();
-            assert!(text.contains("\"workspace_id\":7"));
+            assert!(!store.root().join(LEGACY_DELTA_LOG).exists());
         }
         // Phase `pending_queue_orderly_drain`.
         {
