@@ -571,7 +571,13 @@ pub fn run() -> std::process::ExitCode {
         .then(|| ui::warmup::spawn_warmup(!want_vello))
         .flatten();
 
-    tracing_subscriber::fmt::init();
+    // RUST_LOG as `fmt::init` reads it, with the per-launch timing lines kept:
+    // the open-latency gate reads them from the session log.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
+        .init();
     shell::crash_log::install("tilo shell panic");
     // After the crash log: a panic outside a helper's panic boundary still
     // ends the compositor, in every build. Inside one (the collaboration
