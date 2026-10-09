@@ -2394,6 +2394,9 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        // The map built now describes the tree as it is: a replacement the
+        // widgets reported before is part of it, not a change after it.
+        self.take_composition_dirty();
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.continuation.pending_view.take() {
@@ -2446,7 +2449,10 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        // Always take the widgets' report, so it is not mistaken later for a
+        // change after the map this rebuild makes.
+        let reported = self.take_composition_dirty();
+        let topology_changed = self.layout.structure_dirty || reported;
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {

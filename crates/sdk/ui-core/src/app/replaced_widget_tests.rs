@@ -230,3 +230,32 @@ fn an_accessibility_action_after_a_replacement_reaches_no_replaced_control() {
     app.rebuild_structure();
     assert_eq!(app.focusable_order.len(), 1);
 }
+
+/// A replacement reported before the layout was built is part of that
+/// layout: an assistive technology's action afterwards reaches the control
+/// it names, rather than being dropped as if the tree had changed since.
+#[test]
+fn a_replacement_the_layout_already_took_in_does_not_drop_an_action() {
+    use crate::a11y::Action;
+    use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
+    let (root, armed) = Replacing::new(ReplaceAt::Sync);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    armed.set(true);
+    app.root_widget.sync(&app.state.doc, &app.state.root);
+    assert!(!armed.get(), "the sync replaced the control");
+    app.init_layout();
+    let target = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Tripwire"))
+        .map(|(id, _)| *id)
+        .expect("the control is exported");
+    let control = app.focusable_order[0];
+    let _ = app.dispatch_a11y_action(target, &Action::Focus);
+    assert_eq!(
+        app.focused_node,
+        Some(control),
+        "the action reached the control"
+    );
+}

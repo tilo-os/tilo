@@ -174,7 +174,6 @@ impl FeedsModal {
         let cancel = Rc::new(Cell::new(false));
         let dialog = ModalDialog::new(title, body)
             .open(true)
-            .with_destructive(matches!(intent, ModalIntent::Unsubscribe { .. }))
             .primary_action(primary, {
                 let s = Rc::clone(&submit);
                 move || s.set(true)
@@ -235,18 +234,6 @@ impl FeedsModal {
             "Rename feed",
             body,
             "Rename",
-        )
-    }
-
-    fn unsubscribe(feed_id: Id, title: &str) -> Self {
-        let body = ModalBody::message(&format!(
-            "\u{201c}{title}\u{201d} and its articles will be removed from this device.",
-        ));
-        Self::new(
-            ModalIntent::Unsubscribe { feed_id },
-            "Unsubscribe from this feed?",
-            body,
-            "Unsubscribe",
         )
     }
 
@@ -1073,7 +1060,11 @@ impl Core {
                     .unwrap_or_default();
                 self.open_modal(FeedsModal::rename(feed_id, &title));
             }
-            MenuAction::Unsubscribe(feed_id) => self.open_unsubscribe_confirm(feed_id),
+            // The host asks the person before it unsubscribes; the feed
+            // leaves the sidebar once the library no longer holds it.
+            MenuAction::Unsubscribe(feed_id) => {
+                self.perform(doc, Library::UNSUBSCRIBE.with(feed_id));
+            }
             MenuAction::Import => self.request_import(),
             MenuAction::Export => self.export_opml(),
             MenuAction::ToggleRead => self.toggle_read(doc),
@@ -1119,15 +1110,6 @@ impl Core {
         self.open_modal(FeedsModal::add_folder());
     }
 
-    fn open_unsubscribe_confirm(&mut self, feed_id: Id) {
-        let title = self
-            .store
-            .feed(&feed_id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default();
-        self.open_modal(FeedsModal::unsubscribe(feed_id, &title));
-    }
-
     /// Run a dialog's primary action with `value` against the store and the
     /// document. Returns `false` (the dialog stays open) when a required
     /// field is empty.
@@ -1145,7 +1127,6 @@ impl Core {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
             ModalIntent::AddFolder => self.add_folder(&value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(&feed_id, &value, doc),
-            ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(&feed_id, doc),
             ModalIntent::EditArticleTags { article_id } => self.set_tags(&article_id, &value, doc),
         }
         true
@@ -1174,26 +1155,6 @@ impl Core {
         } else {
             format!("Saved {}", plural(tags.len(), "tag", "tags"))
         });
-    }
-
-    /// Delete a feed and its articles from the store and the document, and
-    /// recover a place or selection that pointed at it.
-    pub(crate) fn unsubscribe_feed(&mut self, feed_id: &Id, doc: &mut ui::widget::Edits<'_>) {
-        let title = self
-            .store
-            .feed(feed_id)
-            .map(|f| f.title.clone())
-            .unwrap_or_default();
-        let removed = self.store.remove_feed(feed_id);
-        self.perform(doc, Library::UNSUBSCRIBE.with(feed_id.clone()));
-        if matches!(&self.filter, Filter::Feed(id) if id == feed_id) {
-            self.set_filter(Filter::All);
-        }
-        if self.selected.as_ref().is_some_and(|s| removed.contains(s)) {
-            self.selected = None;
-        }
-        self.ensure_selection();
-        self.set_toast(format!("Unsubscribed from {title}"));
     }
 
     pub(crate) fn rename_feed(
@@ -2699,6 +2660,11 @@ impl FeedsApp {
         let first = !core.synced;
         core.store = store;
         core.arrive();
+        // A feed shown on its own that is gone (unsubscribed here or by a
+        // collaborator) leaves the list on everything.
+        if matches!(&core.filter, Filter::Feed(id) if core.store.feed(id).is_none()) {
+            core.set_filter(Filter::All);
+        }
         core.ensure_selection();
         if first && core.selected.is_none() {
             core.select_featured();
