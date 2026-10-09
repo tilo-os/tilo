@@ -66,7 +66,7 @@ def tabs(state):
     return result
 
 
-def fresh_binding(state, preserved, cohort):
+def fresh_binding(state, preserved, cohort, application=APP):
     current = tabs(state)
     if any(current.get(key) != row for key, row in preserved.items()):
         raise RuntimeError("Pre-existing tab or record association changed")
@@ -77,12 +77,12 @@ def fresh_binding(state, preserved, cohort):
             raise RuntimeError("Fresh owned tab is ambiguous")
         return None
     (room, tab), row = added[0]
-    if row["application"] != APP or type(row["surface"]) is not int or row["surface"] <= 0:
+    if row["application"] != application or type(row["surface"]) is not int or row["surface"] <= 0:
         return None
     association = row["association"]
     if association is None:
         return None
-    if (not isinstance(association, dict) or association.get("app_id") != APP
+    if (not isinstance(association, dict) or association.get("app_id") != application
             or association.get("room") != room
             or type(association.get("record_instance")) is not int):
         raise RuntimeError("Fresh Notes public record association unavailable")
@@ -101,7 +101,7 @@ def fresh_binding(state, preserved, cohort):
     if len(found) != 1:
         raise RuntimeError("Fresh native worker ambiguous")
     subject = found[0]
-    if (subject.get("package_id") != APP
+    if (subject.get("package_id") != application
             or subject.get("record_instance") != association["record_instance"]
             or type(subject.get("peer_pid")) is not int or subject["peer_pid"] <= 0
             or not isinstance(subject.get("peer_start_time_ticks"), str)
@@ -111,7 +111,7 @@ def fresh_binding(state, preserved, cohort):
                                 str(subject.get("adoption_id")))
             or subject["adoption_id"] == "00000000-0000-0000-0000-000000000000"):
         raise RuntimeError("Native worker record/lifetime unavailable")
-    record = cohort.mapped_record(state, (room, tab, str(row["surface"])), APP)
+    record = cohort.mapped_record(state, (room, tab, str(row["surface"])), application)
     if record is None:
         return None  # Current worker has not published its certified checkout yet.
     return dict(room=room, tab=tab, group=row["group"], surface=row["surface"],

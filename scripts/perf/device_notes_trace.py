@@ -21,6 +21,8 @@ phase_fields = set("serial event revision phase_timing queue_wait_us render_us t
                    "sparse_attempts full_attempts damage_admitted".split())
 optional_numbers = {"input_age_at_enqueue_us", "physical_presented_time_ns", "physical_sequence"}
 submissions = []
+gpu_submissions = []
+gpu_fields = set("serial revision scope status process_id renderer_generation encoder_supported encoder_enabled external_queue_work first_recording last_recording recording_count measured_count stale_count recording_ns post_render_ns".split())
 submission_fields = set("serial status scene_count command_count finish_count submit_count scene_record_us command_encode_us encoder_finish_us queue_submit_us sparse_marker_submit_us".split())
 lifecycle = []
 records = []
@@ -32,6 +34,27 @@ diagnostic_fields = {
 }
 diagnostic_events = ({"imported", "activated", "budget-exhausted"}, {"submitted", "completed"}, {"retired"})
 for line in Path(sys.argv[1]).read_text().splitlines():
+    if "FRAME-GPU-SUBMISSION " in line:
+        suffix = line.partition("FRAME-GPU-SUBMISSION ")[2]
+        if len(suffix) > 4096 or len(gpu_submissions) >= 10000:
+            raise SystemExit("GPU submission records exceed their bound")
+        fields = {}
+        for token in suffix.split():
+            key, separator, value = token.partition("=")
+            if not separator or key not in gpu_fields:
+                continue
+            if key in fields:
+                raise SystemExit("Duplicate GPU submission field")
+            valid = ((key == "scope" and value == "encoder_before_query_resolve")
+                     or (key == "status" and value in ("complete", "incomplete", "unsupported", "disabled", "missing"))
+                     or (key in ("encoder_supported", "encoder_enabled", "external_queue_work") and value in ("true", "false"))
+                     or (key in ("renderer_generation", "first_recording", "last_recording", "recording_ns", "post_render_ns") and value == "none")
+                     or (key not in ("scope", "status", "encoder_supported", "encoder_enabled", "external_queue_work") and value.isascii() and value.isdecimal()))
+            if not valid:
+                raise SystemExit("Invalid GPU submission field")
+            fields[key] = value
+        gpu_submissions.append((fields.get("serial"), "FRAME-GPU-SUBMISSION " + " ".join(key + "=" + value for key, value in fields.items())))
+        continue
     if "FRAME-SUBMISSION serial=" in line:
         suffix = line.partition("FRAME-SUBMISSION ")[2]
         if len(suffix) > 4096 or len(submissions) >= 10000:
@@ -199,6 +222,10 @@ selected.extend(original for proof, original in lifecycle if proof in proofs)
 selected.extend(original for _, original in lifecycle[-128:])
 selected_serials = {line.partition("serial=")[2].split()[0] for line in selected if line.startswith("FRAME-LIFECYCLE serial=")}
 selected.extend(original for serial, original in submissions if serial in selected_serials)
+selected_gpu = [(serial, original) for serial, original in gpu_submissions if serial in selected_serials]
+if len({serial for serial, _ in selected_gpu}) != len(selected_gpu):
+    raise SystemExit("Duplicate selected GPU submission identity")
+selected.extend(original for _, original in selected_gpu)
 result = "\n".join(dict.fromkeys(selected))
 if len(result.encode()) > 524288:
     raise SystemExit("Notes trace cohort exceeds the bounded collection limit")

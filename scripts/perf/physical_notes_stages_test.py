@@ -576,10 +576,6 @@ class ForeignCaptureJoin(unittest.TestCase):
         self.assertFalse(self.report([], required=False)['available'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class PhysicalSettingsStages(unittest.TestCase):
     def fixture(self, hover=False):
         baseline = PhysicalNotesStages().fixture()
@@ -687,7 +683,7 @@ class PhysicalSettingsStages(unittest.TestCase):
         self.assertTrue(report['native_gpu']['complete'])
         self.assertEqual(report['compositor']['frames'][0]['submission_gpu']['renderer_generation'], 7)
         self.assertEqual(report['compositor']['gpu_costs']['recording_ns']['n'], 1)
-        self.assertEqual(report['compositor']['gpu_costs']['recording_ns']['p99_ms'], .00003)
+        self.assertEqual(report['compositor']['gpu_costs']['recording_ns']['p99_ms'], 30 * 1e-6)
         for gpu in (None, gpu_record(status='incomplete', recording_count=2, last_recording=4),
                     gpu_record(serial=42)):
             altered = [phase] + ([gpu] if gpu is not None else []) + compositor[2:]
@@ -724,3 +720,7 @@ class PhysicalSettingsStages(unittest.TestCase):
                 with self.subTest(case=case):
                     self.assertNotEqual(result.returncode,0)
                     self.assertFalse(output.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()
