@@ -163,8 +163,7 @@ def compositor_evidence(record, gpu, cpu, producer):
 
 def summarize_palette_latency(lines, *, mode, process_id, observer_session,
                               expected_query_hash, target_provider, target_action,
-                              target_pane=None, settings_process_id=None,
-                              settings_observer_session=None):
+                              settings_target=None):
     if mode not in MODES:
         raise ValueError('Explicit palette workload mode required')
     producer = number(process_id, 1)
@@ -211,8 +210,9 @@ def summarize_palette_latency(lines, *, mode, process_id, observer_session,
                     or submission[0].get('activation_dispatch_ns') != dispatch):
                 raise ValueError('Missing original physical button/broker invocation join')
             invocation = random_id(submission[0].get('invocation'))
-            activation = summarize_settings_activation(lines, invocation, target_pane,
-                settings_process_id, settings_observer_session)
+            if not isinstance(settings_target, tuple) or len(settings_target) != 3:
+                raise ValueError('Exact Settings pane and worker identity required')
+            activation = summarize_settings_activation(lines, invocation, *settings_target)
             if not activation['physical_activation_available']:
                 raise ValueError('Broker-only activation is not physical button latency')
             matches = [r for r in phases.values() if r['physical_outcome'] ==
@@ -326,6 +326,8 @@ def main():
     if args.mode == 'click' and any(options[key] is None for key in
             ('target_pane', 'settings_process_id', 'settings_observer_session')):
         parser.error('click requires exact Settings pane and worker PID/observer session')
+    options['settings_target'] = tuple(options.pop(key) for key in
+            ('target_pane', 'settings_process_id', 'settings_observer_session'))
     report = summarize_palette_latency(capture_lines(log), **options)
     descriptor = os.open(out, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, 'w') as destination:
