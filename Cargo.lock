@@ -8710,6 +8710,7 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
+ "tilo-history",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
