@@ -341,6 +341,59 @@ class CompositorPhaseJoin(unittest.TestCase):
         self.assertEqual(result['costs']['kms_retirement_us']['p50_ms'], .019)
         self.assertEqual(result['frames'][0]['readback_classification'], 'compositor_readback_reported')
 
+    def test_gpu_percentiles_use_only_exact_complete_frames_and_keep_nested_intervals(self):
+        from compositor_phases import summarize_compositor_phases
+        from compositor_submission_test import gpu_record
+        samples = [dict(input_id=index, cpu_frame_id=index) for index in range(1, 5)]
+        feedback = {index: dict(presented_time_ns=100 + index, sequence=index,
+                               clock_id=1, discarded=False, flags=7) for index in range(1, 5)}
+        lines = []
+        for index, duration in enumerate((0, 1000000, 2000000, 4000000), 1):
+            lines.extend([self.line(serial=index, revision=9,
+                physical_presented_time_ns=100 + index, physical_sequence=index),
+                gpu_record(serial=index, first_recording=index, last_recording=index,
+                           recording_ns=duration, post_render_ns=duration // 2)])
+        # Valid background GPU work is never attributed to these input frames.
+        lines.extend([self.line(serial=99, revision=9, physical_sequence=99),
+                      gpu_record(serial=99, first_recording=99, last_recording=99,
+                                 recording_ns=900000000, post_render_ns=800000000)])
+        report = summarize_compositor_phases(lines, samples, feedback)
+        self.assertTrue(report['gpu_available'])
+        self.assertTrue(report['gpu_complete'])
+        self.assertEqual(report['gpu_clock'], 'device_relative_duration_ns')
+        self.assertEqual(report['coverage']['gpu_samples_matched'], 4)
+        self.assertEqual(report['coverage']['unmatched_gpu_records'], 1)
+        recording = report['gpu_costs']['recording_ns']
+        self.assertEqual(recording['n'], 4)
+        self.assertEqual(recording['min_ms'], 0)
+        self.assertEqual(recording['p50_ms'], 1)
+        self.assertEqual(recording['p95_ms'], 4)
+        self.assertEqual(recording['p99_ms'], 4)
+        self.assertEqual(report['gpu_costs']['post_render_ns']['p99_ms'], 2)
+        self.assertAlmostEqual(report['costs']['gpu_completion_wait_us']['p99_ms'], .009)
+        partial_lines = [line for line in lines if not line.startswith('FRAME-GPU-SUBMISSION serial=4 ')]
+        partial = summarize_compositor_phases(partial_lines, samples, feedback)
+        self.assertTrue(partial['gpu_available'])
+        self.assertFalse(partial['gpu_complete'])
+        self.assertEqual(partial['coverage']['gpu_samples_matched'], 3)
+        self.assertEqual(partial['gpu_costs']['recording_ns']['n'], 3)
+        self.assertEqual(partial['gpu_costs']['recording_ns']['p99_ms'], 2)
+
+    def test_missing_partial_or_foreign_gpu_work_never_becomes_measured_zero(self):
+        from compositor_submission_test import gpu_record
+        for records in ([], [gpu_record(serial=42)],
+                        [gpu_record(revision=73, status='incomplete',
+                                    recording_count=2, last_recording=4)]):
+            with self.subTest(records=records):
+                report = self.report([self.line()] + records)
+                self.assertTrue(report['complete'])
+                self.assertFalse(report['gpu_available'])
+                self.assertFalse(report['gpu_complete'])
+                self.assertEqual(report['gpu_costs'], {})
+                self.assertEqual(report['coverage']['gpu_samples_matched'], 0)
+        with self.assertRaisesRegex(ValueError, 'another frame revision'):
+            self.report([self.line(), gpu_record(revision=72)])
+
     def test_actual_render_decisions_are_optional_and_exact_outcome_owned(self):
         result = self.report([self.line(render_work='true', target_width=1920,
             target_height=1080, render_attempts=2, sparse_attempts=1,
@@ -523,10 +576,6 @@ class ForeignCaptureJoin(unittest.TestCase):
         self.assertFalse(self.report([], required=False)['available'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class PhysicalSettingsStages(unittest.TestCase):
     def fixture(self, hover=False):
         baseline = PhysicalNotesStages().fixture()
@@ -633,6 +682,16 @@ class PhysicalSettingsStages(unittest.TestCase):
         self.assertTrue(report['foreign_capture']['complete'])
         self.assertTrue(report['native_gpu']['complete'])
         self.assertEqual(report['compositor']['frames'][0]['submission_gpu']['renderer_generation'], 7)
+        self.assertEqual(report['compositor']['gpu_costs']['recording_ns']['n'], 1)
+        self.assertEqual(report['compositor']['gpu_costs']['recording_ns']['p99_ms'], 30 * 1e-6)
+        for gpu in (None, gpu_record(status='incomplete', recording_count=2, last_recording=4),
+                    gpu_record(serial=42)):
+            altered = [phase] + ([gpu] if gpu is not None else []) + compositor[2:]
+            incomplete = summarize_physical_settings_stages(lines, 'bluetooth', altered, True, hover=True)
+            self.assertFalse(incomplete['compositor']['gpu_complete'])
+            self.assertEqual(incomplete['compositor']['gpu_costs'], {})
+            with self.assertRaisesRegex(ValueError, 'Incomplete exact'):
+                require_gpu_stages(incomplete)
         with self.assertRaises(ValueError):
             summarize_physical_settings_stages(lines, 'bluetooth',
                 [phase.replace('physical_sequence=1', 'physical_sequence=2')] + compositor[1:], True, hover=True)
@@ -661,3 +720,7 @@ class PhysicalSettingsStages(unittest.TestCase):
                 with self.subTest(case=case):
                     self.assertNotEqual(result.returncode,0)
                     self.assertFalse(output.exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

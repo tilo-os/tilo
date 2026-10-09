@@ -237,18 +237,30 @@ def summarize_compositor_phases(lines, samples, feedback):
                                                     else 'no_compositor_readback_reported')
         frames.append(frame)
     measured = [row for row in frames if row.get('phase_samples_available')]
+    gpu_measured = [row['submission_gpu'] for row in measured
+                    if row['submission_gpu']['available']]
     return dict(available=bool(measured), performance_certified=False,
+                gpu_available=bool(gpu_measured),
+                gpu_complete=bool(samples) and len(gpu_measured) == len(samples),
+                gpu_clock='device_relative_duration_ns',
                 coverage=dict(verified_notes_frames=len(samples), lifecycle_records=len(records),
                               exact_outcome_matches=len(matched), phase_samples_matched=len(measured),
+                              gpu_samples_matched=len(gpu_measured),
+                              unmatched_gpu_records=len(gpu_submissions) - len(gpu_measured),
                               unmatched_lifecycle_records=len(records) - len(matched),
                               records_without_physical_outcome=sum(row['physical_outcome'] is None for row in records)),
                 complete=bool(samples) and len(measured) == len(samples), frames=frames,
                 costs={key: distribution([row['costs_us'][key] for row in measured], scale=.001)
                        for key in COSTS} if measured else {},
+                gpu_costs={key: distribution([row[key] for row in gpu_measured])
+                           for key in ('recording_ns', 'post_render_ns')} if gpu_measured else {},
                 limitations=[
                     'Only exact kernel timestamp and sequence equality links a compositor frame to verified app feedback.',
                     'Matched compositor costs cover the whole scene, not Notes alone; intervals may overlap client stages.',
                     'Submission CPU boundaries are nested within encode_submit; the sparse marker is separate. Missing boundaries are unavailable.',
+                    'GPU costs include only complete exact-outcome-owned device timestamp recordings; missing and partial frames are excluded with explicit coverage.',
+                    'post_render is nested within recording; these GPU distributions must not be added or joined to host-clock timestamps.',
+                    'GPU recordings exclude pre-execution queue time, query resolve, and external queue work.',
                     'Completion wait includes GPU waiting or readback mapping and is not GPU execution duration.',
                     'No compositor readback bytes does not prove absence of copies elsewhere.',
                     'Missing physical/phase records remain unavailable; no time-proximity matching is used.',
