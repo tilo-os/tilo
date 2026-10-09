@@ -769,7 +769,7 @@ impl Persistence {
             &mut history,
             &value,
             &self.author,
-            crate::history::now_seconds(),
+            ui::time::unix_now_i64(),
         ) {
             self.history_dirty.set(true);
         }

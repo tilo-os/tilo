@@ -603,10 +603,7 @@ mod tests {
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
+        let nonce = tilo_clock::try_unix_now_ns().expect("clock");
         let path = std::env::temp_dir().join(format!(
             "tilo-identity-registry-{label}-{}-{nonce}",
             std::process::id()

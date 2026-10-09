@@ -190,10 +190,7 @@ impl ActivityBus {
         let Some(sequence) = bus.sequence.checked_add(1) else {
             return;
         };
-        let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-            return;
-        };
-        let Ok(source_time_ms) = u64::try_from(elapsed.as_millis()) else {
+        let Some(source_time_ms) = tilo_clock::try_unix_now_ms() else {
             return;
         };
         bus.sequence = sequence;

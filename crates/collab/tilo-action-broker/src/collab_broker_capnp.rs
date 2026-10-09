@@ -728,10 +728,7 @@ fn admit_verified_join(
         tree,
         route,
         verified,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "legacy clock unavailable")?
-            .as_secs(),
+        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
 fn admit_verified_join_at(
@@ -800,10 +797,7 @@ fn admit_agent_delegation(
         route,
         admitted,
         agent_id,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "legacy clock unavailable")?
-            .as_secs(),
+        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
     )
 }
 fn admit_agent_delegation_at(

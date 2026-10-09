@@ -134,10 +134,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             .unwrap();
         approve(&h, "so.tilo.editor");
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = tilo_clock::try_unix_now().unwrap();
         let report = signed_report(&h.outsider, "http-report-one", now);
         let response = client
             .post(url(h.addr, "/moderation/mutations"))
@@ -266,10 +263,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
     let previous = storage.load_snapshot().unwrap();
     let mut entries = storage.load_entries().unwrap();
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
         sequence: previous
