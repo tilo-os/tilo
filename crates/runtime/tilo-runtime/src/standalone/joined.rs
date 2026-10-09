@@ -60,6 +60,8 @@ pub(super) struct Joined {
     requesters: content::Requesters,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
+    /// Wakes the channel service's pump when governance arrives.
+    governance_wake: Arc<super::channels::PumpWake>,
     /// This device's channel keys, once the channel service runs: the only
     /// renewer of its sealed writes that expire in custody.
     keys: ChannelKeyProvider,
@@ -97,6 +99,7 @@ impl Joined {
             content: std::sync::OnceLock::new(),
             requesters: content::Requesters::default(),
             governance: Mutex::new(Vec::new()),
+            governance_wake: Arc::default(),
             keys: ChannelKeyProvider::default(),
         });
         for room in joined.owner.rooms() {
@@ -198,6 +201,12 @@ impl Joined {
     /// The slot the channel service fills with this device's channel keys.
     pub(super) fn channel_keys(&self) -> ChannelKeyProvider {
         self.keys.clone()
+    }
+
+    /// What the sessions poke when governance arrives for the channel
+    /// service, whose pump otherwise sleeps while no channel is live.
+    pub(super) fn governance_wake(&self) -> Arc<super::channels::PumpWake> {
+        Arc::clone(&self.governance_wake)
     }
 
     /// The device key of `room`'s governor, which stewards its channels.
@@ -329,6 +338,7 @@ impl Joined {
         if let Ok(mut governance) = self.governance.lock() {
             governance.push(inbound);
         }
+        self.governance_wake.poke();
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {

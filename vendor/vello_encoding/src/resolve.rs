@@ -172,6 +172,11 @@ impl Resolver {
             .set_max_size(i32::try_from(max_size).unwrap_or(i32::MAX));
     }
 
+    /// What the image atlas cache holds now.
+    pub fn image_cache_stats(&self) -> crate::ImageCacheStats {
+        self.image_cache.stats()
+    }
+
     /// Creates a new resource cache.
     pub fn new() -> Self {
         Self::default()

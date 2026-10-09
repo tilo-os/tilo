@@ -8,6 +8,11 @@
 //! or dropped. When the keys arrive the held edits are sealed and sent and
 //! the held ciphertext is opened, in order.
 //!
+//! Once a route holds keys it asks again only when told its channel changed
+//! (`channelKeysChanged`), when ciphertext arrives that its keys can't open,
+//! or when the broker refuses an edit sealed under them; see
+//! `broker::KeySchedule`.
+//!
 //! Only an endpoint with no identity service at all (an explicit test
 //! harness) stays plaintext, and only until a group is installed on it.
 
@@ -67,6 +72,9 @@ pub(super) struct RouteKeys {
     held_outbound_bytes: usize,
     held_inbound: VecDeque<(SignedOp, String)>,
     reported: Option<ChannelAccessState>,
+    /// The generation of the keys that last failed to open held ciphertext
+    /// and asked for newer ones: asked once per generation.
+    asked_for_held: Option<u64>,
 }
 
 impl RouteKeys {
@@ -87,12 +95,33 @@ impl RouteKeys {
             held_outbound_bytes: 0,
             held_inbound: VecDeque::new(),
             reported: None,
+            asked_for_held: None,
         }
     }
 
     /// Whether this endpoint asks the identity service for keys.
     pub(super) fn asks_identity_service(&self) -> bool {
         matches!(self.keys, Keys::Pending(_) | Keys::Content { .. })
+    }
+
+    /// Whether this route asks the identity service and holds no keys yet:
+    /// it waits for access, was removed, or the service is unavailable.
+    pub(super) fn awaiting_keys(&self) -> bool {
+        matches!(self.keys, Keys::Pending(_))
+    }
+
+    /// Whether held ciphertext should make the endpoint ask for newer keys
+    /// now: the route holds keys, they failed to open what arrived (sealed
+    /// under an epoch they lack), and this generation has not asked yet.
+    pub(super) fn wants_keys_for_held(&mut self) -> bool {
+        let Keys::Content { generation, .. } = self.keys else {
+            return false;
+        };
+        if self.held_inbound.is_empty() || self.asked_for_held == Some(generation) {
+            return false;
+        }
+        self.asked_for_held = Some(generation);
+        true
     }
 
     /// The service generation of the keys held, 0 when none.
@@ -416,6 +445,45 @@ mod tests {
             route.open(&envelope(sealed, Some(metadata)), true),
             Err(Unopened::Never)
         ));
+    }
+
+    /// Ciphertext the held keys can't open (sealed under a newer epoch) asks
+    /// for newer keys once per generation, and never while keys are awaited
+    /// (those routes are asked anyway).
+    #[test]
+    fn unopenable_ciphertext_asks_for_newer_keys_once_per_generation() {
+        let channel = ChannelId::new();
+        let (_, encoded) = keys(channel);
+        let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
+        let mut route = RouteKeys::requested();
+        assert!(route.awaiting_keys());
+        route.hold_inbound(envelope(vec![1], None), "peer".into());
+        assert!(
+            !route.wants_keys_for_held(),
+            "a waiting route is asked anyway"
+        );
+
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert!(!route.awaiting_keys());
+        assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
+        assert!(
+            !route.wants_keys_for_held(),
+            "nothing held asks for nothing"
+        );
+        let newer = keys(channel).0;
+        let (metadata, sealed) = newer
+            .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
+            .unwrap();
+        route.hold_inbound(envelope(sealed, Some(metadata)), "peer".into());
+        assert!(route.wants_keys_for_held());
+        assert!(
+            !route.wants_keys_for_held(),
+            "asked once for this generation"
+        );
+
+        route.update(Wire::Ready, 2, Some(&encoded));
+        assert!(route.wants_keys_for_held(), "newer keys may still lack it");
+        assert!(!route.wants_keys_for_held());
     }
 
     #[test]

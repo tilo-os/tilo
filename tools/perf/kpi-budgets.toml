@@ -11,10 +11,12 @@
 #   enforce                  true: a ceiling miss fails the run at once;
 #                            false (default): it is reported as a target not
 #                            yet met (marketing targets that are not true yet)
-#   p50_tolerance, p99_tolerance, baseline_runs, min_delta
+#   p50_tolerance, p99_tolerance, baseline_runs, baseline_min_runs, min_delta
 #                            override [defaults]; min_delta is the absolute
 #                            change (in the unit) below which a ratio never
-#                            counts as a regression
+#                            counts as a regression; baseline_min_runs is how
+#                            many stored runs a baseline needs before a run is
+#                            compared with it (an accepted run counts at once)
 #   source                   where the number comes from
 #
 # A KPI with a budget whose group ran but produced no record fails the run, so
@@ -24,6 +26,7 @@
 p50_tolerance = 1.10
 p99_tolerance = 1.20
 baseline_runs = 5
+baseline_min_runs = 1
 min_delta = 0.0
 
 # tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
@@ -102,9 +105,13 @@ min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
 # App package size: bytes of the newest signed tapp per app in the public
-# registry index. Targets from the KPI document (median <= 2 MB, max <= 6 MB,
-# decimal megabytes); reported, not enforced, until TIL-590's per-app ratchet
-# owns the gate. The default relative rule already fails sustained growth.
+# registry index, over the apps of tools/perf/tapp-size-budget/ (the default
+# collection; runtime and provider stubs and withdrawn packages are not apps).
+# Targets from the KPI document (median <= 2 MB, max <= 6 MB, decimal
+# megabytes) are reported here. The enforced gate is the same job's
+# tools/perf/tapp_size_ratchet.py fleet: each app within its budget, and the
+# median, p90 and max within the fleet ceilings beside those budgets
+# (TIL-590). The default relative rule also fails sustained growth.
 
 [kpi."footprint.tapp.bytes.x86_64"]
 unit = "bytes"
@@ -197,28 +204,82 @@ source = "KPI document: MCP tool call <= local invoke + 2 ms"
 # This lane has no panel, so they are reported, never enforced; the relative
 # rule catches regressions of the compositor's own work. A dropped-frame count
 # whose baseline is zero has no ratio, so one frame either way is not a change.
+# Timing KPIs need three stored runs before comparison: pointer p99 has ranged
+# from 7 to 13 ms between nights on identical code (TIL-700). Dropped frames
+# keep the one-run comparison: with a three-run minimum, elevated `new` runs
+# enter the baseline and can hide sustained growth from zero. Its two-run
+# regression rule still distinguishes a single noisy night.
 
 [kpi."latency.input_to_frame.pointer"]
 unit = "ms"
 p50 = 24.7
 p99 = 41.3
+baseline_min_runs = 3
 source = "KPI document: Input→photon latency (compositor side, headless)"
 
 [kpi."latency.workspace_switch.first_frame"]
 unit = "ms"
 p99 = 16.7
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, first frame (compositor side, headless)"
 
 [kpi."latency.workspace_switch.settled"]
 unit = "ms"
 max = 300.0
+baseline_min_runs = 3
 source = "KPI document: Workspace switch, total (compositor side, headless)"
 
 [kpi."latency.workspace_switch.dropped_frames"]
 unit = "count"
 max = 0.0
 min_delta = 1.0
+baseline_min_runs = 1
 source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
+
+# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, TIL-614): a
+# headless dev build on the shared `runner` class with a signed-in desktop,
+# a restored Notes tab and a Terminal, left alone and sampled from /proc over
+# 60 s; context switches per second of every thread of the compositor's
+# process tree, of the compositor process alone, and its frame loop's
+# iterations. The installed desktop's counterpart is Dev / VM acceptance's
+# `idle.*` (TIL-589). The ceilings are the KPI target (an idle desktop <= 5
+# wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
+# regression, and are lowered there as each idle fix lands.
+#
+# A count of timers moves little with the runner, but TIL-696 makes these
+# bimodal: until an unrelated paint, the frame loop spins at a rate that
+# follows the runner, and whether a run measures inside the spin depends on
+# the wall clock (60/s parked, 2008/s spinning, docs/benchmarks/
+# idle-wakeups-2026-10-09.md). Until TIL-696 lands the relative rule would
+# call that a regression every other night, so its tolerances are wide; the
+# fix restores the defaults. The floor keeps a single extra timer tick from
+# reading as a percentage regression.
+
+[kpi."wakeups.headless_two_apps"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (headless share)"
+
+[kpi."wakeups.headless_two_apps.shell"]
+unit = "per_s"
+max = 5.0
+p50_tolerance = 40.0
+p99_tolerance = 40.0
+min_delta = 1.0
+source = "KPI document: idle desktop <= 5 wakeups/s (compositor process)"
+
+# The compositor's frame loop parks while nothing asks for a frame, so an
+# idle loop iterates about never; any rate here is a deadline or a source
+# that keeps it awake. Its baseline is 0 while parked, which has no ratio;
+# min_delta is the TIL-696 spin's floor until that lands.
+[kpi."wakeups.frame_loop_ticks.headless_two_apps"]
+unit = "per_s"
+max = 1.0
+min_delta = 1500.0
+source = "the frame loop parks while idle (TIL-136, TIL-614)"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md): kernel input event to KMS
@@ -327,6 +388,14 @@ unit = "per_s"
 max = 1.0
 min_delta = 5.0
 source = "KPI document: compositor at most 1 wakeup/s while still (context switches of its loop thread)"
+
+# The same over every thread of the compositor process (TIL-690): the loop thread can
+# sleep while the network runtime, session services or the renderer's threads do not.
+[kpi."idle.wakeups_per_s.shell_threads"]
+unit = "per_s"
+max = 5.0
+min_delta = 5.0
+source = "KPI document: idle desktop at most 5 wakeups/s (context switches of every compositor thread)"
 
 [kpi."idle.ram_mib"]
 unit = "MiB"

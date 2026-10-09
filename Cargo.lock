@@ -7945,6 +7945,7 @@ dependencies = [
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
+ "tilo-startup-metrics",
  "tilo-test-env",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -16934,6 +16935,7 @@ name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "serde",
  "sha2 0.11.0",
  "tempfile",
@@ -18213,6 +18215,7 @@ dependencies = [
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tilo-clock",

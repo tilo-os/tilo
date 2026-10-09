@@ -899,21 +899,11 @@ mod tests {
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
-        let mut handled = false;
-        window.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::from(modifiers),
-                state: Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: root,
-                taffy: tree,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .layout(tree, root)
+            .send(window, event)
+            .handled
     }
 
     fn invoke_exit_choice(window: &mut BrowserWindow, id: &str, doc: &mut AutoCommit) {

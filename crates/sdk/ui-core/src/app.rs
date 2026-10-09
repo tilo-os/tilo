@@ -89,6 +89,8 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
 #[cfg(feature = "native")]
+mod input_publication;
+#[cfg(feature = "native")]
 mod surface;
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
@@ -1326,7 +1328,7 @@ impl App {
             self.controlled_installed_history_definition = Some(controlled_definition);
         }
         self.init_layout();
-        self.validate_history_registration()
+        tilo_startup_metrics::span("history-validate", || self.validate_history_registration())
     }
 
     /// Construct an explicitly detached app for headless or test execution.
@@ -2388,7 +2390,10 @@ impl App {
     /// from the previous process; shell continuation still wins when both exist.
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
-        self.refresh_control_action_availability();
+        // Startup marks name each step, so a slow first layout says which one.
+        tilo_startup_metrics::span("init-layout-actions", || {
+            self.refresh_control_action_availability();
+        });
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
@@ -2397,8 +2402,10 @@ impl App {
         // The map built now describes the tree as it is: a replacement the
         // widgets reported before is part of it, not a change after it.
         self.take_composition_dirty();
-        self.build_history_presentation();
-        self.update_focusable_order();
+        tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
+        tilo_startup_metrics::span("init-layout-focus-order", || {
+            self.update_focusable_order();
+        });
         if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         } else if let Some(view) = dev_view {
@@ -2712,7 +2719,6 @@ fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
 }
 
 #[cfg(test)]
-#[allow(dead_code, reason = "used by feature-gated render retry tests")]
 fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
     matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
         now.checked_add(Duration::from_nanos(16_666_667))

@@ -4263,21 +4263,11 @@ mod responsive_body_tests {
         }
 
         fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
-            let mut handled = false;
-            let mut focus = None;
-            self.w.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .send(&mut self.w, ev);
         }
 
         fn cursor(&mut self, x: f64, y: f64) {

@@ -1561,27 +1561,6 @@ mod tests {
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
 
-    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        v.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-    }
-
     fn ent(name: &str, is_dir: bool) -> Entry {
         Entry {
             name: name.into(),
@@ -2692,7 +2671,9 @@ mod tests {
         fn send(&mut self, event: &WindowEvent) {
             let (_, tree, node) = self.frame.layout_parts().expect("laid out");
             let tree = tree.clone();
-            dispatch(&mut self.view, &tree, node, event);
+            ui::testing::Dispatch::new()
+                .layout(&tree, node)
+                .send(&mut self.view, event);
         }
 
         fn move_to(&mut self, at: Point) {

@@ -6036,25 +6036,7 @@ mod tests {
     }
 
     fn dispatch_topbar_event(bar: &mut TopBarChrome, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("test leaf");
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        bar.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut state),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(bar, event)
     }
 
     #[test]

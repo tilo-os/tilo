@@ -956,27 +956,12 @@ fn platform_search_opens_finds_and_activates_places() {
             use winit::keyboard::ModifiersState;
             winit::event::Modifiers::from(ModifiersState::CONTROL)
         };
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        a.handle_event(
+        ui::testing::Dispatch::new().modifiers(ctrl).send(
+            &mut a,
             &WindowEvent::KeyboardInput {
                 device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &ctrl,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
             },
         );
 
@@ -2379,27 +2364,7 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
 /// whether the app marked it handled. Layout params are unused by the maps
 /// widget (it hit-tests its own recorded rects) so dummies suffice.
 fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
-    let modifiers = winit::event::Modifiers::default();
-    let mut state = AutoCommit::new();
-    let root = automerge::ROOT;
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    a.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut state),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::dispatch(a, ev)
 }
 
 fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {

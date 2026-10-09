@@ -402,21 +402,11 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = row.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let mut handled = false;
-        let mut focus_target = None;
-        row.handle_event(
-            &named_key(key),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut row, &named_key(key))
+            .handled;
         assert!(handled);
         assert_eq!(
             presses.take().map(|press| press.address.encode()),

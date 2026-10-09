@@ -432,24 +432,11 @@ fn pump_with_modifiers(
     event: &WindowEvent,
     modifiers: winit::event::Modifiers,
 ) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 #[test]

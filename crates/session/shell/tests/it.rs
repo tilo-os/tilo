@@ -119,6 +119,8 @@ mod identity_startup;
 mod idle_inhibit_protocol;
 #[path = "idle_settles.rs"]
 mod idle_settles;
+#[path = "idle_wakeups.rs"]
+mod idle_wakeups;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]

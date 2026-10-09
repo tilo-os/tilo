@@ -119,24 +119,11 @@ fn dispatch_mods(
     event: &WindowEvent,
     mods: winit::event::Modifiers,
 ) -> bool {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    a.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(a, event)
+        .handled
 }
 
 fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {

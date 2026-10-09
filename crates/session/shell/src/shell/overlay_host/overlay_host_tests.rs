@@ -1897,24 +1897,12 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
 }
 
 fn pump_at_scale(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers, scale: f64) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .scale_factor(scale)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 /// Builds a `KeyEvent` over a zeroed buffer — winit 0.30's

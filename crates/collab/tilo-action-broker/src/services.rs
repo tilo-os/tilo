@@ -1058,4 +1058,8 @@ pub struct HostServices {
     /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
     /// it apps' content stays in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
+    /// This device's channel encryption service, which tells each route's
+    /// endpoint when its channel keys changed (`channelKeysChanged`).
+    /// Without it endpoints ask the identity service on a timer.
+    pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
 }

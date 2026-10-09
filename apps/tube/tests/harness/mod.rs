@@ -207,21 +207,13 @@ impl<W: Widget> Harness<W> {
     }
 
     fn dispatch(&mut self, event: &WindowEvent) {
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.app.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &self.modifiers,
-                state: ui::widget::Edits::lend(&mut self.state.doc),
-                path: &self.state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        let focus = ui::testing::Dispatch::new()
+            .modifiers(self.modifiers)
+            .doc(&mut self.state.doc)
+            .path(&self.state.root)
+            .layout(&self.taffy, self.child)
+            .send(&mut self.app, event)
+            .focus_target;
         if focus.is_some() {
             self.last_focus = focus;
         }

@@ -78,6 +78,11 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 name = "it"
 path = "tests/it.rs"
 
+# Per-input cost against resource size; reads the framework's phase profiler.
+[[example]]
+name = "framework-scaling"
+required-features = ["test-support"]
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `render` stores the picture it answers with.
 tilo-content = { version = "0.1.0", path = "../../system/content" }

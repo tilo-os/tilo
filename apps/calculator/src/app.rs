@@ -3102,25 +3102,11 @@ mod tests {
     // fine.
 
     fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: Edits::lend(&mut st.doc),
-                path: &st.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(&mut st.doc)
+            .path(&st.root)
+            .send(app, ev)
+            .handled
     }
 
     fn cursor(p: Point) -> WindowEvent {
@@ -3377,7 +3363,6 @@ mod tests {
 
         // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
         {
-            use taffy::{Style, TaffyTree};
             // Drive the REAL production event path (handle_event → on_press) at a
             // narrow width and assert the collapsed Functions drawer opens.
             let mut app = CalculatorApp::new();
@@ -3391,46 +3376,31 @@ mod tests {
                 .toggle_center()
                 .expect("a collapsed toggle must be present");
 
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
             let mut st = ui::State::new();
-            let mods = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut focus = None;
             let dev = winit::event::DeviceId::dummy();
-            app.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut st.doc),
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            app.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: Edits::lend(&mut st.doc),
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let moved = ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .send(
+                    &mut app,
+                    &WindowEvent::CursorMoved {
+                        device_id: dev,
+                        position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
+                    },
+                );
+            ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .handled(moved.handled)
+                .focus_target(moved.focus_target)
+                .send(
+                    &mut app,
+                    &WindowEvent::MouseInput {
+                        device_id: dev,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                );
             assert!(
                 app.g2.panel_open(),
                 "tapping the toggle must open the Functions drawer"

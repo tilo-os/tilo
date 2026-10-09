@@ -954,6 +954,82 @@ pub(crate) fn directory_witness(
 
 #[derive(Default)]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
+
+/// One bound owner's admission generation and record frontier, read on each
+/// side of an input dispatch. Only a native surface's input path reads it.
+#[cfg(feature = "native")]
+pub(crate) struct BoundOwnerMark {
+    binding: CallbackBinding,
+    generation: Option<u64>,
+    document: Option<(Vec<automerge::ChangeHash>, usize)>,
+}
+
+/// Every live bound owner under `root`, once each, in tree order.
+#[cfg(feature = "native")]
+pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+    fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
+        if let Some(binding) = widget.callback_binding()
+            && !binding.closing.get()
+            && binding.lifetime.is_active()
+            && !marks
+                .iter()
+                .any(|mark| mark.binding.same_component(&binding))
+        {
+            let entry = binding.enter();
+            let generation = binding.generation().ok().flatten();
+            let document = binding
+                .read_document(outer, |doc, _| crate::widget::settle_mark(doc))
+                .ok();
+            drop(entry);
+            marks.push(BoundOwnerMark {
+                binding,
+                generation,
+                document,
+            });
+        }
+        widget.for_each_child(&mut |child| visit(child, outer, marks));
+    }
+    let mut marks = Vec::new();
+    visit(root, outer, &mut marks);
+    marks
+}
+
+#[cfg(feature = "native")]
+impl BoundResourceCache {
+    /// An input dispatch lends each owner its record mutably, which advances
+    /// the owner's admission generation whether or not anything was written.
+    /// When the owners' records stand exactly where they did `before` the
+    /// dispatch, carry each snapshot that was current then to the generation
+    /// now. Returns `false`, carrying nothing, when any owner's record moved
+    /// or the owners changed: the caller must republish.
+    pub(crate) fn carry_across_input(
+        &self,
+        before: &[BoundOwnerMark],
+        after: &[BoundOwnerMark],
+    ) -> bool {
+        let unmoved = before.len() == after.len()
+            && before.iter().zip(after).all(|(before, after)| {
+                before.binding.same_component(&after.binding)
+                    && before.document.is_some()
+                    && before.document == after.document
+            });
+        if !unmoved {
+            return false;
+        }
+        let mut entries = self.0.borrow_mut();
+        for (before, after) in before.iter().zip(after) {
+            let (Some(was), Some(now)) = (before.generation, after.generation) else {
+                continue;
+            };
+            for entry in entries.iter_mut().filter(|entry| {
+                entry.generation == was && entry.snapshot.binding.same_component(&before.binding)
+            }) {
+                entry.generation = now;
+            }
+        }
+        true
+    }
+}
 struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,

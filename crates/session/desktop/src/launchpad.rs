@@ -1009,24 +1009,10 @@ mod tests {
         doc: &mut AutoCommit,
         event: &WindowEvent,
     ) -> bool {
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mut handled = false;
-        let mut focus_target = None;
-        pad.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(doc)
+            .send(pad, event)
+            .handled
     }
 
     use ui::synthetic_input::mouse_release;

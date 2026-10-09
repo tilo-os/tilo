@@ -290,6 +290,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         fanout: Arc::clone(&joined.fanout),
         sessions: Mutex::new(BTreeMap::new()),
         governance: Mutex::new(Vec::new()),
+        governance_wake: joined.governance_wake(),
         keys: joined.keys.clone(),
         content: std::sync::OnceLock::new(),
         requesters: content::Requesters::default(),

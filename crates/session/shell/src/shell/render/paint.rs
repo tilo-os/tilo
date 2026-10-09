@@ -38,6 +38,9 @@ use crate::shell::hdr_surface::HdrLayer;
 use settings_store::hardware::OutputTransform;
 
 mod output_view;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod window_cycle_memory_tests;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
 
@@ -1851,6 +1854,10 @@ impl RetainedGpuTarget {
     /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
     pub fn memory_stats(&self) -> vello::RendererMemoryStats {
         self.renderer.memory_stats()
+    }
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.renderer.image_cache_stats()
     }
     /// Existing opt-in timestamp status.
     pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
@@ -4499,6 +4506,16 @@ impl VelloDrmBridge {
     /// full-render API and for conservative versioned fallbacks.
     pub fn last_sparse_render_attempts(&self) -> usize {
         self.target.last_sparse_render_attempts
+    }
+
+    /// The image atlas and the CPU pixels its residents keep alive.
+    pub fn image_cache_stats(&self) -> vello::ImageCacheStats {
+        self.target.image_cache_stats()
+    }
+
+    /// GPU allocations the renderer accounts for, the image atlas included.
+    pub fn renderer_memory_stats(&self) -> vello::RendererMemoryStats {
+        self.target.memory_stats()
     }
 
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.

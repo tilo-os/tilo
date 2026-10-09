@@ -5094,7 +5094,7 @@ mod tests {
     use super::*;
     use crate::resource::TestMail;
     use automerge::ReadDoc;
-    use winit::event::{Modifiers, MouseButton};
+    use winit::event::MouseButton;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -5135,21 +5135,11 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             (taffy, node)
         });
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .layout(&taffy, node)
+            .send(app, ev)
+            .handled;
         if app.test_layout.is_none() {
             app.test_layout = Some((taffy, node));
         }

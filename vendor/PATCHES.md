@@ -289,6 +289,36 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
 
+## Image cache eviction, shrink and stats (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+Upstream evicts a resident image only when an allocation fails, and never
+shrinks the atlas. A Wayland client's frame is a new image on every commit,
+so every superseded frame kept its CPU pixels alive until the atlas was full,
+the atlas grew to its maximum on the way, and the compositor kept that
+high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+opened and closed, past 1 GiB). Now:
+
+- `ImageCache::finish_resolve` evicts every resident no pass drew in the last
+  two (`EVICT_AFTER_GENERATIONS`, upstream's own staleness rule), so a resident
+  survives two scenes that skip it — two outputs, or a capture beside the
+  live frame — and a window that keeps committing holds three frames at most.
+- When a pass's residents cover at most an eighth of the atlas for 60 passes
+  in a row (`SHRINK_AFTER_RESOLVES`), the next pass first repacks into half
+  the side, down to the initial 1024. Repacking marks every resident dirty, so
+  each is uploaded again, at its new position, the next time it is drawn; the
+  halving happens in `begin_resolve`, before the pass hands out positions. A
+  repack that does not fit leaves the atlas as it was.
+- `Renderer::image_cache_stats()` (through `Resolver::image_cache_stats`)
+  reports `ImageCacheStats`: atlas side, resident count, resident CPU bytes
+  and area, and lifetime evictions, shrinks and omissions.
+
+Own tests in `image_cache.rs`: stale residents are released without
+allocation pressure, an image survives two passes that skip it, a committing
+window holds three frames at most, the atlas shrinks after residency drops and
+uploads its residents again where it draws them, a busy atlas does not shrink,
+and thirty open/close cycles leave only the wallpaper resident at the size it
+started with.
+
 ## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
 
 wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU

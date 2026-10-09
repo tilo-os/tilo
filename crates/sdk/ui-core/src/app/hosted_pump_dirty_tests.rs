@@ -715,3 +715,227 @@ fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
         "a delivered continuation remains strictly one-use"
     );
 }
+
+/// Bare pointer motion keeps the published resource tree; every change an
+/// event can make to it still republishes within that event (TIL-628).
+#[cfg(feature = "native")]
+mod input_publication {
+    use super::*;
+    use std::rc::Rc;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    /// Publishes one resource whose label shows every piece of state an
+    /// input can move: a press switches its tab without marking the event
+    /// handled; hovering past x = 500 opens a menu, reported as a
+    /// presentation change; motion with a button held drags, unreported;
+    /// hovering below y = 500 writes the document.
+    struct InputProbe {
+        calls: Rc<Cell<usize>>,
+        tab: usize,
+        menu_open: bool,
+        pressed: bool,
+        drag_x: Option<f64>,
+    }
+
+    impl Widget for InputProbe {
+        crate::provides!(dyn crate::resources::PublishesResources);
+
+        crate::testing::inert_widget_methods!(
+            unregistered_leaf_layout,
+            apply_layout,
+            draw,
+            get_rect,
+            name = "input-publication-probe"
+        );
+
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[COUNTER_TYPE]
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            match event {
+                WindowEvent::MouseInput { state, .. } => {
+                    self.pressed = *state == ElementState::Pressed;
+                    if self.pressed {
+                        self.tab += 1;
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    if self.pressed {
+                        self.drag_x = Some(position.x);
+                    }
+                    if position.x > 500.0 && !self.menu_open {
+                        self.menu_open = true;
+                        crate::widget::note_resource_presentation_changed();
+                    }
+                    if position.y > 500.0 {
+                        ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    impl crate::resources::PublishesResources for InputProbe {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+            self.calls.set(self.calls.get() + 1);
+            let hovered = doc.get(ROOT, "hovered").unwrap().is_some();
+            let label = format!(
+                "tab {} menu {} drag {:?} hovered {hovered}",
+                self.tab, self.menu_open, self.drag_x
+            );
+            vec![
+                Resource::new("probe", "probe", label).with_action(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
+            ]
+        }
+    }
+
+    struct Surface;
+
+    impl AppSurface for Surface {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(1000, 1000)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: CursorIcon) {}
+    }
+
+    fn app() -> (App, Rc<Cell<usize>>) {
+        let calls = Rc::new(Cell::new(0));
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            crate::wake::WakeScope::new(),
+            State::new(),
+            Box::new(InputProbe {
+                calls: calls.clone(),
+                tab: 0,
+                menu_open: false,
+                pressed: false,
+                drag_x: None,
+            }),
+        );
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        (app, calls)
+    }
+
+    fn move_to(app: &mut App, x: f64, y: f64) {
+        app.surface_input(
+            &Surface,
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(x, y),
+            },
+            false,
+        );
+    }
+
+    fn button(app: &mut App, state: ElementState) {
+        app.surface_input(
+            &Surface,
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+            },
+            false,
+        );
+    }
+
+    /// The probe's label in the tree an agent reads now, with no frame or
+    /// sync in between.
+    fn published(app: &App) -> String {
+        app.collect_resources()
+            .into_iter()
+            .find(|resource| resource.id.as_str() == "probe")
+            .expect("the probe stays published")
+            .label
+    }
+
+    #[test]
+    fn pointer_motion_without_state_change_does_not_regenerate_declarations() {
+        let (mut app, calls) = app();
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        let generation = app.actions.resource_generation.get();
+        let before = calls.get();
+        for step in 0..100 {
+            move_to(&mut app, f64::from(step), 20.0);
+        }
+        let regenerated = calls.get() - before;
+        assert!(
+            regenerated <= 1,
+            "100 hover moves regenerated declarations {regenerated} times"
+        );
+        assert_eq!(app.actions.resource_generation.get(), generation);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        assert_eq!(
+            calls.get() - before,
+            regenerated,
+            "reading the kept tree regenerates nothing"
+        );
+    }
+
+    #[test]
+    fn presentation_only_change_still_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        // The probe switches tabs on a press it does not mark handled.
+        button(&mut app, ElementState::Pressed);
+        button(&mut app, ElementState::Released);
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+    }
+
+    #[test]
+    fn hover_that_reports_a_presentation_change_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        move_to(&mut app, 600.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu true drag None hovered false");
+    }
+
+    #[test]
+    fn hover_that_edits_the_document_republishes() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered false");
+        move_to(&mut app, 10.0, 600.0);
+        assert_eq!(published(&app), "tab 0 menu false drag None hovered true");
+    }
+
+    #[test]
+    fn drag_motion_republishes_without_being_reported() {
+        let (mut app, _) = app();
+        move_to(&mut app, 10.0, 20.0);
+        button(&mut app, ElementState::Pressed);
+        assert_eq!(published(&app), "tab 1 menu false drag None hovered false");
+        move_to(&mut app, 50.0, 20.0);
+        assert_eq!(
+            published(&app),
+            "tab 1 menu false drag Some(50.0) hovered false"
+        );
+        button(&mut app, ElementState::Released);
+        move_to(&mut app, 70.0, 20.0);
+        assert_eq!(
+            published(&app),
+            "tab 1 menu false drag Some(50.0) hovered false",
+            "released, motion is hover again"
+        );
+    }
+}

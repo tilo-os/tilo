@@ -1796,7 +1796,7 @@ mod tests {
     /// than calling the selection helper directly.
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
         use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, Modifiers};
+        use winit::event::DeviceId;
 
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (390.0, 760.0));
@@ -1809,61 +1809,38 @@ mod tests {
             .expect("Theirs selector")
             .0
             .center();
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(theirs.x, theirs.y),
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        app.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled);
+        let moved = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .send(
+                app,
+                &WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(theirs.x, theirs.y),
+                },
+            );
+        let pressed = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .handled(moved.handled)
+            .focus_target(moved.focus_target)
+            .send(
+                app,
+                &WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+        assert!(pressed.handled);
         assert_eq!(selected_compact_source(app), "Show Theirs source");
 
-        handled = false;
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::ArrowLeft)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut state.doc)
+            .path(&state.root)
+            .focus_target(pressed.focus_target)
+            .send(app, &keyboard_event(Key::Named(NamedKey::ArrowLeft)))
+            .handled;
         assert!(handled);
         assert_eq!(selected_compact_source(app), "Show Ours source");
 

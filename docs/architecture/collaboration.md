@@ -297,6 +297,16 @@ This gives three deployments without three protocols:
 - Private actions: the v2 envelope (`tilo_delivery_protocol::transport_v2`)
   on `tilo-relay/3`, and on `tilo-relay/4`, where each action is signed by the
   device that sends it (below).
+- Compact state: `tilo-relay/5` (`ALPN_COMPACT_STATE_V1`) is `tilo-relay/4`
+  whose co-edit deltas travel as `EnvelopeV2::UnsignedDelta`. A co-edit
+  publisher leaves the outer `Envelope::Delta::signature` all zero, because the
+  session and the payload's own signed op authenticate it, so the field is
+  dropped on the wire: 66 bytes less per keystroke frame and per recipient. Each
+  session's reader restores the same `Envelope::Delta`, so the host stores and
+  routes one value whatever the wire was. A client dials `tilo-relay/5` first and
+  falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
+  `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
+  know.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

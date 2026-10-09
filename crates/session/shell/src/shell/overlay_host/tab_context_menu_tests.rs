@@ -175,22 +175,12 @@ impl Harness {
     }
 
     fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.root,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.root)
+            .send(&mut self.host, event)
+            .handled
     }
 
     fn move_to(&mut self, p: Point) {

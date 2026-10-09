@@ -3457,36 +3457,14 @@ mod tests {
     }
 
     fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
-        let m = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
         let win_ev = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new().doc(doc).send(ev, &win_ev);
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
-        let m = mods(false, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
         let win_ev = WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: if pressed {
@@ -3496,69 +3474,33 @@ mod tests {
             },
             button: MouseButton::Left,
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods(false, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
     }
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
-        let m = mods(ctrl, shift);
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let node = NodeId::new(0);
         let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
         let win_ev = WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: ke,
             is_synthetic: false,
         };
-        ev.handle_event(
-            &win_ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(mods(ctrl, shift))
+            .doc(doc)
+            .send(ev, &win_ev);
     }
 
     fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
         // Positive composition cases model delivery to the active field.
         // The app-level journey separately verifies refusal after focus loss.
         ev.set_focus(true);
-        let m = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        ev.handle_event(
-            &WindowEvent::Ime(ime),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: ui::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(doc)
+            .send(ev, &WindowEvent::Ime(ime))
+            .handled;
         assert!(handled, "the editor consumes input-method events");
     }
 

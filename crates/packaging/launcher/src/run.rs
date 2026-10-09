@@ -1594,6 +1594,7 @@ pub fn run(
     } else {
         read_manifest(manifest_path)?
     };
+    tilo_startup_metrics::handoff_mark("package-verified");
     run_with_context(&manifest, payload_root, opts, None, None)
 }
 
@@ -1880,6 +1881,20 @@ fn splice_cli_setenv(
         argv.push(entry);
     }
     Ok(())
+}
+
+/// Hand this launch's phase marks to the app
+/// ([`tilo_startup_metrics::LAUNCHER_MARKS_ENV`]), so its startup file also
+/// covers the launcher. Only when the shell asked for startup metrics; the
+/// value is the launcher's own fixed mark names and wall-clock times. The
+/// last mark is taken here, after every check and before the sandbox spawns.
+fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
+    tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
+    splice_cli_setenv(
+        argv,
+        tilo_startup_metrics::handoff_env_value()
+            .map(|marks| (tilo_startup_metrics::LAUNCHER_MARKS_ENV.to_string(), marks)),
+    )
 }
 
 /// Expose the upstream NT synchronization device only to GUI packages marked
@@ -3047,12 +3062,14 @@ pub(crate) fn run_with_context(
     // Host preflight precedes connected service custody.
     // Seccomp baseline → tmpfile → fd.
     let seccomp_fds = stage_seccomp(manifest)?;
+    tilo_startup_metrics::handoff_mark("seccomp-staged");
 
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
     // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
     // waited on so Drop can SIGTERM the proxies.
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
+    tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
 
     // Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
@@ -3064,10 +3081,12 @@ pub(crate) fn run_with_context(
     } else {
         resolve_runtime(manifest, opts)?
     };
+    tilo_startup_metrics::handoff_mark("runtime-verified");
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
+    tilo_startup_metrics::handoff_mark("loader-preflight-done");
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
@@ -3083,6 +3102,7 @@ pub(crate) fn run_with_context(
     } else {
         resolve_launch_dirs(manifest, opts)?
     };
+    tilo_startup_metrics::handoff_mark("app-dirs-ready");
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
@@ -3142,6 +3162,7 @@ pub(crate) fn run_with_context(
         resolved
     };
     let binds = to_service_binds(&resolved);
+    tilo_startup_metrics::handoff_mark("services-resolved");
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
@@ -3152,6 +3173,7 @@ pub(crate) fn run_with_context(
         } else {
             resolve_identity_broker(&capabilities, opts)?
         };
+    tilo_startup_metrics::handoff_mark("identity-ready");
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     if identity_broker_app.is_some() {
@@ -3162,6 +3184,7 @@ pub(crate) fn run_with_context(
     // mode shares the host network with no allowlist to enforce, so neither
     // needs a gate. Guard bound here (not in the `if let`) so it outlives the child.
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
+    tilo_startup_metrics::handoff_mark("egress-ready");
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
     let (mut argv, extra_setenv, cli_passthrough) = build_initial_argv(
@@ -3211,6 +3234,7 @@ pub(crate) fn run_with_context(
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    splice_startup_marks(&mut argv)?;
     splice_sandbox_shim(
         &mut argv,
         opts,

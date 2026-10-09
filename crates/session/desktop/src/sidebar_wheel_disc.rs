@@ -2298,7 +2298,7 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::Cell;
 
-    use winit::event::{Modifiers, WindowEvent};
+    use winit::event::WindowEvent;
 
     /// A desktop of `workspaces` workspaces numbered from 1, counting
     /// every change the wheel asks of it.
@@ -2387,29 +2387,7 @@ mod tests {
     use ui::synthetic_input::mouse_release;
 
     fn pump(d: &mut SidebarWheelDisc, ev: &WindowEvent) -> bool {
-        use automerge::AutoCommit;
-        let mut doc = AutoCommit::new();
-        let path = automerge::ROOT.clone();
-        let mods = Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        // handle_event doesn't consult the node id.
-        let dummy_node = unsafe { std::mem::transmute::<u64, NodeId>(0) };
-        d.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &path,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: dummy_node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::dispatch(d, ev)
     }
 
     /// `Widget::draw`, which populates the scene cache, the

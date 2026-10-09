@@ -816,50 +816,32 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         app.library_mode = true;
         app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
         let mut doc = AutoCommit::new();
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut focus = None;
-        let mut handled = false;
-        let no_modifiers = winit::event::Modifiers::default();
-        app.handle_event(
+        let pinch = ui::testing::Dispatch::new().doc(&mut doc).send(
+            &mut app,
             &WindowEvent::PinchGesture {
                 device_id: DeviceId::dummy(),
                 delta: 0.2,
                 phase: TouchPhase::Moved,
             },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &no_modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
         );
+        let handled = pinch.handled;
         assert!(handled);
         let after_pinch = app.timeline_density;
 
-        handled = false;
         let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);
-        app.handle_event(
-            &WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: TouchPhase::Moved,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &ctrl,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .modifiers(ctrl)
+            .doc(&mut doc)
+            .focus_target(pinch.focus_target)
+            .send(
+                &mut app,
+                &WindowEvent::MouseWheel {
+                    device_id: DeviceId::dummy(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                    phase: TouchPhase::Moved,
+                },
+            )
+            .handled;
         assert!(handled);
         assert_eq!(app.timeline_density, after_pinch + 1);
     }
@@ -1375,27 +1357,13 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         let mut text = TextRenderer::new();
         app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         let before = crate::test_doc::library(&doc);
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut focus = None;
-        let mut handled = false;
-        let modifiers = winit::event::Modifiers::default();
         app.pointer = Point::new(400.0, 400.0);
-        app.handle_event(
+        ui::testing::Dispatch::new().doc(&mut doc).send(
+            &mut app,
             &WindowEvent::MouseWheel {
                 device_id: DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                 phase: TouchPhase::Moved,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
             },
         );
         assert!(!app.can_page_library(false));
