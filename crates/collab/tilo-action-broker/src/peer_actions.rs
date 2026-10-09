@@ -174,6 +174,7 @@ impl std::fmt::Debug for PeerActionQueue {
             .field("permits", &self.permits)
             .field("transitions", &self.transitions)
             .field("policy_time", &self.policy_time.is_some())
+            .field("replay", &self.replay)
             .finish()
     }
 }

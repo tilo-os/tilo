@@ -6275,10 +6275,6 @@ pub(crate) struct ActionTarget {
     tx: mpsc::Sender<PrivateOutbound>,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both variants are large wire frames of similar size; boxing either only adds an allocation per private frame"
-)]
 pub(crate) enum PrivateOutbound {
     Reply(EnvelopeV2),
     Delivery(PrivateDelivery),
