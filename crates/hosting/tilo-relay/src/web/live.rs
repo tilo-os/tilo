@@ -23,12 +23,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
+use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority, LiveSession};
 use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
 use tokio::sync::Notify;
 
 use crate::web::sessions::Sessions;
+
+// The live relay (`tilo-moq`, which stays free of the host's wire crate) and
+// the host's canonical live codec must agree on every frame and rate limit.
+const _: () =
+    assert!(tilo_moq::live::MAX_PRESENCE_RATE == tilo_relay_protocol::live::MAX_PRESENCE_RATE);
+const _: () = assert!(tilo_moq::live::MAX_OPS_RATE == tilo_relay_protocol::live::MAX_OPS_RATE);
+const _: () = assert!(
+    tilo_moq::live::MAX_DATAGRAM_FRAME_BYTES == tilo_relay_protocol::live::MAX_PRESENCE_FRAME_BYTES
+);
+const _: () = assert!(
+    tilo_moq::live::MAX_STREAM_FRAME_BYTES == tilo_relay_protocol::live::MAX_OPS_FRAME_BYTES
+);
 
 /// How often idle sessions are swept and, with them, every grant observed
 /// even though nothing announced a change.
@@ -252,8 +264,8 @@ impl LiveSession for Admitted {
 pub(crate) struct Authority(pub(crate) Arc<LiveGrants>);
 
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
-        let token: [u8; 32] = token.try_into().map_err(|_| Admission::Denied)?;
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
+        let token: [u8; 32] = token.try_into().map_err(|_| Denied)?;
         let grant = self
             .0
             .grants
@@ -261,11 +273,11 @@ impl LiveAuthority for Authority {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&token)
             .cloned()
-            .ok_or(Admission::Denied)?;
+            .ok_or(Denied)?;
         let session = Admitted { grant };
         match session.status() {
             AuthorizationStatus::Current => Ok(Arc::new(session)),
-            _ => Err(Admission::Denied),
+            AuthorizationStatus::Denied => Err(Denied),
         }
     }
 
@@ -305,10 +317,7 @@ mod tests {
         grants.grants.lock().unwrap().insert([4; 32], grant.clone());
         let held = Admitted { grant };
         assert!(matches!(held.status(), AuthorizationStatus::Denied));
-        assert!(matches!(
-            Authority(grants).try_admit(&[4; 32]),
-            Err(Admission::Denied)
-        ));
+        assert!(matches!(Authority(grants).try_admit(&[4; 32]), Err(Denied)));
     }
 
     fn record() -> LiveRecord {

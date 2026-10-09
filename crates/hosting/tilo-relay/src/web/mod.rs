@@ -996,7 +996,6 @@ async fn route(
             let stream = web
                 .live
                 .fallback_open(&bytes, id)
-                .await
                 .map_err(fallback_status)?;
             let mut response = Response::new(Body::Stream(stream));
             if let Ok(value) = header::HeaderValue::from_str(&hex::encode(id)) {
