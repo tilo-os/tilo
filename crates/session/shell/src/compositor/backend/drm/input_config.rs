@@ -1461,7 +1461,9 @@ mod tests {
 
     /// Long enough for every notification of a write and one stamp poll.
     fn settle() {
-        std::thread::sleep(settings_store::live::POLL_INTERVAL + Duration::from_millis(300));
+        std::thread::sleep(
+            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
+        );
     }
 
     #[test]
@@ -1471,7 +1473,7 @@ mod tests {
             // Otherwise every session start re-applies settings already applied while constructing the backend.
             let path = scratch("baseline");
             write(&path, "input", json!({"tap_to_click": true}));
-            let live = LiveSettings::start_at(path.clone(), || {});
+            let live = LiveSettings::start_at(path, || {});
             let mut follower = SectionFollower::new(&live);
             assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
@@ -1484,7 +1486,7 @@ mod tests {
             assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
             changed(&live, || {
-                write(&path, "input", json!({"tap_to_click": false}))
+                write(&path, "input", json!({"tap_to_click": false}));
             });
             assert_eq!(
                 follower.changed_sections(&live),
@@ -1510,7 +1512,7 @@ mod tests {
                 "baseline: no file"
             );
             changed(&live, || {
-                write(&path, "input", json!({"tap_to_click": false}))
+                write(&path, "input", json!({"tap_to_click": false}));
             });
             assert_eq!(follower.changed_sections(&live), sections(&["input"]));
         }
@@ -1544,7 +1546,7 @@ mod tests {
         assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
         changed(&live, || {
-            write(&path, "appearance", json!({"theme": "light"}))
+            write(&path, "appearance", json!({"theme": "light"}));
         });
         assert_eq!(
             follower.changed_sections(&live),
