@@ -4820,7 +4820,9 @@ mod tests {
 
     #[test]
     fn pump_room_contents_runs_a_pressed_install_without_other_pending_work() {
-        pressed_install_on_a_quiet_desktop(|card| card.press_for_test());
+        pressed_install_on_a_quiet_desktop(
+            crate::shell::app_notice_card::AppNoticeCard::press_for_test,
+        );
     }
 
     #[test]
