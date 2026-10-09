@@ -1796,7 +1796,7 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, Modifiers};
+    use winit::event::Modifiers;
 
     use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_actions::Action as _;
@@ -2016,7 +2016,7 @@ mod tests {
                 let mut handled = false;
                 app.handle_keyboard_shortcut(
                     &Key::Character(key.into()),
-                    &char_press(key),
+                    &char_key(key),
                     Modifiers::from(ModifiersState::CONTROL),
                     &mut ui::widget::Edits::lend(&mut doc),
                     &mut handled,
@@ -2040,7 +2040,7 @@ mod tests {
 
             let (mut app, mut doc) = fresh();
             let before = shown_source(&app, &doc);
-            assert!(send(&mut app, &mut doc, &char_press("x")));
+            assert!(send(&mut app, &mut doc, &char_key("x")));
             assert!(app.perform_semantic_action(
                 "typst.source",
                 &ui::a11y::Action::SetValue("= Accessible edit".into()),
@@ -2135,14 +2135,7 @@ mod tests {
     use winit::event::TouchPhase;
     use winit::keyboard::ModifiersState;
 
-    /// the same trick the toolkit's own widget tests use.
-    fn char_press(c: &str) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(c.into()),
-            Some(c.into()),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::char_key;
 
     /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
     /// via `x` for the horizontal-pan path.
@@ -2206,7 +2199,7 @@ mod tests {
 
             let base = app.preview.zoom();
             assert!(
-                send_mods(&mut app, &mut doc, &char_press("="), ctrl),
+                send_mods(&mut app, &mut doc, &char_key("="), ctrl),
                 "Ctrl+= consumed"
             );
             let zoomed_in = app.preview.zoom();
@@ -2216,7 +2209,7 @@ mod tests {
             );
 
             assert!(
-                send_mods(&mut app, &mut doc, &char_press("-"), ctrl),
+                send_mods(&mut app, &mut doc, &char_key("-"), ctrl),
                 "Ctrl+- consumed"
             );
             assert!(

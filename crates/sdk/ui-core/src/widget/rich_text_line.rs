@@ -1573,23 +1573,11 @@ mod tests {
     use super::*;
     use crate::widget::marks::Mark;
     use winit::event::Modifiers;
-    use winit::keyboard::{Key, ModifiersKeyState, ModifiersState, NamedKey, SmolStr};
+    use winit::keyboard::{ModifiersKeyState, ModifiersState, NamedKey};
 
-    fn key_press(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
-    fn char_press(c: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(SmolStr::new(c)),
-            Some(SmolStr::new(c)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
     fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
         dispatch_with_mods(line, event, Modifiers::default());
@@ -1833,7 +1821,7 @@ mod tests {
             // Type against OUR doc, not the throwaway one `dispatch` would make.
             let taffy: TaffyTree<()> = TaffyTree::new();
             for c in ["h", "i"] {
-                let ev = char_press(c);
+                let ev = char_key(c);
                 let mut handled = false;
                 let mut focus_target = None;
                 line.handle_event(
@@ -1963,7 +1951,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abcdef");
             l.set_focus(true);
             l.set_cursor_pos(3);
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             match l.take_signal() {
                 Some(LineSignal::Enter { split_at: 3 }) => {}
                 other => panic!("expected Enter@3, got {other:?}"),
@@ -1975,7 +1963,7 @@ mod tests {
         {
             let mut l = RichTextLine::new().with_text("hi");
             l.set_focus(true);
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             match l.take_signal() {
                 Some(LineSignal::Enter { split_at }) => assert_eq!(split_at, 2),
                 other => panic!("expected Enter@2, got {other:?}"),
@@ -1987,7 +1975,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
             l.set_cursor_pos(0);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert_eq!(l.take_signal(), Some(LineSignal::BackspaceAtStart));
             assert_eq!(l.value(), "abc");
         }
@@ -1997,7 +1985,7 @@ mod tests {
             let mut l = RichTextLine::new().with_text("abc");
             l.set_focus(true);
             l.set_cursor_pos(3);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert!(l.take_signal().is_none());
             assert_eq!(l.value(), "ab");
             assert!(l.take_dirty().is_some());
@@ -2007,9 +1995,9 @@ mod tests {
         {
             let mut l = RichTextLine::new().with_text("x");
             l.set_focus(true);
-            dispatch(&mut l, &key_press(NamedKey::ArrowUp));
+            dispatch(&mut l, &named_key(NamedKey::ArrowUp));
             assert_eq!(l.take_signal(), Some(LineSignal::ArrowUp));
-            dispatch(&mut l, &key_press(NamedKey::ArrowDown));
+            dispatch(&mut l, &named_key(NamedKey::ArrowDown));
             assert_eq!(l.take_signal(), Some(LineSignal::ArrowDown));
         }
 
@@ -2017,10 +2005,10 @@ mod tests {
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
-            dispatch(&mut l, &char_press("["));
+            dispatch(&mut l, &char_key("["));
             // First `[` shouldn't emit.
             assert!(l.take_signal().is_none());
-            dispatch(&mut l, &char_press("["));
+            dispatch(&mut l, &char_key("["));
             match l.take_signal() {
                 Some(LineSignal::LinkOpen { open_at: 0 }) => {}
                 other => panic!("expected LinkOpen{{open_at:0}}, got {other:?}"),
@@ -2035,8 +2023,8 @@ mod tests {
         {
             let mut l = RichTextLine::new();
             l.set_focus(true);
-            dispatch(&mut l, &char_press("h"));
-            dispatch(&mut l, &char_press("i"));
+            dispatch(&mut l, &char_key("h"));
+            dispatch(&mut l, &char_key("i"));
             assert_eq!(l.value(), "hi");
             let dirty = l.take_dirty();
             assert_eq!(dirty.as_deref(), Some("hi"));
@@ -2046,9 +2034,9 @@ mod tests {
         // Case `unfocused_line_ignores_keys`.
         {
             let mut l = RichTextLine::new().with_text("abc");
-            dispatch(&mut l, &key_press(NamedKey::Enter));
+            dispatch(&mut l, &named_key(NamedKey::Enter));
             assert!(l.take_signal().is_none(), "unfocused line must not emit");
-            dispatch(&mut l, &char_press("z"));
+            dispatch(&mut l, &char_key("z"));
             assert_eq!(l.value(), "abc");
         }
 
@@ -2126,7 +2114,7 @@ mod tests {
             l.set_focus(true);
             l.toggle_mark(Mark::Bold);
             assert_eq!(l.pending_marks().len(), 1);
-            dispatch(&mut l, &char_press("x"));
+            dispatch(&mut l, &char_key("x"));
             assert_eq!(l.value(), "x");
             // Pending was drained onto the inserted byte.
             assert!(l.pending_marks().is_empty());
@@ -2141,7 +2129,7 @@ mod tests {
             l.set_marks(vec![MarkSpan::new(2..4, Mark::Bold)]);
             l.set_focus(true);
             l.set_cursor_pos(0);
-            dispatch(&mut l, &char_press("X"));
+            dispatch(&mut l, &char_key("X"));
             assert_eq!(l.value(), "Xhello");
             assert_eq!(l.marks()[0].range, 3..5);
         }
@@ -2152,7 +2140,7 @@ mod tests {
             l.set_marks(vec![MarkSpan::new(3..5, Mark::Bold)]);
             l.set_focus(true);
             l.set_cursor_pos(1);
-            dispatch(&mut l, &key_press(NamedKey::Backspace));
+            dispatch(&mut l, &named_key(NamedKey::Backspace));
             assert_eq!(l.value(), "hello");
             assert_eq!(l.marks()[0].range, 2..4);
         }
@@ -2177,14 +2165,14 @@ mod tests {
                     line.set_focus(true);
                     line.inner_mut().set_selection(0, 6);
                     line.set_inline_formatting(false);
-                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    dispatch_with_mods(&mut line, &char_key(shortcut), Modifiers::from(modifier));
                     assert_eq!(line.value(), "source");
                     assert!(line.marks().is_empty());
                     assert!(line.pending_marks().is_empty());
                     assert!(line.take_dirty().is_none());
 
                     line.set_inline_formatting(true);
-                    dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                    dispatch_with_mods(&mut line, &char_key(shortcut), Modifiers::from(modifier));
                     assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
                 }
             }
@@ -2196,18 +2184,18 @@ mod tests {
             line.set_focus(true);
             dispatch_with_mods(
                 &mut line,
-                &char_press("b"),
+                &char_key("b"),
                 Modifiers::from(ModifiersState::CONTROL),
             );
             assert_eq!(line.pending_marks(), &[Mark::Bold]);
             line.set_inline_formatting(false);
-            dispatch(&mut line, &char_press("["));
-            dispatch(&mut line, &char_press("["));
+            dispatch(&mut line, &char_key("["));
+            dispatch(&mut line, &char_key("["));
             assert_eq!(line.value(), "[[");
             assert!(line.take_signal().is_none());
             assert!(line.marks().is_empty());
             line.set_inline_formatting(true);
-            dispatch(&mut line, &char_press("["));
+            dispatch(&mut line, &char_key("["));
             assert!(matches!(
                 line.take_signal(),
                 Some(LineSignal::LinkOpen { .. })
