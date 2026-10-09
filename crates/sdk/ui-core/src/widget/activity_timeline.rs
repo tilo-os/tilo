@@ -3779,6 +3779,7 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press};
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
@@ -4165,13 +4166,6 @@ mod tests {
         hover_row_tracks_cursor_y();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
     /// Only the pub fields the widget reads are overwritten.
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
@@ -4179,14 +4173,6 @@ mod tests {
             None,
             ElementState::Pressed,
         ))
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
     }
 
     fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
@@ -4815,20 +4801,9 @@ mod group_tests {
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(

@@ -363,7 +363,7 @@ mod tests {
     use crate::widget::ModalDialog;
     use automerge::AutoCommit;
     use vello::kurbo::Point;
-    use winit::event::{ElementState, MouseButton};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
@@ -433,13 +433,7 @@ mod tests {
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn dispatch(d: &mut ModalDialog<PromptBody>, event: &WindowEvent) {
         let mut taffy = TaffyTree::<()>::new();
@@ -534,7 +528,7 @@ mod tests {
             dispatch(&mut d, &char_event("b"));
             let center = d.dialog_rect().center();
             dispatch(&mut d, &cursor_at(center));
-            dispatch(&mut d, &left_press());
+            dispatch(&mut d, &mouse_press());
             assert!(
                 d.content().is_focused(),
                 "the field stays focused after an in-box click",

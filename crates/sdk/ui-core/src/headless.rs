@@ -13679,13 +13679,7 @@ mod framed_tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
@@ -13717,7 +13711,7 @@ mod framed_tests {
     fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
         let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
         let outcome = Framed::harness_mut(&mut probe)
-            .dispatch_to_root_outcome(&press(), &winit::event::Modifiers::default());
+            .dispatch_to_root_outcome(&mouse_press(), &winit::event::Modifiers::default());
         assert!(outcome.handled);
         assert_eq!(outcome.focus_target, None);
         assert_eq!(probe.presses, 1);

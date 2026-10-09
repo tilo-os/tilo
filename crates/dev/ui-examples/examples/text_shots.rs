@@ -19,7 +19,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -78,12 +77,7 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
     );
 }
 
-fn cursor(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(x, y),
-    }
-}
+use tilo_ui::synthetic_input::cursor_moved;
 pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXT_SHOTS_OUT").unwrap_or_else(|_| "/tmp/text_shots".to_string());
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -120,7 +114,7 @@ pub fn run(_args: &[String]) {
     dispatch(
         &mut ni,
         &mut doc,
-        &cursor(ni_rect.x1 - 16.0, ni_rect.y0 + 16.0),
+        &cursor_moved(ni_rect.x1 - 16.0, ni_rect.y0 + 16.0),
     );
 
     // --- ColorPicker (embeddable inspector control) ----------------------
