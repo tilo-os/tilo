@@ -155,8 +155,9 @@ run here on every full run instead, on the dev disk under KVM:
   Each open is split into segments that add up to it (`open_segments`): request to the
   launcher's start, the launcher's own phases (the marks it hands the app in
   `TILO_STARTUP_LAUNCHER_MARKS`), the launcher's hand-off to the app's `main` (bubblewrap,
-  the Landlock shim and the dynamic loader; `exec_to_main` is its end, from the kernel's
-  process start time) and `main` to the first frame. The compositor's
+  the Landlock shim and the dynamic loader: the shim marks `sandbox-entered` and
+  `sandbox-exec`, so `exec_to_main` is the loader alone) and `main` to the first frame.
+  The compositor's
   `tilo::launch_latency` lines, which it logs whatever `RUST_LOG` says, add its own
   request→spawn→map→first-present split. An open without either is unobservable.
 - A16 is `app_startup_check.py`'s judgement over every app the run launched.
