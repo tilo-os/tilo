@@ -373,6 +373,12 @@ impl Widget for EmbeddedApp {
         self.app.ime_window_state().map(|field| field.purpose)
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.app
+            .ime_window_state()
+            .is_some_and(|field| field.multiline)
+    }
+
     fn ime_requires_deferred_ack(&self) -> bool {
         self.app
             .focused_node

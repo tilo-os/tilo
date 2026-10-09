@@ -1411,6 +1411,17 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.ime_purpose()
         }
+        fn ime_multiline(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(Widget::ime_multiline)
+        }
+
         fn presented(&self) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

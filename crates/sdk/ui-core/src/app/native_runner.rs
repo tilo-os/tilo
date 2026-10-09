@@ -522,7 +522,7 @@ fn apply_native_ime(
     }
     match next {
         Some(intent) => {
-            window.set_ime_purpose(intent.purpose);
+            apply_native_ime_content(window, intent);
             window.set_ime_allowed(true);
             window.set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(intent.x, intent.y),
@@ -532,6 +532,15 @@ fn apply_native_ime(
         None => window.set_ime_allowed(false),
     }
     *previous = next;
+}
+
+fn apply_native_ime_content(window: &Window, intent: ImeWindowState) {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        window.set_ime_multiline(intent.multiline);
+    }
+    window.set_ime_purpose(intent.purpose);
 }
 
 fn secondary_ime_state(
@@ -1360,7 +1369,7 @@ impl AppHandler {
                 // must already carry the right content type. Cursor geometry
                 // follows enable because winit intentionally ignores cursor
                 // updates while IME is disabled.
-                window.set_ime_purpose(intent.purpose);
+                apply_native_ime_content(window, intent);
                 window.set_ime_allowed(true);
                 window.set_ime_cursor_area(
                     winit::dpi::LogicalPosition::new(intent.x, intent.y),

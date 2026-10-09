@@ -145,6 +145,7 @@ mod tests {
                 surface: DictationSurface::default(),
                 field: FieldRequest {
                     purpose: winit::window::ImePurpose::Normal,
+                    multiline: false,
                     x: 420,
                     y: 100,
                     width: 1,

@@ -220,6 +220,7 @@ mod tests {
     fn ime(x: u32, y: u32) -> ImeWindowState {
         ImeWindowState {
             purpose: winit::window::ImePurpose::Normal,
+            multiline: false,
             x,
             y,
             width: 1,
