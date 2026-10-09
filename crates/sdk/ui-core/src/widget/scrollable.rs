@@ -2936,7 +2936,7 @@ mod tests {
             assert!(s.is_focused());
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::PageDown)),
+                dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "PageDown handled"
             );
             let page = 300.0 * PAGE_FRACTION;
@@ -2946,25 +2946,28 @@ mod tests {
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::End)), "End handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::End)), "End handled");
             assert!(
                 (s.offset_y() - 900.0).abs() < 1e-3,
                 "End → bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::PageUp)), "PageUp handled");
+            assert!(
+                dispatch(&mut s, &named_key(NamedKey::PageUp)),
+                "PageUp handled"
+            );
             assert!(
                 (s.offset_y() - (900.0 - page)).abs() < 0.5,
                 "PageUp from bottom, got {}",
                 s.offset_y()
             );
 
-            assert!(dispatch(&mut s, &key(NamedKey::Home)), "Home handled");
+            assert!(dispatch(&mut s, &named_key(NamedKey::Home)), "Home handled");
             assert_eq!(s.offset_y(), 0.0, "Home → top");
 
             assert!(
-                dispatch(&mut s, &key(NamedKey::ArrowDown)),
+                dispatch(&mut s, &named_key(NamedKey::ArrowDown)),
                 "ArrowDown handled"
             );
             assert!(
@@ -2979,7 +2982,7 @@ mod tests {
             let mut s = vertical(1200.0);
             assert!(!s.is_focused());
             assert!(
-                !dispatch(&mut s, &key(NamedKey::PageDown)),
+                !dispatch(&mut s, &named_key(NamedKey::PageDown)),
                 "unfocused key not handled"
             );
             assert_eq!(s.offset_y(), 0.0, "unfocused container does not scroll");
@@ -3496,13 +3499,7 @@ mod tests {
         s
     }
 
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     fn dispatch_mods(
         s: &mut Scrollable,

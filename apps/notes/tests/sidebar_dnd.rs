@@ -18,7 +18,7 @@ use notes::sidebar::OutEvent;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::NamedKey;
 
 fn cursor_moved(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
@@ -35,13 +35,7 @@ fn mouse(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Named(key),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with three root notes: [Welcome, One, Two].
 fn three_page_app() -> (TestApp<NotesShell>, PageId, PageId, PageId) {

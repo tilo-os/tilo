@@ -2666,14 +2666,7 @@ mod tests {
         }
     }
 
-    fn key_press(key: NamedKey) -> WindowEvent {
-        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
@@ -2778,7 +2771,7 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         g.set_focus(true);
         assert!(!g.focus_visible(), "a click shows no focus ring");
-        dispatch(&mut g, &key_press(NamedKey::ArrowLeft));
+        dispatch(&mut g, &named_key(NamedKey::ArrowLeft));
         assert!(g.focus_visible(), "the keys bring the ring back");
         g.set_focus(false);
         g.set_focus(true);
@@ -3030,9 +3023,9 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         assert_eq!(g.selected(), 0, "a click on it chooses nothing");
         g.set_focus(true);
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowRight)));
+        assert!(dispatch_handled(&mut g, &named_key(NamedKey::ArrowRight)));
         assert_eq!(g.selected(), 2, "the arrow steps over it");
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowLeft)));
+        assert!(dispatch_handled(&mut g, &named_key(NamedKey::ArrowLeft)));
         assert_eq!(g.selected(), 0);
         let node = g.accessibility().expect("a group node");
         assert!(
@@ -3091,23 +3084,23 @@ mod tests {
 
             assert!(dispatch_handled(
                 &mut group,
-                &key_press(NamedKey::ArrowRight)
+                &named_key(NamedKey::ArrowRight)
             ));
             assert_eq!(group.selected(), 1);
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::End)));
+            assert!(dispatch_handled(&mut group, &named_key(NamedKey::End)));
             assert_eq!(group.selected(), 2);
             assert!(dispatch_handled(
                 &mut group,
-                &key_press(NamedKey::ArrowRight)
+                &named_key(NamedKey::ArrowRight)
             ));
             assert_eq!(group.selected(), 0, "arrow navigation wraps");
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::Enter)));
+            assert!(dispatch_handled(&mut group, &named_key(NamedKey::Enter)));
             assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
             group.set_focus(false);
             assert!(!dispatch_handled(
                 &mut group,
-                &key_press(NamedKey::ArrowRight)
+                &named_key(NamedKey::ArrowRight)
             ));
             assert_eq!(
                 group.selected(),
@@ -3139,9 +3132,9 @@ mod tests {
             assert_eq!(group.selected(), 2);
 
             group.set_focus(true);
-            dispatch(&mut group, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut group, &named_key(NamedKey::ArrowRight));
             assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
-            dispatch(&mut group, &key_press(NamedKey::End));
+            dispatch(&mut group, &named_key(NamedKey::End));
             assert_eq!(group.selected(), 2);
         }
 
@@ -3168,7 +3161,7 @@ mod tests {
             ));
             assert!(!dispatch_handled(
                 &mut group,
-                &key_press(NamedKey::ArrowRight),
+                &named_key(NamedKey::ArrowRight),
             ));
             assert_eq!(group.selected(), 0);
         }
@@ -3404,7 +3397,7 @@ mod tests {
             let node = g.accessibility().expect("semantics");
             assert_eq!(node.value, None);
             g.set_focus(true);
-            dispatch(&mut g, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut g, &named_key(NamedKey::ArrowRight));
             assert_eq!(g.selection(), Some(0), "the first arrow chooses the first");
             g.set_selection(None);
             assert_eq!(g.selected(), NONE_CHOSEN);

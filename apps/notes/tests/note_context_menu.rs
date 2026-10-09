@@ -19,13 +19,7 @@ fn mouse_press_right() -> WindowEvent {
     }
 }
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Named(key),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with one note (`body`) open, laid out `width` x 800.
 fn note_at(width: u16, body: &str) -> (TestApp<NotesShell>, PageId) {

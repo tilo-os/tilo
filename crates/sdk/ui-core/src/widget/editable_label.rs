@@ -658,21 +658,9 @@ mod tests {
         handled
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named_key(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     fn mouse_move(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {

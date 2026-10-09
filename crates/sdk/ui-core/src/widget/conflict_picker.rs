@@ -1016,14 +1016,7 @@ mod tests {
         }
     }
 
-    /// Synthesise a `WindowEvent::KeyboardInput` carrying `key` in the `Pressed` state.
-    fn key_press(key: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(key),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     fn dispatch(p: &mut ConflictPicker, event: &WindowEvent) {
         let mut tree = TaffyTree::<()>::new();
@@ -1101,7 +1094,7 @@ mod tests {
                 .on_pick(move |o| outcomes_clone.borrow_mut().push(o));
             p.rect = Rect::new(0.0, 0.0, 1280.0, 360.0);
 
-            dispatch(&mut p, &key_press(NamedKey::Escape));
+            dispatch(&mut p, &named_key(NamedKey::Escape));
             assert_eq!(outcomes.borrow().len(), 1);
             assert_eq!(outcomes.borrow()[0], PickerOutcome::Cancel);
         }

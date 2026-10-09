@@ -1392,11 +1392,11 @@ mod tests {
             // No highlight yet → Enter would commit the typed text. Arrow down arms
             // the first suggestion.
             assert!(ac.highlighted().is_none());
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "alpha");
-            assert!(drive(&mut ac, &named(NamedKey::ArrowDown)));
+            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "album");
-            assert!(drive(&mut ac, &named(NamedKey::Enter)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Enter)));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1411,7 +1411,7 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("b"));
             assert!(
-                !drive(&mut ac, &named(NamedKey::Enter)),
+                !drive(&mut ac, &named_key(NamedKey::Enter)),
                 "Enter goes on to the form's default action"
             );
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
@@ -1422,7 +1422,7 @@ mod tests {
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
             drive(&mut ac, &char_key("a"));
-            assert!(drive(&mut ac, &named(NamedKey::Escape)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Escape)));
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
             assert!(!ac.is_open());
         }
@@ -1450,7 +1450,7 @@ mod tests {
             ac.begin_edit();
             drive(&mut ac, &char_key("a")); // "alpha","album"
             // Tab fills the field with the first suggestion but does not commit.
-            assert!(drive(&mut ac, &named(NamedKey::Tab)));
+            assert!(drive(&mut ac, &named_key(NamedKey::Tab)));
             assert_eq!(ac.text(), "alpha");
             assert_eq!(
                 ac.take_outcome(),
@@ -1518,21 +1518,9 @@ mod tests {
         })
     }
 
-    fn char_key(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
-    fn named(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     fn mouse_move(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -1685,9 +1673,9 @@ mod tests {
             ac.open();
             assert!(ac.is_open());
             assert_eq!(ac.suggestions().len(), 2);
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            drive(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Paris");
-            drive(&mut ac, &named(NamedKey::ArrowDown));
+            drive(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Parma");
         }
 
