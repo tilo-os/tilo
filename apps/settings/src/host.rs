@@ -238,6 +238,30 @@ impl PaneCx {
         }
     }
 
+    /// `control`, setting the field of section `T` at `path` to what `value`
+    /// makes of each committed input (a label for a stored number); an
+    /// input it refuses changes nothing. Disabled outside a host.
+    #[must_use]
+    pub fn bind_field_with<T, V, I, C>(
+        &self,
+        control: C,
+        path: ui::tilo_resource::Path<T, V>,
+        value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
+    ) -> C
+    where
+        T: Section,
+        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
+        I: 'static,
+        C: ActionControl<I>,
+    {
+        match self.section::<T>().and_then(|actions| {
+            actions.edit_binding_with(path, move |path, input| Ok(path.set(value(input)?)))
+        }) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
     /// `control`, invoking the verb `verb` of section `T` with each committed
     /// value. Disabled outside a host.
     #[must_use]

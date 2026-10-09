@@ -26,9 +26,7 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::appearance::{
-    AppearanceEffect, text_size_label, text_size_name, text_size_options,
-};
+use crate::panes::appearance::{text_size_label, text_size_options};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair,
@@ -95,59 +93,59 @@ fn labels<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'stat
     table.iter().map(|(label, _)| *label)
 }
 
+/// The colour filter a shown label stands for.
+fn colour_filter(label: &str) -> Result<ColorFilter, String> {
+    ColorFilter::from_label(label).ok_or_else(|| format!("`{label}` is not a colour filter"))
+}
+
+/// The magnifier zoom a shown label stands for.
+fn magnifier_zoom(label: &str) -> Result<u8, String> {
+    magnifier::zoom_from_label(label).ok_or_else(|| format!("`{label}` is not a magnifier zoom"))
+}
+
+/// The magnifier view a shown label stands for.
+fn magnifier_view(label: &str) -> Result<magnifier::MagnifierView, String> {
+    magnifier::MagnifierView::from_label(label)
+        .ok_or_else(|| format!("`{label}` is not a magnifier view"))
+}
+
+/// The cursor size a shown label stands for.
+fn cursor_size(label: &str) -> Result<u32, String> {
+    AccessibilityPrefs::cursor_size_px(label)
+        .ok_or_else(|| format!("`{label}` is not a cursor size"))
+}
+
+/// The osk mode a shown label stands for.
+fn osk_mode(label: &str) -> Result<OnScreenKeyboard, String> {
+    OnScreenKeyboard::from_label(label)
+        .ok_or_else(|| format!("`{label}` is not an on-screen keyboard mode"))
+}
+
+/// The bounce delay a shown label stands for.
+fn bounce_delay(label: &str) -> Result<u32, String> {
+    AccessibilityPrefs::bounce_delay_ms(label)
+        .ok_or_else(|| format!("`{label}` is not a bounce keys delay"))
+}
+
+/// The switch keys a shown label stands for.
+fn switch_keys(label: &str) -> Result<SwitchKeyPair, String> {
+    SwitchKeyPair::from_label(label).ok_or_else(|| format!("`{label}` is not a switch key pair"))
+}
+
+/// The switch scan a shown label stands for.
+fn switch_scan(label: &str) -> Result<u16, String> {
+    SWITCH_SCANS
+        .iter()
+        .find(|(known, _)| *known == label)
+        .map(|(_, ms)| *ms)
+        .ok_or_else(|| format!("`{label}` is not a scan interval"))
+}
+
 /// The pointer, typing, hearing and screen-reader assists the compositor's
 /// input and accessibility layer applies.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccessibilityEffect {
-    /// Set the size of the large cursor.
-    #[effect(idempotent)]
-    SetCursorSize {
-        #[param("The cursor size", choices = labels(AccessibilityPrefs::CURSOR_SIZES))]
-        size: String,
-    },
-    /// Set how long bounce keys ignores a repeated key.
-    #[effect(idempotent)]
-    SetBounceKeysDelay {
-        #[param("The delay", choices = labels(AccessibilityPrefs::BOUNCE_DELAYS))]
-        delay: String,
-    },
-    /// Set when the on-screen keyboard shows.
-    #[effect(idempotent)]
-    SetOnScreenKeyboard {
-        #[param("When it shows", choices = OnScreenKeyboard::OPTIONS.iter().copied())]
-        mode: String,
-    },
-    /// Set the keys switch control listens to.
-    #[effect(idempotent)]
-    SetSwitchKeys {
-        #[param("The next and activate keys", choices = SwitchKeyPair::OPTIONS.iter().copied())]
-        keys: String,
-    },
-    /// Set switch control's automatic scan.
-    #[effect(idempotent)]
-    SetSwitchScan {
-        #[param("How often focus moves on its own", choices = labels(&SWITCH_SCANS))]
-        interval: String,
-    },
-    /// Set the colour filter.
-    #[effect(idempotent)]
-    SetColorFilter {
-        #[param("The filter", choices = ColorFilter::OPTIONS.iter().copied())]
-        filter: String,
-    },
-    /// Set the magnifier's zoom.
-    #[effect(idempotent)]
-    SetMagnifier {
-        #[param("The zoom; Off turns the magnifier off", choices = magnifier::ZOOM_LABELS)]
-        zoom: String,
-    },
-    /// Set how the magnifier shows what it enlarges.
-    #[effect(idempotent)]
-    SetMagnifierView {
-        #[param("A lens around the pointer or the full screen", choices = magnifier::MagnifierView::ALL.map(magnifier::MagnifierView::label))]
-        view: String,
-    },
     /// Turn the screen reader on or off.
     #[effect(idempotent)]
     SetScreenReader { on: bool },
@@ -174,49 +172,6 @@ pub(crate) fn answer(
     use AccessibilityEffect as E;
     let not = |value: &str, what: &str| format!("`{value}` is not a {what}");
     let change: Box<dyn FnOnce(&mut AccessibilityPrefs)> = match effect {
-        E::SetCursorSize { size } => {
-            let px = AccessibilityPrefs::cursor_size_px(&size)
-                .ok_or_else(|| not(&size, "cursor size"))?;
-            Box::new(move |p| p.cursor_size = px)
-        }
-        E::SetBounceKeysDelay { delay } => {
-            let ms = AccessibilityPrefs::bounce_delay_ms(&delay)
-                .ok_or_else(|| not(&delay, "bounce keys delay"))?;
-            Box::new(move |p| p.bounce_keys_delay_ms = ms)
-        }
-        E::SetOnScreenKeyboard { mode } => {
-            let mode = OnScreenKeyboard::from_label(&mode)
-                .ok_or_else(|| not(&mode, "on-screen keyboard mode"))?;
-            Box::new(move |p| p.on_screen_keyboard = mode)
-        }
-        E::SetSwitchKeys { keys } => {
-            let pair =
-                SwitchKeyPair::from_label(&keys).ok_or_else(|| not(&keys, "switch key pair"))?;
-            Box::new(move |p| p.switch_key_pair = pair)
-        }
-        E::SetSwitchScan { interval } => {
-            let ms = SWITCH_SCANS
-                .iter()
-                .find(|(label, _)| *label == interval)
-                .map(|(_, ms)| *ms)
-                .ok_or_else(|| not(&interval, "scan interval"))?;
-            Box::new(move |p| p.switch_scan_ms = ms)
-        }
-        E::SetColorFilter { filter } => {
-            let filter =
-                ColorFilter::from_label(&filter).ok_or_else(|| not(&filter, "colour filter"))?;
-            Box::new(move |p| p.color_filter = filter)
-        }
-        E::SetMagnifier { zoom } => {
-            let zoom =
-                magnifier::zoom_from_label(&zoom).ok_or_else(|| not(&zoom, "magnifier zoom"))?;
-            Box::new(move |p| p.magnifier_zoom = zoom)
-        }
-        E::SetMagnifierView { view } => {
-            let view = magnifier::MagnifierView::from_label(&view)
-                .ok_or_else(|| not(&view, "magnifier view"))?;
-            Box::new(move |p| p.magnifier_view = view)
-        }
         E::SetScreenReader { on } => Box::new(move |p| p.screen_reader = on),
         E::SetSpeechRate { rate } => {
             let wpm = SPEECH_RATES
@@ -465,6 +420,29 @@ impl AccessibilityPane {
         )
     }
 
+    fn field_choice<V>(
+        &self,
+        id: &str,
+        options: impl IntoIterator<Item = impl Into<String>>,
+        state: &LocalState<String>,
+        field: ui::tilo_resource::Path<AccessibilityPrefs, V>,
+        value: fn(&str) -> Result<V, String>,
+    ) -> El
+    where
+        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
+    {
+        let placeholder = state.get();
+        Box::new(
+            self.cx.bind_field_with(
+                Dropdown::from_state(options.into_iter().map(Into::into).collect(), state)
+                    .with_id(id)
+                    .with_placeholder(&placeholder),
+                field,
+                move |label: String| value(&label),
+            ),
+        )
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
             self.build_vision_card(),
@@ -480,11 +458,12 @@ impl AccessibilityPane {
         let shown = &self.shown;
         let placeholder = shown.text_size.get();
         let size = Box::new(
-            self.cx.bind(
+            self.cx.bind_field_with(
                 Dropdown::from_state(text_size_options(), &shown.text_size)
                     .with_id("a11y.text_size")
                     .with_placeholder(&placeholder),
-                effect(AppearanceEffect::SET_TEXT_SIZE).map(|shown: String| text_size_name(&shown)),
+                AppearancePrefs::paths().text_scale,
+                |label: String| crate::panes::appearance::text_size_value(&label),
             ),
         );
         card(
@@ -509,29 +488,32 @@ impl AccessibilityPane {
                 choice_row(&t("a11y-text-size"), size),
                 choice_row(
                     &t("a11y-colour-filter"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.color_filter",
                         ColorFilter::OPTIONS.iter().copied(),
                         &shown.color_filter,
-                        AccessibilityEffect::SET_COLOR_FILTER,
+                        AccessibilityPrefs::paths().color_filter,
+                        colour_filter,
                     ),
                 ),
                 choice_row(
                     &t("a11y-magnifier"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.magnifier",
                         magnifier::ZOOM_LABELS,
                         &shown.magnifier,
-                        AccessibilityEffect::SET_MAGNIFIER,
+                        AccessibilityPrefs::paths().magnifier_zoom,
+                        magnifier_zoom,
                     ),
                 ),
                 choice_row(
                     &t("a11y-magnifier-view"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.magnifier_view",
                         magnifier::MagnifierView::ALL.map(magnifier::MagnifierView::label),
                         &shown.magnifier_view,
-                        AccessibilityEffect::SET_MAGNIFIER_VIEW,
+                        AccessibilityPrefs::paths().magnifier_view,
+                        magnifier_view,
                     ),
                 ),
             ]),
@@ -565,11 +547,12 @@ impl AccessibilityPane {
                 ),
                 choice_row(
                     &t("a11y-cursor-size"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.cursor_size",
                         labels(AccessibilityPrefs::CURSOR_SIZES),
                         &shown.cursor_size,
-                        AccessibilityEffect::SET_CURSOR_SIZE,
+                        AccessibilityPrefs::paths().cursor_size,
+                        cursor_size,
                     ),
                 ),
                 setting_row_described(
@@ -600,11 +583,12 @@ impl AccessibilityPane {
         let osk_row = setting_row_described(
             &t("a11y-osk"),
             &t("a11y-osk-desc"),
-            self.choice(
+            self.field_choice(
                 "a11y.on_screen_keyboard",
                 OnScreenKeyboard::OPTIONS.iter().copied(),
                 &shown.on_screen_keyboard,
-                AccessibilityEffect::SET_ON_SCREEN_KEYBOARD,
+                AccessibilityPrefs::paths().on_screen_keyboard,
+                osk_mode,
             ),
         );
         card(
@@ -639,11 +623,12 @@ impl AccessibilityPane {
                 ),
                 choice_row(
                     &t("a11y-bounce-delay"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.bounce_delay",
                         labels(AccessibilityPrefs::BOUNCE_DELAYS),
                         &shown.bounce_delay,
-                        AccessibilityEffect::SET_BOUNCE_KEYS_DELAY,
+                        AccessibilityPrefs::paths().bounce_keys_delay_ms,
+                        bounce_delay,
                     ),
                 ),
                 setting_row_described(
@@ -667,20 +652,22 @@ impl AccessibilityPane {
                 ),
                 choice_row(
                     &t("a11y-switch-keys"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.switch_keys",
                         SwitchKeyPair::OPTIONS.iter().copied(),
                         &shown.switch_keys,
-                        AccessibilityEffect::SET_SWITCH_KEYS,
+                        AccessibilityPrefs::paths().switch_key_pair,
+                        switch_keys,
                     ),
                 ),
                 choice_row(
                     &t("a11y-switch-scan"),
-                    self.choice(
+                    self.field_choice(
                         "a11y.switch_scan",
                         labels(&SWITCH_SCANS),
                         &shown.switch_scan,
-                        AccessibilityEffect::SET_SWITCH_SCAN,
+                        AccessibilityPrefs::paths().switch_scan_ms,
+                        switch_scan,
                     ),
                 ),
             ]),
@@ -834,45 +821,26 @@ mod tests {
             true,
         )
         .unwrap();
-        set(
+        crate::host::testing::edit_field(
             &mut app,
-            AppearanceEffect::SetTextSize {
-                size: "Larger".into(),
-            },
-        );
+            crate::host::testing::APPEARANCE,
+            "text_scale",
+            1.3,
+        )
+        .unwrap();
         let appearance = app.settings::<AppearancePrefs>().get();
         assert!(appearance.high_contrast);
         assert_eq!(appearance.text_scale, 1.30);
 
         edit_field(&mut app, ACCESSIBILITY, "large_cursor", true).unwrap();
-        set(
-            &mut app,
-            AccessibilityEffect::SetCursorSize {
-                size: "Largest".into(),
-            },
-        );
+        edit_field(&mut app, ACCESSIBILITY, "cursor_size", 64).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "sticky_keys", true).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "bounce_keys", true).unwrap();
-        set(
-            &mut app,
-            AccessibilityEffect::SetBounceKeysDelay {
-                delay: "500 ms".into(),
-            },
-        );
+        edit_field(&mut app, ACCESSIBILITY, "bounce_keys_delay_ms", 500).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "bounce_keys_alert", true).unwrap();
         edit_field(&mut app, ACCESSIBILITY, "mouse_keys", true).unwrap();
-        set(
-            &mut app,
-            AccessibilityEffect::SetOnScreenKeyboard {
-                mode: "Always".into(),
-            },
-        );
-        set(
-            &mut app,
-            AccessibilityEffect::SetSwitchScan {
-                interval: "2 seconds".into(),
-            },
-        );
+        edit_field(&mut app, ACCESSIBILITY, "on_screen_keyboard", "always").unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "switch_scan_ms", 2000).unwrap();
         set(
             &mut app,
             AccessibilityEffect::SetSpeechRate {
@@ -889,10 +857,7 @@ mod tests {
         assert_eq!(access.switch_scan_ms, 2000);
         assert_eq!(access.screen_reader_rate, 140);
 
-        let refused = AccessibilityEffect::SetCursorSize {
-            size: "Huge".into(),
-        };
-        assert!(app.effect(&SettingsEffect::from(refused)).is_err());
+        assert!(edit_field(&mut app, ACCESSIBILITY, "cursor_size", 9999).is_err());
         assert_eq!(app.settings::<AccessibilityPrefs>().get(), access);
     }
 
@@ -908,16 +873,8 @@ mod tests {
             .update_section(magnifier::SECTION, remembered)
             .unwrap();
 
-        set(
-            &mut app,
-            AccessibilityEffect::SetMagnifier { zoom: "4×".into() },
-        );
-        set(
-            &mut app,
-            AccessibilityEffect::SetMagnifierView {
-                view: "Full screen".into(),
-            },
-        );
+        edit_field(&mut app, ACCESSIBILITY, "magnifier_zoom", 4).unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "magnifier_view", "full_screen").unwrap();
         let section = document.section(magnifier::SECTION);
         assert_eq!(
             magnifier::MagnifierState::from_section(&section),

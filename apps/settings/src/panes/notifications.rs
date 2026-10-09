@@ -144,24 +144,6 @@ fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'sta
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NotificationEffect {
-    /// Set when the focus period begins.
-    #[effect(idempotent)]
-    SetFocusStart {
-        #[param("The time, HH:MM", choices = english(FOCUS_TIMES))]
-        time: String,
-    },
-    /// Set when the focus period ends.
-    #[effect(idempotent)]
-    SetFocusEnd {
-        #[param("The time, HH:MM", choices = english(FOCUS_TIMES))]
-        time: String,
-    },
-    /// Set on which days the focus period applies.
-    #[effect(idempotent)]
-    SetFocusDays {
-        #[param("The days", choices = english(FOCUS_DAYS))]
-        days: String,
-    },
     /// Show one app's notification banners, or stop.
     #[effect(idempotent)]
     SetAppBanners {
@@ -236,21 +218,6 @@ pub(crate) fn answer(
     use NotificationEffect as E;
     let host = app.host();
     match effect {
-        E::SetFocusStart { time } => {
-            let minute =
-                focus_time_minutes(&time).ok_or_else(|| format!("`{time}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.start_minute = minute)
-        }
-        E::SetFocusEnd { time } => {
-            let minute =
-                focus_time_minutes(&time).ok_or_else(|| format!("`{time}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.end_minute = minute)
-        }
-        E::SetFocusDays { days } => {
-            let days =
-                focus_days_from_label(&days).ok_or_else(|| format!("`{days}` is not offered"))?;
-            host.update(|p: &mut NotificationPrefs| p.focus.weekdays = days)
-        }
         E::SetAppBanners { app, on } => host.update(app_rule(&app, |r| r.banners = Some(on))?),
         E::SetAppPreviews { app, on } => host.update(app_rule(&app, |r| r.previews = Some(on))?),
         E::SetAppSounds { app, on } => host.update(app_rule(&app, |r| r.sounds = Some(on))?),
@@ -486,6 +453,12 @@ fn focus_time_label(minutes: u16) -> &'static str {
         .map_or("22:00", |(label, _)| *label)
 }
 
+/// The minute of the day a focus time label stands for, as the focus
+/// dropdowns store it.
+fn focus_minutes(label: &str) -> Result<u16, String> {
+    focus_time_minutes(label).ok_or_else(|| format!("`{label}` is not offered"))
+}
+
 fn focus_time_minutes(label: &str) -> Option<u16> {
     FOCUS_TIMES
         .iter()
@@ -516,14 +489,6 @@ fn focus_days_from_label(label: &str) -> Option<u8> {
     FOCUS_DAYS.iter().find_map(|(english, days)| {
         (*english == label || focus_days_shown(english) == label).then_some(*days)
     })
-}
-
-/// The English name of a day set shown in either language.
-fn focus_days_english(shown: &str) -> String {
-    english(FOCUS_DAYS)
-        .find(|english| *english == shown || focus_days_shown(english) == shown)
-        .unwrap_or(shown)
-        .to_owned()
 }
 
 fn focus_days_options() -> Vec<String> {
@@ -852,28 +817,33 @@ impl NotificationsPane {
                 choice_row(
                     &t("notif-focus-from"),
                     Self::choice(focus_options.clone(), &self.shown.focus_start, |control| {
-                        cx.bind(
+                        cx.bind_field_with(
                             control.with_id("notifications.focus.start"),
-                            effect(NotificationEffect::SET_FOCUS_START),
+                            NotificationPrefs::paths().focus.start_minute,
+                            |label: String| focus_minutes(&label),
                         )
                     }),
                 ),
                 choice_row(
                     &t("notif-focus-days"),
                     Self::choice(focus_days_options(), &self.shown.focus_days, |control| {
-                        cx.bind(
+                        cx.bind_field_with(
                             control.with_id("notifications.focus.days"),
-                            effect(NotificationEffect::SET_FOCUS_DAYS)
-                                .map(|shown: String| focus_days_english(&shown)),
+                            NotificationPrefs::paths().focus.weekdays,
+                            |shown: String| {
+                                focus_days_from_label(&shown)
+                                    .ok_or_else(|| format!("`{shown}` is not offered"))
+                            },
                         )
                     }),
                 ),
                 choice_row(
                     &t("notif-focus-until"),
                     Self::choice(focus_options, &self.shown.focus_end, |control| {
-                        cx.bind(
+                        cx.bind_field_with(
                             control.with_id("notifications.focus.end"),
-                            effect(NotificationEffect::SET_FOCUS_END),
+                            NotificationPrefs::paths().focus.end_minute,
+                            |label: String| focus_minutes(&label),
                         )
                     }),
                 ),
@@ -1101,18 +1071,8 @@ mod tests {
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
-        set(
-            &mut app,
-            NotificationEffect::SetFocusStart {
-                time: "20:00".into(),
-            },
-        );
-        set(
-            &mut app,
-            NotificationEffect::SetFocusDays {
-                days: "Weekdays".into(),
-            },
-        );
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
+        edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
         set(
             &mut app,
             NotificationEffect::SetAppSounds {
@@ -1139,17 +1099,17 @@ mod tests {
         let muted = prefs.per_app["so.tilo.mail"].muted_until.unwrap();
         assert!(muted > unix_now_i64() + 7 * 60 * 60);
 
-        for refused in [
-            NotificationEffect::SetFocusStart {
-                time: "13:37".into(),
-            },
-            NotificationEffect::SetAppBadges {
+        assert!(
+            edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 24 * 60).is_err(),
+            "a minute past the day is refused"
+        );
+        assert!(
+            app.effect(&SettingsEffect::from(NotificationEffect::SetAppBadges {
                 app: "not an id".into(),
                 on: true,
-            },
-        ] {
-            assert!(app.effect(&SettingsEffect::from(refused)).is_err());
-        }
+            }))
+            .is_err()
+        );
         assert_eq!(app.settings::<NotificationPrefs>().get(), prefs);
     }
 
