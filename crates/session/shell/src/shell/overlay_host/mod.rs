@@ -5495,9 +5495,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let reveal = chrome.borrow_mut().take_tab_focus_reveal();
         let st = chrome.borrow();
         let tree = st.tree();
         if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(strip) = reveal {
+                surface.reveal_on_next_layout(strip);
+            }
             surface.sync_navigation(&tree.desktop);
         }
     }

@@ -611,6 +611,9 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    /// Explicit tab selection must reveal even an already-selected window
+    /// after canvas panning. A one-shot exact address leaves free pan alone.
+    tab_focus_reveal: Option<(WorkspaceId, StripId, GroupId, u64)>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -856,6 +859,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            tab_focus_reveal: None,
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
@@ -1692,7 +1696,30 @@ impl ChromeState {
             // reopen the right layout with an older window selected.
             tree.queue_save();
         }
+        self.tab_focus_reveal = Some((workspace, strip, group, tab));
         self.bump();
+    }
+
+    /// Consume explicit framing only while its complete selection remains
+    /// current. A later click or close must not reveal an obsolete target.
+    pub(crate) fn take_tab_focus_reveal(&mut self) -> Option<StripId> {
+        let (workspace, strip, group, tab) = self.tab_focus_reveal.take()?;
+        let tree = self.tree();
+        (tree.desktop.active == workspace
+            && tree.desktop.active_strip.get(&workspace) == Some(&strip)
+            && tree.desktop.active_group_for(strip) == Some(group)
+            && tree
+                .desktop
+                .active_workspace()?
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)?
+                .window_groups
+                .iter()
+                .find(|candidate| candidate.id == group)?
+                .active_tab
+                == tab)
+            .then_some(strip)
     }
 
     /// Replace what personal continuity knows about other devices' focus.

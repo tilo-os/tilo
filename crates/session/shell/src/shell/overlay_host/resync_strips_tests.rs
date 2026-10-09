@@ -1456,3 +1456,99 @@ fn group_actions_target_exactly_their_group_or_surface() {
     closing_one_of_two_same_app_windows_targets_only_its_surface();
     group_plus_is_a_workspace_scoped_app_picker_targeting_that_group();
 }
+
+#[test]
+fn explicit_tab_focus_reveals_the_selected_group_after_manual_pan() {
+    use crate::shell::chrome_state::SearchScope;
+    use crate::shell::search::SearchRegistry;
+    use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+    let (mut tree, strip, group) = one_group_seed();
+    for id in 201..=206 {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(id, "Neighbour"));
+    }
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let theme = Theme::dark();
+    layout_close_fixture(&mut host, &theme);
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    layout_close_fixture(&mut host, &theme);
+    host.tick_scroll_active_into_view_for_tests();
+    let offset = host
+        .group_row_mut_for_tests(strip)
+        .unwrap()
+        .pan_max_scroll_x();
+    assert!(offset > 1280.0, "fixture has an offscreen selected group");
+    assert_eq!(
+        host.desktop_surface_mut()
+            .unwrap()
+            .pan_desktop(strip, offset),
+        Some(true)
+    );
+    layout_close_fixture(&mut host, &theme);
+    host.tick_scroll_active_into_view_for_tests();
+    assert!(host.group_at_for_tests(strip, 0).unwrap().get_rect().x1 < 0.0);
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip),
+        Some(group)
+    );
+
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    layout_close_fixture(&mut host, &theme);
+    assert!(
+        host.group_at_for_tests(strip, 0).unwrap().get_rect().x1 < 0.0,
+        "ordinary updates retain deliberate canvas panning before selection"
+    );
+
+    let mut registry = SearchRegistry::new();
+    registry.register(std::rc::Rc::new(
+        crate::shell::search::providers::desktop_windows::DesktopWindowsProvider::new(),
+    ));
+    let mut doc = AutoCommit::new();
+    let resource = ResourceRef::new("desktop-windows", "tab.focus:100:1");
+    let catalog = {
+        let state = chrome.borrow();
+        ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            SearchScope::All,
+            None,
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+    };
+    catalog
+        .select(&resource)
+        .expect("published exact focus action")
+        .invoke(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            [],
+        )
+        .expect("semantic selection accepted");
+    host.tick_scroll_active_into_view_for_tests();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    layout_close_fixture(&mut host, &theme);
+    let selected = host.group_at_for_tests(strip, 0).unwrap().get_rect();
+    assert!(
+        selected.x0 >= 0.0 && selected.x1 <= 1280.0,
+        "explicit tab focus must reveal the actual retained group: {selected:?}"
+    );
+
+    assert_eq!(
+        host.desktop_surface_mut()
+            .unwrap()
+            .pan_desktop(strip, offset),
+        Some(true)
+    );
+    host.update(&AutoCommit::new(), &automerge::ROOT);
+    layout_close_fixture(&mut host, &theme);
+    assert!(
+        host.group_at_for_tests(strip, 0).unwrap().get_rect().x1 < 0.0,
+        "consumed explicit selection must leave later free panning intact"
+    );
+}
