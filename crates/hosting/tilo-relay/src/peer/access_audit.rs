@@ -7,7 +7,9 @@
 //!
 //! - [`AUDIT_SETTLE`] after anything it reads announces a change
 //!   ([`crate::authority_epoch`]);
-//! - when the certificate or agent delegation the connection holds expires;
+//! - [`AUDIT_SETTLE`] after the certificate or agent delegation the
+//!   connection holds expires (every frame is already refused from the
+//!   expiry on; the settle lets one in flight be answered before the close);
 //! - every [`UNWATCHED_AUDIT`] while a subscribed room's membership file can
 //!   only be observed by reading it (no live membership watch covers it);
 //! - otherwise after [`AUDIT_BACKSTOP`], for a writer that forgets to
@@ -104,7 +106,7 @@ impl AccessAudit {
         {
             due = due.min(after(
                 now,
-                Duration::from_nanos(expiry.saturating_sub(now_ns)),
+                Duration::from_nanos(expiry.saturating_sub(now_ns)).saturating_add(AUDIT_SETTLE),
             ));
         }
         self.due = due;
@@ -202,7 +204,7 @@ mod tests {
 
         peer.cert.expires_at_ns = Some(in_secs(5));
         audit.audited(&peer, &agents, &[7], true);
-        assert!(audit.due() <= Instant::now() + Duration::from_secs(5));
+        assert!(audit.due() <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(audit.due() > Instant::now() + Duration::from_secs(4));
 
         let delegation = AgentDelegation::sign(
@@ -212,7 +214,7 @@ mod tests {
             "Helper",
             [1, 2, 3],
             AgentScope {
-                rooms: Vec::new(),
+                rooms: vec![uuid::Uuid::from_u128(7).to_string()],
                 apps: Vec::new(),
                 may_confirm: false,
             },
@@ -225,7 +227,7 @@ mod tests {
             .unwrap()
             .insert(peer.device_public_key, Some(delegation));
         audit.audited(&peer, &agents, &[7], true);
-        assert!(audit.due() <= Instant::now() + Duration::from_secs(2));
+        assert!(audit.due() <= Instant::now() + Duration::from_secs(2) + AUDIT_SETTLE);
         assert!(audit.due() > Instant::now() + Duration::from_secs(1));
 
         // An expiry already past is not a deadline to spin on.
