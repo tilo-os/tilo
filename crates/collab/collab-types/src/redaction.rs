@@ -1,7 +1,7 @@
 //! Cooperative cryptographic redaction.
 //!
 //! A `RedactRequest` is the payload of a [`crate::op::SignedOp`] whose
-//! `op_class` is [`crate::role::OpClass::Redact`]. Only the channel owner
+//! `kind` is [`crate::role::OpKind::Redaction`]. Only the channel owner
 //! (see [`crate::role::role_permits`]) can mint one, declaring "this
 //! earlier op is now compliance-required to be removed; peers, please honour it."
 //!
@@ -28,7 +28,7 @@ use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::channel::ArtifactId;
 use crate::crypto::Ed25519PublicKey;
 use crate::op::SignedOp;
-use crate::role::OpClass;
+use crate::role::OpKind;
 
 /// Hard upper bound on `RedactRequest::reason`. Long enough for a
 /// compliance reference plus a sentence of context; larger justifications
@@ -87,7 +87,7 @@ impl OpId {
 }
 
 /// A signed redaction request payload, carried by a [`SignedOp`] whose
-/// `op_class` is [`OpClass::Redact`]. `target_op_id`/`target_op_hash` are
+/// `kind` is [`OpKind::Redaction`]. `target_op_id`/`target_op_hash` are
 /// derived from the targeted op at minting time; the audit log
 /// cross-references the original envelope with them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,19 +158,19 @@ impl RedactedMarker {
 /// Errors produced by the redaction pipeline.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum RedactionError {
-    /// The op claimed `op_class == Redact` but the payload didn't decode as a
-    /// `RedactRequest` — distinct from `WrongOpClass` so audit logs can tell
+    /// The op claimed `kind == Redact` but the payload didn't decode as a
+    /// `RedactRequest` — distinct from `WrongOpKind` so audit logs can tell
     /// "valid postcard, wrong type" from "garbage bytes".
     #[error("malformed redaction payload: {0}")]
     Malformed(#[source] CanonicalError),
 
-    /// The op claimed `op_class != Redact` but a caller tried to parse its
+    /// The op claimed `kind != Redact` but a caller tried to parse its
     /// payload as one. The validator catches this earlier; this variant
     /// should only surface from the lower-level parser.
-    #[error("redaction op had the wrong op_class: {actual:?}")]
-    WrongOpClass {
-        /// The `op_class` the envelope actually carried.
-        actual: OpClass,
+    #[error("redaction op had the wrong kind: {actual:?}")]
+    WrongOpKind {
+        /// The `kind` the envelope actually carried.
+        actual: OpKind,
     },
 
     /// `reason` exceeded `MAX_REDACTION_REASON_BYTES`. Rejected at parse time
@@ -186,7 +186,7 @@ pub enum RedactionError {
 }
 
 /// Encode a `RedactRequest` to canonical bytes — the form an op's payload
-/// carries when `op_class == Redact`.
+/// carries when `kind == Redact`.
 ///
 /// # Errors
 ///
@@ -197,7 +197,7 @@ pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalEr
 
 /// Decode a [`SignedOp::payload`] as a [`RedactRequest`].
 ///
-/// Verifies: `op.op_class == Redact`; the payload decodes; `reason.len()
+/// Verifies: `op.kind == Redact`; the payload decodes; `reason.len()
 /// <= MAX_REDACTION_REASON_BYTES`; `payload.redacted_by == op.author`
 /// (catching the identity mismatch before the validator sees it).
 ///
@@ -205,16 +205,14 @@ pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalEr
 ///
 /// # Errors
 ///
-/// Returns [`RedactionError::WrongOpClass`] if `op.op_class != Redact`,
+/// Returns [`RedactionError::WrongOpKind`] if `op.kind != Redact`,
 /// [`RedactionError::Malformed`] if the payload doesn't decode as a
 /// `RedactRequest`, [`RedactionError::ReasonTooLong`] if `reason` exceeds
 /// [`MAX_REDACTION_REASON_BYTES`], or [`RedactionError::RedactorMismatch`]
 /// if `redacted_by` disagrees with `op.author`.
 pub fn parse_redact_payload(op: &SignedOp) -> Result<RedactRequest, RedactionError> {
-    if op.op_class != OpClass::Redact {
-        return Err(RedactionError::WrongOpClass {
-            actual: op.op_class,
-        });
+    if op.kind != OpKind::Redaction {
+        return Err(RedactionError::WrongOpKind { actual: op.kind });
     }
     let req: RedactRequest =
         from_canonical_bytes(&op.payload).map_err(RedactionError::Malformed)?;
@@ -259,7 +257,7 @@ mod tests {
             ArtifactId::new(),
             pk,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )
@@ -348,7 +346,7 @@ mod tests {
                 req.artifact,
                 pk,
                 AttestationId::new(),
-                OpClass::Redact,
+                OpKind::Redaction,
                 SystemTime::UNIX_EPOCH,
                 42,
             );
@@ -356,7 +354,7 @@ mod tests {
             assert_eq!(parsed, req);
         }
 
-        // Phase: parse_redact_payload_rejects_wrong_op_class.
+        // Phase: parse_redact_payload_rejects_wrong_op_kind.
         {
             let (_, pk) = generate_keypair();
             let req = RedactRequest {
@@ -373,15 +371,15 @@ mod tests {
                 req.artifact,
                 pk,
                 AttestationId::new(),
-                OpClass::Splice, // wrong on purpose
+                OpKind::Change, // wrong on purpose
                 SystemTime::UNIX_EPOCH,
                 1,
             );
             match parse_redact_payload(&op) {
-                Err(RedactionError::WrongOpClass { actual }) => {
-                    assert_eq!(actual, OpClass::Splice);
+                Err(RedactionError::WrongOpKind { actual }) => {
+                    assert_eq!(actual, OpKind::Change);
                 }
-                other => panic!("expected WrongOpClass, got {other:?}"),
+                other => panic!("expected WrongOpKind, got {other:?}"),
             }
         }
 
@@ -402,7 +400,7 @@ mod tests {
                 req.artifact,
                 pk,
                 AttestationId::new(),
-                OpClass::Redact,
+                OpKind::Redaction,
                 SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -435,7 +433,7 @@ mod tests {
                 req.artifact,
                 author_pk,
                 AttestationId::new(),
-                OpClass::Redact,
+                OpKind::Redaction,
                 SystemTime::UNIX_EPOCH,
                 1,
             );

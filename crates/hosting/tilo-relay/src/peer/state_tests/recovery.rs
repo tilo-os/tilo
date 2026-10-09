@@ -57,7 +57,7 @@ fn signed(
         collab_types::document_artifact_id("selector.app", room, "one"),
         collab_types::Ed25519PublicKey::from_bytes(source),
         collab_types::document_attestation_id("selector.app", room, "one"),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         now,
         seq,
     )

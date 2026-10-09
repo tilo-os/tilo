@@ -9,6 +9,8 @@ pub use protocol::NeighbourMsg;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
+mod receipt_tests;
+#[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 mod cached_document;
 pub mod document;

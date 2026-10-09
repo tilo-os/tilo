@@ -548,7 +548,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
+    Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op, validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
@@ -596,7 +596,7 @@ fn sign_delta(
         artifact,
         author_pub,
         attestation_id,
-        OpClass::Splice,
+        OpKind::Change,
         SystemTime::UNIX_EPOCH
             .checked_add(StdDuration::from_secs(10))
             .unwrap(),

@@ -1,7 +1,7 @@
 //! Bounded replaceable recovery material; immutable obligations remain elsewhere.
 use super::{
     ArtifactKind, BTreeMap, ChannelState, DocumentMutation, Duration, Ed25519PublicKey,
-    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpClass,
+    LocalDocument, MAX_PUBLICATION_BYTES, MAX_PUBLICATIONS, MemberAuthority, NeighbourMsg, OpKind,
     ReadDoc, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
     publication_size, room,
 };
@@ -57,7 +57,7 @@ fn history_envelope(
         collab_types::document_artifact_id(&route.app, room, &route.record),
         author,
         collab_types::document_attestation_id(&route.app, room, &route.record),
-        OpClass::Splice,
+        OpKind::Change,
         timestamp,
         sequence,
     )
@@ -242,7 +242,7 @@ impl StatePeer {
         let NeighbourMsg::AppDocument { envelope, .. } = message else {
             return Err("recovery projection is not an app document".into());
         };
-        if envelope.op_class != OpClass::Splice
+        if envelope.kind != OpKind::Change
             || !matches!(local.mutation, Some(DocumentMutation::Incremental(_)))
             || local.admission.sequence() == 0
             || self
@@ -377,6 +377,7 @@ impl StatePeer {
             .insert(envelope.artifact, route.record.clone());
         channel.room.clone_from(&self.core.room);
         channel.grants.clone_from(&member.policy.grants);
+        channel.surfaces.clone_from(&self.surfaces);
         if reserved {
             // Historical proof already checked the real persisted floor. This
             // isolated validation copy must still run role/clearance/redaction

@@ -1046,7 +1046,7 @@ impl DocumentAuthorization {
         let record = route.record.as_deref().unwrap_or("");
         if route != &self.0.route
             || operation.encryption.is_some()
-            || operation.op_class != collab_types::OpClass::Splice
+            || operation.kind != collab_types::OpKind::Change
             || operation.artifact
                 != collab_types::document_artifact_id(&route.app_id, &room, record)
             || operation.attestation_id

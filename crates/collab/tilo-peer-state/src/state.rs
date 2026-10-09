@@ -9,7 +9,7 @@ use crate::{NeighbourMsg, document, room};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
+    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -317,6 +317,25 @@ const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub struct StatePeer {
     core: PeerCore<LegacyNative>,
+    /// The app surfaces received changes are decided against by their
+    /// claims; without a source, a change is decided as an edit of its
+    /// record. Set by the host, never persisted.
+    surfaces: collab_types::Surfaces,
+}
+
+/// The kind a record document's identity names (`tilo:record.kind`).
+/// The record as this peer holds it, when it has units beside itself to
+/// tell a change's writes apart by.
+fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<automerge::Automerge> {
+    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc).document().clone())
+}
+
+fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
+    let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
+    match doc.get(&meta, "kind").ok()?? {
+        (automerge::Value::Scalar(kind), _) => kind.as_str().map(str::to_owned),
+        _ => None,
+    }
 }
 
 fn check_governed_snapshot(
@@ -377,6 +396,7 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: collab_types::Surfaces::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -1486,6 +1506,12 @@ impl StatePeer {
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         backend::member::legacy(&self.core, source, now).map_err(err)
     }
+    /// Decide received changes by their claims against the app surfaces
+    /// `surfaces` finds.
+    pub fn set_surfaces(&mut self, surfaces: collab_types::Surfaces) {
+        self.surfaces = surfaces;
+    }
+
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, refused when the change is not granted.
     fn authorize_document(
@@ -1497,11 +1523,39 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<MemberAuthority, String> {
         let member = self.permissions(*source, authorization_time)?;
-        let node = collab_types::op_node(&self.core.room, Some(app_id), record, envelope.op_class);
-        if !member.allows(&node, ActionKind::Undoable, authorization_time) {
-            return Err("document change forbidden: not granted".into());
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
+        };
+        // The record as this peer holds it, read only when changes are
+        // decided against app surfaces: which of the app's resources it is,
+        // and which units a change writes.
+        let document = self
+            .surfaces
+            .enforced()
+            .then(|| self.core.documents.get(&route))
+            .flatten();
+        let kind = document.and_then(|document| record_kind(&*document.doc));
+        let held = document.and_then(|document| held_units(&document.doc));
+        let decided = collab_types::decide_op(
+            envelope,
+            &collab_types::Record {
+                room: &self.core.room,
+                app: app_id,
+                record,
+            },
+            kind.as_deref(),
+            held.as_ref(),
+            &self.surfaces,
+            &|node, kind| member.allows(node, kind, authorization_time),
+        );
+        match decided {
+            Ok(collab_types::Receipt::Admit) => Ok(member),
+            Ok(collab_types::Receipt::Hold) => {
+                Err("document change held: its app surface is not here yet".into())
+            }
+            Err(refusal) => Err(format!("document change forbidden: {refusal}")),
         }
-        Ok(member)
     }
 
     /// Select native schema v5 only as part of an outer owner's reviewed rollout.
@@ -2074,6 +2128,7 @@ impl StatePeer {
         candidate.channel.room.clone_from(&self.core.room);
         let mut validated_channel = candidate.channel.clone();
         validated_channel.grants.clone_from(&member.policy.grants);
+        validated_channel.surfaces.clone_from(&self.surfaces);
         let foreign_bound = tilo_action_policy::roles::foreign_device_bound();
         let author = member.authority(&foreign_bound);
         match collab_types::validate_admitted_inbound_op(
@@ -2114,7 +2169,7 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
-        if envelope.op_class == OpClass::Compaction
+        if envelope.kind == OpKind::Compaction
             && !matches!(
                 payload,
                 collab_types::WholeDocumentPayload::Encrypted { .. }
@@ -2346,7 +2401,7 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let admitted =
             DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
-        let history = if envelope.op_class == OpClass::Compaction {
+        let history = if envelope.kind == OpKind::Compaction {
             sealed_compaction::supersede(
                 &candidate.sealed,
                 &candidate.channel.last_seq_per_author,
@@ -2565,6 +2620,34 @@ impl StatePeer {
         self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         Ok(message)
     }
+    /// The claims of `mutation`'s changes on `route`, each naming the units
+    /// it writes in the record as this peer holds it.
+    fn claims_of(
+        &self,
+        route: &Route,
+        mutation: &DocumentMutation,
+    ) -> Vec<collab_types::ChangeClaim> {
+        let DocumentMutation::Incremental(bytes) = mutation else {
+            return Vec::new();
+        };
+        let held = self
+            .core
+            .documents
+            .get(route)
+            .and_then(|document| held_units(&document.doc));
+        let units = match (held, collab_types::parse_changes(bytes)) {
+            (Some(held), Ok(changes)) => collab_types::units::units_by_change(&held, &changes),
+            _ => std::collections::BTreeMap::new(),
+        };
+        collab_types::mutation_claims(mutation, |change| {
+            units
+                .get(&change.hash().0)
+                .cloned()
+                .unwrap_or_else(|| vec![Vec::new()])
+        })
+        .unwrap_or_default()
+    }
+
     #[expect(
         clippy::needless_pass_by_value,
         reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"
@@ -2596,15 +2679,13 @@ impl StatePeer {
             collab_types::document_artifact_id(app, &self.core.room, record),
             author,
             collab_types::document_attestation_id(app, &self.core.room, record),
-            OpClass::Splice,
+            OpKind::Change,
             now,
             seq,
         )
         // A change something other than the executor wrote names no action:
         // its op carries no claims, which a receiver deciding claims refuses.
-        .with_claims(
-            collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap_or_default(),
-        );
+        .with_claims(self.claims_of(&route, &mutation));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
@@ -3347,6 +3428,7 @@ impl StatePeer {
                 native_cut_publisher: None,
                 _retention: (),
             },
+            surfaces: collab_types::Surfaces::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(

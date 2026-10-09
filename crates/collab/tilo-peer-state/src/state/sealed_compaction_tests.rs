@@ -185,7 +185,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
 fn signed(
     key: &SigningKey,
     seq: u64,
-    op_class: OpClass,
+    kind: OpKind,
     payload: Vec<u8>,
     encryption: Option<EncryptionMetadata>,
     now: SystemTime,
@@ -195,7 +195,7 @@ fn signed(
         artifact(),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         collab_types::document_attestation_id(APP, ROOM, RECORD),
-        op_class,
+        kind,
         now,
         seq,
     );
@@ -237,7 +237,7 @@ fn write(
     message(signed(
         key,
         next_seq(peer, key),
-        OpClass::Splice,
+        OpKind::Change,
         payload,
         Some(metadata),
         now,
@@ -307,7 +307,7 @@ fn forged(
     message(signed(
         key,
         next_seq(peer, key),
-        OpClass::Compaction,
+        OpKind::Compaction,
         wrapper.encode().unwrap(),
         Some(*metadata),
         now,
@@ -371,7 +371,7 @@ fn a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_chan
         vec![compaction.clone()],
         "history superseded"
     );
-    assert_eq!(compaction.op_class, OpClass::Compaction);
+    assert_eq!(compaction.kind, OpKind::Compaction);
     let metadata = compaction.encryption.unwrap();
     assert_eq!(metadata.epoch, current.epoch());
     assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
@@ -551,7 +551,7 @@ fn forged_compactions_are_refused() {
     let cleartext = signed(
         &f.owner,
         next_seq(&f.host, &f.owner),
-        OpClass::Compaction,
+        OpKind::Compaction,
         DocumentMutation::Snapshot(f.host.document(APP, RECORD).unwrap())
             .encode()
             .unwrap(),

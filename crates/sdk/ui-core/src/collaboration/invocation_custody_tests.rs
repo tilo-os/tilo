@@ -54,7 +54,7 @@ impl HostDocumentCommitter for CustodyCommitter {
                     &route.cluster_id.to_string(),
                     route.record.as_deref().unwrap_or(""),
                 ),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::wall(),
                 1,
             );

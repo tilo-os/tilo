@@ -405,17 +405,24 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
         };
         // The change the op makes, decided against the room's policy when it
         // was made, exactly as a receiver decides it live.
+        let allows = |node: &tilo_action_policy::TreePath, kind| {
+            author.answer(node, kind, &tilo_action_policy::Context::at(at / 1_000_000))
+                == tilo_action_policy::Answer::Allow
+        };
         ensure!(
-            author.answer(
-                &collab_types::validator::op_node(
-                    &b.room,
-                    Some(app_id.as_str()),
-                    record_id,
-                    envelope.op_class
-                ),
-                collab_types::validator::op_kind(envelope.op_class),
-                &tilo_action_policy::Context::at(at / 1_000_000),
-            ) == tilo_action_policy::Answer::Allow,
+            collab_types::decide_op(
+                envelope,
+                &collab_types::Record {
+                    room: &b.room,
+                    app: app_id.as_str(),
+                    record: record_id,
+                },
+                None,
+                None,
+                &collab_types::Surfaces::default(),
+                &allows,
+            )
+            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
             "historical document change forbidden"
         );
         let collab_types::RoutedDocumentPayload::Cleartext(mutation) =

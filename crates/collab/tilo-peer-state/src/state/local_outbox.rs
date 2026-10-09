@@ -2,7 +2,7 @@
 //! Nothing here admits remote historical wire data or commits an owner's storage.
 use super::{
     AdmissionError, ArtifactKind, BTreeMap, ChannelState, Document, DocumentAdmission,
-    DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpClass, ReadDoc,
+    DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpKind, ReadDoc,
     Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
 };
 
@@ -439,7 +439,7 @@ impl StatePeer {
             envelope.artifact,
             envelope.author,
             envelope.attestation_id,
-            envelope.op_class,
+            envelope.kind,
             now,
             seq,
             encryption,

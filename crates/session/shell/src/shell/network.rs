@@ -11343,16 +11343,26 @@ mod tests {
         ) -> bool {
             net.peer_document_author(origin, cluster_id, app_id, record_id, envelope)
                 .is_some_and(|author| {
-                    author.answer(
-                        &collab_types::validator::op_node(
-                            cluster_id,
-                            Some(app_id),
-                            record_id,
-                            envelope.op_class,
-                        ),
-                        collab_types::validator::op_kind(envelope.op_class),
-                        &tilo_desktop_model::context_at(tilo_clock::unix_now()),
-                    ) == tilo_action_policy::Answer::Allow
+                    let allows = |node: &tilo_action_policy::TreePath, kind| {
+                        author.answer(
+                            node,
+                            kind,
+                            &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                        ) == tilo_action_policy::Answer::Allow
+                    };
+                    collab_types::decide_op(
+                        envelope,
+                        &collab_types::Record {
+                            room: cluster_id,
+                            app: app_id,
+                            record: record_id,
+                        },
+                        None,
+                        None,
+                        &collab_types::Surfaces::default(),
+                        &allows,
+                    )
+                    .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
                 })
         }
 
@@ -11585,7 +11595,7 @@ mod tests {
                     &route.cluster_id,
                     &route.record_id,
                 ),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             );
@@ -11625,21 +11635,6 @@ mod tests {
                 false,
             ));
 
-            let mut moved = envelope.clone();
-            moved.op_class = collab_types::OpClass::Move;
-            collab_types::sign_op(&mut moved, &signing).expect("signed move");
-            assert!(
-                document_allowed(
-                    &net,
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &moved,
-                ),
-                "document authorization must use the declared action class, not hard-code text splice",
-            );
-
             let replica = net.replica.lock().expect("replica");
             let mut tree = replica.tree.write();
             let workspace = tree
@@ -11652,17 +11647,6 @@ mod tests {
             workspace.admit(person.clone(), tilo_action_policy::Role::Commenter);
             drop(tree);
             drop(replica);
-            let mut comment = envelope.clone();
-            comment.op_class = collab_types::OpClass::Comment;
-            collab_types::sign_op(&mut comment, &signing).expect("signed comment");
-            assert!(document_allowed(
-                &net,
-                &origin,
-                &route.cluster_id,
-                &route.app_id,
-                &route.record_id,
-                &comment,
-            ),);
             assert!(
                 !document_allowed(
                     &net,
@@ -11705,7 +11689,7 @@ mod tests {
                     &route.cluster_id,
                     &route.app_id,
                     &route.record_id,
-                    &comment,
+                    &envelope,
                 ),
                 "an operation signed while online is still refused if it arrives after removal",
             );
@@ -12559,7 +12543,7 @@ mod tests {
             collab_types::document_artifact_id(app_id, cluster_id, record_id),
             collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             collab_types::document_attestation_id(app_id, cluster_id, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -12595,7 +12579,7 @@ mod tests {
             collab_types::document_artifact_id("so.tilo.tube", &cluster, record_id),
             collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             collab_types::document_attestation_id("so.tilo.tube", &cluster, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -13123,7 +13107,7 @@ mod tests {
                         laptop_signing.verifying_key().to_bytes(),
                     ),
                     collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::now(),
                     u64::try_from(seq).unwrap() + 1,
                 );
@@ -13358,7 +13342,7 @@ mod tests {
                 collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
                 collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
                 collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
                 collab_types::EncryptionMetadata::content_key(
@@ -13588,7 +13572,7 @@ mod tests {
                     collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
                     collab_types::Ed25519PublicKey::from_bytes([1; 32]),
                     collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::UNIX_EPOCH,
                     1,
                 );
@@ -13920,7 +13904,7 @@ mod tests {
     }
 
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
-        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![0xAA, 0xBB])
@@ -13929,7 +13913,7 @@ mod tests {
             ArtifactId::new(),
             Ed25519PublicKey::from_bytes([1u8; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             seq,
         )

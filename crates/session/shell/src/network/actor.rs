@@ -6097,7 +6097,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(b_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -6323,7 +6323,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(a_device),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -6443,7 +6443,7 @@ mod tests {
             collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
             collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
             collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );
@@ -7053,7 +7053,7 @@ mod tests {
             artifact,
             device(&a_key),
             collab_types::AttestationId::default(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
             metadata,

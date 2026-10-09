@@ -548,14 +548,14 @@ mod tests {
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
             artifact(0x11),
             Ed25519PublicKey::from_bytes([7u8; 32]),
             AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             42,
         ))

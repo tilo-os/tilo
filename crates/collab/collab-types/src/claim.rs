@@ -549,7 +549,7 @@ mod tests {
             crate::op::document_artifact_id("app", "room", "record"),
             crate::Ed25519PublicKey::from_bytes([7; 32]),
             crate::op::document_attestation_id("app", "room", "record"),
-            crate::OpClass::Splice,
+            crate::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,
         )

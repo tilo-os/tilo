@@ -5,7 +5,7 @@ use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
 use collab_types::{
-    ArtifactKind, ChannelState, OpClass, RedactedMarker, SignedOp, ValidationError,
+    ArtifactKind, ChannelState, OpKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 use std::{
@@ -181,13 +181,13 @@ fn accept(
         ch.record_history(&route.cluster_id, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
-        if envelope.op_class == OpClass::Compaction
+        if envelope.kind == OpKind::Compaction
             && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
         {
             let _ = state.apply_compaction(&cp);
         }
     }
-    if envelope.op_class == OpClass::Redact {
+    if envelope.kind == OpKind::Redaction {
         apply_redaction_from_envelope(&envelope, artifact, channels);
     }
     fan_out(fanout, envelope, route, from_user_id);
@@ -274,7 +274,7 @@ mod tests {
             document_artifact_id("notes", "room", "record"),
             collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             document_attestation_id("notes", "room", "record"),
-            OpClass::Splice,
+            OpKind::Change,
             an_hour_ago,
             1,
         )
@@ -318,7 +318,7 @@ mod tests {
                 document_artifact_id("notes", "room", "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
                 document_attestation_id("notes", "room", "record"),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             )

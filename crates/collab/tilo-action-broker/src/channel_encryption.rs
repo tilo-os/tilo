@@ -1733,14 +1733,14 @@ mod tests {
     fn sealed_op(
         artifact: collab_types::ArtifactId,
         (metadata, payload): (EncryptionMetadata, Vec<u8>),
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> SignedOp {
         SignedOp::new_unsigned_with_encryption(
             payload,
             artifact,
             public(1),
             collab_types::AttestationId::default(),
-            op_class,
+            kind,
             std::time::SystemTime::UNIX_EPOCH,
             1,
             metadata,
@@ -1753,7 +1753,7 @@ mod tests {
     /// under the current epoch.
     #[test]
     fn a_key_holder_opens_history_and_seals_a_current_checkpoint() {
-        use collab_types::OpClass;
+        use collab_types::OpKind;
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
@@ -1772,7 +1772,7 @@ mod tests {
             first
                 .seal_content(artifact, ContentRetention::Delta, b"before the rotation")
                 .unwrap(),
-            OpClass::Splice,
+            OpKind::Change,
         );
         laptop.service.access(room_id, channel, now);
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
@@ -1796,7 +1796,7 @@ mod tests {
             .unwrap()
             .encode()
             .unwrap();
-        let compaction = sealed_op(artifact, (sealed.0, payload), OpClass::Compaction);
+        let compaction = sealed_op(artifact, (sealed.0, payload), OpKind::Compaction);
         assert_eq!(
             keys.open_new_write(room_id, &compaction).unwrap(),
             b"merged record"
@@ -1816,7 +1816,7 @@ mod tests {
             artifact,
             public(10),
             collab_types::document_attestation_id("test.app", "room", ""),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             std::time::SystemTime::now(),
             1,
             metadata,

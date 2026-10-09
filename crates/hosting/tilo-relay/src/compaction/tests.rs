@@ -44,7 +44,7 @@ fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) 
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes(author),
                     attestation,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::UNIX_EPOCH,
                     seq.saturating_add(index as u64),
                     collab_types::EncryptionMetadata::mls_application(
@@ -58,7 +58,7 @@ fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) 
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes(author),
                     attestation,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::UNIX_EPOCH,
                     seq.saturating_add(index as u64),
                 )

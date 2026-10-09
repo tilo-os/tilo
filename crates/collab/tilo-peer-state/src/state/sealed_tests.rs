@@ -38,7 +38,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         collab_types::document_artifact_id(APP, peer.room(), RECORD),
         author,
         collab_types::document_attestation_id(APP, peer.room(), RECORD),
-        OpClass::Splice,
+        OpKind::Change,
         peer_time(),
         seq,
         collab_types::EncryptionMetadata::mls_application(1, channel),

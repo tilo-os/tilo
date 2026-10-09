@@ -289,7 +289,7 @@ impl RouteKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpClass};
+    use collab_types::{AttestationId, ChannelId, Ed25519PublicKey, OpKind};
     use runtime_identity::wire::ChannelAccess as Wire;
 
     fn keys(channel: ChannelId) -> (channel_crypto::ChannelGroup, Vec<u8>) {
@@ -310,7 +310,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
                 metadata,
@@ -320,7 +320,7 @@ mod tests {
                 artifact,
                 Ed25519PublicKey::from_bytes([2; 32]),
                 AttestationId::default(),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::UNIX_EPOCH,
                 1,
             ),
@@ -408,7 +408,7 @@ mod tests {
             .encode()
             .unwrap();
         let mut compaction = envelope(payload, Some(metadata));
-        compaction.op_class = OpClass::Compaction;
+        compaction.kind = OpKind::Compaction;
         let mut route = RouteKeys::requested();
         route.update(Wire::Ready, 1, Some(&encoded));
         assert_eq!(
