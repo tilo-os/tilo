@@ -106,7 +106,9 @@ mod tests {
     /// Wait for the writer thread to leave `path` reading `expected`
     /// (`None`: absent); fail after a few seconds.
     fn eventually(path: &Path, expected: Option<&str>) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .expect("deadline in range");
         loop {
             let found = std::fs::read_to_string(path).ok();
             if found.as_deref() == expected {
