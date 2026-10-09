@@ -753,8 +753,12 @@ impl Workbook {
         let mut places = Vec::new();
         for (sheet_id, sheet) in self.sheets.iter() {
             let layout = sheet.layout();
+            let shared = std::sync::Arc::new(layout.clone());
             for chart in sheet.chart_snapshots(&layout) {
                 let id = Id::from_raw(chart.id.clone());
+                let fields = Self::paths().sheets.item(sheet_id).charts.item(&id);
+                let (kind, area, laid_out) =
+                    (fields.kind, fields.area.path().clone(), shared.clone());
                 places.push(
                     Derived::new(chart.title.clone())
                         .of_kind("chart")
@@ -768,6 +772,26 @@ impl Workbook {
                             Self::EDIT_CHART
                                 .bind(verbs::EditChart::paths().sheet, sheet_id.clone())
                                 .and(verbs::EditChart::paths().chart, id.clone()),
+                        )
+                        .with_edit_asking(
+                            "chart-type",
+                            "Chart type",
+                            "kind",
+                            "column or line",
+                            move |value: ChartKind| kind.set(value),
+                        )
+                        .with_edit_asking(
+                            "chart-cells",
+                            "Chart cells",
+                            "range",
+                            "The cells to chart, e.g. B2:D6",
+                            move |range: CellRange| {
+                                area.set(crate::workbook::Area::of(
+                                    &laid_out,
+                                    range.start,
+                                    range.end,
+                                ))
+                            },
                         )
                         .with(
                             Self::DELETE_CHART

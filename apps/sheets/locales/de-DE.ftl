@@ -30,6 +30,7 @@ sheets-sheet-cells = Zellen von { $item } bearbeitet
 sheets-workbook-sheets = Tabellen umgeordnet
 sheets-chart-title = Diagramm in { $new } umbenannt
 sheets-chart-kind = Diagrammtyp geändert
+sheets-chart-area = Diagramm zeigt nun andere Zellen
 sheets-comment-body = Kommentar bearbeitet
 sheets-comment-resolved = { $new ->
     [true] Kommentar erledigt

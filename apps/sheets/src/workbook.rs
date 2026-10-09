@@ -93,6 +93,14 @@ impl ChartKind {
         }
     }
 
+    /// What the chart's picker calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Column => "Column",
+            Self::Line => "Line",
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "column" => Self::Column,
@@ -123,12 +131,37 @@ impl tilo_resource::JsonSchema for ChartKind {
 
 /// A rectangle of cells, by the ids of its first and last row and column:
 /// it moves with them when rows or columns are inserted around it.
-#[derive(Model, Clone, Debug, PartialEq)]
+#[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Area {
     pub top: Id,
     pub left: Id,
     pub bottom: Id,
     pub right: Id,
+}
+
+impl Area {
+    /// The area of the cells `start` to `end` of a sheet laid out as
+    /// `layout`; one naming no cell when the sheet does not reach them.
+    #[must_use]
+    pub fn of(layout: &Layout, start: Addr, end: Addr) -> Self {
+        match (layout.ids(start), layout.ids(end)) {
+            (Some((top, left)), Some((bottom, right))) => Self {
+                top: top.clone(),
+                left: left.clone(),
+                bottom: bottom.clone(),
+                right: right.clone(),
+            },
+            _ => Self::default(),
+        }
+    }
+
+    /// Whether it names no cell.
+    #[must_use]
+    pub fn is_unset(&self) -> bool {
+        [&self.top, &self.left, &self.bottom, &self.right]
+            .iter()
+            .any(|id| id.as_str().is_empty())
+    }
 }
 
 /// A chart of a range of cells.
@@ -141,8 +174,7 @@ pub struct Chart {
     pub kind: ChartKind,
     /// Range
     ///
-    /// The cells it charts. Changed by its verb, which checks the range.
-    #[model(readonly)]
+    /// The cells it charts, which move with their rows and columns.
     pub area: Area,
 }
 
@@ -228,6 +260,9 @@ impl Sheet {
         }
         if self.color.is_some_and(|color| color >= TAB_COLOR_COUNT) {
             return Err(Refusal::new("no such tab colour"));
+        }
+        if self.charts.values().any(|chart| chart.area.is_unset()) {
+            return Err(Refusal::new("a chart charts cells of its sheet"));
         }
         Ok(())
     }

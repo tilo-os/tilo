@@ -239,6 +239,8 @@ enum TabAction {
 enum AnnotationClick {
     Open(Addr),
     EditChart(String),
+    SetChartKind(String, ChartKind),
+    ChartCells(String),
     DeleteChart(String),
     Reply(String),
     EditComment(String),
@@ -3000,7 +3002,7 @@ impl Widget for SheetsApp {
                         AccessNode::new(Role::ListItem)
                             .with_name(format!("{} chart", chart.title))
                             .with_description(format!(
-                                "{}:{}; open, edit, or delete from the chart card",
+                                "{}:{}; open, rename, change its type or cells, or delete from the chart card",
                                 crate::model::addr_to_a1(chart.start.0, chart.start.1),
                                 crate::model::addr_to_a1(chart.end.0, chart.end.1)
                             ))
@@ -3010,15 +3012,34 @@ impl Widget for SheetsApp {
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Edit chart")
-                                    .with_description(format!(
-                                        "Current value: {} | {} | {}:{}",
-                                        chart.title,
-                                        chart.kind.code(),
+                                    .with_name("Rename chart")
+                                    .with_value(chart.title.clone())
+                                    .with_action_target(format!("{target}:edit"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Column chart")
+                                    .with_action_target(format!("{target}:column"))
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .selected(chart.kind == ChartKind::Column),
+                                    ),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Line chart")
+                                    .with_action_target(format!("{target}:line"))
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .selected(chart.kind == ChartKind::Line),
+                                    ),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Chart cells")
+                                    .with_value(format!(
+                                        "{}:{}",
                                         crate::model::addr_to_a1(chart.start.0, chart.start.1),
                                         crate::model::addr_to_a1(chart.end.0, chart.end.1),
                                     ))
-                                    .with_action_target(format!("{target}:edit"))
+                                    .with_action_target(format!("{target}:cells"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
                                     .with_name("Delete chart")
@@ -3466,6 +3487,33 @@ impl SheetsApp {
                     self.status = "Editing chart".into();
                 }
             }
+            AnnotationClick::SetChartKind(id, kind) => {
+                let path = Workbook::paths()
+                    .sheets
+                    .item(&sheet)
+                    .charts
+                    .item(&Id::from_raw(id))
+                    .kind;
+                if let Ok(invoke) = Invoke::edit(&path.set(kind))
+                    && self.submit(state, invoke)
+                {
+                    self.status = format!("{} chart", kind.label());
+                }
+            }
+            AnnotationClick::ChartCells(id) => {
+                let Some(chart) = self.sheet_charts.iter().find(|chart| chart.id == id) else {
+                    self.status = "Chart no longer exists".into();
+                    return;
+                };
+                let range = format!(
+                    "{}:{}",
+                    crate::model::addr_to_a1(chart.start.0, chart.start.1),
+                    crate::model::addr_to_a1(chart.end.0, chart.end.1),
+                );
+                if self.ask_annotation(&format!("chart:{id}"), "chart-cells", range) {
+                    self.status = "Choosing the chart's cells".into();
+                }
+            }
             AnnotationClick::DeleteChart(id) => {
                 self.submit(
                     state,
@@ -3535,6 +3583,13 @@ impl SheetsApp {
             }
             ("chart", "delete") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
                 Some(AnnotationClick::DeleteChart(id.to_string()))
+            }
+            ("chart", "cells") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::ChartCells(id.to_string()))
+            }
+            ("chart", code) if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                ChartKind::parse(code)
+                    .map(|kind| AnnotationClick::SetChartKind(id.to_string(), kind))
             }
             ("comment", "open") => self
                 .sheet_comments
@@ -6332,6 +6387,83 @@ pub(crate) mod tests {
             .map(|reply| reply.body.as_str())
             .collect();
         assert_eq!(replies, ["Done"]);
+    }
+
+    /// A chart's card picks its type and its cells: the type picker's
+    /// buttons edit the chart's `kind` field, Cells asks in the palette for
+    /// the chart's published `chart-cells` edit of its `area`.
+    #[test]
+    fn a_chart_card_changes_its_type_and_cells() {
+        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(1800.0, 1200.0, 1.0);
+        let sheet = app.sheet_ids[0].clone();
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "B2:C4".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        doc = book.doc().clone();
+        app.sync(&doc, &automerge::ROOT);
+        paint_frame(&mut app, &mut tr, &theme);
+        let chart = doc_workbook(&doc)
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+
+        let line = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::SetChartKind(_, ChartKind::Line)))
+            .map(|(rect, _)| rect.center())
+            .expect("the card offers a line chart");
+        let mut handled = false;
+        assert!(app.try_annotation_click(line, &mut Edits::lend(&mut doc), &mut handled));
+        let kind_of = |doc: &AutoCommit| {
+            doc_workbook(doc)
+                .sheets
+                .get(&sheet)
+                .unwrap()
+                .charts
+                .get(&chart)
+                .unwrap()
+                .kind
+        };
+        assert_eq!(kind_of(&doc), ChartKind::Line);
+
+        // The same picker is offered to assistive technology.
+        let column = format!("sheets.annotation:chart:{}:column", chart.as_str());
+        assert!(matches!(
+            app.annotation_click_from_target(&column),
+            Some(AnnotationClick::SetChartKind(_, ChartKind::Column))
+        ));
+
+        paint_frame(&mut app, &mut tr, &theme);
+        let cells = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::ChartCells(_)))
+            .map(|(rect, _)| rect.center())
+            .expect("the card offers its cells");
+        assert!(app.try_annotation_click(cells, &mut Edits::lend(&mut doc), &mut handled));
+        assert_eq!(app.palette.argument_buffer(), Some("B2:C4"));
+        answer_palette(&mut app, &mut doc, "A1:D3");
+        run_palette_action(&mut app, &mut doc);
+        let state = doc_workbook(&doc);
+        let sheet_state = state.sheets.get(&sheet).unwrap();
+        let shown = sheet_state
+            .chart_snapshots(&sheet_state.layout())
+            .into_iter()
+            .find(|snapshot| snapshot.id == chart.as_str())
+            .unwrap();
+        assert_eq!((shown.start, shown.end), ((0, 0), (3, 2)));
+        assert_eq!(shown.kind, ChartKind::Line, "the type is kept");
     }
 
     /// An agent edits a chart's title, type and cells in one call, and a
