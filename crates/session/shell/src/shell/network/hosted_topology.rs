@@ -610,4 +610,95 @@ mod tests {
         ));
         assert_eq!(projections(), 6, "a moved room document is looked at again");
     }
+
+    /// What one look at a settled room cost before (copying and projecting
+    /// the admitted document every time) against now, for a room document
+    /// with some history. Printed for the record.
+    #[test]
+    fn a_settled_room_is_looked_at_without_copying_it() {
+        use automerge::transaction::Transactable as _;
+        const LOOKS: u32 = 50;
+        let salt = 0x0042;
+        let device = [0x5a; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let mut room = automerge::AutoCommit::new();
+        let owners = room
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        room.put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        // A room that has been in use: a few thousand edits of history.
+        let notes = room
+            .put_object(automerge::ROOT, "history", automerge::ObjType::Map)
+            .expect("a map");
+        for edit in 0..4_000_u64 {
+            room.put(&notes, format!("k{}", edit % 64), edit)
+                .expect("an edit");
+            if edit % 8 == 0 {
+                room.commit();
+            }
+        }
+        room.commit();
+        let windows = own_legacy_windows(
+            &[Strip {
+                id: crate::shell::state::StripId(own(1)),
+                name: "Workspace".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![tab(
+                        own(3),
+                        TileContent::Foreign {
+                            app_id: "org.gimp.GIMP".into(),
+                            surface_id: 7,
+                        },
+                    )],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            }],
+            salt,
+        );
+        let mut settled = None;
+        let Ok(Some(Plan::Publish(changes))) = plan(&room, device, &windows, salt, &mut settled)
+        else {
+            panic!("the window is published once");
+        };
+        for change in &changes {
+            room.load_incremental(change).expect("admitted");
+        }
+
+        let started = Instant::now();
+        for _ in 0..LOOKS {
+            let mut fresh = None;
+            assert!(matches!(
+                plan(&room, device, &windows, salt, &mut fresh),
+                Ok(None)
+            ));
+        }
+        let copied = started.elapsed();
+        assert!(matches!(
+            plan(&room, device, &windows, salt, &mut settled),
+            Ok(None)
+        ));
+        let started = Instant::now();
+        for _ in 0..LOOKS {
+            assert!(matches!(
+                plan(&room, device, &windows, salt, &mut settled),
+                Ok(None)
+            ));
+        }
+        let skipped = started.elapsed();
+        eprintln!(
+            "TIL-136 hosted topology look at a settled room ({} changes): copied and projected {:?}, settled {:?}",
+            room.get_changes(&[]).len(),
+            copied / LOOKS,
+            skipped / LOOKS,
+        );
+        assert!(skipped < copied, "settled {skipped:?} vs copied {copied:?}");
+    }
 }

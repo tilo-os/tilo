@@ -14590,6 +14590,76 @@ mod tests {
         assert_eq!(plan.derivations, 4);
     }
 
+    /// What an idle wakeup cost the legacy-share pass before (walking every
+    /// tab of every workspace) against now, on a desktop of 8 workspaces
+    /// with 24 windows each. Printed for the record.
+    #[test]
+    fn an_idle_wakeup_costs_the_legacy_share_pass_a_fraction_of_walking_the_tabs() {
+        use crate::shell::state::{
+            RoomId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId, WorkspaceTree,
+        };
+        const WAKEUPS: u32 = 2_000;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let template = tree.desktop.workspaces[0].clone();
+        tree.desktop.workspaces.clear();
+        for desk in 0..8_u64 {
+            let mut workspace = template.clone();
+            workspace.id = WorkspaceId(100 + desk);
+            workspace.room = RoomId::new();
+            workspace.strips.truncate(1);
+            workspace.strips[0].window_groups = (0..24_u64)
+                .map(|window| {
+                    let id = desk * 1_000 + window * 10;
+                    WindowGroup {
+                        id,
+                        tabs: vec![Tab {
+                            id: id + 1,
+                            title: "Terminal".into(),
+                            tile: TileContent::Foreign {
+                                app_id: "org.gnome.Ptyxis".into(),
+                                surface_id: id + 2,
+                            },
+                        }],
+                        active_tab: id + 1,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    }
+                })
+                .collect();
+            workspace.shared_surfaces.share(desk * 1_000 + 2, 9);
+            tree.desktop.workspaces.push(workspace);
+        }
+        tree.desktop.active = WorkspaceId(100);
+        let nobody = std::collections::HashSet::new();
+        let no_device = std::collections::BTreeMap::new();
+
+        let started = Instant::now();
+        for _ in 0..WAKEUPS {
+            let for_host = hosts_viewed_window(&tree, &no_device);
+            assert!(!for_host);
+            assert_eq!(
+                desired_legacy_shares(&tree, true, &nobody, &no_device).len(),
+                1
+            );
+        }
+        let walked = started.elapsed();
+        let tree = tree.shared();
+        let mut plan = LegacySharePlan::default();
+        assert!(plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        let started = Instant::now();
+        for _ in 0..WAKEUPS {
+            assert!(!plan.refresh(&tree, (nobody.clone(), no_device.clone()), true, |_| true));
+        }
+        let gated = started.elapsed();
+        eprintln!(
+            "TIL-136 legacy-share pass per idle wakeup, 8 workspaces x 24 windows: walked {:?}, gated {:?}",
+            walked / WAKEUPS,
+            gated / WAKEUPS,
+        );
+        assert_eq!(plan.derivations, 1);
+        assert!(gated < walked, "gated {gated:?} vs walked {walked:?}");
+    }
+
     #[test]
     fn a_legacy_window_streams_to_each_own_device_showing_its_tab() {
         use crate::shell::device_fabric_runtime::WindowViewer;
