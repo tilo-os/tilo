@@ -4079,6 +4079,27 @@ impl ShellNetwork {
         )
     }
 
+    /// Mint an invitation on the terms an `invitation.issue` action stated:
+    /// any role, lifetime and optional name, recipient-bound when a person
+    /// key is given. Same authority checks as every other issuance path.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
+    pub fn issue_invitation(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        terms: &crate::shell::peer_sync_overlay::InvitationTerms,
+    ) -> Result<String, String> {
+        self.issue_invite_for(
+            local,
+            terms.expires_in_seconds,
+            terms.invitee_name.as_deref(),
+            terms.role,
+            terms.recipient_user_public_key,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "invite issuance keeps membership authorization, recipient binding, expiry, and signing in one validated operation"
