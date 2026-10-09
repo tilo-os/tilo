@@ -142,6 +142,36 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
+thread_local! {
+    static LAYOUT_CLIP: std::cell::Cell<Option<vello::kurbo::Rect>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The window area content is seen through while it is being placed: the
+/// viewport of the nearest enclosing scroll view (intersected with any
+/// outer one), or `None` when nothing clips it. A collection reads it in
+/// [`Widget::apply_layout`] to keep only the rows near what is shown laid
+/// out; drawing culls against `PresenceCtx::should_cull` instead.
+#[must_use]
+pub fn layout_clip() -> Option<vello::kurbo::Rect> {
+    LAYOUT_CLIP.with(std::cell::Cell::get)
+}
+
+/// Run `place` (a scroll view placing its content) with `clip` as the
+/// [`layout_clip`], narrowed by any clip already in effect.
+pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) -> T {
+    struct Restore(Option<vello::kurbo::Rect>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYOUT_CLIP.with(|cell| cell.set(self.0));
+        }
+    }
+    let outer = layout_clip();
+    let clip = outer.map_or(clip, |outer| outer.intersect(clip));
+    let _restore = Restore(LAYOUT_CLIP.with(|cell| cell.replace(Some(clip))));
+    place()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WidgetLayoutError {
     #[error(transparent)]

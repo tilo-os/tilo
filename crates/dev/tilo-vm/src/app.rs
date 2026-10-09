@@ -4623,7 +4623,7 @@ impl App {
         dir: &str,
     ) -> Result<AppInstallResult, CliError> {
         self.runner.cwd = Some(worktree.root.clone());
-        let target = build::target_dir(&self.cargo_metadata());
+        let target = build::target_dir(&self.cargo_metadata()?);
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
         let package = build::app_package(&target, dir, &tapp);
@@ -4671,15 +4671,10 @@ impl App {
         })
     }
 
-    fn cargo_metadata(&mut self) -> Value {
-        self.runner
-            .output(&CommandLine::new(
-                "cargo",
-                &["metadata", "--no-deps", "--format-version", "1"],
-            ))
-            .ok()
-            .and_then(|o| serde_json::from_str(&o.stdout).ok())
-            .unwrap_or(Value::Null)
+    fn cargo_metadata(&mut self) -> Result<Value, CliError> {
+        let runner = &mut self.runner;
+        self.receipt
+            .phase("metadata", || build::cargo_metadata(runner))
     }
 
     /// `--builder host`: cargo on this Linux host, layer uploaded.
@@ -4691,7 +4686,7 @@ impl App {
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata();
+        let metadata = self.cargo_metadata()?;
         let target = build::target_dir(&metadata);
         let extra = build::dev_features(&metadata, &component.packages);
         let cargo = build::cargo_build(component, &extra);

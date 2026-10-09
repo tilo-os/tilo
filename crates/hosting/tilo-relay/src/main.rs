@@ -217,6 +217,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
             metrics.deltas_received, metrics.deltas_fanned_out
         );
         println!("bytes queued: {}", metrics.bytes_queued);
+        println!(
+            "bytes sent: {} ({} live fan-out)",
+            metrics.bytes_sent, metrics.bytes_sent_live
+        );
     }
     Ok(())
 }
