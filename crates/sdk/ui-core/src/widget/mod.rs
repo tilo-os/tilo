@@ -2682,7 +2682,7 @@ pub use decorator::Decorator;
 pub(crate) mod layout;
 pub use layout::{
     AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, text_control_height,
+    insets_xy, layout_clip, text_control_height, with_layout_clip,
 };
 
 mod button;
