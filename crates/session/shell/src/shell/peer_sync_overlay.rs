@@ -376,7 +376,13 @@ impl PeerSyncOverlay {
                 self.enrollment_poll_at = None;
                 self.state.status = Some(format!("Join incomplete: {error}"));
             }
-            (PeerSyncRequest::PollEnrollment(_) | PeerSyncRequest::CancelEnrollment(_), _) => {}
+            // An invitation action answers its caller, not this card.
+            (
+                PeerSyncRequest::PollEnrollment(_)
+                | PeerSyncRequest::CancelEnrollment(_)
+                | PeerSyncRequest::IssueInvitation(_),
+                _,
+            ) => {}
 
             (PeerSyncRequest::IssueInvite, Ok(PeerSyncResponse::Message(token))) => {
                 self.finish_invite(token, None, copy_result);
@@ -447,8 +453,6 @@ impl PeerSyncOverlay {
                     &[("error", error.into())],
                 ));
             }
-            // An invitation action answers its caller, not this card.
-            (PeerSyncRequest::IssueInvitation(_), _) => {}
             (_, Ok(_)) => {
                 self.state.status = Some(t("peer-sync-unexpected-response"));
             }
