@@ -1842,7 +1842,7 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     if package_id != "so.tilo.settings" {
         return Ok(());
     }
-    let Some(host) = xdg_paths::xdg::config_home() else {
+    let Some(host) = tilo_paths::xdg::config_home() else {
         return Ok(());
     };
     let host = host.join("tilo");

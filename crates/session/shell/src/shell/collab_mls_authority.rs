@@ -165,7 +165,7 @@ impl SecretServiceMlsVault {
     ///
     /// Returns an error when session state or vault material cannot be opened.
     pub fn open_for_session() -> Result<Self, MlsAuthorityError> {
-        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
+        let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             MlsAuthorityError::VaultUnavailable(
                 "launcher did not provide XDG_STATE_HOME for MLS state".into(),
             )

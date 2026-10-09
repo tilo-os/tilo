@@ -455,8 +455,8 @@ fn store() -> Result<PackageStore, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    xdg_paths::env_dir("XDG_DATA_HOME")
-        .or_else(xdg_paths::data_dir)
+    tilo_paths::env_dir("XDG_DATA_HOME")
+        .or_else(tilo_paths::data_dir)
         .ok_or(Error::NoDataDir)
 }
 
@@ -1215,7 +1215,7 @@ fn register_search_providers() {
     let written = data_home_root()
         .map_err(|error| error.to_string())
         .and_then(|data| {
-            let config = xdg_paths::config_dir().ok_or("no configuration directory")?;
+            let config = tilo_paths::config_dir().ok_or("no configuration directory")?;
             tilo_os_search::linux_files::write(&data, &config, &runtime)
                 .map_err(|error| error.to_string())
         });
@@ -2155,7 +2155,7 @@ fn runtime_install(
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = xdg_paths::data_dir()
+    let base = tilo_paths::data_dir()
         .ok_or(Error::NoDataDir)?
         .join("tilo-runtime");
     if !base.exists() {

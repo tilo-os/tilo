@@ -435,7 +435,7 @@ fn stage_launch_content(
     {
         return Err("launch content failed integrity validation".into());
     }
-    let dir = xdg_paths::xdg::runtime_dir()
+    let dir = tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
@@ -1591,7 +1591,7 @@ fn launchable_catalogue_path() -> Option<std::path::PathBuf> {
     if cfg!(test) {
         return None;
     }
-    xdg_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
+    tilo_paths::state_dir().map(|root| root.join("tilo/actions/launchable.json"))
 }
 
 /// A broker over `membership` with the native services an action host

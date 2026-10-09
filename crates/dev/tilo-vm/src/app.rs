@@ -1799,7 +1799,7 @@ impl App {
         let disk_path = match (&args.disk, image.is_some() || published.is_some()) {
             (Some(path), _) => Some(absolute(Path::new(path))),
             (None, true) => Some(
-                xdg_paths::data_local_dir()
+                tilo_paths::data_local_dir()
                     .unwrap_or_else(std::env::temp_dir)
                     .join("tilo-vm")
                     .join("vms")
@@ -6374,7 +6374,7 @@ fn check_local_disks(
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_nanos());
-                let cache = xdg_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
+                let cache = tilo_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
                 Some(image::import_path(&cache, &text, meta.len(), modified))
             } else {
                 None
