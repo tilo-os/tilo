@@ -2469,6 +2469,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-windows-vm-network.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.path \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-lease.path \
     /usr/lib/systemd/system/
 COPY \
     docs/windows-vm.md \
@@ -2476,7 +2478,7 @@ COPY \
     /usr/share/doc/tilo/
 RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-provision /usr/libexec/tilo-windows-owner \
               /usr/libexec/tilo-windows-recovery-console \
-    && systemctl enable tilo-windows-vm-egress-reaper.timer
+    && systemctl enable tilo-windows-vm-egress-reaper.path tilo-windows-vm-egress-lease.path
 
 # ---------------------------------------------------------------------------
 # Enable services

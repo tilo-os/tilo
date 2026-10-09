@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Tilo Windows egress lease reaper while a lease exists
+Documentation=file:///usr/share/doc/tilo/windows-vm.md
+ConditionKernelCommandLine=!tilo.install
+
+[Path]
+# tilo-windows-vm-control writes a root-only lease record before it attaches
+# the egress NIC, so the reaper is armed before the lease can be used. The
+# reaper sleeps until the earliest expiry and exits only once the directory is
+# empty; a reaper that died with a record left is started again at once.
+DirectoryNotEmpty=/run/tilo/windows-egress/leases
+Unit=tilo-windows-vm-egress-reaper.service
+
+[Install]
+WantedBy=paths.target

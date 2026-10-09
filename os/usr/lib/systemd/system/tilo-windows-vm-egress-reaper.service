@@ -7,12 +7,19 @@ After=virtqemud.service virtnetworkd.service
 ConditionKernelCommandLine=!tilo.install
 
 [Service]
-Type=oneshot
-ExecStart=/usr/libexec/tilo-windows-vm-control egress-reap
+# Started by tilo-windows-vm-egress-lease.path while a lease record exists and
+# by tilo-windows-vm-egress-reaper.timer on a provisioned machine. One pass
+# retires expired leases and refreshes the status summary; with a lease left
+# it sleeps until that lease expires and exits once none remains.
+Type=exec
+ExecStart=/usr/libexec/tilo-windows-vm-control egress-reap --until-idle
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 ProtectSystem=strict
+# The controller lock, lease records and published summaries live here; the
+# rest of /run stays read-only under ProtectSystem=strict.
+ReadWritePaths=/run/tilo/windows-egress
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

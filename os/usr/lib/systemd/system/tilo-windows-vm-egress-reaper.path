@@ -1,0 +1,13 @@
+[Unit]
+Description=Start the Tilo Windows status timer once an appliance is provisioned
+Documentation=file:///usr/share/doc/tilo/windows-vm.md
+ConditionKernelCommandLine=!tilo.install
+
+[Path]
+# The timer stays active once started, so this predicate fires once per boot
+# on a provisioned machine and never on one without a Windows appliance.
+PathExists=/var/lib/tilo/windows/domain.uuid
+Unit=tilo-windows-vm-egress-reaper.timer
+
+[Install]
+WantedBy=paths.target
