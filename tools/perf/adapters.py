@@ -27,6 +27,12 @@ Each adapter reads what a benchmark already prints and emits records through
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
   `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
+- `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
+  (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
+  becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
+  latency: one per delivered edit), and each provider in
+  `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
+  and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
 
 Usage:
 
@@ -34,6 +40,7 @@ Usage:
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -43,8 +50,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +184,73 @@ def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
     return [record.from_samples(kpi, "per_s", values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+PRICES = Path(__file__).resolve().parent / "prices.toml"
+# The relay load bench's per-minute KPIs, as `relay_load` names them.
+HOSTING_KPIS = {
+    "hosting.relay.cpu_s_per_collab_hour": "s",
+    "hosting.relay.rss_mib_per_collab": "MiB",
+    "hosting.relay.egress_bytes_per_collab_hour": "bytes",
+    "hosting.relay.frame_bytes_per_collab_hour": "bytes",
+    "hosting.relay.fanout_ms": "ms",
+}
+
+
+def collab_hour_usd(provider: dict[str, Any], prices: dict[str, Any], cpu_s: float, rss_mib: float,
+                    egress_bytes: float, idle_rss_mib: float) -> tuple[float, float, str]:
+    """Dollars per active collaborator-hour on one provider's VM, with the
+    collaborators that VM carries and the resource that binds it."""
+    target = float(prices["target_utilisation"])
+    hours = float(prices["hours_per_month"])
+    by_cpu = float(provider["vcpus"]) * 3600.0 * target / cpu_s if cpu_s > 0 else math.inf
+    free_mib = float(provider["memory_gib"]) * 1024.0 * target - idle_rss_mib
+    if free_mib <= 0:
+        raise ValueError(f"the idle relay ({idle_rss_mib:.0f} MiB) does not fit {provider['description']}")
+    by_memory = free_mib / rss_mib if rss_mib > 0 else math.inf
+    capacity, binding = (by_cpu, "cpu") if by_cpu <= by_memory else (by_memory, "memory")
+    if not math.isfinite(capacity):
+        raise ValueError("the run measured neither CPU time nor memory per collaborator")
+    compute = float(provider["monthly_usd"]) / hours / capacity
+    included_gb = float(provider["included_egress_gb_month"]) / (capacity * hours)
+    billable_gb = max(0.0, egress_bytes / 1e9 - included_gb)
+    return compute + billable_gb * float(provider["egress_usd_per_gb"]), capacity, binding
+
+
+def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one relay load bench run, priced with `prices`."""
+    collaborators = int(report["collaborators"])
+    variant = f"n{collaborators}"
+    kpis = report.get("kpis", {})
+    if set(kpis) != set(HOSTING_KPIS):
+        raise ValueError(f"the bench reported {sorted(kpis)}, not {sorted(HOSTING_KPIS)}")
+    for kpi, unit in HOSTING_KPIS.items():
+        if kpis[kpi]["unit"] != unit or not kpis[kpi]["samples"]:
+            raise ValueError(f"{kpi}: expected samples in {unit}")
+    meta = {**env.get("meta", {}), "collaborators": str(collaborators), "rooms": str(report["rooms"]),
+            "room_size": str(report["room_size"]), "window_s": str(report["window_s"]),
+            "edits": str(report["edits"]), "presence": str(report["presence"]),
+            "undelivered_edits": str(report["undelivered_edits"]), "prices_checked": str(prices["checked"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    records = [record.from_samples(f"{kpi}.{variant}", unit, kpis[kpi]["samples"], meta=meta, **base)
+               for kpi, unit in HOSTING_KPIS.items()]
+    minutes = list(zip(kpis["hosting.relay.cpu_s_per_collab_hour"]["samples"],
+                       kpis["hosting.relay.rss_mib_per_collab"]["samples"],
+                       kpis["hosting.relay.egress_bytes_per_collab_hour"]["samples"], strict=True))
+    idle = float(report["relay_idle_rss_mib"])
+    for name, provider in sorted(prices["provider"].items()):
+        priced = [collab_hour_usd(provider, prices, *minute, idle) for minute in minutes]
+        hourly = [usd for usd, _, _ in priced]
+        capacity = min(collaborators for _, collaborators, _ in priced)
+        bindings = sorted({binding for _, _, binding in priced})
+        provider_meta = {**meta, "provider": provider["description"],
+                         "collaborators_per_vm": f"{capacity:.0f}", "binding": ",".join(bindings)}
+        records.append(record.from_samples(f"hosting.relay.cost_usd_per_collab_hour.{name}.{variant}", "usd",
+                                           hourly, meta=provider_meta, **base))
+        monthly = [usd * float(prices["active_hours_per_user_month"]) for usd in hourly]
+        records.append(record.from_samples(f"hosting.relay.cost_usd_per_user_month.{name}.{variant}", "usd",
+                                           monthly, meta=provider_meta, **base))
+    return records
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -190,10 +266,22 @@ def main(argv: list[str] | None = None) -> int:
     idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
     idle.add_argument("--env-json", required=True, type=Path)
     idle.add_argument("logs", nargs="+", type=Path)
+    hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
+    hosting.add_argument("--env-json", required=True, type=Path)
+    hosting.add_argument("--prices", type=Path, default=PRICES)
+    hosting.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
-        if args.command == "fs-gate":
+        if args.command == "hosting-load":
+            records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
+                                   tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
+            for item in records:
+                if item.unit == "usd":
+                    print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
+                          f"({item.meta['collaborators_per_vm']} collaborators per VM, "
+                          f"bound by {item.meta['binding']})", file=sys.stderr)
+        elif args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "workspace-switch":
             samples = [sample for path in args.logs
