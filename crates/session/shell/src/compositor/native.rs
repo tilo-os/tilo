@@ -2910,6 +2910,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         Ok(serde_json::json!({
             "query": query,
             "count": actions.len(),
+            "completion": catalog.completion(),
             "actions": actions,
         }))
     }
@@ -15572,6 +15573,19 @@ mod tests {
         assert!(
             rows["count"].as_u64().is_some_and(|count| count > 0),
             "{rows}"
+        );
+        let completion = &rows["completion"];
+        assert!(
+            completion["complete"].is_boolean(),
+            "admin wire preserves completion: {rows}"
+        );
+        assert!(
+            completion["incomplete"].is_array(),
+            "admin wire preserves provider outcomes: {rows}"
+        );
+        assert_eq!(
+            completion["complete"].as_bool(),
+            completion["incomplete"].as_array().map(Vec::is_empty)
         );
         assert!(matches!(
             ask(r#"{"op":"state_dump"}"#),
