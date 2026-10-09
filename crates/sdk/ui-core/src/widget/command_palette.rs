@@ -434,6 +434,9 @@ struct FilterChipLook {
 )]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
+    entries_generation: u64,
+    /// Render cache: records only a completed invocation of the real draw pass.
+    drawn_inspection: Option<serde_json::Value>,
     /// Labels and descriptions of `entries`, indexed while they stay the
     /// same.
     entry_index: ListIndex,
@@ -508,6 +511,8 @@ impl CommandPalette {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            entries_generation: 0,
+            drawn_inspection: None,
             entry_index: ListIndex::default(),
             query: String::new(),
             query_placeholder: crate::i18n!("palette-placeholder"),
@@ -565,6 +570,7 @@ impl CommandPalette {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.entries_generation = self.entries_generation.saturating_add(1);
         self.visible.clear();
         self.cursor = 0;
     }
@@ -930,12 +936,14 @@ impl CommandPalette {
 
     pub fn push(&mut self, e: CommandEntry) {
         self.entries.push(e);
+        self.entries_generation = self.entries_generation.saturating_add(1);
         self.rebuild();
     }
 
     /// Resets the cursor to 0.
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         self.entries = entries;
+        self.entries_generation = self.entries_generation.saturating_add(1);
         self.cursor = 0;
         self.rebuild();
     }
@@ -1016,6 +1024,46 @@ impl CommandPalette {
     pub fn set_filter(&mut self, f: Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>) {
         self.filter = Some(f);
         self.rebuild();
+    }
+
+    /// Last actual draw, never a live-state substitute. Entry generation lets
+    /// a host refuse to bind an old row ordinal to a replaced result table.
+    pub fn drawn_inspection(&self) -> Option<&serde_json::Value> {
+        self.drawn_inspection.as_ref()
+    }
+
+    pub fn entries_generation(&self) -> u64 {
+        self.entries_generation
+    }
+
+    fn record_drawn_inspection(&mut self) {
+        let entries = self.visible_entries();
+        let hover = self.row_at(self.last_cursor);
+        let rows: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let rect = self.row_rect(index)?;
+                Some(serde_json::json!({
+                    "entry_id": entry.id,
+                    "visible_index": index,
+                    "bounds": [rect.x0, rect.y0, rect.x1, rect.y1],
+                    "selected": index == self.cursor,
+                    "hovered": hover == Some(index),
+                }))
+            })
+            .collect();
+        let input = self.input_row_rect();
+        self.drawn_inspection = Some(serde_json::json!({
+            "entries_generation": self.entries_generation,
+            "query_hash": blake3::hash(self.query.as_bytes()).to_hex().to_string(),
+            "query_bytes": self.query.len(),
+            "bounds": [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1],
+            "query_bounds": [input.x0, input.y0, input.x1, input.y1],
+            "selected_entry_id": self.selected_id(),
+            "hovered_entry_id": hover.and_then(|index| entries.get(index).map(|entry| &entry.id)),
+            "rows": rows,
+        }));
     }
 
     pub fn visible_entries(&self) -> Vec<&CommandEntry> {
@@ -2215,6 +2263,7 @@ impl Widget for CommandPalette {
 
         self.draw_footer(scene, transform, text_renderer, theme);
         text_renderer.set_text_scale(renderer_scale);
+        self.record_drawn_inspection();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -4034,5 +4083,56 @@ mod selected_status_tests {
         assert!(row.description.as_deref().unwrap().contains("Couldn't run"));
         palette.set_entries(vec![CommandEntry::new("two", "Fixture two")]);
         assert!(palette.visible_entries().first().unwrap().badge.is_none());
+    }
+}
+
+#[cfg(test)]
+mod drawn_inspection_tests {
+    use super::*;
+
+    fn draw(palette: &mut CommandPalette) {
+        palette.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+    }
+
+    #[test]
+    fn drawn_inspection_tracks_real_pointer_selection_only_after_drawing() {
+        let mut palette = CommandPalette::new();
+        palette.set_entries(vec![
+            CommandEntry::new("a", "Alpha"),
+            CommandEntry::new("b", "Bravo"),
+        ]);
+        palette.set_rect(Rect::new(0.0, 0.0, 600.0, 400.0));
+        palette.set_focus(true);
+        assert!(palette.drawn_inspection().is_none());
+        draw(&mut palette);
+        let old = palette.drawn_inspection().unwrap().clone();
+        let point = palette.row_rect(1).expect("second row mounted").center();
+        let mut document = automerge::AutoCommit::new();
+        let mut handled = false;
+        palette.handle_pointer_event(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            },
+            1.0,
+            &mut crate::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(palette.selected_id(), Some("b"));
+        assert_eq!(palette.drawn_inspection().unwrap(), &old);
+        draw(&mut palette);
+        let current = palette.drawn_inspection().unwrap();
+        assert_eq!(current["selected_entry_id"], "b");
+        assert_eq!(current["hovered_entry_id"], "b");
+        assert_eq!(current["rows"][1]["selected"], true);
+        assert_eq!(current["rows"][1]["hovered"], true);
     }
 }

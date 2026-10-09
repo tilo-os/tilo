@@ -525,6 +525,8 @@ pub struct ShellOverlayHost {
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
+    /// Changes only when the actual ranked entries are replaced.
+    palette_results_generation: u64,
     /// Parameterized result awaiting a JSON argument object in the palette's
     /// query field. Keeping the inert result (not a pre-bound callback) lets
     /// Enter perform the same strict `ActionArgs::bind_json` as scripts.
@@ -2276,6 +2278,7 @@ impl ShellOverlayHost {
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
+            palette_results_generation: 0,
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
@@ -8083,6 +8086,92 @@ impl ShellOverlayHost {
             .flatten()
     }
 
+    /// Read the mounted palette without probing it, changing selection, or
+    /// invoking a result. Labels and query text are deliberately absent:
+    /// identities come from the same result table used by activation, and
+    /// geometry comes from the shared widget's painted-row calculation.
+    pub fn palette_inspection(&self) -> serde_json::Value {
+        let rect = self.palette.get_rect();
+        let mounted = self.palette_visible && rect.width() > 0.0 && rect.height() > 0.0;
+        let hovered = mounted
+            .then(|| {
+                self.last_cursor
+                    .and_then(|point| self.palette.row_at(point))
+            })
+            .flatten();
+        let selected = self
+            .palette_visible
+            .then(|| self.palette.selected_id())
+            .flatten();
+        let entries = self.palette.visible_entries();
+        let rows: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(visible_index, entry)| {
+                let result_index = entry.id.strip_prefix("result:")?.parse::<usize>().ok()?;
+                let result = self.search_results.get(result_index)?;
+                let bounds = mounted
+                    .then(|| self.palette.row_rect(visible_index))
+                    .flatten()?;
+                Some(serde_json::json!({
+                    "visible_index": visible_index,
+                    "result_index": result_index,
+                    "entry_id": entry.id,
+                    "provider_id": result.provider_id,
+                    "action_id": result.id,
+                    "bounds": [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
+                    "selected": selected == Some(entry.id.as_str()),
+                    "hovered": hovered == Some(visible_index),
+                }))
+            })
+            .collect();
+        let hovered_entry = hovered.and_then(|index| entries.get(index).map(|entry| &entry.id));
+        let input = self.palette.input_row_rect();
+        serde_json::json!({
+            "visible": self.palette_visible,
+            "mounted": mounted,
+            "query_hash": blake3::hash(self.palette.query().as_bytes()).to_hex().to_string(),
+            "query_bytes": self.palette.query().len(),
+            "results_generation": self.palette_results_generation,
+            "published_revision_hash": blake3::hash(self.last_search_revision.as_bytes()).to_hex().to_string(),
+            "query_current": self.palette.query() == self.last_search_query,
+            "bounds": mounted.then_some([rect.x0, rect.y0, rect.x1, rect.y1]),
+            "query_bounds": mounted.then_some([input.x0, input.y0, input.x1, input.y1]),
+            "selected_entry_id": selected,
+            "hovered_entry_id": hovered_entry,
+            "rows": rows,
+            "rendered": self.palette_rendered_inspection(mounted),
+        })
+    }
+
+    fn palette_rendered_inspection(&self, mounted: bool) -> Option<serde_json::Value> {
+        if !mounted {
+            return None;
+        }
+        let mut drawn = self.palette.drawn_inspection()?.clone();
+        if drawn["entries_generation"].as_u64()? != self.palette.entries_generation() {
+            return None;
+        }
+        for row in drawn["rows"].as_array_mut()? {
+            let index = row["entry_id"]
+                .as_str()?
+                .strip_prefix("result:")?
+                .parse::<usize>()
+                .ok()?;
+            let result = self.search_results.get(index)?;
+            row["result_index"] = serde_json::json!(index);
+            row["provider_id"] = serde_json::json!(result.provider_id);
+            row["action_id"] = serde_json::json!(result.id);
+        }
+        drawn["results_generation"] = serde_json::json!(self.palette_results_generation);
+        drawn["published_revision_hash"] = serde_json::json!(
+            blake3::hash(self.last_search_revision.as_bytes())
+                .to_hex()
+                .to_string()
+        );
+        Some(drawn)
+    }
+
     fn selected_search_identity(&self) -> Option<(String, String)> {
         self.palette
             .selected_id()
@@ -8207,6 +8296,7 @@ impl ShellOverlayHost {
             self.palette.set_cursor(cursor);
         }
         self.search_results = results;
+        self.palette_results_generation = self.palette_results_generation.saturating_add(1);
         // New entry count needs a new palette node height on the next
         // rebuild, or the palette stays pinned at its first-paint size.
         self.palette_layout_dirty = true;
@@ -26991,3 +27081,6 @@ pub(crate) fn install_fixture_search_provider(
 ) {
     host.search_registry.register_or_replace(provider);
 }
+
+#[cfg(test)]
+mod palette_inspection_tests;
