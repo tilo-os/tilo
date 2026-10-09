@@ -10219,9 +10219,7 @@ fn handle_signed_op_send_for_artifact(
     };
     match validation {
         Ok(()) => {
-            let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
-                mls_vault.clone_from(&ch.mls_vault);
                 ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
@@ -10230,13 +10228,6 @@ fn handle_signed_op_send_for_artifact(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
-            }
-            if envelope.op_class == collab_types::OpClass::Compaction
-                && let Some(metadata) = envelope.encryption
-                && let Some(vault) = mls_vault
-                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-            {
-                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
             if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
