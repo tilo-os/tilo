@@ -22,14 +22,18 @@ MODULE_SHA = 'c43f48e11f302087250d1e406024956781cd2f02595a5e343b3d7ddd5ef707fa'
 MODEL_SHA = 'b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb'
 
 PEER = r'''
-import json, struct, subprocess, sys, time
+import json, os, select, signal, struct, subprocess, sys, time
+from pathlib import Path
 raw = open('/review/audio.s16', 'rb').read()
-command = ['/review/aot-worker', '/review/needle.aot', sys.argv[1],
+cancelling = sys.argv[4] in ('cancel-draft', 'cancel-finish')
+command = ['/review/aot-worker', *(['--observe-calls'] if cancelling else []),
+    '/review/needle.aot', sys.argv[1],
     '/review/whistle.cact', '/review/aot-bridge.so', sys.argv[2]]
 if sys.argv[5] == 'trace':
     command = ['strace', '-f', '-qq', '-e', 'trace=mmap,mprotect,pkey_mprotect',
         '-o', '/trace/native.log', *command]
-child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE if cancelling else None, bufsize=0)
 sequence = 0
 beginning = time.monotonic()
 def request(kind, payload=b''):
@@ -48,9 +52,66 @@ def reply():
     value = json.loads(payload)
     value['wall_seconds'] = time.monotonic() - beginning
     print('WHISTLE_AOT_WORKER_REPLY ' + json.dumps(value), flush=True)
+def marker(expected):
+    if not select.select([child.stderr], [], [], 5)[0]:
+        raise RuntimeError('native call marker was not observed')
+    if child.stderr.readline(128).decode().strip() != expected:
+        raise RuntimeError('unexpected native call marker')
+def cpu_ticks():
+    fields = Path(f'/proc/{child.pid}/stat').read_text().rsplit(')', 1)[1].split()
+    return int(fields[11]) + int(fields[12])
+def cancel_native(operation):
+    marker(f'WHISTLE_AOT_NATIVE_BEGIN {operation}')
+    initial_ticks = cpu_ticks()
+    deadline = time.monotonic() + 2
+    while True:
+        if child.poll() is not None or select.select([child.stdout, child.stderr], [], [], 0)[0]:
+            raise RuntimeError('native call ended before observed cancellation')
+        ticks = cpu_ticks() - initial_ticks
+        if ticks >= 2:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError('native computation was not observed')
+        time.sleep(.005)
+    # Pin the exact owned process, never a name or reused PID. This review
+    # measures native termination; compositor owner/reaping has separate tests.
+    pidfd = os.pidfd_open(child.pid)
+    try:
+        started = time.monotonic()
+        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        exit_code = child.wait(timeout=1)
+        elapsed = time.monotonic() - started
+    finally:
+        os.close(pidfd)
+    child.stdin.close()
+    trailing = child.stdout.read(65546)
+    child.stdout.close()
+    ended = child.stderr.read(1024)
+    child.stderr.close()
+    if exit_code != -signal.SIGKILL or trailing or ended or elapsed >= 1:
+        raise RuntimeError('cancelled native call published output or did not reap')
+    print('WHISTLE_AOT_CANCEL ' + json.dumps({'operation': operation,
+        'native_cpu_ticks_observed': ticks, 'clock_ticks_per_second': os.sysconf('SC_CLK_TCK'),
+        'kill_to_reaped_seconds': elapsed, 'worker_exit': exit_code,
+        'trailing_reply_bytes': len(trailing), 'native_end_observed': False}), flush=True)
 request(0, json.dumps({'language': sys.argv[3]}).encode())
 reply()
 beginning = time.monotonic()
+if cancelling:
+    # A real authenticated complete recording makes inference long enough to
+    # observe. Each Audio frame remains inside the production framing bound.
+    for offset in range(0, len(raw), 64000):
+        request(1, raw[offset:offset + 64000])
+    request(2)
+    if sys.argv[4] == 'cancel-finish':
+        marker('WHISTLE_AOT_NATIVE_BEGIN 0')
+        marker('WHISTLE_AOT_NATIVE_END 0')
+        reply()
+        request(3)
+        cancel_native(1)
+    else:
+        cancel_native(0)
+    sys.exit(0)
 offset, planned = 0, min(64000, len(raw))
 while offset < len(raw):
     time.sleep(max(0, planned / 32000 - (time.monotonic() - beginning)))
@@ -91,9 +152,13 @@ def main():
     parser.add_argument('--phase', choices=('compile', 'recognize', 'worker'), required=True)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--case', choices=scope.PUBLIC_CASES, default='fr_fr-0')
-    parser.add_argument('--mode', choices=('complete', 'silence', 'eof'), default='complete')
+    parser.add_argument('--mode', choices=('complete', 'silence', 'eof',
+                                         'cancel-draft', 'cancel-finish'), default='complete')
     parser.add_argument('--trace', action='store_true')
     args = parser.parse_args()
+    cancelling = args.mode in ('cancel-draft', 'cancel-finish')
+    if cancelling and (args.phase != 'worker' or args.trace):
+        parser.error('native cancellation needs the direct, untraced worker')
     if os.geteuid() == 0 or os.geteuid() != os.getuid():
         parser.error('unprivileged public review required')
     cg = scope.admitted_scope()
@@ -208,6 +273,18 @@ def main():
     rows = [json.loads(line.split(' ', 1)[1]) for line in result['stdout'].splitlines()
             if line.startswith(prefix)]
     if args.phase == 'worker':
+        if cancelling:
+            cancellations = [json.loads(line.split(' ', 1)[1])
+                             for line in result['stdout'].splitlines()
+                             if line.startswith('WHISTLE_AOT_CANCEL ')]
+            operation = 0 if args.mode == 'cancel-draft' else 1
+            if (len(cancellations) != 1 or cancellations[0]['operation'] != operation
+                    or cancellations[0]['native_cpu_ticks_observed'] < 2
+                    or cancellations[0]['worker_exit'] != -9
+                    or cancellations[0]['trailing_reply_bytes']
+                    or cancellations[0]['native_end_observed']
+                    or cancellations[0]['kill_to_reaped_seconds'] >= 1):
+                raise RuntimeError('actual native cancellation must be observed and reaped')
         if args.trace:
             calls = (trace_dir / 'native.log').read_text().splitlines()
             if any('PROT_WRITE' in line and 'PROT_EXEC' in line for line in calls):
@@ -217,14 +294,20 @@ def main():
                 raise RuntimeError('must observe actual executable code publication')
         if not rows or rows[0]['kind'] != 'ready' or rows[0]['draft_policy'] != 'incremental':
             raise RuntimeError('actual prepared incremental speech worker required')
-        if [row['sequence'] for row in rows] != [1] + list(range(3, len(rows) * 2, 2)):
+        if cancelling:
+            if ([row['kind'] for row in rows] !=
+                    (['ready'] if operation == 0 else ['ready', 'draft'])
+                    or rows[0]['sequence'] != 1
+                    or (operation == 1 and rows[-1]['sequence'] != 3 + (len(raw) - 1) // 64000)):
+                raise RuntimeError('cancelled session emitted unexpected replies')
+        elif [row['sequence'] for row in rows] != [1] + list(range(3, len(rows) * 2, 2)):
             # Finish follows the final draft immediately, without an Audio frame.
             if (args.mode == 'eof' or [row['sequence'] for row in rows[:-1]] !=
                     [1] + list(range(3, (len(rows) - 1) * 2, 2))
                     or rows[-1]['sequence'] != rows[-2]['sequence'] + 1):
                 raise RuntimeError('ordered exact speech sequences required')
         done = [row for row in rows if row['kind'] == 'done']
-        if args.mode == 'eof':
+        if args.mode == 'eof' or cancelling:
             if done:
                 raise RuntimeError('unfinished session committed text')
         elif len(done) != 1 or (args.mode == 'silence' and done[0]['text']):

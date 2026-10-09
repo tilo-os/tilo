@@ -23,6 +23,22 @@ struct Decoder<'a> {
     processed: usize,
     provisional: Zeroizing<String>,
     stable: Zeroizing<String>,
+    observe_calls: bool,
+}
+impl Decoder<'_> {
+    fn call(&mut self, operation: i32, samples: &[f32]) -> Result<String, SpeechError> {
+        // Opt-in public qualification markers contain only the fixed operation.
+        // They let the controller prove cancellation inside a native call,
+        // without exposing words, configuration, paths or audio statistics.
+        if self.observe_calls {
+            eprintln!("WHISTLE_AOT_NATIVE_BEGIN {operation}");
+        }
+        let result = self.native.call(operation, samples);
+        if self.observe_calls {
+            eprintln!("WHISTLE_AOT_NATIVE_END {operation}");
+        }
+        result
+    }
 }
 impl worker::SpeechDecoder for Decoder<'_> {
     fn draft_policy(&self) -> DraftPolicy {
@@ -44,7 +60,7 @@ impl worker::SpeechDecoder for Decoder<'_> {
         }
         if samples.len() > self.processed {
             let new = samples.get(self.processed..).ok_or(SpeechError::Protocol)?;
-            let raw = Zeroizing::new(self.native.call(0, new)?);
+            let raw = Zeroizing::new(self.call(0, new)?);
             let reply: NativeReply =
                 serde_json::from_str(&raw).map_err(|_| SpeechError::Recognition)?;
             let text = reply.text.as_str();
@@ -71,7 +87,7 @@ impl worker::SpeechDecoder for Decoder<'_> {
     }
     fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
         self.draft(samples)?;
-        let raw = Zeroizing::new(self.native.call(1, samples)?);
+        let raw = Zeroizing::new(self.call(1, samples)?);
         let reply: NativeReply =
             serde_json::from_str(&raw).map_err(|_| SpeechError::Recognition)?;
         let text = reply.text.as_str();
@@ -115,14 +131,20 @@ fn run() -> Result<(), SpeechError> {
         return Err(SpeechError::ModelUnavailable);
     }
     let args: Vec<String> = std::env::args().collect();
+    let observe_calls = args.get(1).is_some_and(|arg| arg == "--observe-calls");
+    let supplied = if observe_calls {
+        args.get(2..)
+    } else {
+        args.get(1..)
+    }
+    .ok_or(SpeechError::Protocol)?;
     let [
-        _,
         artifact_path,
         artifact_sha,
         model_path,
         bridge_path,
         bridge_sha,
-    ] = args.as_slice()
+    ] = supplied
     else {
         return Err(SpeechError::Protocol);
     };
@@ -162,6 +184,7 @@ fn run() -> Result<(), SpeechError> {
         processed: 0,
         provisional: Zeroizing::new(String::new()),
         stable: Zeroizing::new(String::new()),
+        observe_calls,
     };
     worker::serve_decoder(
         (

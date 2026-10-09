@@ -709,6 +709,63 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
 
 #[test]
 fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
+    assert_dictation_native_commit(&["rough".into()], "東京 👋");
+}
+
+/// Recorded, literal public-engine results, replayed through production editing.
+/// These fixtures prove insertion/undo, not a new acoustic measurement.
+#[derive(serde::Deserialize)]
+pub(super) struct PublicAotTranscript {
+    pub case: String,
+    pub raw_final: String,
+    all_drafts: Vec<PublicAotDraft>,
+}
+#[derive(serde::Deserialize)]
+struct PublicAotDraft {
+    text: String,
+}
+impl PublicAotTranscript {
+    pub fn drafts(&self) -> Vec<String> {
+        self.all_drafts
+            .iter()
+            .map(|draft| draft.text.clone())
+            .collect()
+    }
+}
+pub(super) fn public_aot_transcripts() -> Vec<PublicAotTranscript> {
+    #[derive(serde::Deserialize)]
+    struct Ledger {
+        qualification_only: bool,
+        production_activation: bool,
+        results: Vec<PublicAotTranscript>,
+    }
+    let ledger: Ledger = serde_json::from_str(include_str!(
+        "../../../../docs/architecture/dictation-whistle-aot-review.json"
+    ))
+    .expect("source-pinned public AOT qualification ledger");
+    assert!(ledger.qualification_only && !ledger.production_activation);
+    assert_eq!(
+        ledger
+            .results
+            .iter()
+            .map(|row| row.case.as_str())
+            .collect::<Vec<_>>(),
+        ["en_us-0", "de_de-0", "fr_fr-0", "es_419-0"]
+    );
+    for row in &ledger.results {
+        assert!(!row.raw_final.is_empty() && !row.all_drafts.is_empty());
+    }
+    ledger.results
+}
+
+#[test]
+fn public_aot_transcripts_reach_native_notes_with_selection_undo_and_redo() {
+    for row in public_aot_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
     use shell::compositor::shell_text_input::{FieldRequest, ShellTextInput};
     let mut h = Harness::new();
     let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
@@ -746,21 +803,24 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
             break;
         }
     }
+    for draft in drafts {
+        h.state
+            .update_dictation(id, draft.clone(), std::time::Instant::now())
+            .unwrap();
+        h.pump();
+        assert!(
+            !proxy
+                .sync(&mut h.state, Some(field))
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
+                )),
+            "a provisional engine hypothesis must never edit the field"
+        );
+    }
     h.state
-        .update_dictation(id, "rough".into(), std::time::Instant::now())
-        .unwrap();
-    h.pump();
-    assert!(
-        !proxy
-            .sync(&mut h.state, Some(field))
-            .iter()
-            .any(|event| matches!(
-                event,
-                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
-            ))
-    );
-    h.state
-        .update_dictation(id, "東京 👋".into(), std::time::Instant::now())
+        .update_dictation(id, final_text.into(), std::time::Instant::now())
         .unwrap();
     h.state
         .finish_dictation(id, std::time::Instant::now())
@@ -778,7 +838,7 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
             }
         }
     }
-    assert_eq!(commits, ["東京 👋"]);
+    assert_eq!(commits, [final_text]);
     assert_native_field_selection_and_undo(commits.first().unwrap());
     assert!(
         h.state

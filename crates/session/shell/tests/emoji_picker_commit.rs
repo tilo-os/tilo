@@ -537,6 +537,17 @@ fn foreign_id(state: &State, app_id: &str) -> u64 {
 
 #[test]
 fn dictation_streams_and_corrects_without_editing_until_one_utf8_commit() {
+    assert_dictation_foreign_commit(&["wrong hypothesis".into()], "Bonjour, 世界 👋");
+}
+
+#[test]
+fn public_aot_transcripts_reach_foreign_fields_without_committing_hallucinated_drafts() {
+    for row in super::input_method_wire::public_aot_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+fn assert_dictation_foreign_commit(drafts: &[String], final_text: &str) {
     let mut h = Harness::new();
     let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
     let field = h.field(None);
@@ -545,17 +556,17 @@ fn dictation_streams_and_corrects_without_editing_until_one_utf8_commit() {
         .state
         .begin_dictation(now)
         .expect("ordinary editable field");
+    for draft in drafts {
+        h.state.update_dictation(id, draft.clone(), now).unwrap();
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty(), "draft is not an edit");
+    }
     h.state
-        .update_dictation(id, "wrong hypothesis".into(), now)
-        .unwrap();
-    h.pump();
-    assert!(h.peer(&field).committed.is_empty(), "draft is not an edit");
-    h.state
-        .update_dictation(id, "Bonjour, 世界 👋".into(), now)
+        .update_dictation(id, final_text.into(), now)
         .unwrap();
     h.state.finish_dictation(id, now).unwrap();
     h.pump();
-    assert_eq!(h.peer(&field).committed, [Some("Bonjour, 世界 👋".into())]);
+    assert_eq!(h.peer(&field).committed, [Some(final_text.into())]);
     assert!(h.peer(&field).keys.is_empty(), "no synthetic key events");
     assert!(h.state.take_delivered_text().is_empty(), "no emoji recents");
     assert!(
