@@ -1,5 +1,6 @@
 //! Hosted compositor mode — runs the shell inside the developer's existing X11/Wayland session
-//! via `winit`. The legacy path every `cargo run -p tilo-desktop` invocation uses; kept separate so `--mode native` has somewhere to land.
+//! via `winit`, as a `ui::App` the toolkit paints. A dev opt-in (`--mode hosted`) for machines with no DRM/KMS and no spare
+//! Wayland session; the default is `--mode native`.
 
 use std::sync::Arc;
 
