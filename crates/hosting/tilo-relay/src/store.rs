@@ -173,6 +173,8 @@ pub struct WorkspaceStore {
     workspace_id: u64,
     pinned: bool,
     shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
+    /// Shared by every handle on `root`; see `shell_selection::tail_cache`.
+    tail_cache: shell_selection::tail_cache::SharedTailCache,
 }
 
 /// One server-local projection of the native room governor. Both sets share a
@@ -238,6 +240,7 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         Ok(Self {
+            tail_cache: shell_selection::tail_cache::SharedTailCache::for_root(&root),
             root,
             workspace_id,
             pinned,
@@ -307,6 +310,7 @@ impl WorkspaceStore {
         }
         fs::File::open(&self.root)?.sync_all()?;
         self.shell_authority = Some(authority);
+        self.tail_cache.invalidate();
         Ok(())
     }
 
