@@ -59,6 +59,8 @@ mod federation_workspace_shard;
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[path = "hosting_cost.rs"]
+mod hosting_cost;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
 #[cfg(target_os = "linux")]

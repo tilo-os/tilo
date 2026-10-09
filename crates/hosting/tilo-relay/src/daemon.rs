@@ -737,8 +737,7 @@ impl Relay {
         handshake_trust.refresh(&workspaces).await;
         let live_trust_policy = handshake_trust.live_policy.clone();
         let handler = RelayProtocol {
-            v2: false,
-            signed_actions: false,
+            protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -855,17 +854,23 @@ impl Relay {
         };
         let mut router = Router::builder(endpoint.clone())
             .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::COMPACT_STATE,
+                    ..handler.clone()
+                },
+            )
+            .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
                 RelayProtocol {
-                    v2: true,
-                    signed_actions: true,
+                    protocol: crate::peer::SessionProtocol::SIGNED_ACTIONS,
                     ..handler.clone()
                 },
             )
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
-                    v2: true,
+                    protocol: crate::peer::SessionProtocol::V2,
                     ..handler.clone()
                 },
             )
@@ -1451,6 +1456,7 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
         ALPN,
         tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -2126,9 +2132,8 @@ fn validate_native_interactive_workspace_identity(
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
-    pub(crate) v2: bool,
-    /// Sessions on `ALPN_SIGNED_ACTIONS_V1`, which forward device-signed actions.
-    pub(crate) signed_actions: bool,
+    /// What sessions on this ALPN negotiated.
+    pub(crate) protocol: crate::peer::SessionProtocol,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -2598,8 +2603,7 @@ async fn handle_conn(
         recv,
         send,
         ctx.peer_context(),
-        ctx.v2,
-        ctx.signed_actions,
+        ctx.protocol,
     ))
     .await;
     if let Err(e) = peer_result {
@@ -4005,6 +4009,7 @@ mod tests {
             ALPN,
             tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,
