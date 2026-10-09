@@ -6160,6 +6160,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
+ "tilo-history",
  "workspace-hack",
 ]
 
@@ -11922,6 +11923,7 @@ dependencies = [
  "registry-types",
  "runtime-dylib",
  "tilo-app",
+ "tilo-history",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -14726,16 +14728,13 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "runtime-dylib",
- "serde",
  "serde_json",
  "taffy",
- "tilo-actions",
  "tilo-app",
- "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-vello",
  "tilo-winit",
- "uuid",
  "workspace-hack",
 ]
 

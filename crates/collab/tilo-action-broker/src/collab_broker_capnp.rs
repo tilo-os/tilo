@@ -5207,10 +5207,15 @@ impl CapnpBrokerState {
             return;
         }
         let route = target.route();
+        let key = PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind);
+        let payload = PresencePayload::Interaction(Box::new(interaction));
+        // Peers see it too; their ingress keeps the actor only as far as
+        // this device's certified person vouches for it.
+        self.publish_presence(route, &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
             user_id: shown.actor.id.clone(),
-            key: PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind),
-            payload: PresencePayload::Interaction(Box::new(interaction)),
+            key,
+            payload,
         };
         if let Some(fanout) = self.fanout.upgrade() {
             // No connection is peer 0: the view the action runs in sees it too.

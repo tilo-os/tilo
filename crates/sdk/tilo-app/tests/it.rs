@@ -15,8 +15,12 @@ pub mod child_resources;
 pub mod control_custody_raw_holder;
 #[path = "effects.rs"]
 pub mod effects;
+#[path = "forms.rs"]
+pub mod forms;
 #[path = "framework.rs"]
 pub mod framework;
+#[path = "gestures.rs"]
+pub mod gestures;
 #[path = "history_actions.rs"]
 pub mod history_actions;
 #[path = "host_context.rs"]

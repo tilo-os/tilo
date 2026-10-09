@@ -158,7 +158,7 @@ impl<R: Resource> Actions<R> {
         let key = self.key(action.action_id());
         let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
         let published = self.published.borrow();
-        ActionBinding::new(&published, &spec, move |input| action.arguments(input))
+        ActionBinding::fallible(&published, &spec, move |input| action.arguments(input))
             .map_err(|error| (key, error.to_string()))
     }
 
@@ -202,6 +202,30 @@ impl<R: Resource> Actions<R> {
     pub(crate) fn control_invocation(&self, invoke: Invoke<R>) -> Option<ActionBinding<()>> {
         self.try_invocation(invoke)
             .map_err(|(key, why)| unbound::<R>(&format!("`{key}`"), &why))
+            .ok()
+    }
+
+    /// The binding of a button that invokes `R`'s action `id` with the
+    /// arguments `arguments` makes when it is pressed (a form's values).
+    pub(crate) fn deferred_binding(
+        &self,
+        id: &str,
+        arguments: impl Fn() -> Result<serde_json::Map<String, serde_json::Value>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Option<ActionBinding<()>> {
+        let key = self.key(id);
+        let spec = match self.spec(&key) {
+            Ok(spec) => spec,
+            Err(why) => {
+                unbound::<R>(&format!("`{key}`"), &why);
+                return None;
+            }
+        };
+        let published = self.published.borrow();
+        ActionBinding::fallible(&published, &spec, move |()| arguments())
+            .map_err(|error| unbound::<R>(&format!("`{key}`"), &error.to_string()))
             .ok()
     }
 
@@ -287,7 +311,7 @@ impl<R: Resource> Actions<R> {
         let id = effect.action_id();
         let resource = self.exporting::<E>(id)?;
         let spec = resource.actions.first()?.clone();
-        ActionBinding::new(&resource, &spec, move |input| effect.arguments(input))
+        ActionBinding::fallible(&resource, &spec, move |input| effect.arguments(input))
             .map_err(|error| tracing::warn!(%error, effect = id, "control not bound"))
             .ok()
     }

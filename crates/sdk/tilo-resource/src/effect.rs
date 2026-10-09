@@ -712,7 +712,9 @@ mod tests {
     fn variant_refs_bind_controls_by_id() {
         assert_eq!(Sample::RENAME_THING.id, "rename-thing");
         assert_eq!(
-            Sample::RENAME_THING.arguments(&("b".to_owned(), Some("B".to_owned()))),
+            Sample::RENAME_THING
+                .arguments(&("b".to_owned(), Some("B".to_owned())))
+                .unwrap(),
             Sample::RenameThing {
                 thing: "b".into(),
                 label: Some("B".into())

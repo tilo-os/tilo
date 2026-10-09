@@ -47,6 +47,12 @@ pub mod keys {
     pub const PUBLISHER_PROOF_HELP: LabelKey = LabelKey::new("publisher-proof-help");
     pub const PUBLISHER_PROOF_LABEL: LabelKey = LabelKey::new("publisher-proof-label");
     pub const PUBLISHER_PUBLIC_KEY_LABEL: LabelKey = LabelKey::new("publisher-public-key-label");
+    pub const PUBLISHER_PUBLISHER_CONTACT: LabelKey = LabelKey::new("publisher-publisher-contact");
+    pub const PUBLISHER_PUBLISHER_DOMAIN: LabelKey = LabelKey::new("publisher-publisher-domain");
+    pub const PUBLISHER_PUBLISHER_FORGE_ACCOUNT: LabelKey =
+        LabelKey::new("publisher-publisher-forge-account");
+    pub const PUBLISHER_PUBLISHER_REGISTRY: LabelKey =
+        LabelKey::new("publisher-publisher-registry");
     pub const PUBLISHER_REGISTRY_LABEL: LabelKey = LabelKey::new("publisher-registry-label");
     pub const PUBLISHER_SECRET_COPIED: LabelKey = LabelKey::new("publisher-secret-copied");
     pub const PUBLISHER_SECRET_COPIED_DETAIL: LabelKey =

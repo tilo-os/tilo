@@ -2,7 +2,14 @@ use std::time::Duration;
 
 use publisher::{App, KeyEffect, Publisher};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{Invoke, Replica, TestApp};
+use ui::tilo_resource::Path;
+
+/// Replace the text of one field of the profile, as its input does.
+#[expect(clippy::expect_used, reason = "a path of the profile always encodes")]
+fn edit(field: Path<Publisher, String>, text: &str) -> Invoke<Publisher> {
+    Invoke::edit(&field.replace(text)).expect("an edit")
+}
 use ui::tilo_actions::{
     Availability, ConfirmationPolicy, DoorError, PermissionRequirement, RiskLevel,
 };
@@ -48,7 +55,7 @@ fn the_registry_must_be_https_or_this_machine() {
     ] {
         assert!(registry_client::RegistryClient::validate_url(address).is_ok());
         profile
-            .apply(Publisher::SET_REGISTRY.with(address))
+            .apply(edit(Publisher::paths().registry, address))
             .expect("HTTPS or an actual loopback host");
         assert_eq!(profile.state().expect("profile").registry, address);
     }
@@ -65,7 +72,7 @@ fn the_registry_must_be_https_or_this_machine() {
         assert!(registry_client::RegistryClient::validate_url(address).is_err());
         assert!(
             profile
-                .apply(Publisher::SET_REGISTRY.with(address))
+                .apply(edit(Publisher::paths().registry, address))
                 .is_err(),
             "reject an invalid address at the action door: {address}"
         );
@@ -131,7 +138,7 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
     let resources = app.harness().resources();
     let profile = resources
         .iter()
-        .find(|resource| resource.kind == "so.tilo.publisher.profile")
+        .find(|resource| resource.kind == "publisher.profile")
         .expect("the profile is published");
     assert_eq!(
         resources
@@ -202,7 +209,7 @@ fn applying_reports_what_the_registry_answered() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
         .expect("create the key");
-    app.invoke(Publisher::SET_REGISTRY.with("http://127.0.0.1:9"))
+    app.invoke(edit(Publisher::paths().registry, "http://127.0.0.1:9"))
         .expect("an unreachable registry");
     let nothing = app.effect(&KeyEffect::ApplyForNamespaces);
     assert!(
@@ -217,7 +224,7 @@ fn applying_reports_what_the_registry_answered() {
         "the application explains why it failed: {detail}"
     );
 
-    app.invoke(Publisher::SET_DOMAIN.with("example.com"))
+    app.invoke(edit(Publisher::paths().domain, "example.com"))
         .expect("domain");
     assert!(
         app.effect(&KeyEffect::ApplyForNamespaces).is_err(),
@@ -236,9 +243,9 @@ fn applying_reports_what_the_registry_answered() {
 fn the_claims_are_durable() {
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Publisher::SET_DOMAIN.with("example.com"))
+    app.invoke(edit(Publisher::paths().domain, "example.com"))
         .expect("domain");
-    app.invoke(Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada"))
+    app.invoke(edit(Publisher::paths().forge_account, "codeberg:ada"))
         .expect("forge");
     let app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().domain, "example.com");
@@ -280,4 +287,32 @@ fn narrow_key_actions_reserve_their_wrapped_rows_before_namespaces() {
     app.harness()
         .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
         .expect("scrolling retains the exact published proof value");
+}
+
+#[test]
+fn history_names_the_field_that_changed() {
+    let _home = home();
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.invoke(edit(Publisher::paths().domain, "example.com"))
+        .expect("domain");
+    app.invoke(edit(Publisher::paths().contact, "ada@example.com"))
+        .expect("contact");
+    assert!(
+        app.invoke(edit(Publisher::paths().registry, "not a URL"))
+            .is_err(),
+        "the invariant refuses an address the client would not use"
+    );
+    let catalogue = tilo_history::Catalogue::new("en-US", &[include_str!("../locales/en-US.ftl")]);
+    let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+    let sentences: Vec<String> = app
+        .versions()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|entry| entry.what.is_some())
+        .map(|entry| reader.sentence(&entry))
+        .collect();
+    assert_eq!(
+        sentences,
+        ["Changed the domain to claim", "Changed the contact address"]
+    );
 }

@@ -313,6 +313,7 @@ pub mod dev_reload;
 mod dispatch;
 mod each;
 mod effect;
+mod form;
 pub mod history;
 mod kinds;
 mod launch;
@@ -352,6 +353,7 @@ pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
     JobProgress, Jobs, Progress, Projection,
 };
+pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
@@ -366,7 +368,7 @@ pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
-pub use view::{EffectsHandle, ViewCx};
+pub use view::{Bound, EffectsHandle, ViewCx};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_results_tests;

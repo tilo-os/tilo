@@ -121,7 +121,12 @@ fn edit(
         .with_record_frame(outer, false, |doc, path| {
             let mut operation =
                 BoundOperation::enter(binding, doc, tilo_actions::OperationKind::Document).unwrap();
-            with_native_text(physical, || {
+            let input = if physical {
+                Input::Continuing
+            } else {
+                Input::Discrete
+            };
+            with_native_text(input, || {
                 execute_resource_operation(
                     &mut TextOwner::default(),
                     operation.doc,
@@ -284,8 +289,8 @@ fn physical_text_provenance_is_captured_in_the_exact_owned_queue_entry() {
     let mut queued = queued.into_iter();
     let (physical, first) = queued.next().unwrap();
     let (programmatic, second) = queued.next().unwrap();
-    assert!(physical.physical_text);
-    assert!(!programmatic.physical_text);
+    assert_eq!(physical.input, Input::Continuing);
+    assert_eq!(programmatic.input, Input::Discrete);
     assert_eq!(
         first, second,
         "equal descriptor values retain distinct provenance"
@@ -321,10 +326,10 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let (physical, first) = queued.next().unwrap();
     let (programmatic, second) = queued.next().unwrap();
     assert!(
-        physical.physical_text,
+        physical.input == Input::Continuing,
         "initial installation retains the producer's exact queued provenance"
     );
-    assert!(!programmatic.physical_text);
+    assert_eq!(programmatic.input, Input::Discrete);
     assert_eq!(first, second);
     assert!(queued.next().is_none());
     assert!(
@@ -343,8 +348,8 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let (programmatic, unmarked) = capture_physical_drain(|| {
         crate::widget::controls::take_attributed_control_invocation(&mut parent)
     });
-    assert!(marked);
-    assert!(!unmarked);
+    assert_eq!(marked, Input::Continuing);
+    assert_eq!(unmarked, Input::Discrete);
     assert_eq!(physical, programmatic);
-    assert!(!DRAINED_PHYSICAL_TEXT.with(Cell::get));
+    assert_eq!(DRAINED_INPUT.with(Cell::get), Input::Discrete);
 }

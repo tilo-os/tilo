@@ -27,9 +27,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::actions;
 use crate::app::{Action, Core, Requests, Shared};
 use crate::model::{Language, SnippetId};
+use crate::resource::SnippetsView;
 use crate::tr;
 
 /// What the content column shows. A change rebuilds the column.
@@ -44,17 +44,18 @@ pub(crate) struct DetailKey {
 impl DetailKey {
     pub(crate) fn of(core: &Core) -> Self {
         Self {
-            snippet: core.open.and_then(|id| core.library.get(id)).map(|s| {
-                (
-                    s.id,
+            snippet: core.open.as_ref().and_then(|id| {
+                let s = core.library.get(id)?;
+                Some((
+                    id.clone(),
                     s.language,
-                    s.folder.clone(),
-                    s.tags.clone(),
+                    s.folder.0.clone(),
+                    s.tags.iter().cloned().collect(),
                     s.description.clone(),
                     s.has_placeholders(),
-                )
+                ))
             }),
-            library_empty: core.library.snippets.is_empty(),
+            library_empty: core.library.is_empty(),
         }
     }
 
@@ -72,7 +73,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         return Box::new(EmptyAction {
             state: EmptyState::new(tr("snippets-empty-library"))
                 .with_icon(Icon::Code)
-                .with_action(tr("snippets-new-snippet"))
+                .with_action(tr("snippets-new"))
                 .with_action_id("snippets.library.new-snippet"),
             requests: Rc::clone(requests),
         });
@@ -85,6 +86,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     // folder and tags.
     let picker = {
         let requests = Rc::clone(requests);
+        let id = id.clone();
         Dropdown::from_state(
             Language::ALL.into_iter().map(Language::name).collect(),
             &ui::LocalState::new(language.name()),
@@ -97,7 +99,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
                 requests
                     .borrow_mut()
-                    .push(Action::SetLanguage(id, language));
+                    .push(Action::SetLanguage(id.clone(), language));
             }
         })
     };
@@ -106,12 +108,14 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         core: Rc::clone(core),
     }));
     // The folder and each tag open the library at them.
+    let actions = core.borrow().actions.clone();
+    let reveal = |view: SnippetsView| actions.as_ref().and_then(|actions| actions.effect(&view));
     if !folder.is_empty() {
         let mut chip = Chip::new(folder.clone())
             .with_id(format!("snippets.snippet:{id}.folder"))
             .with_lead(ChipLead::Glyph(Icon::Folder))
             .with_accessible_name(format!("Folder: {folder}"));
-        if let Some(reveal) = actions::reveal_folder_binding(&folder) {
+        if let Some(reveal) = reveal(SnippetsView::RevealFolder { folder }) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -120,7 +124,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
             .with_accessible_name(format!("Tag: {tag}"));
-        if let Some(reveal) = actions::reveal_tag_binding(&tag) {
+        if let Some(reveal) = reveal(SnippetsView::Reveal { tag: tag.clone() }) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
@@ -140,6 +144,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
     // variables.
     let copy = {
         let requests = Rc::clone(requests);
+        let copied = id.clone();
         Button::new(
             &format!("snippets.snippet:{id}.copy"),
             &tr(if templated {
@@ -149,7 +154,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             }),
         )
         .role(ButtonRole::Primary)
-        .on_effect(move || requests.borrow_mut().push(Action::Copy(id)))
+        .on_effect(move || requests.borrow_mut().push(Action::Copy(copied.clone())))
     };
 
     Box::new(
@@ -175,7 +180,7 @@ fn open_snippet_button(
     let core = Rc::clone(core);
     let requests = Rc::clone(requests);
     button.on_effect(move || {
-        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open) {
+        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open.clone()) {
             requests.borrow_mut().push(action(id));
         }
     })
@@ -241,7 +246,7 @@ impl Anchored {
         let Ok(core) = self.core.try_borrow() else {
             return;
         };
-        let open = core.open.and_then(|id| core.library.get(id));
+        let open = core.open.as_ref().and_then(|id| core.library.get(id));
         let state = (open.is_some(), open.is_some_and(|s| s.favorite));
         drop(core);
         if self.shown == Some(state) {

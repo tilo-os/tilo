@@ -517,6 +517,20 @@ impl DrainQueues {
                 labels,
                 announced,
             );
+            // Who acted is what the sender's certified identity supports.
+            let (user_id, payload) = match payload {
+                ui::collaboration::PresencePayload::Interaction(update) => {
+                    let actor = update.actor.from_peer(&user_id, entry.person.as_deref());
+                    let sequence = update.sequence;
+                    (
+                        actor.id.clone(),
+                        ui::collaboration::PresencePayload::Interaction(Box::new(
+                            update.normalized_by_broker(actor, sequence),
+                        )),
+                    )
+                }
+                payload => (user_id, payload),
+            };
             let route = CrdtRoute::cluster(entry.cluster_id.clone());
             let event = CollabEvent::RemotePresenceUpdate {
                 user_id,

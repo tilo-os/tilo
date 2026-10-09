@@ -433,7 +433,7 @@ fn assert_saved_body(
 
 fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
-        physical_text: false,
+        input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

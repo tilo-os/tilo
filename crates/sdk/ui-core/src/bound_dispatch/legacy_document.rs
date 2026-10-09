@@ -246,7 +246,7 @@ pub(crate) fn select_local_target(
                 }),
                 ResourceOwner::Component(binding) => {
                     LocalResourceTarget::Component(BoundActionTarget {
-                        physical_text: false,
+                        input: crate::bound_dispatch::Input::Discrete,
                         address: BoundActionAddress {
                             instance_id: binding.instance_id,
                             address: address.clone(),

@@ -15,56 +15,89 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 
-thread_local! {
-    static PHYSICAL_TEXT: Cell<bool> = const { Cell::new(false) };
-    static DRAINED_PHYSICAL_TEXT: Cell<bool> = const { Cell::new(false) };
-    static NATIVE_TEXT_EXECUTION: Cell<bool> = const { Cell::new(false) };
+/// How a person's input produced a control invocation: the provenance that
+/// decides whether it joins the undo step before it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Input {
+    /// Programmatic, assistive or one-off: a step of its own.
+    #[default]
+    Discrete,
+    /// Continues the person's gesture (typing, a drag): it joins the step
+    /// before it when the resource says it continues it.
+    Continuing,
+    /// Starts a gesture (the first value of a drag): it never joins the
+    /// step before it, and the rest of the gesture joins it.
+    Starting,
 }
 
-struct PhysicalTextScope(bool);
-impl Drop for PhysicalTextScope {
+thread_local! {
+    static INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
+    static DRAINED_INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
+    static NATIVE_TEXT_EXECUTION: Cell<Input> = const { Cell::new(Input::Discrete) };
+}
+
+struct InputScope(Input);
+impl Drop for InputScope {
     fn drop(&mut self) {
-        PHYSICAL_TEXT.with(|flag| flag.set(self.0));
+        INPUT.with(|flag| flag.set(self.0));
     }
 }
 
 /// Private producer provenance, copied into the exact owned queue entry.
 /// It confers no execution authority and is never decoded from a request.
-pub(crate) fn with_physical_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
-    let _scope = PhysicalTextScope(PHYSICAL_TEXT.with(|flag| flag.replace(physical)));
+pub(crate) fn with_input<T>(input: Input, run: impl FnOnce() -> T) -> T {
+    let _scope = InputScope(INPUT.with(|flag| flag.replace(input)));
     run()
 }
 
+/// [`with_input`] for typing: `physical` text continues the person's
+/// typing; anything else is discrete.
+pub(crate) fn with_physical_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
+    with_input(
+        if physical {
+            Input::Continuing
+        } else {
+            Input::Discrete
+        },
+        run,
+    )
+}
+
+pub(crate) fn input() -> Input {
+    INPUT.with(Cell::get)
+}
+
+#[cfg(test)]
 pub(crate) fn physical_text() -> bool {
-    PHYSICAL_TEXT.with(Cell::get)
+    input() != Input::Discrete
 }
 
-pub(crate) fn note_drained_physical_text(physical: bool) {
-    DRAINED_PHYSICAL_TEXT.with(|flag| flag.set(physical));
+pub(crate) fn note_drained_input(input: Input) {
+    DRAINED_INPUT.with(|flag| flag.set(input));
 }
 
-struct DrainTextScope(bool);
+struct DrainTextScope(Input);
 impl Drop for DrainTextScope {
     fn drop(&mut self) {
-        DRAINED_PHYSICAL_TEXT.with(|flag| flag.set(self.0));
+        DRAINED_INPUT.with(|flag| flag.set(self.0));
     }
 }
 
-fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, bool) {
-    let _scope = DrainTextScope(DRAINED_PHYSICAL_TEXT.with(|flag| flag.replace(false)));
+fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input) {
+    let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
     let result = run();
-    (result, DRAINED_PHYSICAL_TEXT.with(Cell::get))
+    (result, DRAINED_INPUT.with(Cell::get))
 }
 
-struct NativeTextScope(bool);
+struct NativeTextScope(Input);
 impl Drop for NativeTextScope {
     fn drop(&mut self) {
         NATIVE_TEXT_EXECUTION.with(|flag| flag.set(self.0));
     }
 }
 
-fn with_native_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
-    let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(physical)));
+fn with_native_text<T>(input: Input, run: impl FnOnce() -> T) -> T {
+    let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(input)));
     run()
 }
 
@@ -150,7 +183,7 @@ impl From<BoundDispatchError> for BoundActionError {
 /// the reusable numeric instance or a domain resource ID.
 #[derive(Clone)]
 pub(crate) struct BoundActionTarget {
-    pub(crate) physical_text: bool,
+    pub(crate) input: Input,
     pub(crate) binding: CallbackBinding,
     pub(crate) address: BoundActionAddress,
 }
@@ -301,7 +334,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
             for invocation in binding.queued_controls.borrow().iter() {
                 output.push((
                     BoundActionTarget {
-                        physical_text: false,
+                        input: Input::Discrete,
                         address: BoundActionAddress {
                             instance_id: binding.instance_id,
                             address: invocation.address.clone(),
@@ -343,7 +376,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             continuing.push(None);
             invocations.push((
                 BoundActionTarget {
-                    physical_text: false,
+                    input: Input::Discrete,
                     binding: binding.clone(),
                     address: BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -353,13 +386,13 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let (Some((intent, on_behalf_of)), physical_text) = capture_physical_drain(|| {
+        while let (Some((intent, on_behalf_of)), input) = capture_physical_drain(|| {
             crate::widget::controls::take_attributed_control_invocation(widget)
         }) {
             continuing.push(on_behalf_of);
             invocations.push((
                 BoundActionTarget {
-                    physical_text,
+                    input,
                     binding: binding.clone(),
                     address: BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -547,7 +580,7 @@ impl BoundPublication {
             .ok_or_else(unknown)?;
         let _entry = binding.enter()?;
         Ok(Some(BoundActionTarget {
-            physical_text: false,
+            input: Input::Discrete,
             address: BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new(resource, address.action.clone()),
@@ -1285,7 +1318,7 @@ pub(crate) fn select_bound_target(
             });
         }
         selected = Some(BoundActionTarget {
-            physical_text: false,
+            input: Input::Discrete,
             binding: snapshot.binding.clone(),
             address: BoundActionAddress {
                 instance_id: snapshot.binding.instance_id,
@@ -2199,7 +2232,7 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        with_native_text(target.physical_text && actor == binding.author.0 && crate::history_source::authors::agent_principal_name(actor).is_none(), || execute_resource_operation(
+                        with_native_text(if actor == binding.author.0 && crate::history_source::authors::agent_principal_name(actor).is_none() { target.input } else { Input::Discrete }, || execute_resource_operation(
                             widget,
                             doc,
                             path,
@@ -2732,7 +2765,8 @@ fn note_native_text_policy(
     doc: &AutoCommit,
     encoded: &tilo_actions::EncodedAction,
 ) {
-    if !NATIVE_TEXT_EXECUTION.with(Cell::get) {
+    let input = NATIVE_TEXT_EXECUTION.with(Cell::get);
+    if input == Input::Discrete {
         return;
     }
     let Some(history) = crate::widget::capability::capability::<
@@ -2762,6 +2796,8 @@ fn note_native_text_policy(
         .and_then(|pending| pending.native_text.as_ref());
     let (continues, continuable) =
         history.physical_text_policy(previous.map(|span| &span.action), encoded);
+    // The first value of a gesture is a step of its own, whatever came before.
+    let continues = continues && input != Input::Starting;
     if let Some(operation) = frame.operations.last_mut() {
         operation.native_text = Some(NativeTextPolicy {
             action: encoded.clone(),

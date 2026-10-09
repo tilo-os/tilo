@@ -534,7 +534,9 @@ mod tests {
         let reply = (reply.build)(
             &tilo_actions::ActionArgs::bind_json(
                 &reply.params,
-                &Tube::REPLY_TO_COMMENT.arguments(&(comment.clone(), "Agreed".into())),
+                &Tube::REPLY_TO_COMMENT
+                    .arguments(&(comment.clone(), "Agreed".into()))
+                    .unwrap(),
             )
             .unwrap(),
             0,

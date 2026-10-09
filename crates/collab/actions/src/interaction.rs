@@ -73,6 +73,22 @@ impl InteractionActor {
         self.for_person = Some(person.into());
         self
     }
+
+    /// The actor a receiver shows for an update a peer sent as `sender`:
+    /// the actor the update names when it is software acting for exactly
+    /// the person the transport certified the sender as (`certified`), so
+    /// a device can say its own person's agent acted, never that someone
+    /// else did; otherwise the sender itself, as a person.
+    #[must_use]
+    pub fn from_peer(&self, sender: &str, certified: Option<&str>) -> Self {
+        let vouched = self.kind.acts_for_someone()
+            && certified.is_some_and(|person| self.for_person.as_deref() == Some(person));
+        if vouched {
+            self.clone()
+        } else {
+            Self::new(sender, ActorKind::Person)
+        }
+    }
 }
 
 /// A stable character range within a document block.
@@ -396,6 +412,32 @@ fn validate_count(field: &'static str, count: usize) -> Result<(), InteractionVi
         return Err(issue(field, "has too many items"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod peer_actor_tests {
+    use super::*;
+
+    #[test]
+    fn a_peer_can_vouch_only_for_its_own_persons_software() {
+        let agent = InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("ada");
+        assert_eq!(agent.from_peer("peer@7", Some("ada")), agent);
+        assert_eq!(
+            agent.from_peer("peer@7", Some("bob")),
+            InteractionActor::new("peer@7", ActorKind::Person),
+            "Bob's device cannot say Ada's agent acted"
+        );
+        assert_eq!(
+            agent.from_peer("peer@7", None),
+            InteractionActor::new("peer@7", ActorKind::Person)
+        );
+        let impostor = InteractionActor::new("carol", ActorKind::Person).acting_for("ada");
+        assert_eq!(
+            impostor.from_peer("peer@7", Some("ada")),
+            InteractionActor::new("peer@7", ActorKind::Person),
+            "a person is only ever the sender"
+        );
+    }
 }
 
 #[cfg(test)]
