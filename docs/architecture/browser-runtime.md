@@ -157,7 +157,7 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Gap | Where | Browser implementation |
 |---|---|---|
 | Threads | `render_thread` (`ui-render`), `tilo_rt::app()` (a dedicated thread), `cpu_pool` (rayon), `ThreadPool` background executor, collaboration broker worker | *Done except the broker.* Render on the page thread (`FrameHarness` + Vello on the canvas). `tilo_rt::app()` on wasm is a `LocalSet` polled by one `wasm_bindgen_futures::spawn_local` task (same `spawn`/`spawn_then`/`spawn_blocking` signatures; `block_on` refuses with `UiThread`; tokio `time`/`net` have no driver). `cpu()` runs as an app task, `cpu_pool()` is the page thread alone, `tilo_rt::io` refuses. `tilo-host`'s default `Background` on wasm is `PageExecutor` (microtasks + `setTimeout`). The broker worker is behind `broker-transport` (milestone 5). Frames follow input, component wakes, animation and wake deadlines only (`FrameHarness::frame_schedule`, as the native runner): an idle mount presents nothing. |
-| Files | `settings-store`, `app-state::FsStore`, `xdg-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
+| Files | `settings-store`, `app-state::FsStore`, `tilo-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
 | Local daemons | none linked (milestone 5) | `CollaborationManager::with_transport` with a relay-backed `CollabTransport` (not wired yet); the certified peer installs its user as `ui::local_identity` ([Seams](#seams-the-page-installs)). |
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
@@ -209,10 +209,10 @@ for capnp, not at all, so the linker already discarded them.
 Still in the wasm graph, left for later:
 
 - `app-state` → `cli` → `runtime-portal` (discovery only), `advisory-lock`,
-  `xdg-paths`: `FsStore` and the package path helpers share
+  `tilo-paths`: `FsStore` and the package path helpers share
   `app-state/src/lib.rs` with `DocOwner`/`DocWriter`. Splitting `FsStore`
   behind an `app-state` feature would drop `cli`, `advisory-lock` and
-  `anyhow`; `xdg-paths` stays through `spellcheck`.
+  `anyhow`; `tilo-paths` stays through `spellcheck`.
 - `tts`: on wasm only its vocabulary (`Speaker`, `Priority`, `NullSpeaker`)
   compiles; the SSIP backend is `cfg(unix)`.
 - `spellcheck`: pure Rust, but embeds a ~690 KB word list. Candidate for a
@@ -266,8 +266,8 @@ host) and the carrier.
     the publisher namespace.
   - The shared `LiveService` (commit `67c31b331`) issues 60-second
     host-signed live grants and re-checks each session's current roster
-    permission from one shared owner turn every 50 ms, so revocation cuts
-    live sessions within about 100 ms.
+    permission from one shared owner turn whenever an authority change is
+    announced, so revocation cuts live sessions within about 100 ms.
   - The carrier is moq-lite over WebTransport (`/moq/live`), with an HTTPS
     streaming fallback (`/peer/v3/live/fallback/*`). There are no WebSockets.
 - **Browser speculation.** `peer_live/speculation.rs` keeps a *durable
@@ -356,10 +356,12 @@ rather than a second host:
     with the host's canonical codec.
   - A grant (`/live/grant`) is bound to the HTTPS session and presented in
     the carrier's admission preface.
-  - One observer checks every grant every 50 ms (session open, device not
-    revoked, still admitted), and the relay re-checks each session against
-    that snapshot. This is 541's batched `LiveService` observation, run on a
-    tokio interval.
+  - One observer checks every grant (session open, device not revoked,
+    still admitted), and the relay re-checks each session against that
+    snapshot. This is 541's batched `LiveService` observation, run when
+    something it reads announces a change — the relay's authority epoch
+    (`tilo-relay/src/authority_epoch.rs`), a session ending or running out, a
+    grant issued — and on the 5 s session sweep as a backstop.
   - Browsers without WebTransport use 541's HTTPS stream fallback
     (`/peer/v1/live/fallback/{open,send,resume}`) with the same frames.
   - Live frames from iroh peers are bridged into the relay, so native and
@@ -373,8 +375,8 @@ rather than a second host:
   synchronously inside a `tokio::select!` loop and retried with
   `std::thread::sleep`. Here every handler is async and awaits the relay's
   own locks, workspace I/O already runs on the blocking pool, and the only
-  periodic work (the 50 ms observation and the session janitor) runs on
-  tokio intervals. No thread ever sleeps in async code.
+  periodic work (the session janitor, which also backstops the grant
+  observation) runs on a tokio interval. No thread ever sleeps in async code.
 - **The browser side** is `crates/browser/tilo-browser-peer`: custody,
   session, outbox and replay, live state, and the `CollabTransport`.
   - It reaches the host through an `HttpClient` seam (`fetch` in the page).
@@ -787,7 +789,8 @@ approves proposals as they come; a production approver shows them.
 `Relay::register_agent` verifies the delegation against the host's user:
 
 - The device is refused outside its rooms, at subscribe and on every
-  one-second access audit.
+  access audit: registering, replacing or withdrawing a delegation starts
+  one, and so does its expiry.
 - `Relay::withdraw_agent` refuses it entirely.
 - Remote actions from the device carry `Caller::delegated_agent`: the
   agent is its own principal, never the person who delegated it.

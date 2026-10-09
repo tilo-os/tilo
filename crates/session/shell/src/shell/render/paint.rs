@@ -232,6 +232,20 @@ pub struct SceneDamage<'a> {
     pub regions: Option<&'a [vello::FineDamageRect]>,
 }
 
+impl<'a> SceneDamage<'a> {
+    /// The same frame with `regions` in place of its own, when there are any.
+    fn with_regions<'b>(self, regions: Option<&'b [vello::FineDamageRect]>) -> SceneDamage<'b>
+    where
+        'a: 'b,
+    {
+        SceneDamage {
+            revision: self.revision,
+            previous_revision: self.previous_revision,
+            regions: regions.or(self.regions),
+        }
+    }
+}
+
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -523,6 +537,10 @@ pub struct RetainedGpuTarget {
     /// Revision associated with the complete retained frame. Legacy full-render APIs do not
     /// carry a revision, so they intentionally clear this even though their target is complete.
     last_successful_revision: Option<u64>,
+    /// Damage of frames an output skipped while its page flip was pending, in target pixels.
+    /// `last_successful_revision` already names the newest of them; the next direct render
+    /// repairs these regions with its own (see [`VelloDrmBridge::defer_output`]).
+    owed_damage: Vec<vello::FineDamageRect>,
     /// Total Vello submissions used by the latest paint, including sparse work and bounded
     /// bump-budget recovery retries.
     last_render_attempts: usize,
@@ -675,6 +693,7 @@ impl RetainedGpuTarget {
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
             last_successful_revision: None,
+            owed_damage: Vec::new(),
             last_render_attempts: 0,
             last_sparse_render_attempts: 0,
             last_full_render_attempts: 0,
@@ -817,6 +836,19 @@ impl RetainedGpuTarget {
     fn invalidate(&mut self) {
         self.retained_target_valid = false;
         self.last_successful_revision = None;
+        self.owed_damage.clear();
+    }
+
+    /// `regions` together with the damage owed by frames skipped since the last render,
+    /// which this takes; `None` when nothing is owed or the frame renders in full anyway.
+    fn take_owed_damage(
+        &mut self,
+        regions: Option<&[vello::FineDamageRect]>,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        let owed = std::mem::take(&mut self.owed_damage);
+        regions
+            .filter(|_| !owed.is_empty())
+            .map(|regions| [regions, owed.as_slice()].concat())
     }
 
     fn check_health(&self) -> Result<(), BridgeError> {
@@ -2555,6 +2587,10 @@ impl VelloDrmBridge {
                 output.size.0, output.size.1, self.target.size.0, self.target.size.1
             )));
         }
+        // Frames this output skipped while its flip was pending left their damage owed: the
+        // retained pixels already claim those revisions, so this render repairs it too.
+        let repaired = self.target.take_owed_damage(damage.regions);
+        let damage = damage.with_regions(repaired.as_deref());
         let hdr = output.format != wgpu::TextureFormat::Bgra8Unorm;
         let composite = hdr && !hdr_layers.is_empty();
         if composite {
@@ -3842,6 +3878,7 @@ impl VelloDrmBridge {
         self.retained_staging_valid = false;
         self.staging_content = None;
         self.target.last_successful_revision = None;
+        self.target.owed_damage.clear();
     }
 
     #[inline]
@@ -5393,6 +5430,15 @@ mod tests {
         bridge
     }
 
+    /// A frame that renders in full.
+    fn full_frame(revision: u64) -> SceneDamage<'static> {
+        SceneDamage {
+            revision,
+            previous_revision: None,
+            regions: None,
+        }
+    }
+
     /// One output's frame through the production per-output path, into an offscreen
     /// stand-in for its imported scanout target, read back as BGRA bytes.
     fn paint_output_pixels(
@@ -5401,9 +5447,46 @@ mod tests {
         view: &OutputView,
         revision: u64,
     ) -> Vec<u8> {
+        paint_output_damage(bridge, scene, view, full_frame(revision)).1
+    }
+
+    /// [`paint_output_pixels`] for a frame carrying `damage`, with the frame's stats.
+    fn paint_output_damage(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+    ) -> (GpuFrameStats, Vec<u8>) {
         let (width, height) = view.size;
         let (device, queue) = bridge.gpu();
         let (device, queue) = (device.clone(), queue.clone());
+        let (texture, stats) = paint_output_offscreen(bridge, scene, view, damage);
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(&device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(&mut encoder, &texture, &buffer, stride, width, height);
+        queue.submit([encoder.finish()]);
+        let mapped =
+            VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
+        let mut pixels = Vec::new();
+        for row in mapped.chunks(stride as usize).take(height as usize) {
+            pixels.extend_from_slice(&row[..(width as usize).saturating_mul(4)]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        (stats, pixels)
+    }
+
+    /// One output's frame through the production per-output path into an offscreen
+    /// stand-in for its imported scanout target, which is returned unread.
+    fn paint_output_offscreen(
+        bridge: &mut VelloDrmBridge,
+        scene: &Scene,
+        view: &OutputView,
+        damage: SceneDamage<'_>,
+    ) -> (wgpu::Texture, GpuFrameStats) {
+        let (width, height) = view.size;
+        let (device, _) = bridge.gpu();
+        let device = device.clone();
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("output-view-test-scanout"),
             size: wgpu::Extent3d {
@@ -5419,15 +5502,11 @@ mod tests {
             view_formats: &[],
         });
         let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        bridge
+        let stats = bridge
             .paint_output_into(
                 scene,
                 view,
-                SceneDamage {
-                    revision,
-                    previous_revision: None,
-                    regions: None,
-                },
+                damage,
                 OutputTarget {
                     view: &target_view,
                     format: wgpu::TextureFormat::Bgra8Unorm,
@@ -5442,19 +5521,7 @@ mod tests {
                 },
             )
             .expect("the output's frame renders");
-        let (buffer, stride) = VelloDrmBridge::allocate_staging(&device, width, height);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        VelloDrmBridge::append_full_copy(&mut encoder, &texture, &buffer, stride, width, height);
-        queue.submit([encoder.finish()]);
-        let mapped =
-            VelloDrmBridge::map_device_readback(&device, &buffer).expect("scanout stand-in maps");
-        let mut pixels = Vec::new();
-        for row in mapped.chunks(stride as usize).take(height as usize) {
-            pixels.extend_from_slice(&row[..(width as usize).saturating_mul(4)]);
-        }
-        drop(mapped);
-        buffer.unmap();
-        pixels
+        (texture, stats)
     }
 
     #[test]
@@ -5537,10 +5604,205 @@ mod tests {
             "an undamaged output holding the previous revision keeps its image"
         );
         // A busy flip dropped the right output's frame: its surface is ahead of KMS.
-        bridge.invalidate_output_view(right.id);
+        bridge.invalidate_output_view(&right);
         assert!(
             !bridge.keep_unchanged_output(&right, damage(3)),
             "after a dropped flip the output must not count as unchanged"
+        );
+    }
+
+    #[test]
+    fn per_output_view_never_bands_two_4k_heads() {
+        // Two 3840x2160 heads side by side span 7680x2160: 30x9 = 270 Vello bins, past the
+        // 256 one render can address, so the combined target rendered in two bands. While
+        // both render direct the bridge's target is the head at the origin (the DRM
+        // presenter's `bridge_extent`), and each head is one render.
+        let head = (3840, 2160);
+        assert_eq!(
+            RetainedGpuTarget::band_rows((7680, 2160)),
+            Some(2048),
+            "the combined desktop is past the bin limit"
+        );
+        assert_eq!(
+            RetainedGpuTarget::band_rows(head),
+            None,
+            "one head fits one render"
+        );
+        let mut bridge = required_bridge(head.0, head.1);
+        let mut scene = Scene::new();
+        // A window spanning both heads.
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(40, 120, 200),
+            None,
+            &vello::kurbo::Rect::new(3000.0, 400.0, 4800.0, 1600.0),
+        );
+        let views = [
+            OutputView::at(crate::shell::render::OutputId(0), (0, 0), head),
+            OutputView::at(crate::shell::render::OutputId(1), (3840, 0), head),
+        ];
+        for (index, view) in views.iter().enumerate() {
+            let (_, stats) = paint_output_offscreen(&mut bridge, &scene, view, full_frame(1));
+            assert_eq!(
+                (stats.render_attempts, bridge.last_render_attempts()),
+                (1, 1),
+                "head {index} renders in one pass, not in bands"
+            );
+        }
+        assert!(
+            bridge.view_is_whole_scene(&views[0]),
+            "the head at the origin renders straight into the bridge's target"
+        );
+        assert!(bridge.target.band.is_none(), "no band target was needed");
+        assert!(
+            bridge
+                .output_surfaces
+                .iter()
+                .all(|(_, surface)| surface.size == head && surface.band.is_none()),
+            "the other head's surface is its own size and never banded"
+        );
+        assert_eq!(bridge.size(), head, "no target spans both heads");
+    }
+
+    #[test]
+    fn an_undamaged_origin_output_keeps_its_image_in_the_bridge_target() {
+        // The bridge's target is the left output's: damage on the right one leaves it as it is.
+        let mut bridge = required_bridge(100, 100);
+        let scene = Scene::new();
+        let left = OutputView::at(crate::shell::render::OutputId(0), (0, 0), (100, 100));
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        assert!(bridge.view_is_whole_scene(&left));
+        paint_output_pixels(&mut bridge, &scene, &left, 1);
+        paint_output_pixels(&mut bridge, &scene, &right, 1);
+        let right_only = [vello::FineDamageRect {
+            x: 120,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        let damage = SceneDamage {
+            revision: 2,
+            previous_revision: Some(1),
+            regions: Some(&right_only),
+        };
+        assert!(
+            bridge.keep_unchanged_output(&left, damage),
+            "damage on the other output neither renders nor flips this one"
+        );
+        assert!(
+            !bridge.keep_unchanged_output(&right, damage),
+            "the damaged output renders"
+        );
+        assert_eq!(
+            bridge.target.last_successful_revision,
+            Some(2),
+            "the kept target holds the new revision, so the next frame repairs it sparsely"
+        );
+    }
+
+    #[test]
+    fn a_deferred_output_repairs_its_owed_damage_sparsely() {
+        // The right output skips revision 2 (its flip is pending), whose damage falls on it.
+        // Revision 3 damages only the left output; the right one must still show revision 2.
+        let mut bridge = required_bridge(100, 100);
+        let right = OutputView::at(crate::shell::render::OutputId(1), (100, 0), (100, 100));
+        let blue = Color::from_rgb8(0, 0, 255);
+        let red = Color::from_rgb8(255, 0, 0);
+        let mut before = Scene::new();
+        before.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            blue,
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0),
+        );
+        let mut after = Scene::new();
+        after.append(&before, None);
+        after.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            red,
+            None,
+            &vello::kurbo::Rect::new(110.0, 10.0, 130.0, 30.0),
+        );
+        paint_output_pixels(&mut bridge, &before, &right, 1);
+        let on_right = [vello::FineDamageRect {
+            x: 110,
+            y: 10,
+            width: 20,
+            height: 20,
+        }];
+        assert!(
+            bridge.defer_output(
+                &right,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&on_right),
+                },
+            ),
+            "a surface holding the previous revision records the skipped damage"
+        );
+        let on_left = [vello::FineDamageRect {
+            x: 10,
+            y: 50,
+            width: 10,
+            height: 10,
+        }];
+        let next = SceneDamage {
+            revision: 3,
+            previous_revision: Some(2),
+            regions: Some(&on_left),
+        };
+        assert!(
+            !bridge.keep_unchanged_output(&right, next),
+            "owed damage makes the output render although this frame's damage is elsewhere"
+        );
+        let (stats, pixels) = paint_output_damage(&mut bridge, &after, &right, next);
+        assert_eq!(
+            (stats.sparse_attempts, stats.full_attempts),
+            (1, 0),
+            "the owed damage is repaired sparsely"
+        );
+        let pixel = |x: usize, y: usize| {
+            pixels
+                .chunks_exact(4)
+                .nth(y.saturating_mul(100).saturating_add(x))
+                .expect("the pixel lies on the output")
+                .to_vec()
+        };
+        // The scanout stand-in is BGRA.
+        assert_eq!(
+            pixel(20, 20),
+            [0, 0, 255, 255],
+            "the skipped frame's change shows"
+        );
+        assert_eq!(pixel(60, 60), [255, 0, 0, 255], "the rest is unchanged");
+
+        // Pixels that do not hold the previous revision cannot owe a frame: the output's next
+        // render is full.
+        assert!(!bridge.defer_output(
+            &right,
+            SceneDamage {
+                revision: 9,
+                previous_revision: Some(7),
+                regions: Some(&on_right),
+            },
+        ));
+        let (stats, _) = paint_output_damage(
+            &mut bridge,
+            &after,
+            &right,
+            SceneDamage {
+                revision: 10,
+                previous_revision: Some(9),
+                regions: Some(&on_left),
+            },
+        );
+        assert_eq!(
+            stats.sparse_attempts, 0,
+            "an output that lost its debt renders in full"
         );
     }
 

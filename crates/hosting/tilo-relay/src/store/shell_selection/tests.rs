@@ -1143,7 +1143,7 @@ fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
 }
 
 #[test]
-fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
+fn serial_checkpoint_refresh_filters_unrelated_proof_reads() {
     let meta = producer_metadata();
     let (_tmp, store) = selected_baseline_store(&meta);
     let mut global_selections = 0;
@@ -1158,7 +1158,7 @@ fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
     }
 
     assert_eq!(global_selections, 4);
-    assert_eq!(global_reads, 100);
+    assert_eq!(global_reads, 74);
 }
 
 #[test]

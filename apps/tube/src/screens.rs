@@ -11,7 +11,6 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
     Container, ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow,
@@ -1537,9 +1536,7 @@ fn sync_status(status: crate::sync::SyncStatus) -> Option<(String, Tone)> {
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let current = ui::time::unix_now_i64();
     t_args(
         "tube-last-synced",
         &[arg("when", ui::format::relative(current - time))],

@@ -380,13 +380,7 @@ impl Widget for EditableLabel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.input.apply_layout_external(self.rect);
     }
 
@@ -624,20 +618,7 @@ impl Widget for EditableLabel {
 }
 
 impl crate::widget::controls::ActionControls for EditableLabel {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let Some(action) = &self.action else {
             return Vec::new();
@@ -648,14 +629,6 @@ impl crate::widget::controls::ActionControls for EditableLabel {
             .or_else(|| self.test_id())
             .unwrap_or("editable_label");
         vec![action.metadata(control_id)]
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
     }
 }
 

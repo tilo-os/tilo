@@ -1,6 +1,7 @@
 //! Command implementations. Each returns an [`Outcome`]: what happened, as
 //! text and as JSON, plus the likely next commands.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -872,12 +873,14 @@ impl App {
                 direct,
                 jobs,
                 cmdline,
+                frame_cpu_trace,
             }) => self.swap(
                 slot,
                 component,
                 &from,
                 builder,
                 profile.as_deref(),
+                frame_cpu_trace,
                 KernelFlags {
                     direct,
                     jobs,
@@ -1799,7 +1802,7 @@ impl App {
         let disk_path = match (&args.disk, image.is_some() || published.is_some()) {
             (Some(path), _) => Some(absolute(Path::new(path))),
             (None, true) => Some(
-                xdg_paths::data_local_dir()
+                tilo_paths::data_local_dir()
                     .unwrap_or_else(std::env::temp_dir)
                     .join("tilo-vm")
                     .join("vms")
@@ -3849,9 +3852,10 @@ impl App {
             }
             SlotCommand::Show { name, .. } => {
                 let name = self.slot_name(name)?;
-                let shown = self.connect(&vm)?.call(SlotShow { name })?;
-                Ok(Outcome::new(describe_show(&shown), json!(shown))
-                    .next(&["tilo-vm slot exec -- sha256sum <path>"]))
+                let mut remote = self.connect(&vm)?;
+                let shown = remote.call(SlotShow { name })?;
+                let layers = remote.call(LayerList {})?;
+                Ok(installed_slot_outcome(&shown, &layers))
             }
             SlotCommand::Exec {
                 name,
@@ -4015,8 +4019,10 @@ impl App {
         from: &str,
         builder: Option<Builder>,
         profile: Option<&str>,
+        frame_cpu_trace: bool,
         kernel: KernelFlags,
     ) -> Result<Outcome, CliError> {
+        validate_frame_cpu_component(&component, frame_cpu_trace)?;
         // Boot components first: the kernel swaps VM-wide (its slot is `vm`
         // unless named), the others go to their scenario.
         if !component.starts_with("app:")
@@ -4092,7 +4098,7 @@ impl App {
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
         remote = self.connect(&vm)?;
-        let info = entry.map(|c| c.info);
+        let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
                 slot: slot.clone(),
@@ -4189,6 +4195,7 @@ impl App {
                 "worktree",
                 Some(Builder::Remote),
                 None,
+                false,
                 KernelFlags::default(),
             )?;
             inputs.unchanged(&root)?;
@@ -4568,7 +4575,7 @@ impl App {
                     }
                 }
             }
-            Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Host => self.install_app_from_host(&mut remote, &vm, &worktree, slot, dir)?,
             Builder::Remote => {
                 let command = configured
                     .filter(|line| !line.is_empty())
@@ -4594,6 +4601,7 @@ impl App {
     fn install_app_from_host(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         worktree: &Worktree,
         slot: &str,
         dir: &str,
@@ -4603,18 +4611,35 @@ impl App {
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
         let package = build::app_package(&target, dir, &tapp);
+        self.install_host_app_package(
+            remote,
+            slot,
+            |runner| {
+                if !runner.interactive(&package)? {
+                    return Err(CliError::CommandFailed {
+                        command: package.display(),
+                        status: "failed".into(),
+                        stderr: String::new(),
+                    });
+                }
+                Ok(tapp)
+            },
+            |app| app.connect(vm),
+        )
+    }
+
+    fn install_host_app_package(
+        &mut self,
+        remote: &mut Remote,
+        slot: &str,
+        build: impl FnOnce(&mut SystemRunner) -> Result<PathBuf, CliError>,
+        reconnect: impl FnOnce(&mut Self) -> Result<Remote, CliError>,
+    ) -> Result<AppInstallResult, CliError> {
         let runner = &mut self.runner;
-        let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            if !runner.interactive(&package)? {
-                return Err(CliError::CommandFailed {
-                    command: package.display(),
-                    status: "failed".into(),
-                    stderr: String::new(),
-                });
-            }
-            Ok(())
-        });
-        built?;
+        let tapp = self.receipt.phase("build", || build(runner))?;
+        // Packaging may outlast the transport's idle lifetime. Open the usual
+        // authenticated route again before any upload; never replay AppInstall.
+        *remote = reconnect(self)?;
         let upload = self
             .receipt
             .phase("transfer", || -> Result<String, CliError> {
@@ -6028,6 +6053,86 @@ fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]
     words
 }
 
+fn validate_frame_cpu_component(component: &str, enabled: bool) -> Result<(), CliError> {
+    if enabled && component != "shell" {
+        return Err(CliError::InvalidInput(
+            "--frame-cpu-trace is supported only for the shell component".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn frame_cpu_info(
+    entry: Option<Component>,
+    enabled: bool,
+) -> Result<Option<tilo_vm_protocol::ComponentInfo>, CliError> {
+    let mut info = entry.map(|entry| entry.info);
+    if enabled {
+        let shell = info.as_mut().ok_or_else(|| {
+            CliError::InvalidInput("--frame-cpu-trace requires the shell component manifest".into())
+        })?;
+        shell.frame_cpu_trace = true;
+    }
+    Ok(info)
+}
+
+#[derive(serde::Serialize)]
+struct InstalledSlotReceipt<'a> {
+    #[serde(flatten)]
+    shown: &'a SlotShowResult,
+    installed_builds: BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>>,
+    identity_scope: &'static str,
+}
+
+fn installed_slot_outcome(
+    shown: &SlotShowResult,
+    layers: &[tilo_vm_protocol::LayerInfo],
+) -> Outcome {
+    let installed_builds = installed_builds(shown, layers);
+    let mut text = describe_show(shown);
+    text.push_str("\n  build receipts: installed layers; running process image unverified");
+    for (component, layer) in &installed_builds {
+        let receipt = layer.map_or_else(
+            || "unavailable".into(),
+            |layer| {
+                let p = &layer.provenance;
+                format!(
+                    "source={} toolchain={} profile={} builder={}",
+                    p.source_commit.as_deref().unwrap_or("unavailable"),
+                    p.toolchain.as_deref().unwrap_or("unavailable"),
+                    p.cargo_profile.as_deref().unwrap_or("unavailable"),
+                    p.builder.as_deref().unwrap_or("unavailable")
+                )
+            },
+        );
+        let _ = write!(text, "\n    {component}: {receipt}");
+    }
+    let data = json!(InstalledSlotReceipt {
+        shown,
+        installed_builds,
+        identity_scope: "installed_layer_not_running_process",
+    });
+    Outcome::new(text, data).next(&["tilo-vm --json slot show"])
+}
+
+/// Build receipts describe immutable installed layers, never process memory.
+fn installed_builds<'a>(
+    shown: &SlotShowResult,
+    layers: &'a [tilo_vm_protocol::LayerInfo],
+) -> BTreeMap<String, Option<&'a tilo_vm_protocol::LayerInfo>> {
+    shown
+        .slot
+        .components
+        .iter()
+        .map(|(component, hash)| {
+            (
+                component.clone(),
+                layers.iter().find(|layer| &layer.hash == hash),
+            )
+        })
+        .collect()
+}
+
 /// `slot show` as text: the slot, then each component's files.
 fn describe_show(shown: &SlotShowResult) -> String {
     let info = &shown.slot;
@@ -6356,7 +6461,7 @@ fn check_local_disks(
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_nanos());
-                let cache = xdg_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
+                let cache = tilo_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
                 Some(image::import_path(&cache, &text, meta.len(), modified))
             } else {
                 None
@@ -7994,6 +8099,7 @@ mod tests {
                 direct: false,
                 jobs: None,
                 cmdline: None,
+                frame_cpu_trace: false,
             };
             assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
             assert_eq!(named_slot(&Command::Doctor), None);
@@ -8073,6 +8179,43 @@ mod tests {
             );
             assert!(text.contains("/usr/bin/sh-alias  -> shell"), "{text}");
         }
+    }
+
+    #[test]
+    fn installed_build_receipts_exclude_unselected_layers_and_keep_missing_explicit() {
+        let mut slot = slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]);
+        slot.components.insert("shell".into(), "current".into());
+        slot.components.insert("missing".into(), "unknown".into());
+        let shown = SlotShowResult {
+            slot,
+            files: vec![],
+        };
+        let layers = vec![
+            tilo_vm_protocol::LayerInfo {
+                hash: "previous".into(),
+                provenance: tilo_vm_protocol::Provenance::local("shell"),
+            },
+            tilo_vm_protocol::LayerInfo {
+                hash: "current".into(),
+                provenance: tilo_vm_protocol::Provenance::local("shell"),
+            },
+        ];
+        let builds = installed_builds(&shown, &layers);
+        assert_eq!(builds.len(), 2);
+        assert_eq!(builds["shell"].unwrap().hash, "current");
+        assert!(builds["missing"].is_none());
+        let outcome = installed_slot_outcome(&shown, &layers);
+        let receipt = outcome.data;
+        assert!(receipt["installed_builds"]["missing"].is_null());
+        assert_eq!(
+            receipt["installed_builds"]["shell"]["provenance"]["component"],
+            "shell"
+        );
+        assert_eq!(
+            receipt["identity_scope"],
+            "installed_layer_not_running_process"
+        );
+        assert_eq!(receipt["slot"]["generation"], 2);
     }
 
     #[test]

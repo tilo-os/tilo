@@ -408,6 +408,7 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | Env var | Effect |
 |---|---|
 | `TILO_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `TILO_FRAME_CPU_TRACE=/private/path.csv` | numeric companion for painted ticks: phase CPU and bracketed clock anchors |
 | `TILO_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
 | `TILO_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
@@ -417,6 +418,36 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
 written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+
+For a source-matched performance fixture, opt into `TILO_FRAME_CPU_TRACE` through
+its supported launch configuration. Use a new, separate file in the fixture
+owner's private directory; an existing file is refused instead of overwritten.
+This leaves the original frame CSV and its parsers unchanged;
+join the companion's `seq` and `start_us` to the original rows. It records no
+application payload, titles, paths or identities. No extra clock reads or writes
+occur when this option is absent.
+
+The companion measures calling-thread and aggregate process CPU separately for
+layout, scene construction, submission and the layout-start-to-submit-return
+interval. The layout label includes the existing focus/output/accessibility
+reconciliation. Process
+CPU includes parallel renderer **and other background threads**. A low thread CPU
+value alone cannot identify GPU waiting, host scheduling or TCG overhead. Compare
+the paired guest/host CPU and scheduling counters as well. `present_async=1`
+means submit timings cover enqueueing, rather than the render worker's completion.
+Subtract the labelled wall phases from `paint_wall_us` to retain visibility of
+capture and control work between them; never call that residual GPU time.
+
+`anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings;
+`anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket.
+Subtract that offset from both monotonic endpoints to bound the tick start; retain
+rounding uncertainty as well as the bracket width.
+Correlate UTC with the collector's paired host/guest clock samples and retain
+their uncertainty. Guest and host monotonic epochs differ, and UTC can step.
+Unavailable CPU or monotonic clocks are blank, not zero. The companion flushes
+its first painted row and then once per second, retains no sample history, and
+stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
+no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
 
 ## Where to look in source
 

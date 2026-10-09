@@ -172,7 +172,7 @@ static ASKING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 
 /// Where this user's relays' answers are kept: their cache directory.
 pub fn offers_path() -> Option<PathBuf> {
-    xdg_paths::cache_dir().map(|cache| cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE))
+    tilo_paths::cache_dir().map(|cache| cache.join(tilo_relay_protocol::RELAY_OFFERS_FILE))
 }
 
 /// The answers recorded at `path`; nothing when absent or unreadable.

@@ -3780,12 +3780,7 @@ impl Widget for CalendarApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = ui::widget::placed(&layout, origin);
         let size_changed = (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
             || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON;
         if size_changed {

@@ -743,12 +743,7 @@ impl Widget for Card {
         // received from its own `build_layout` call.
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         let card_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -927,13 +922,7 @@ impl Widget for ViewportStage {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -3810,12 +3799,7 @@ impl Widget for InstallerApp {
         // received from its own `build_layout` call.
         #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::placed(layout, origin);
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()

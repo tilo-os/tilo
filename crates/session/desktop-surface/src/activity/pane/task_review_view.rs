@@ -3,8 +3,8 @@
 use super::{
     ActivityFocus, ActivityTree, ActivityView, Duration, ElementState, Key, LensSelection,
     Modifiers, NamedKey, PaintCtx, PresenceCtx, Rect, RoomActivityPane, SystemTime, TaskAction,
-    TextRole, Widget, WindowEvent, at, draw_task_button, format_relative_time, t, t_args,
-    task_status_label, text_width,
+    TaskListOrigin, TextRole, Widget, WindowEvent, at, draw_task_button, format_relative_time, t,
+    t_args, task_status_label, text_width,
 };
 use crate::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
 
@@ -39,7 +39,8 @@ impl RoomActivityPane {
             _ => false,
         }
     }
-    pub(super) fn refresh_task_review(&mut self) {
+    /// Poll the room owner's review and say where the task list comes from.
+    pub(super) fn refresh_task_review(&mut self) -> TaskListOrigin {
         if self
             .direction
             .as_ref()
@@ -51,13 +52,15 @@ impl RoomActivityPane {
             self.review_task_offset = 0;
         }
         self.task_review = self.host.task_review_snapshot(&self.task_room);
-        if let Some(Ok(snapshot)) = &self.task_review
+        let origin = if let Some(Ok(snapshot)) = &self.task_review
             && snapshot.room == self.task_room
         {
-            self.tasks = snapshot.tasks.clone();
+            TaskListOrigin::Review(std::sync::Arc::as_ptr(snapshot) as usize)
         } else if self.host.task_review_required(&self.task_room) {
-            self.tasks.clear();
-        }
+            TaskListOrigin::Withheld
+        } else {
+            TaskListOrigin::Tree
+        };
         if let Some(invocation) = self.review_pending
             && let Some(result) = self.host.poll_task_review(invocation)
         {
@@ -76,6 +79,7 @@ impl RoomActivityPane {
                 }
             }
         }
+        origin
     }
     pub(super) fn reviewed_control(
         &self,

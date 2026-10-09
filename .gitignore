@@ -7,6 +7,9 @@ os/external-assets/kernel-cache/
 # OEM firmware is staged locally for an explicit hardware image, never committed.
 os/hardware/firmware/*
 !os/hardware/firmware/.gitkeep
+!os/hardware/firmware/generic/
+os/hardware/firmware/generic/*
+!os/hardware/firmware/generic/.gitkeep
 os/tilo-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):

@@ -3728,10 +3728,8 @@ mod tests {
         }
         // Phase `profile_output_file_is_created_new_and_never_overwritten`.
         {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the test clock is after the Unix epoch")
-                .as_nanos();
+            let stamp =
+                tilo_clock::try_unix_now_ns().expect("the test clock is after the Unix epoch");
             let path = std::env::temp_dir().join(format!(
                 "tilo-redraw-bench-profile-output-{}-{stamp}",
                 std::process::id()

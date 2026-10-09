@@ -73,6 +73,8 @@ pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
 #[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
@@ -102,6 +104,8 @@ pub mod legacy_host;
 pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
+#[cfg(not(target_arch = "wasm32"))]
+mod membership_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]

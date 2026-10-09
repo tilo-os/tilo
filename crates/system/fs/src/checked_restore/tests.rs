@@ -951,11 +951,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     {
         use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
         let mut fixture = Fixture::new().await;
-        let expiry = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 2;
+        let expiry = tilo_clock::try_unix_now().unwrap() + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
             Scope::FsPath("/".into()),
@@ -990,12 +986,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                     .is_err(),
                 "ACL write must wait behind admission read lease"
             );
-            while std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                <= expiry
-            {
+            while tilo_clock::try_unix_now().unwrap() <= expiry {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
             resume.send(()).unwrap();

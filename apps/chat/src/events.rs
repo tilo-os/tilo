@@ -42,9 +42,7 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::clock::UNIX_EPOCH)
-        .map_or(NOW, |d| d.as_secs() as i64)
+    ui::time::try_unix_now().map_or(NOW, |secs| secs as i64)
 }
 
 struct EventDispatch<'a, 'doc> {
@@ -2425,7 +2423,7 @@ mod tests {
             );
             app.request_visible_images();
             app.images
-                .block_until_idle(ui::clock::Duration::from_secs(3));
+                .block_until_idle(ui::time::Duration::from_secs(3));
             assert!(
                 app.images.get(crate::images::DEMO_CALL_GRID).is_some(),
                 "the shared ImageStore decoded the attachment thumbnail"

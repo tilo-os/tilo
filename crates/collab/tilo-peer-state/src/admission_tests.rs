@@ -2953,5 +2953,7 @@ fn selective_publication_cannot_discard_prior_document_basis() {
     );
 }
 
+#[path = "copy_on_write_tests.rs"]
+mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;

@@ -77,7 +77,7 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| {
             // SAFETY: `geteuid` only reads the process credentials and has no
             // preconditions.

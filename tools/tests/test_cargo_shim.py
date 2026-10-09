@@ -29,7 +29,9 @@ class CacheIncrementalPolicy(unittest.TestCase):
             custom.symlink_to(cache)
             env = dict(os.environ)
             for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_INCREMENTAL",
-                        "QCARGO_BYPASS", "CONTAINER_ID", "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS"):
+                        "QCARGO_BYPASS", "CONTAINER_ID", "CODEX_THREAD_ID",
+                        "CODEX_SESSION_ID", "CLAUDECODE", "QCARGO_REMOTE_ONLY",
+                        "QCARGO_REMOTE_ACTIVE", "QCARGO_REMOTE_CARGO", "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS"):
                 env.pop(key, None)
             env.update(PATH=str(root) + os.pathsep + env["PATH"],
                        CARGO_TARGET_DIR=str(root / "target"),
