@@ -4403,6 +4403,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",

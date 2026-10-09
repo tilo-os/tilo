@@ -37,10 +37,9 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod backend;
-pub mod doc;
+pub mod locales;
 pub mod model;
 pub mod resource;
 pub mod sample;
