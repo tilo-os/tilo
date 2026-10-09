@@ -1670,8 +1670,7 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
                 self.live.represent();
             }
             Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
-                self.dispatch
-                    .note_landed(&address.action, output.value.clone());
+                self.dispatch.note_landed(&address.action, output);
             }
             Ok(_) => {}
         }

@@ -61,6 +61,7 @@
 pub mod canonical;
 pub mod caps;
 pub mod channel;
+pub mod claim;
 pub mod compaction;
 pub mod crypto;
 pub mod document_import;
@@ -76,6 +77,7 @@ pub mod ownership_transfer;
 pub mod peer;
 pub mod permission_profile;
 pub mod person_room;
+pub mod receipt;
 pub mod redaction;
 pub mod role;
 pub mod space;
@@ -100,6 +102,9 @@ pub use caps::{
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
+};
+pub use claim::{
+    ChangeClaim, ClaimError, ClaimedAction, FrameworkChange, UnitPath, claims_of, parse_changes,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
@@ -137,6 +142,7 @@ pub use ownership_transfer::{
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
 pub use person_room::{is_person_room, person_room, person_room_of};
+pub use receipt::{Receipt, ReceiptRefusal, ReceiptSurface, Record, check_claims, claim_node};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,

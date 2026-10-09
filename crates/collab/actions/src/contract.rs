@@ -175,9 +175,8 @@ impl ResultSpec {
     /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
-            Self::None | Self::Job if output.value.is_none() && output.resources.is_empty() => {
-                Ok(())
-            }
+            // An action with no result may still name what it created.
+            Self::None | Self::Job if output.value.is_none() => Ok(()),
             Self::None => Err("action declared no result but returned one".into()),
             // An absent value is `null`: a result its schema lets be null may be
             // left out by an executor with nothing to report.

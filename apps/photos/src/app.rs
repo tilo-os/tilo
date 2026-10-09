@@ -13205,6 +13205,7 @@ mod history_reconcile_tests {
         );
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per phase")]
     #[test]
     fn changed_targets_invalidate_metadata_and_album_drafts() {
         eprintln!(

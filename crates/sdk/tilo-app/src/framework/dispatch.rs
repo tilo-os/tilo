@@ -146,6 +146,9 @@ pub struct Dispatcher<R: Resource> {
     /// Applies one immediate action: the resource's own, or for a child
     /// resource its parent's action carrying it.
     submit_now: SubmitNow<R>,
+    /// Applies a group of the resource's own actions now as one action;
+    /// `None` for a dispatcher of a nested or other record.
+    group_now: Option<GroupNow<R>>,
     /// Counts the immediate actions of the resource and its children, so a
     /// dispatcher can tell that nothing came between its last action and
     /// its next.
@@ -180,6 +183,16 @@ type PermissionStates = Rc<RefCell<Vec<(PermissionRequirement, LocalState<bool>)
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
+/// Applies a group of the resource's actions now, as one action.
+type GroupNow<R> = Rc<
+    dyn Fn(
+        &mut ui_core::action_host::ActionHost,
+        &mut Edits<'_>,
+        &tilo_resource::ActionGroup<<R as Resource>::Action>,
+        ActionContext,
+    ) -> Result<(), ActionError>,
+>;
+
 /// Applies one typed action to the document a pass may change, through
 /// the host.
 type SubmitNow<R> = Rc<
@@ -210,6 +223,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
+            group_now: self.group_now.clone(),
             serial: Rc::clone(&self.serial),
             last: Rc::clone(&self.last),
             continuing: Rc::clone(&self.continuing),
@@ -280,6 +294,14 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(|host, edits, action, context| {
                 edits.apply(host, R::ACTION_TYPE, action, context)
             }),
+            group_now: Some(Rc::new(|host, edits, group, context| {
+                edits.apply(
+                    host,
+                    &tilo_resource::group::group_type::<R>(),
+                    group,
+                    context,
+                )
+            })),
             serial: Rc::default(),
             last: Rc::default(),
             continuing: Rc::default(),
@@ -445,10 +467,11 @@ impl<R: Resource> Dispatcher<R> {
         self.landed.clone()
     }
 
-    pub(crate) fn note_landed(&self, action: &str, answer: Option<serde_json::Value>) {
+    pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
         self.landed.set(Some(Landed {
             action: action.to_owned(),
-            answer,
+            answer: output.value.clone(),
+            created: output.resources.clone(),
         }));
     }
 
@@ -672,11 +695,59 @@ impl<R: Resource> Dispatcher<R> {
         edits: &mut Edits<'_>,
         submit: impl Submit<R>,
     ) -> Result<(), ActionError> {
-        let action = submit
-            .into_invoke()
-            .and_then(|invoke| invoke.build(tilo_resource::origin_now_ms()))
+        let invoke = submit.into_invoke().map_err(ActionError::Refused)?;
+        if invoke.is_group() {
+            return self.group_now(edits, &invoke);
+        }
+        let action = invoke
+            .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
         self.apply_now(edits, &action)
+    }
+
+    /// [`Self::submit_now`] of a group (`Invoke::group(edits)`): its members
+    /// applied as one action, one change and one entry in history, all or
+    /// nothing.
+    fn group_now(&self, edits: &mut Edits<'_>, invoke: &Invoke<R>) -> Result<(), ActionError> {
+        let Some(group_now) = &self.group_now else {
+            return Err(ActionError::Refused(
+                "this record's edits are applied one at a time".into(),
+            ));
+        };
+        if self.custody.is_some() {
+            return Err(ActionError::Refused(
+                "caller-scoped effects submit document changes through queued actions".into(),
+            ));
+        }
+        if let Some(reason) = self.unreadable() {
+            return Err(ActionError::Refused(reason));
+        }
+        let group = tilo_resource::group::build_group::<R>(
+            &invoke.arguments,
+            tilo_resource::origin_now_ms(),
+        )
+        .map_err(ActionError::Refused)?;
+        if let Some(refused) = group.actions.iter().find(|action| !self.may_apply(action)) {
+            return Err(ActionError::Refused(Self::not_allowed((self
+                .permission_of)(
+                refused
+            ))));
+        }
+        let mut context = ActionContext::for_resource(
+            self.resource_id.as_ref(),
+            R::KIND,
+            self.resource_label.get(),
+        );
+        if let Some(me) = &self.me {
+            context = context.with_invoker(ActionInvoker::actor(me.as_ref()));
+        }
+        group_now(&mut self.host.borrow_mut(), edits, &group, context)?;
+        // A group is a step of its own: nothing continues it.
+        self.serial.set(self.serial.get().wrapping_add(1));
+        *self.last.borrow_mut() = None;
+        self.applied.set(true);
+        self.continuing.set(false);
+        Ok(())
     }
 
     /// Apply one typed action to the document `edits` lends — an event's,
@@ -799,6 +870,7 @@ impl<R: Resource> Dispatcher<R> {
             unreadable: Rc::default(),
             host: Rc::clone(&self.host),
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
+            group_now: None,
             serial: Rc::default(),
             last: Rc::default(),
             continuing: Rc::default(),
@@ -855,6 +927,7 @@ impl<R: Resource> Dispatcher<R> {
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
             // parent's action carrying it.
+            group_now: None,
             submit_now: Rc::new(move |host, edits, action: &C::Action, context| {
                 parent(host, edits, &wrap(action.clone()), context)
             }),
@@ -943,6 +1016,8 @@ pub struct Landed {
     pub action: String,
     /// What it answered, if anything.
     pub answer: Option<serde_json::Value>,
+    /// The resources it created (`<kind>/<field>/<id>` for an item).
+    pub created: Vec<String>,
 }
 
 impl Landed {
@@ -950,17 +1025,11 @@ impl Landed {
     /// "new" verb created first.
     #[must_use]
     pub fn minted(&self) -> Vec<tilo_resource::Id> {
-        self.answer
-            .as_ref()
-            .and_then(|answer| answer.get("minted"))
-            .and_then(serde_json::Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(tilo_resource::Id::from_raw)
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.created
+            .iter()
+            .filter_map(|resource| resource.rsplit('/').next())
+            .map(tilo_resource::Id::from_raw)
+            .collect()
     }
 }
 

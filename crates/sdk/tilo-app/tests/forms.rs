@@ -84,10 +84,15 @@ fn typing_into_a_form_changes_no_document_and_submitting_invokes_the_verb_once()
     );
     assert_eq!(app.versions().len(), versions + 1, "one invocation");
     let landed = LANDED.with(|landed| landed.borrow().as_ref().map(LocalState::get));
+    let landed = landed
+        .flatten()
+        .expect("the view learns that its submission landed");
+    assert_eq!(landed.action, "add");
+    let created = app.state().bookmarks.ids().next().cloned();
     assert_eq!(
-        landed.flatten().map(|landed| landed.action),
-        Some("add".to_owned()),
-        "the view learns that its submission landed"
+        landed.minted().first(),
+        created.as_ref(),
+        "and which bookmark it created"
     );
 
     // The form empties once sent; an empty one is refused by the verb.

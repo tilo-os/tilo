@@ -904,7 +904,31 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         E: tilo_resource::Model + Clone + 'static,
         O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
     {
-        self.effects.outbox(self.alive.clone(), outbox, owns, run)
+        self.effects
+            .outbox(self.alive.clone(), outbox, owns, run, false)
+    }
+
+    /// [`Self::outbox`], where an entry is the outside half of the action
+    /// that queued it: one an admitted invocation on this device queues runs
+    /// at once under that invocation — `cx.invocation()` names it, and its
+    /// custody authorises what the handler does for it (a native host that
+    /// acts only on behalf of an invocation) — and the invocation completes
+    /// only once its entries settled, failing with a failed one. Entries
+    /// queued elsewhere, replayed or still pending after a restart run as
+    /// [`Self::outbox`] runs them, with no invocation.
+    pub fn outbox_awaited<E, O>(
+        &self,
+        outbox: tilo_resource::Path<R, tilo_resource::Outbox<E, O>>,
+        owns: impl Fn(&R::State, &E) -> bool + 'static,
+        run: impl FnMut(&tilo_resource::Id, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> Projection
+    where
+        R: Resource<State = R> + tilo_resource::Model + 'static,
+        E: tilo_resource::Model + Clone + 'static,
+        O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+    {
+        self.effects
+            .outbox(self.alive.clone(), outbox, owns, run, true)
     }
 
     /// Drain only consequences newly queued by an actual local Document

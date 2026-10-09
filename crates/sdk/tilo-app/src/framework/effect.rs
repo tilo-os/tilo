@@ -1520,7 +1520,17 @@ struct OutboxDrain<R: Resource, T, O> {
     /// Entries this drain settled, never run again here while their
     /// settlement is on its way into the state.
     settled: std::collections::HashSet<Id>,
+    /// Entries running for the local invocation whose action queued them,
+    /// which completes once they settled.
+    caused: HashMap<Id, (InvocationId, causal::Group)>,
+    /// The revision the drain last looked at.
+    revision: u64,
 }
+
+/// An outbox drain, shared by the drains that run what is pending and, for
+/// [`ViewCx::outbox_awaited`](super::ViewCx::outbox_awaited), by those that
+/// run what an invocation queued.
+struct SharedOutbox<R: Resource, T, O>(Rc<RefCell<OutboxDrain<R, T, O>>>);
 
 /// How a handler's answer settles its entry: a [`Settled`] it answered
 /// ([`Effected::settled`]), the result `O` it answered, or nothing to report
@@ -1545,9 +1555,18 @@ where
     T: tilo_resource::Model + Clone + 'static,
     O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
 {
-    /// Record how the entry `id` settled, or leave it pending to run again.
-    fn finish(&mut self, id: &Id, answer: Result<ActionOutput, String>, revision: u64) -> bool {
-        match answer.and_then(|output| settlement::<O>(&output)) {
+    /// Record how the entry `id` settled, or leave it pending to run again;
+    /// an invocation waiting on it learns which.
+    fn finish(&mut self, id: &Id, answer: Result<ActionOutput, String>) -> bool {
+        let settled = answer.and_then(|output| settlement::<O>(&output));
+        if let Some((_, group)) = self.caused.remove(id) {
+            group.borrow_mut().finished(match &settled {
+                Ok(Settled::Done(_)) => Ok(ActionOutput::default()),
+                Ok(Settled::Failed { reason, .. }) => Err(failure(reason.clone())),
+                Err(error) => Err(failure(error.clone())),
+            });
+        }
+        match settled {
             Ok(settled) => {
                 self.settled.insert(id.clone());
                 self.env.dispatch.submit(self.outbox.settle(id, &settled));
@@ -1555,10 +1574,58 @@ where
             }
             Err(error) => {
                 tracing::warn!(%error, kind = R::KIND, "an outbox entry stays pending");
-                self.retry.insert(id.clone(), revision);
+                self.retry.insert(id.clone(), self.revision);
                 false
             }
         }
+    }
+
+    /// The pending entries of `state` this device owns.
+    fn owned(&self, state: &R::State) -> Vec<(Id, T)> {
+        self.outbox.get(state).map_or_else(Vec::new, |outbox| {
+            outbox
+                .pending()
+                .filter(|(_, value)| (self.owns)(state, value))
+                .map(|(id, value)| (id.clone(), value.clone()))
+                .collect()
+        })
+    }
+
+    /// Run `value` (the entry `id`) as `invocation`, under its custody when
+    /// it has one. Whether it finished at once.
+    fn start_entry(
+        &mut self,
+        id: Id,
+        value: T,
+        invocation: Option<InvocationId>,
+        custody: Option<&ResourceInvocationScope>,
+    ) -> Result<(), String> {
+        let mut cx = EffectCx::new(self.env.clone(), invocation).with_custody(custody.cloned())?;
+        let answer = {
+            let _acting = ActingFor::enter(invocation);
+            match custody {
+                Some(custody) => custody
+                    .with_effect(|| (self.run)(&id, value, &mut cx))
+                    .and_then(|answer| custody.check().map(|()| answer)),
+                None => (self.run)(&id, value, &mut cx),
+            }
+        };
+        match (answer, cx.started.take()) {
+            (Ok(Effected::Pending), Some(started)) => self.jobs.insert(id, started),
+            (answer, started) => {
+                if let Some(started) = started {
+                    started.stop();
+                }
+                let answer = answer.and_then(|effected| match effected {
+                    Effected::Done(output) => Ok(output),
+                    Effected::Pending => {
+                        Err("an outbox handler answered later without starting a job".into())
+                    }
+                });
+                self.finish(&id, answer);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1569,14 +1636,8 @@ where
     O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
 {
     fn run(&mut self, state: &R::State, revision: u64) {
-        let Some(outbox) = self.outbox.get(state) else {
-            return;
-        };
-        let pending: Vec<(Id, T)> = outbox
-            .pending()
-            .filter(|(_, value)| (self.owns)(state, value))
-            .map(|(id, value)| (id.clone(), value.clone()))
-            .collect();
+        self.revision = revision;
+        let pending = self.owned(state);
         self.settled
             .retain(|id| pending.iter().any(|(entry, _)| entry == id));
         self.retry
@@ -1588,35 +1649,23 @@ where
             {
                 continue;
             }
-            let mut cx = EffectCx::new(self.env.clone(), None);
-            let answer = (self.run)(&id, value, &mut cx);
-            match (answer, cx.started.take()) {
-                (Ok(Effected::Pending), Some(started)) => self.jobs.insert(id, started),
-                (answer, started) => {
-                    if let Some(started) = started {
-                        started.stop();
-                    }
-                    let answer = answer.and_then(|effected| match effected {
-                        Effected::Done(output) => Ok(output),
-                        Effected::Pending => {
-                            Err("an outbox handler answered later without starting a job".into())
-                        }
-                    });
-                    self.finish(&id, answer, revision);
-                }
+            if let Err(error) = self.start_entry(id, value, None, None) {
+                tracing::warn!(%error, kind = R::KIND, "an outbox entry did not start");
             }
         }
     }
 
     fn poll(&mut self, revision: u64) -> bool {
+        self.revision = revision;
         let mut finished = false;
         for id in self.jobs.keys() {
-            while let Some(polled) = self.jobs.poll(&id, &mut (), &self.env, None) {
+            let invocation = self.caused.get(&id).map(|(invocation, _)| *invocation);
+            while let Some(polled) = self.jobs.poll(&id, &mut (), &self.env, invocation) {
                 let Polled::Finished(result) = polled else {
                     continue;
                 };
                 if let Some(result) = result {
-                    self.finish(&id, result.map_err(|error| error.message), revision);
+                    self.finish(&id, result.map_err(|error| error.message));
                     finished = true;
                 }
                 break;
@@ -1627,6 +1676,25 @@ where
 
     fn forget_settled(&mut self) {
         self.retry.clear();
+    }
+}
+
+impl<R, T, O> Drainer<R> for SharedOutbox<R, T, O>
+where
+    R: Resource<State = R> + tilo_resource::Model + 'static,
+    T: tilo_resource::Model + Clone + 'static,
+    O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
+{
+    fn run(&mut self, state: &R::State, revision: u64) {
+        self.0.borrow_mut().run(state, revision);
+    }
+
+    fn poll(&mut self, revision: u64) -> bool {
+        self.0.borrow_mut().poll(revision)
+    }
+
+    fn forget_settled(&mut self) {
+        self.0.borrow_mut().forget_settled();
     }
 }
 
@@ -1795,6 +1863,7 @@ impl<R: Resource> Effects<R> {
         outbox: Path<R, Outbox<T, O>>,
         owns: impl Fn(&R::State, &T) -> bool + 'static,
         run: impl FnMut(&Id, T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+        awaited: bool,
     ) -> Projection
     where
         R: Resource<State = R> + tilo_resource::Model + 'static,
@@ -1804,18 +1873,26 @@ impl<R: Resource> Effects<R> {
         let Some(env) = self.env.clone() else {
             return Projection::default();
         };
+        let drain = Rc::new(RefCell::new(OutboxDrain {
+            env,
+            outbox,
+            owns: Box::new(owns),
+            run: Box::new(run),
+            jobs: Running::default(),
+            retry: HashMap::new(),
+            settled: std::collections::HashSet::new(),
+            caused: HashMap::new(),
+            revision: 0,
+        }));
         let mut inner = self.inner.borrow_mut();
+        if awaited {
+            inner
+                .causal
+                .register_drainer(alive.clone(), Box::new(SharedOutbox(Rc::clone(&drain))));
+        }
         inner.drains.push(Drains {
             alive,
-            drain: Box::new(OutboxDrain {
-                env,
-                outbox,
-                owns: Box::new(owns),
-                run: Box::new(run),
-                jobs: Running::default(),
-                retry: HashMap::new(),
-                settled: std::collections::HashSet::new(),
-            }),
+            drain: Box::new(SharedOutbox(drain)),
         });
         inner.drained = None;
         Projection {
