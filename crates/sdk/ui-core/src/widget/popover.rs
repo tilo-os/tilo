@@ -657,15 +657,14 @@ impl Widget for PopoverPrompt {
     ) -> NodeId {
         self.theme = theme.clone();
         let (w, h) = self.size(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(crate::num::f32_of_f64(w)),
                 height: Dimension::length(crate::num::f32_of_f64(h)),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

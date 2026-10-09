@@ -6,7 +6,7 @@ use super::{
     InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
     Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
     invocation_target_peer, published_directory_action, validate_directory_identifier,
-    validate_directory_target_input, validate_directory_text, write_directory_row,
+    validate_directory_target_input, validate_directory_text,
 };
 
 struct CapturedResolution {
@@ -393,20 +393,10 @@ pub(super) fn resolve(
             None
         };
         let mut out = results.get();
-        match &captured.resolution {
-            runtime_collab::ActionDirectoryResolution::Found(row) => {
-                write_directory_row(out.reborrow().init_resolution().init_found(), row);
-            }
-            runtime_collab::ActionDirectoryResolution::NotFound => {
-                out.reborrow().init_resolution().set_not_found(());
-            }
-            runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                out.reborrow().init_resolution().set_stale_revision(());
-            }
-            runtime_collab::ActionDirectoryResolution::Unavailable => {
-                out.reborrow().init_resolution().set_unavailable(());
-            }
-        }
+        runtime_collab::write_action_directory_resolution(
+            out.reborrow().init_resolution(),
+            &captured.resolution,
+        )?;
         if let Some(binding) = binding {
             let mut target = out.init_invocation_binding();
             target.set_host(&binding.host);

@@ -58,7 +58,7 @@ use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
+use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// Height of the closed control before the first layout: a Regular control.
 const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
@@ -1366,7 +1366,7 @@ impl Widget for Dropdown {
         } else {
             Dimension::auto()
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width,
                 height: Dimension::length(px(self.field_height + self.caption_height)),
@@ -1377,9 +1377,8 @@ impl Widget for Dropdown {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1941,38 +1940,14 @@ impl Widget for Dropdown {
 }
 
 impl crate::widget::controls::ActionControls for Dropdown {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("dropdown");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
+        crate::widget::controls::value_control_bindings(
+            self.test_id().unwrap_or("dropdown"),
+            self.action.as_ref(),
+            self.binding.as_ref().and_then(|b| b.document_key()),
+            self.on_change.is_some(),
+        )
     }
     fn refresh_control_action_availability(
         &mut self,

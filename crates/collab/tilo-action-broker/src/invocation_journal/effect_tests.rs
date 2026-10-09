@@ -114,45 +114,83 @@ fn prepared_effect_conflict_and_failed_barriers_remain_uncertain() {
     assert_eq!(record.prepared_effect, Some(prepared));
 }
 
+fn corrupt_prepared(
+    corruption: &str,
+    version: &mut serde_json::Value,
+    row: &mut serde_json::Value,
+) {
+    match corruption {
+        "version" => *version = 4.into(),
+        "room" => {
+            row["prepared_effect"]["room"] = uuid::Uuid::new_v4().to_string().into();
+        }
+        "actor" => row["intent"]["actor"] = "other".into(),
+        "invocation" => {
+            row["prepared_effect"]["invocation"] = uuid::Uuid::new_v4().to_string().into();
+        }
+        "null" => row["prepared_effect"] = serde_json::Value::Null,
+        "unknown" => row["prepared_effect"]["authority"] = "fake".into(),
+        "oversized" => {
+            row["prepared_effect"]["redacted"] = serde_json::json!(vec![0u8; 17 * 1024]);
+        }
+        _ => panic!("unexpected corruption fixture"),
+    }
+}
+
+const CORRUPTIONS: [&str; 7] = [
+    "version",
+    "room",
+    "actor",
+    "invocation",
+    "null",
+    "unknown",
+    "oversized",
+];
+
 #[test]
 fn prepared_effect_restore_refuses_malformed_or_downgraded_bindings() {
-    for corruption in [
-        "version",
-        "room",
-        "actor",
-        "invocation",
-        "null",
-        "unknown",
-        "oversized",
-    ] {
+    for corruption in CORRUPTIONS {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        let (mut journal, key, request, update) = fixture(&root);
+        journal.prepare_effect(&key, update, &request).unwrap();
+        drop(journal);
+        // Reopening folds the appended preparation into the snapshot.
+        drop(InvocationJournal::open(&root).unwrap());
+        let path = root.join("records.json");
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut version = data["version"].take();
+        corrupt_prepared(corruption, &mut version, &mut data["records"][0]);
+        data["version"] = version;
+        std::fs::write(path, serde_json::to_vec(&data).unwrap()).unwrap();
+        assert!(InvocationJournal::open(&root).is_err(), "{corruption}");
+    }
+}
+
+#[test]
+fn prepared_effect_entry_refuses_malformed_or_downgraded_bindings() {
+    for corruption in CORRUPTIONS {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("journal");
         let (mut journal, key, request, update) = fixture(&root);
         journal.prepare_effect(&key, update, &request).unwrap();
         drop(journal);
         let path = root.join("records.json");
-        let mut data: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        match corruption {
-            "version" => data["version"] = 4.into(),
-            "room" => {
-                data["records"][0]["prepared_effect"]["room"] =
-                    uuid::Uuid::new_v4().to_string().into();
-            }
-            "actor" => data["records"][0]["intent"]["actor"] = "other".into(),
-            "invocation" => {
-                data["records"][0]["prepared_effect"]["invocation"] =
-                    uuid::Uuid::new_v4().to_string().into();
-            }
-            "null" => data["records"][0]["prepared_effect"] = serde_json::Value::Null,
-            "unknown" => data["records"][0]["prepared_effect"]["authority"] = "fake".into(),
-            "oversized" => {
-                data["records"][0]["prepared_effect"]["redacted"] =
-                    serde_json::json!(vec![0u8; 17 * 1024]);
-            }
-            _ => panic!("unexpected corruption fixture"),
-        }
-        std::fs::write(path, serde_json::to_vec(&data).unwrap()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+        assert_eq!(lines.pop(), Some(&b""[..]), "every entry is terminated");
+        let mut entry: serde_json::Value =
+            serde_json::from_slice(lines.pop().expect("the preparation entry")).unwrap();
+        assert!(entry["record"]["prepared_effect"].is_object());
+        let mut version = entry["version"].take();
+        corrupt_prepared(corruption, &mut version, &mut entry["record"]);
+        entry["version"] = version;
+        let corrupted = serde_json::to_vec(&entry).unwrap();
+        lines.push(&corrupted);
+        let mut stored = lines.join(&b'\n');
+        stored.push(b'\n');
+        std::fs::write(path, stored).unwrap();
         assert!(InvocationJournal::open(&root).is_err(), "{corruption}");
     }
 }

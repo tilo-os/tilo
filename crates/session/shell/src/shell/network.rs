@@ -678,6 +678,15 @@ impl PeerDepartureHistory {
             .map(|state| state.entries.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// Departures recorded so far. Equal values read at two moments mean
+    /// [`Self::snapshot`] did not change in between.
+    pub(crate) fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .map(|state| state.generation)
+            .unwrap_or_default()
+    }
 }
 
 /// Stable transport/host shard for a durable room. Local workspace handles are
@@ -1513,6 +1522,9 @@ pub struct ShellNetwork {
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
     peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
+    /// Advanced whenever [`Self::peer_colours`] changes, so the presence
+    /// pump re-applies colours only after one did.
+    peer_colours_epoch: std::sync::atomic::AtomicU64,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -2001,6 +2013,7 @@ impl ShellNetwork {
             inbound_live_interactions: Arc::new(Mutex::new(Vec::new())),
             live_labels: Mutex::default(),
             peer_colours: Mutex::default(),
+            peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -2613,9 +2626,20 @@ impl ShellNetwork {
         if peer == self.local_peer_hash {
             return;
         }
-        if let Ok(mut colours) = self.peer_colours.lock() {
-            colours.insert(peer, hue);
+        if let Ok(mut colours) = self.peer_colours.lock()
+            && colours.insert(peer, hue) != Some(hue)
+        {
+            self.peer_colours_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
+    }
+
+    /// A counter that advances whenever a peer's colour changes. Equal
+    /// values read at two moments mean [`Self::peer_colours`] did not
+    /// change in between.
+    pub fn peer_colours_epoch(&self) -> u64 {
+        self.peer_colours_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The colour peer session `peer` said its person wears, if it said.
@@ -4262,6 +4286,27 @@ impl ShellNetwork {
             Some(invitee),
             role,
             Some(recipient_user_public_key),
+        )
+    }
+
+    /// Mint an invitation on the terms an `invitation.issue` action stated:
+    /// any role, lifetime and optional name, recipient-bound when a person
+    /// key is given. Same authority checks as every other issuance path.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
+    pub fn issue_invitation(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        terms: &crate::shell::peer_sync_overlay::InvitationTerms,
+    ) -> Result<String, String> {
+        self.issue_invite_for(
+            local,
+            terms.expires_in_seconds,
+            terms.invitee_name.as_deref(),
+            terms.role,
+            terms.recipient_user_public_key,
         )
     }
 
@@ -8339,6 +8384,7 @@ pub(crate) fn shell_network_for_test(
         inbound_live_interactions: Arc::new(Mutex::new(Vec::new())),
         live_labels: Mutex::default(),
         peer_colours: Mutex::default(),
+        peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -14871,8 +14917,12 @@ mod tests {
     fn a_peer_wears_the_colour_its_presence_said() {
         let (net, _cmds) = shell_network_for_test(WorkspaceTree::bootstrap_demo().shared(), 0x1234);
         assert_eq!(net.peer_colour(7), None);
+        let before = net.peer_colours_epoch();
         net.note_peer_colour(7, Some("violet"));
         assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        let heard = net.peer_colours_epoch();
+        assert_ne!(heard, before, "a new colour is announced");
+        net.note_peer_colour(7, Some("violet"));
         net.note_peer_colour(7, Some("chartreuse"));
         net.note_peer_colour(7, None);
         assert_eq!(
@@ -14880,8 +14930,14 @@ mod tests {
             Some(ui::tokens::PresenceHue::Violet),
             "an unknown or missing colour leaves what was heard"
         );
+        assert_eq!(
+            net.peer_colours_epoch(),
+            heard,
+            "restating a colour, or saying none, changes nothing to re-apply"
+        );
         net.note_peer_colour(0x1234, Some("teal"));
         assert_eq!(net.peer_colour(0x1234), None, "never this session's own");
+        assert_eq!(net.peer_colours_epoch(), heard);
         assert_eq!(
             net.peer_colours(),
             vec![(7, ui::tokens::PresenceHue::Violet)]

@@ -65,6 +65,19 @@ The governed implementation uses the Linux host's PipeWire backend. An unavailab
 service or device is a playback error. It does not relax the app sandbox or use
 capture access as an output fallback.
 
+### Native media plugin discovery
+
+The signed application runtime supplies GStreamer core libraries. Platform
+GStreamer decoder plugins remain in the existing read-only system library
+profile, as graphics drivers do. GStreamer normally locates plugins beside its
+own library; relocating that library into `/run/tilo-runtime/<version>/lib`
+therefore needs an explicit search path. The launcher sets
+`GST_PLUGIN_SYSTEM_PATH_1_0` to that runtime's `lib/gstreamer-1.0` followed by fixed
+system plugin directories already covered by the profile. It does not inherit
+session plugin paths, expose a user plugin directory, bind a new host path, or
+change Landlock, seccomp, network or audio-output authority. The same native
+media libraries and platform plugins must remain ABI-compatible.
+
 ## Seccomp-bpf blocklist
 
 `tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:

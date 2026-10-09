@@ -80,6 +80,53 @@ class CheckAggregateTests(unittest.TestCase):
             )
             return result.returncode, summary.read_text() if summary.exists() else ""
 
+    def test_manual_wasm_diagnostic_executes_production_commands_with_bounded_selection(self):
+        diagnostic = (ROOT / ".forgejo/workflows/wasm-check-qualification.yml").read_text()
+        self.assertEqual(section(diagnostic, "on", 0).splitlines()[0], "  workflow_dispatch:")
+        self.assertNotIn("  push:", diagnostic)
+        self.assertNotIn("  pull_request:", diagnostic)
+        self.assertEqual(section(diagnostic, "env", 0).rstrip(), section(self.workflow, "env", 0).rstrip())
+        self.assertEqual(section(diagnostic, "builder", 2).rstrip(), section(self.workflow, "builder", 2).rstrip())
+        original = section(self.workflow, "wasm", 2)
+        job = section(diagnostic, "wasm", 2)
+
+        def scripts(body):
+            result = []
+            lines = body.splitlines()
+            for index, line in enumerate(lines):
+                if line.startswith("        run: "):
+                    value = line.removeprefix("        run: ")
+                    if value == "|":
+                        block = []
+                        for following in lines[index + 1:]:
+                            if following.strip() and not following.startswith("          "):
+                                break
+                            block.append(following.removeprefix("          "))
+                        value = "\n".join(block).rstrip()
+                    result.append(value)
+            return result
+
+        self.assertEqual(scripts(job), scripts(original))
+        names = lambda body: set(re.findall(r"(?m)^      - name: (.+)$", body))
+        self.assertEqual(names(job), names(original) - {"Merge onto the tested main"})
+        self.assertIn("WEB_EXAMPLES: example-counter", job)
+        self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+        self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", job)
+
+    def test_wasm_qualification_uses_native_arm_without_losing_main_x86(self):
+        job = section(self.workflow, "wasm", 2)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}", job)
+        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', job)
+        self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
+        self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
+        self.assertIn('run: bash tools/ci/check-wasm.sh', job)
+        self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
+        self.assertIn("timeout-minutes: 90", job)
+        # Native x86/ARM matrices and their warning flags remain independent.
+        for name in ("test", "check", "clippy"):
+            self.assertIn("runs-on: ${{ matrix.runner }}", section(self.workflow, name, 2))
+
     def test_native_admission_observes_security_without_losing_main_results(self):
         # Evaluate the actual workflow predicates. This deliberately supports only
         # the small boolean/comparison grammar used here, rejecting new syntax.

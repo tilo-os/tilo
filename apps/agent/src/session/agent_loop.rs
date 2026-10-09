@@ -565,13 +565,27 @@ impl Session {
         self.broker_revision = self.broker_revision.wrapping_add(1);
     }
 
+    /// Apply catalogue republications already queued on the link, without
+    /// waiting: while the model thinks nothing else reads the link.
+    fn absorb_catalogue_updates(&mut self) {
+        let queued = self
+            .link
+            .take_queued(|event| matches!(event, CollabEvent::ActionCatalogue { .. }));
+        for event in queued {
+            if let CollabEvent::ActionCatalogue { surfaces } = event {
+                self.set_broker_surfaces(surfaces);
+            }
+        }
+    }
+
     /// The task catalogue — every live broker offer an unattended task may
-    /// invoke — rebuilt only when the broker republished it.
-    pub(super) fn task_catalogue(&mut self) -> surface::Catalogue {
+    /// invoke — rebuilt only when the broker republished it, and shared
+    /// rather than copied between rebuilds.
+    pub(super) fn task_catalogue(&mut self) -> std::sync::Arc<surface::Catalogue> {
         if let Some((revision, catalogue)) = &self.catalogue_cache
             && *revision == self.broker_revision
         {
-            return catalogue.clone();
+            return std::sync::Arc::clone(catalogue);
         }
         let offers = surface::broker_offers(&self.broker_surfaces)
             .into_iter()
@@ -599,12 +613,12 @@ impl Session {
             *per_app.entry(offer.app.as_str()).or_default() += 1;
         }
         tracing::info!(revision = self.broker_revision, ?per_app, "task catalogue");
-        let catalogue = surface::Catalogue {
+        let catalogue = std::sync::Arc::new(surface::Catalogue {
             offers,
             facts: Vec::new(),
             held: Vec::new(),
-        };
-        self.catalogue_cache = Some((self.broker_revision, catalogue.clone()));
+        });
+        self.catalogue_cache = Some((self.broker_revision, std::sync::Arc::clone(&catalogue)));
         catalogue
     }
 
@@ -893,8 +907,10 @@ impl Session {
         let catalogue = self.task_catalogue();
         let targets = self.plan_targets(&catalogue);
         let body = conversation.body(&tools::loop_definitions());
-        // The model starts first: the cancellation check and the live update
-        // are round trips to the host, and they run while it thinks.
+        // The model starts first. The live update and the cancellation poll
+        // are round trips to the host and neither is waited for: the poll's
+        // answer is read while the model thinks, and before any step of this
+        // turn reaches the host.
         let turn_began = ui::time::now();
         let rx = self.chooser.start_turn(body, timeout, turn);
         self.turn = Some(ActiveTurn::new(rx, crate::live::PlanStream::new(targets)));
@@ -904,7 +920,8 @@ impl Session {
                 .set_state(crate::live::LiveState::Thinking, "Thinking", None);
             self.live_publish(true);
         }
-        match self.task_control_change(run)? {
+        self.poll_cancellation(run)?;
+        match self.task_control_change_known()? {
             super::TaskControlChange::Current => {}
             super::TaskControlChange::Cancelled => {
                 self.turn = None;
@@ -926,7 +943,6 @@ impl Session {
         // a turn whose transport stopped answering. Time spent running steps
         // does not count against the model.
         let mut stepping = Duration::ZERO;
-        let mut cancellation_checked = ui::time::now();
         let body = loop {
             if self.task_budget_expired() {
                 self.turn = None;
@@ -935,20 +951,19 @@ impl Session {
                 )));
             }
             self.pump_turn_waiting(Duration::from_millis(50))?;
-            if cancellation_checked.elapsed() >= THINKING_CANCELLATION_POLL {
-                match self.task_control_change(run)? {
-                    super::TaskControlChange::Current => {}
-                    super::TaskControlChange::Cancelled => {
-                        self.turn = None;
-                        return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
-                    }
-                    super::TaskControlChange::Directed(directions) => {
-                        self.turn = None;
-                        return Ok(Some(LoopEnd::Directed(directions)));
-                    }
+            self.absorb_catalogue_updates();
+            match self.task_control_change_known()? {
+                super::TaskControlChange::Current => {}
+                super::TaskControlChange::Cancelled => {
+                    self.turn = None;
+                    return Ok(Some(LoopEnd::Cancelled("Cancelled while thinking".into())));
                 }
-                cancellation_checked = ui::time::now();
+                super::TaskControlChange::Directed(directions) => {
+                    self.turn = None;
+                    return Ok(Some(LoopEnd::Directed(directions)));
+                }
             }
+            self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
                     self.turn = None;
@@ -1974,12 +1989,21 @@ mod tests {
         pace: Option<Duration>,
         /// Events delivered so far, across turns.
         emitted: Arc<std::sync::atomic::AtomicUsize>,
+        /// Host answers (reports and cancellation polls) delivered so far.
+        host_answers: Arc<std::sync::atomic::AtomicUsize>,
+        /// [`Self::host_answers`] when each turn was asked of the model.
+        host_answers_at_turn: Mutex<Vec<usize>>,
     }
 
     struct Scripted(Arc<Script>);
 
     impl TurnTransport for Scripted {
         fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
+            self.0.host_answers_at_turn.lock().unwrap().push(
+                self.0
+                    .host_answers
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            );
             self.0.timeouts.lock().unwrap().push(request.timeout);
             self.0.bodies.lock().unwrap().push(request.body);
             let (tx, rx) = std::sync::mpsc::channel();
@@ -2047,6 +2071,48 @@ mod tests {
             "choices": [{"finish_reason": "tool_calls", "message": {
                 "role": "assistant", "content": null, "tool_calls": tool_calls
             }}]
+        })
+        .to_string())));
+        events
+    }
+
+    /// One Anthropic-dialect turn calling `calls`, as the gateway streams it:
+    /// a call's argument deltas (indexed among the turn's tool calls), its
+    /// completed-call frame at its `content_block_stop`, then the assembled
+    /// Messages body, whose text blocks the frames never carried.
+    fn anthropic_turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
+        let mut events = Vec::new();
+        let mut content = vec![serde_json::json!({"type": "text", "text": "On it."})];
+        for (index, (name, arguments)) in calls.iter().enumerate() {
+            let id = format!("toolu_0{index}");
+            let text = arguments.to_string();
+            let mut start = 0;
+            while start < text.len() {
+                let mut end = (start + piece).min(text.len());
+                while !text.is_char_boundary(end) {
+                    end += 1;
+                }
+                events.push(TurnEvent::Frame {
+                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                    output: serde_json::json!({
+                        "index": index, "id": id, "name": name, "delta": &text[start..end]
+                    })
+                    .to_string(),
+                });
+                start = end;
+            }
+            events.push(TurnEvent::Frame {
+                event: tilo_model_gateway::EVENT_TOOL_CALL.into(),
+                output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
+            });
+            content.push(serde_json::json!({
+                "type": "tool_use", "id": id, "name": name, "input": arguments
+            }));
+        }
+        events.push(TurnEvent::Finished(Ok(serde_json::json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "scripted",
+            "content": content, "stop_reason": "tool_use", "stop_sequence": null,
+            "usage": {"input_tokens": 10, "output_tokens": 20}
         })
         .to_string())));
         events
@@ -2121,6 +2187,18 @@ mod tests {
         /// Hold typed phase acknowledgements to prove Stop is not coupled to
         /// optional owner milestone observation.
         delay_phase_ack: bool,
+        /// Cancel once this many steps have been applied.
+        cancel_after_steps: Option<usize>,
+        /// How long the host takes to answer a report or a cancellation
+        /// poll; steps are answered at once.
+        report_delay: Duration,
+        cancel_delay: Duration,
+        /// Host answers delivered so far, shared with the model script.
+        host_answers: Arc<std::sync::atomic::AtomicUsize>,
+        /// Answers to reports (live updates and progress) delivered so far.
+        report_answers: usize,
+        /// [`Self::report_answers`] when each step arrived.
+        report_answers_at_steps: Vec<usize>,
     }
 
     impl World {
@@ -2290,6 +2368,7 @@ mod tests {
         ) -> (Value, bool) {
             let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
             self.steps.push((action.into(), arguments.clone()));
+            self.report_answers_at_steps.push(self.report_answers);
             self.steps_at
                 .push(self.emitted.load(std::sync::atomic::Ordering::SeqCst));
             if self
@@ -2387,9 +2466,103 @@ mod tests {
         world: Rc<RefCell<World>>,
         sent: Rc<RefCell<Vec<CollabRequest>>>,
         events: Vec<CollabEvent>,
+        /// Host answers not delivered yet, with when they are due.
+        held: Vec<(ui::time::Instant, CollabEvent)>,
     }
 
     impl Broker {
+        /// Deliver a host answer after `delay`, counting it when it arrives.
+        fn answer(&mut self, delay: Duration, event: CollabEvent) {
+            self.held.push((ui::time::now() + delay, event));
+        }
+
+        fn invoke_task(
+            &mut self,
+            request_id: u64,
+            action: &str,
+            arguments: &serde_json::Map<String, Value>,
+        ) {
+            let (continuation, republish) = self.world.borrow_mut().apply(action, arguments);
+            let update = if continuation.get("succeeded").is_some() {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
+                    error: tilo_actions::ActionFailure {
+                        code: "app.refused".into(),
+                        message: format!("{action} was refused"),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            };
+            self.events.push(CollabEvent::TaskActionInvocationResult {
+                request_id,
+                result: Ok((0, update)),
+                continuation: Some(serde_json::to_vec(&continuation).unwrap()),
+                retry_step: false,
+            });
+            // Republished after the result, as a real host does: the loop
+            // must wait for it after a view step.
+            if republish {
+                self.events.push(CollabEvent::ActionCatalogue {
+                    surfaces: self.world.borrow().surfaces(),
+                });
+            }
+        }
+
+        fn task_control(&mut self, request_id: u64) {
+            let (control, delay) = {
+                let mut world = self.world.borrow_mut();
+                world.cancellation_checks += 1;
+                let cancelled = (world.cancel_after_checks != 0
+                    && world.cancellation_checks > world.cancel_after_checks)
+                    || world
+                        .cancel_after_steps
+                        .is_some_and(|steps| world.steps.len() >= steps);
+                (
+                    runtime_collab::TaskRunControl {
+                        version: 1,
+                        run_epoch: world.control_epoch.max(1),
+                        applied_revision: 0,
+                        directions: world.control_directions.clone(),
+                        cancel_requested: cancelled,
+                    },
+                    world.cancel_delay,
+                )
+            };
+            self.answer(
+                delay,
+                CollabEvent::TaskRunControl {
+                    request_id,
+                    result: Ok(control),
+                },
+            );
+        }
+
+        fn task_cancellation(&mut self, request_id: u64) {
+            let (cancelled, delay) = {
+                let mut world = self.world.borrow_mut();
+                world.cancellation_checks += 1;
+                let cancelled = (world.cancel_after_checks != 0
+                    && world.cancellation_checks > world.cancel_after_checks)
+                    || world
+                        .cancel_after_steps
+                        .is_some_and(|steps| world.steps.len() >= steps);
+                (cancelled, world.cancel_delay)
+            };
+            self.answer(
+                delay,
+                CollabEvent::TaskRunCancellation {
+                    request_id,
+                    result: Ok(cancelled),
+                },
+            );
+        }
+
         fn report_enrolled_task(
             &mut self,
             request_id: u64,
@@ -2409,10 +2582,14 @@ mod tests {
                         | runtime_collab::TaskRunUpdate::Executing {}
                 )
             {
-                self.events.push(CollabEvent::EnrolledTaskReply {
-                    request_id,
-                    result: Ok(()),
-                });
+                let delay = self.world.borrow().report_delay;
+                self.answer(
+                    delay,
+                    CollabEvent::EnrolledTaskReply {
+                        request_id,
+                        result: Ok(()),
+                    },
+                );
             }
         }
     }
@@ -2422,6 +2599,22 @@ mod tests {
             true
         }
         fn poll(&mut self) -> Vec<CollabEvent> {
+            let now = ui::time::now();
+            let (due, later) = std::mem::take(&mut self.held)
+                .into_iter()
+                .partition::<Vec<_>, _>(|(at, _)| *at <= now);
+            self.held = later;
+            {
+                let mut world = self.world.borrow_mut();
+                world
+                    .host_answers
+                    .fetch_add(due.len(), std::sync::atomic::Ordering::SeqCst);
+                world.report_answers += due
+                    .iter()
+                    .filter(|(_, event)| matches!(event, CollabEvent::EnrolledTaskReply { .. }))
+                    .count();
+            }
+            self.events.extend(due.into_iter().map(|(_, event)| event));
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
@@ -2432,63 +2625,13 @@ mod tests {
                     arguments,
                     ..
                 } => {
-                    let (continuation, republish) =
-                        self.world.borrow_mut().apply(action, arguments);
-                    let update = if continuation.get("succeeded").is_some() {
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-                            output: tilo_actions::ActionOutput::default(),
-                        }
-                    } else {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation: tilo_actions::InvocationId(Uuid::from_u128(71)),
-                            error: tilo_actions::ActionFailure {
-                                code: "app.refused".into(),
-                                message: format!("{action} was refused"),
-                                details: None,
-                                retryable: false,
-                            },
-                        }
-                    };
-                    self.events.push(CollabEvent::TaskActionInvocationResult {
-                        request_id: *request_id,
-                        result: Ok((0, update)),
-                        continuation: Some(serde_json::to_vec(&continuation).unwrap()),
-                        retry_step: false,
-                    });
-                    // Republished after the result, as a real host does: the
-                    // loop must wait for it after a view step.
-                    if republish {
-                        self.events.push(CollabEvent::ActionCatalogue {
-                            surfaces: self.world.borrow().surfaces(),
-                        });
-                    }
+                    self.invoke_task(*request_id, action, arguments);
                 }
                 CollabRequest::TaskRunControl { request_id, .. } => {
-                    let mut world = self.world.borrow_mut();
-                    world.cancellation_checks += 1;
-                    let cancelled = world.cancel_after_checks != 0
-                        && world.cancellation_checks > world.cancel_after_checks;
-                    self.events.push(CollabEvent::TaskRunControl {
-                        request_id: *request_id,
-                        result: Ok(runtime_collab::TaskRunControl {
-                            version: 1,
-                            run_epoch: world.control_epoch.max(1),
-                            applied_revision: 0,
-                            directions: world.control_directions.clone(),
-                            cancel_requested: cancelled,
-                        }),
-                    });
+                    self.task_control(*request_id);
                 }
                 CollabRequest::TaskRunCancellation { request_id, .. } => {
-                    let mut world = self.world.borrow_mut();
-                    world.cancellation_checks += 1;
-                    let cancelled = world.cancel_after_checks != 0
-                        && world.cancellation_checks > world.cancel_after_checks;
-                    self.events.push(CollabEvent::TaskRunCancellation {
-                        request_id: *request_id,
-                        result: Ok(cancelled),
-                    });
+                    self.task_cancellation(*request_id);
                 }
                 CollabRequest::ReportEnrolledTask {
                     request_id, update, ..
@@ -2496,10 +2639,14 @@ mod tests {
                     self.report_enrolled_task(*request_id, update);
                 }
                 CollabRequest::AcceptEnrolledTask { request_id, .. } => {
-                    self.events.push(CollabEvent::EnrolledTaskReply {
-                        request_id: *request_id,
-                        result: Ok(()),
-                    });
+                    let delay = self.world.borrow().report_delay;
+                    self.answer(
+                        delay,
+                        CollabEvent::EnrolledTaskReply {
+                            request_id: *request_id,
+                            result: Ok(()),
+                        },
+                    );
                 }
                 CollabRequest::AcceptAgentMessage { request_id, .. }
                 | CollabRequest::PrepareAgentMessageReply { request_id, .. }
@@ -2544,8 +2691,9 @@ mod tests {
             Vec::new(),
         );
         let acceptance = f.session.enrolled_active.clone().unwrap();
+        f.session.poll_cancellation(&f.run).unwrap();
         let super::super::TaskControlChange::Directed(directions) =
-            f.session.task_control_change(&f.run).unwrap()
+            f.session.task_control_change_known().unwrap()
         else {
             panic!("enrolled task must observe its saved direction");
         };
@@ -2587,11 +2735,15 @@ mod tests {
             if !enrolled {
                 f.session.enrolled_active = None;
             }
-            assert!(
-                matches!(f.session.task_control_change(&f.run).unwrap(), super::super::TaskControlChange::Directed(directions) if directions.first().is_some_and(|direction| direction.revision == 7))
-            );
+            f.session.poll_cancellation(&f.run).unwrap();
             assert!(matches!(
-                f.session.task_control_change(&f.run).unwrap(),
+                f.session.task_control_change_known().unwrap(),
+                super::super::TaskControlChange::Directed(directions)
+                    if directions.first().is_some_and(|direction| direction.revision == 7)
+            ));
+            f.session.poll_cancellation(&f.run).unwrap();
+            assert!(matches!(
+                f.session.task_control_change_known().unwrap(),
                 super::super::TaskControlChange::Cancelled
             ));
             assert_eq!(f.world.borrow().cancellation_checks, 2);
@@ -2785,11 +2937,14 @@ mod tests {
             timeouts: Mutex::new(Vec::new()),
             pace,
             emitted,
+            host_answers: Arc::clone(&world.borrow().host_answers),
+            host_answers_at_turn: Mutex::new(Vec::new()),
         });
         let link = crate::wire::test_link(Broker {
             world: world.clone(),
             sent: sent.clone(),
             events: Vec::new(),
+            held: Vec::new(),
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
@@ -2878,6 +3033,7 @@ mod tests {
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
+            outstanding: crate::session::outstanding::Outstanding::default(),
         };
         Fixture {
             session,
@@ -3114,6 +3270,174 @@ mod tests {
         );
         assert!(f.world.borrow().steps.is_empty());
         assert!(f.session.turn.is_none());
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Cancelled { .. }
+        ));
+    }
+
+    /// The model call is the long pole, so the first turn is asked before
+    /// the host has answered anything: the live update, the progress line and
+    /// the task-control poll all ride along without a wait.
+    #[test]
+    fn the_first_model_turn_is_asked_before_any_host_answer_arrives() {
+        let mut f = fixture(
+            "say hello",
+            World {
+                report_delay: Duration::from_millis(300),
+                cancel_delay: Duration::from_millis(300),
+                ..World::default()
+            },
+            vec![turn(&[finish("Hello!", true)], 16)],
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        assert_eq!(
+            *f.script.host_answers_at_turn.lock().unwrap(),
+            [0],
+            "the first model request must not wait for any host answer"
+        );
+        let sent = f.sent.borrow();
+        let first_live = sent
+            .iter()
+            .position(|request| {
+                matches!(request, CollabRequest::ReportEnrolledTask {
+                    update: runtime_collab::TaskRunUpdate::Progress { message }, ..
+                } if crate::live::AgentLiveUpdate::decode(message).is_some())
+            })
+            .expect("the live view was published");
+        let first_poll = sent
+            .iter()
+            .position(|request| matches!(request, CollabRequest::TaskRunControl { .. }))
+            .expect("task control was polled");
+        assert!(first_live < first_poll, "{sent:?}");
+        assert!(
+            sent.iter().any(
+                |request| matches!(request, CollabRequest::ReportEnrolledTask {
+                update: runtime_collab::TaskRunUpdate::Progress { message }, ..
+            } if message == "Reviewing the permission-filtered action catalogue")
+            ),
+            "the progress line is still reported, in order"
+        );
+        assert_eq!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Hello!".into()
+            }
+        );
+        let sequences: Vec<u64> = sent
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportEnrolledTask { sequence, .. } => Some(*sequence),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sequences.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "reports keep their order and sequence: {sequences:?}"
+        );
+    }
+
+    /// A step is sent the moment its call is ready, not after the host has
+    /// answered the live update shown for it.
+    #[test]
+    fn a_slow_live_update_answer_does_not_hold_back_the_next_step() {
+        let mut f = fixture(
+            "write hello",
+            World {
+                report_delay: Duration::from_millis(400),
+                ..World::default()
+            },
+            vec![turn(
+                &[
+                    invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
+                    finish("Done", true),
+                ],
+                16,
+            )],
+        );
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.blocks, [("p1".to_string(), "Hello".to_string())]);
+        assert!(
+            !world.report_answers_at_steps.is_empty()
+                && world
+                    .report_answers_at_steps
+                    .iter()
+                    .all(|answers| *answers == 0),
+            "every step reached the host before any live or progress answer: {:?}",
+            world.report_answers_at_steps
+        );
+        let sent = f.sent.borrow();
+        let step = sent
+            .iter()
+            .position(|request| matches!(request, CollabRequest::InvokeTaskAction { .. }))
+            .unwrap();
+        let applying = sent
+            .iter()
+            .position(|request| {
+                matches!(request, CollabRequest::ReportEnrolledTask {
+                update: runtime_collab::TaskRunUpdate::Progress { message }, ..
+            } if crate::live::AgentLiveUpdate::decode(message)
+                .is_some_and(|live| live.state == crate::live::LiveState::Applying))
+            })
+            .expect("the step was shown as applying");
+        assert!(applying < step, "the live view still precedes its step");
+        assert!(
+            began.elapsed() < Duration::from_millis(400) * 3,
+            "only the terminal report waits for the host"
+        );
+        assert_eq!(
+            terminal(&sent),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Done".into()
+            }
+        );
+    }
+
+    /// Not waiting for answers does not weaken cancellation: a poll already
+    /// out is answered ahead of the next step, so the step waits for it and
+    /// never reaches the host once the task is cancelled.
+    #[test]
+    fn a_cancelled_task_still_stops_before_its_next_step() {
+        let mut f = fixture(
+            "write two paragraphs",
+            World {
+                cancel_after_steps: Some(1),
+                cancel_delay: Duration::from_millis(100),
+                ..World::default()
+            },
+            vec![
+                turn(
+                    &[invoke(
+                        "append-paragraph",
+                        &serde_json::json!({"text": "One"}),
+                    )],
+                    16,
+                ),
+                turn(
+                    &[
+                        invoke("append-paragraph", &serde_json::json!({"text": "Two"})),
+                        finish("Done", true),
+                    ],
+                    16,
+                ),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(
+            world
+                .steps
+                .iter()
+                .map(|(action, arguments)| (action.as_str(), arguments["text"].as_str()))
+                .collect::<Vec<_>>(),
+            [("append-paragraph", Some("One"))],
+            "the step after the cancellation must not run"
+        );
         assert!(matches!(
             terminal(&f.sent.borrow()),
             runtime_collab::TaskRunUpdate::Cancelled { .. }
@@ -3543,6 +3867,85 @@ mod tests {
             runtime_collab::TaskRunUpdate::Failed { message }
                 if message.contains("provider stream reset") && message.contains("already written")
         ));
+    }
+
+    /// With Anthropic streamed like the `OpenAI` dialect, a call runs the
+    /// moment its `tool_use` block closes, while Claude still writes the
+    /// next one; the assembled body's pass then skips every call that ran
+    /// (same `toolu_` id), and each result goes back under its call's id.
+    #[test]
+    fn an_anthropic_call_runs_as_its_block_closes_and_only_once() {
+        let first = anthropic_turn(
+            &[
+                invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
+                invoke("read-text", &serde_json::json!({})),
+            ],
+            8,
+        );
+        let second_call = first
+            .iter()
+            .position(|event| {
+                matches!(event, TurnEvent::Frame { event, output }
+                    if event == tilo_model_gateway::EVENT_TOOL_CALL && output.contains("toolu_01"))
+            })
+            .unwrap();
+        let mut f = paced_fixture(
+            "write hello",
+            World::default(),
+            vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
+            Some(Duration::from_millis(4)),
+        );
+        f.session.chooser = Chooser::scripted(
+            Duration::from_secs(5),
+            agent_provider_config::ProviderProtocol::Anthropic,
+            Arc::new(Scripted(f.script.clone())),
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.blocks[0].1, "Hello");
+        let actions = world
+            .steps
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            ["append-paragraph", "read-text"],
+            "each call ran once"
+        );
+        assert!(
+            world.steps_at[0] <= second_call,
+            "the first call ran at event {} while the second was still being written ({second_call})",
+            world.steps_at[0]
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0]["tools"][0].get("input_schema").is_some());
+        let results = bodies[1]["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(results["role"], "user");
+        let ids = results["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| {
+                assert_eq!(block["type"], "tool_result");
+                assert_ne!(block["content"], "Not handled.");
+                block["tool_use_id"].as_str().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["toolu_00", "toolu_01"]);
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: "Wrote it.".into()
+            }
+        );
     }
 
     #[test]

@@ -89,3 +89,6 @@ pub use resource::{Settings, SettingsShell, parse_settings_uri};
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<SettingsShell>()
 }
+
+#[cfg(test)]
+mod cpu_profile;

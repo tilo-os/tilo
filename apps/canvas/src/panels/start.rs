@@ -173,16 +173,15 @@ impl Widget for Swatch {
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
         let side = theme.tokens.metrics.min_pointer_target;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: taffy::Dimension::length(side),
                 height: taffy::Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

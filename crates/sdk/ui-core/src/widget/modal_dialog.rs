@@ -1152,12 +1152,11 @@ impl Widget for FooterKey {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Out of flow and empty: the dialog places the action itself.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             position: taffy::Position::Absolute,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}

@@ -965,16 +965,15 @@ impl Widget for SearchResultsView {
             reason = "desired overlay height is a small on-screen pixel value"
         )]
         let height_px = self.desired_height() as f32;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: length(height_px),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

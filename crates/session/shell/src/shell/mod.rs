@@ -34,7 +34,6 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_history;
-pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod color_pipeline;
@@ -93,6 +92,8 @@ pub mod magnifier;
 #[cfg(target_os = "linux")]
 mod managed_agent;
 pub mod media_keys;
+pub(crate) mod membership;
+pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;

@@ -8,7 +8,7 @@ impl action_directory::Server for NativeMessageTestDirectory {
         _params: action_directory::QueryParams,
         mut results: action_directory::QueryResults,
     ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-        Promise::from(write_directory_page(
+        Promise::from(runtime_collab::write_action_directory_page(
             results.get().init_page(),
             &runtime_collab::ActionDirectoryPage {
                 revision: "message-r1".into(),
@@ -25,8 +25,10 @@ impl action_directory::Server for NativeMessageTestDirectory {
         _params: action_directory::ResolveParams,
         mut results: action_directory::ResolveResults,
     ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
-        write_directory_row(results.get().init_resolution().init_found(), &self.0);
-        Promise::ok(())
+        Promise::from(runtime_collab::write_action_directory_row(
+            results.get().init_resolution().init_found(),
+            &self.0,
+        ))
     }
 }
 
@@ -36,12 +38,16 @@ fn native_message_test_directory() -> action_directory::Client {
     row.resource = "opaque-agent-resource".into();
     row.resource_kind = "chat.agent".into();
     row.action = Some("message".into());
-    row.visibility_action.clone_from(&row.action);
+    row.visibility
+        .as_mut()
+        .expect("test row has visibility")
+        .action
+        .clone_from(row.action.as_ref().expect("test row has an action"));
     let descriptor = row.descriptor.as_mut().unwrap();
     descriptor.resource.clone_from(&row.resource);
     descriptor.resource_kind.clone_from(&row.resource_kind);
     descriptor.action = "message".into();
-    descriptor.operation_kind = "document".into();
+    descriptor.operation_kind = tilo_actions::OperationKind::Document;
     descriptor.input = runtime_collab::ExportedInput::Text {
         prompt: "Message".into(),
         placeholder: String::new(),

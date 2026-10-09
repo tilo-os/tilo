@@ -1171,15 +1171,14 @@ impl Widget for ToastStack {
         self.theme = theme.clone();
         let (w, h) = self.stack_size();
         self.laid_out = self.toasts.len();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(w),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {

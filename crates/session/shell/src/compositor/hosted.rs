@@ -403,6 +403,11 @@ fn attach_peer_sync_bridge(
             )
             .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
+        crate::shell::overlay_host::PeerSyncRequest::IssueInvitation(terms) => {
+            let active = tree_for_bridge.read().desktop.active;
+            net.issue_invitation(active, &terms)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+        }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().desktop.active;
             net.accept_peer_invitation(active, &token)

@@ -351,7 +351,7 @@ impl Widget for Badge {
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel layout size; f32 precision is sufficient"
         )]
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: if width < 0.0 {
                     Dimension::auto()
@@ -363,9 +363,8 @@ impl Widget for Badge {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A text or count badge is as wide as its measured label.

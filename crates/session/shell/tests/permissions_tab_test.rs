@@ -714,6 +714,55 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         );
     }
 
+    // Phase `a_delegated_admin_can_change_roles_through_the_same_check`.
+    {
+        // Administration delegated as a capability, not ownership: the
+        // click must pass the same capability check `member.role.set` does.
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::from(1);
+        let mut ws = Workspace::new(id, "perm-test");
+        let local = shell::shell::state::local_user_id_for_room(&ws.room);
+        let owner = "someone-else".to_string();
+        ws.set_owner(owner.clone());
+        let room = ws.room.to_string();
+        ws.grant_as(
+            &owner,
+            CapOverride::membership(Subject::person(local), room.clone(), Verb::Admin),
+        )
+        .expect("the owner may delegate administration");
+        ws.grant_as(
+            &owner,
+            CapOverride::membership(Subject::person("ada"), room, Verb::Read),
+        )
+        .expect("the owner may write a membership");
+        tree.desktop.workspaces.push(ws);
+        tree.set_active(id);
+
+        let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+        let ada = host
+            .member_control_rects()
+            .iter()
+            .find(|(u, _, _)| u == "ada")
+            .cloned()
+            .expect("ada is in the roster");
+        click(&mut host, ada.1);
+        repaint(&mut host);
+        assert!(host.member_sheet_is_open_for_tests());
+        let editor = host.member_sheet_option_rects_for_tests()[2];
+        click(&mut host, editor);
+
+        let st = chrome.borrow();
+        let t = st.tree();
+        assert_eq!(
+            t.desktop
+                .active_workspace()
+                .unwrap()
+                .role_of(&"ada".to_string()),
+            Some(shell::shell::state::CapRole::Editor),
+            "a delegated administrator's choice takes effect"
+        );
+    }
+
     // Phase `the_owner_row_offers_no_role_change_and_no_removal`.
     {
         // The recorded owner is the workspace's root of trust and `role_of`

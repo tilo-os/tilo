@@ -536,12 +536,42 @@ pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str)
     mount
 }
 
+/// `GStreamer` relocates its default plugin lookup beside `libgstreamer`. The
+/// signed SDK carries that library, while platform decoder plugins already
+/// live in the fixed read-only system library profile. Name that boundary
+/// explicitly; never inherit a session's writable plugin search paths.
+const SYSTEM_GSTREAMER_PLUGINS: &[&str] = &[
+    "/usr/lib64/gstreamer-1.0",
+    "/usr/lib/gstreamer-1.0",
+    "/usr/lib/x86_64-linux-gnu/gstreamer-1.0",
+    "/usr/lib/aarch64-linux-gnu/gstreamer-1.0",
+];
+
+fn push_gstreamer_plugins(argv: &mut Vec<String>, root: &Path, mount: &Path) {
+    if !root.join("lib/libgstreamer-1.0.so.0").is_file() {
+        return;
+    }
+    let bundled = mount.join("lib/gstreamer-1.0");
+    let mut paths = vec![bundled.display().to_string()];
+    paths.extend(
+        SYSTEM_GSTREAMER_PLUGINS
+            .iter()
+            .map(|path| (*path).to_owned()),
+    );
+    argv.extend([
+        "--setenv".into(),
+        "GST_PLUGIN_SYSTEM_PATH_1_0".into(),
+        paths.join(":"),
+    ]);
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
     };
     let runtime_mount = runtime_mount_for(runtime_version);
     push_bind(argv, "--ro-bind", runtime_root, &runtime_mount);
+    push_gstreamer_plugins(argv, runtime_root, &runtime_mount);
     let fonts = runtime_root.join("lib/fonts");
     if fonts.is_dir() {
         push_bind(
@@ -1137,6 +1167,44 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         )
+    }
+
+    #[test]
+    fn runtime_gstreamer_plugin_paths_are_fixed_and_already_readable() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("lib")).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("GST_PLUGIN_SYSTEM_PATH_1_0", "/home/private/plugins");
+        let manifest = mk_manifest("off");
+        let argv_for = || {
+            build_bwrap_argv(
+                &manifest,
+                Path::new("/host/pkg"),
+                Some((runtime.path(), "selected")),
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            )
+        };
+        assert_eq!(
+            setenv_value(&argv_for(), "GST_PLUGIN_SYSTEM_PATH_1_0"),
+            None
+        );
+        std::fs::write(runtime.path().join("lib/libgstreamer-1.0.so.0"), b"fixture").unwrap();
+        let argv = argv_for();
+        let paths = setenv_value(&argv, "GST_PLUGIN_SYSTEM_PATH_1_0").unwrap();
+        assert!(paths.starts_with("/run/tilo-runtime/selected/lib/gstreamer-1.0:"));
+        assert!(!paths.contains("/home/private"));
+        for path in SYSTEM_GSTREAMER_PLUGINS {
+            assert!(paths.split(':').any(|candidate| candidate == *path));
+            assert!(
+                crate::profile::SYSTEM_READ_PATHS
+                    .iter()
+                    .any(|parent| Path::new(path).starts_with(parent))
+            );
+        }
+        assert!(!argv.iter().any(|arg| arg == "--share-net"));
     }
 
     #[test]

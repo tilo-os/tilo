@@ -83,11 +83,13 @@ pub(super) fn append_catalogue(response: &mut Response, query: &str) {
 /// Native control calls this only after admin peer authentication, without
 /// Agent scope, while unlocked. No environment or privilege is stored in CRDT.
 pub(super) fn dispatch(command: &Command) -> Option<Response> {
+    // Answered at once, so there is nothing for `wait_ms` to wait for.
     let Command::ActionsInvoke {
         provider,
         id,
         args,
         device: None,
+        wait_ms: _,
     } = command
     else {
         return None;
@@ -135,7 +137,7 @@ mod tests {
         assert!(session.diagnostics.lock().unwrap().is_none());
         let mut command = Command::ActionsInvoke {
             provider: PROVIDER.into(), id: "configure@session-diagnostics".into(),
-            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None,
+            args: json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false}).as_object().unwrap().clone(), device: None, wait_ms: None,
         };
         assert!(
             matches!(dispatch(&command), Some(Response::Answer(value)) if value["diagnostics"]["presentation"] == true)
@@ -172,6 +174,7 @@ mod tests {
             id: "inspect@session-diagnostics".into(),
             args: serde_json::Map::new(),
             device: None,
+            wait_ms: None,
         };
         assert!(
             matches!(dispatch(&read), Some(Response::Answer(value)) if value["applies_to"] == "subsequent_launches" && value["diagnostics"] == options.value())

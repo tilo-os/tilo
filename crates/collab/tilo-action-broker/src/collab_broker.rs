@@ -811,6 +811,14 @@ impl AppActionBroker {
         self.state.invocations_generation()
     }
 
+    /// Sees every invocation status change after this call — what
+    /// [`Self::statuses_generation`] counts — so a waiter can sleep until
+    /// one happens instead of polling for it.
+    #[must_use]
+    pub fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.invocation_changes()
+    }
+
     /// One invocation's current status, only when `actor` owns it.
     #[must_use]
     pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {

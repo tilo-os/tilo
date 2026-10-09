@@ -1004,7 +1004,7 @@ impl Widget for ColorPicker {
     ) -> NodeId {
         // Its preferred size, narrowed to what the parent gives; the height
         // then follows the width it got (`adjust_layout_style`).
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
@@ -1015,9 +1015,8 @@ impl Widget for ColorPicker {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A picker narrowed by its parent is as tall as that width needs.

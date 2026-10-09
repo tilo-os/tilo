@@ -212,15 +212,14 @@ impl Widget for PromptBody {
     ) -> NodeId {
         self.theme = theme.clone();
         // Full width; as tall as the stack it shows, so the sheet hugs it.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

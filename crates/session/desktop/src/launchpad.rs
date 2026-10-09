@@ -613,7 +613,7 @@ impl Widget for CollaborationLaunchpad {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -624,9 +624,8 @@ impl Widget for CollaborationLaunchpad {
                 height: percent(0.0_f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

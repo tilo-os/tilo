@@ -183,7 +183,8 @@ pub(super) async fn run(
         context.directory.path(),
         authority.clone(),
         context.publisher.clone(),
-    );
+    )
+    .await;
     let first = Device {
         owner,
         identity: identity.clone(),

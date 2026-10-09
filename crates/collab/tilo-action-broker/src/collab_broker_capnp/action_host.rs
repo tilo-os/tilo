@@ -18,8 +18,7 @@ use tilo_actions::remote::{
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, Confirmation, FreshActionBinding,
     InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
-    Reservation, RowVisibility, application_provider, pending, workspace_provider,
-    workspace_provider_room,
+    Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -307,62 +306,7 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
 fn runtime_fresh_binding(binding: &FreshActionBinding) -> runtime_collab::FreshActionBinding {
     let descriptor = &binding.descriptor;
     runtime_collab::FreshActionBinding {
-        descriptor: runtime_collab::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-                runtime_collab::ExportedResourceSemanticIdentity {
-                    kind: identity.kind.clone(),
-                    key: identity.key.clone(),
-                }
-            }),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor
-                .view
-                .as_ref()
-                .map(|view| runtime_collab::ExportedView {
-                    id: view.id.clone(),
-                    label: view.label.clone(),
-                    description: view.description.clone(),
-                    open_action: view.open_action.clone(),
-                    primary: view.primary,
-                    mount: view
-                        .mount
-                        .as_ref()
-                        .map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action.clone(),
-                            capability_param: mount.capability_param.clone(),
-                            view_param: mount.view_param.clone(),
-                        }),
-                    range: view
-                        .range
-                        .as_ref()
-                        .map(|range| runtime_collab::ExportedViewRange {
-                            action: range.action.clone(),
-                            start_param: range.start_param.clone(),
-                            end_param: range.end_param.clone(),
-                            unit_param: range.unit_param.clone(),
-                        }),
-                }),
-            input: match &descriptor.input {
-                InputSpec::None => runtime_collab::ExportedInput::None,
-                InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => runtime_collab::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == Collects::Content,
-                },
-            },
-        },
+        descriptor: runtime_collab::ExportedAction::from(descriptor),
         locus: serde_json::to_string(&descriptor.locus).unwrap_or_default(),
         operation_type: binding.operation_type.clone(),
     }
@@ -2917,21 +2861,12 @@ fn directory_row(
             id: row.resource.clone(),
             kind: row.resource_kind.clone(),
             label: row.resource_label.clone(),
-            presentation: serde_json::from_str::<tilo_actions::ResourcePresentation>(
-                &row.resource_presentation_json,
-            )
-            .ok()
-            .filter(tilo_actions::ResourcePresentation::is_valid),
+            presentation: row.presentation.clone(),
         },
         action,
         fresh_binding,
         has_children: row.has_children,
-        visibility: row.visibility_action.clone().and_then(|action| {
-            Some(RowVisibility {
-                action,
-                contract: serde_json::from_str(&row.visibility_contract_json).ok()?,
-            })
-        }),
+        visibility: row.visibility.clone(),
     })
 }
 

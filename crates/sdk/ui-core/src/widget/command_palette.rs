@@ -2104,15 +2104,14 @@ impl Widget for CommandPalette {
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(px(width)),
                 height: Dimension::length(px(height)),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

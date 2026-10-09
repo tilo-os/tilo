@@ -2596,6 +2596,19 @@ pub trait TaffyTreeExt {
 
     /// Insert a parent whose child ids were built in this same tree.
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
+
+    /// Insert a leaf node for `widget` and register it in `node_map`: the
+    /// whole of a leaf widget's `build_layout`.
+    fn widget_leaf(
+        &mut self,
+        style: taffy::Style,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        widget: &mut (dyn Widget + 'static),
+    ) -> NodeId {
+        let node = self.leaf_node(style);
+        node_map.insert(node, std::ptr::from_mut(widget));
+        node
+    }
 }
 
 impl TaffyTreeExt for TaffyTree<()> {
@@ -2614,6 +2627,8 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+mod composed;
+pub use composed::Composed;
 pub mod controls;
 pub mod decorator;
 pub mod document_effects;

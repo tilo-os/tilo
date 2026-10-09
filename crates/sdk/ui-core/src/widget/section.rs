@@ -404,12 +404,11 @@ impl Widget for CountPill {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(HeaderMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -489,16 +488,15 @@ impl Widget for Chevron {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let side = theme.tokens.metrics.icon_sm;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             size: Size {
                 width: length(side),
                 height: length(side),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1391,7 +1389,7 @@ impl Widget for StatusLine {
         self.style = Some(theme.text(TextRole::Caption));
         self.dot = f64::from(theme.tokens.spacing.s2);
         self.gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1402,9 +1400,8 @@ impl Widget for StatusLine {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1619,7 +1616,7 @@ impl Widget for ObjectHeader {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Some(ObjectMetrics::new(theme));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -1630,9 +1627,8 @@ impl Widget for ObjectHeader {
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

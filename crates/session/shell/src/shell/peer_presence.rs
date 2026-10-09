@@ -21,6 +21,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -104,6 +105,8 @@ pub struct PeerPresence {
     typed_inbound: Arc<Mutex<Vec<RoomTypedPresence>>>,
     departures: Arc<crate::shell::network::PeerDepartureHistory>,
     seen_departures: Mutex<HashSet<DepartureKey>>,
+    /// The departure history's generation [`Self::pump`] last read it at.
+    departures_applied: AtomicU64,
     subscription: Arc<RoomSubscription>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
@@ -114,8 +117,52 @@ pub struct PeerPresence {
     /// What this session last put on the wire, per room: position and
     /// when. Read by [`should_publish_cursor`].
     last_published: Mutex<CursorPublishHistory>,
+    /// The [`ShellNetwork::peer_colours_epoch`] whose colours [`Self::pump`]
+    /// last applied; `u64::MAX` until the first pump applies them.
+    colours_applied: AtomicU64,
+    /// Advanced by [`Self::pump`] whenever it changed the presence the
+    /// roster reads (a pointer heard, placed or retired, typed presence, a
+    /// departure), so a pump that folded nothing costs the roster nothing.
+    presence_epoch: AtomicU64,
+    /// The replica's tree, whose write generation tells [`Self::refresh_roster`]
+    /// whether the room's naming, governance or the active workspace can
+    /// have changed, without taking the replica's lock to ask.
+    roster_tree: crate::shell::state::WorkspaceTreeHandle,
+    /// [`crate::network::replica::WorkspaceTreeReplica::participants_epoch`].
+    participants_epoch: Arc<AtomicU64>,
+    /// What the roster was last derived from; `None` before the first refresh.
+    roster_seen: Mutex<Option<RosterSeen>>,
     net: Arc<ShellNetwork>,
 }
+
+/// The change signals the roster was last derived at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RosterInputs {
+    /// [`crate::shell::state::WorkspaceTreeHandle::generation`].
+    tree: u64,
+    /// [`crate::network::replica::WorkspaceTreeReplica::participants_epoch`].
+    participants: u64,
+    /// [`PeerPresence::presence_epoch`].
+    presence: u64,
+}
+
+/// What [`PeerPresence::refresh_roster`] last derived the roster from.
+struct RosterSeen {
+    inputs: RosterInputs,
+    /// The active workspace's room then, empty when it had none.
+    room: String,
+    /// [`roster_presence_print`] of the presence then, in that room.
+    presence: u64,
+    /// When the roster was last derived, for [`ROSTER_RECHECK`].
+    at: Instant,
+}
+
+/// The longest the roster goes without being derived again while none of
+/// its change signals moved. It also depends on the clock (a device
+/// certificate expiring takes its role chip away) and on presence written
+/// outside [`PeerPresence::pump`]; a missed signal makes the roster this
+/// late, never wrong for good.
+pub const ROSTER_RECHECK: Duration = Duration::from_secs(1);
 
 /// Smallest gap between two pointer publishes for the same room — ~30
 /// Hz, matching the rate the toolkit throttles an app's pointer to so a
@@ -307,6 +354,9 @@ impl PeerPresence {
         );
 
         let departures = net.peer_departure_history();
+        // Read before the snapshot: a departure recorded in between is in
+        // both, and the next pump reads it again and finds it seen.
+        let departures_applied = AtomicU64::new(departures.generation());
         let seen_departures = departures
             .snapshot()
             .into_iter()
@@ -318,6 +368,15 @@ impl PeerPresence {
                 )
             })
             .collect();
+        // Cloned once, so the roster can read their change signals without
+        // locking the replica on every frame.
+        let (roster_tree, participants_epoch) = {
+            let replica = net
+                .replica
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (replica.tree.clone(), replica.participants_epoch())
+        };
         Self {
             cursor,
             anchored: Mutex::new(HashMap::new()),
@@ -325,10 +384,16 @@ impl PeerPresence {
             typed_inbound,
             departures,
             seen_departures: Mutex::new(seen_departures),
+            departures_applied,
             subscription,
             rooms: Mutex::new(rooms_mirror),
             followed: Mutex::new(None),
             last_published: Mutex::new(HashMap::new()),
+            colours_applied: AtomicU64::new(u64::MAX),
+            presence_epoch: AtomicU64::new(0),
+            roster_tree,
+            participants_epoch,
+            roster_seen: Mutex::new(None),
             net: net_for_desktop,
         }
     }
@@ -466,12 +531,21 @@ impl PeerPresence {
             std::mem::take(&mut *buf)
         };
         // Each person in the colour their own machine says they wear, not
-        // one derived here from their session's handle.
-        for (peer, hue) in self.net.peer_colours() {
-            presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
+        // one derived here from their session's handle. Applied after one
+        // changed rather than restated every frame; the epoch is read before
+        // the colours, so a change racing this read is applied next time.
+        let colours = self.net.peer_colours_epoch();
+        if self.colours_applied.swap(colours, Ordering::AcqRel) != colours {
+            for (peer, hue) in self.net.peer_colours() {
+                presence.set_presence_hue(ui::permissions::UserId(format!("peer@{peer}")), hue);
+            }
         }
+        let folded = !drained.is_empty();
         let net = Arc::clone(&self.net);
-        let mine: Vec<String> = self.rooms.lock().map(|g| g.clone()).unwrap_or_default();
+        let mine = self
+            .rooms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let cursor_changed = self.anchored.lock().is_ok_and(|mut anchored| {
             anchored.retain(|_, (room, _, _)| mine.iter().any(|r| r == room));
             let fresh = fold_inbound(
@@ -489,6 +563,7 @@ impl PeerPresence {
             .lock()
             .map(|mut queue| std::mem::take(&mut *queue))
             .unwrap_or_default();
+        let folded = folded || !typed.is_empty();
         // Attribution is normalized to the authenticated envelope identity
         // inside the fold; JSON supplied by an app cannot rename its actor.
         let typed_changed = !typed.is_empty();
@@ -496,6 +571,23 @@ impl PeerPresence {
             if mine.contains(&room) {
                 fold_typed_presence(vec![(user, key, payload)], presence, &room);
             }
+        }
+        drop(mine);
+        let departure_changed = self.fold_departures(presence);
+        if folded || cursor_changed || departure_changed {
+            self.presence_epoch.fetch_add(1, Ordering::Release);
+        }
+        cursor_changed || typed_changed || departure_changed
+    }
+
+    /// Take everyone who left off `presence`, once each. Reads the departure
+    /// history only after it recorded somebody since the last call. Returns
+    /// whether anybody was taken off.
+    fn fold_departures(&self, presence: &mut PresenceCtx) -> bool {
+        // Read before the snapshot, so a departure racing it is read again.
+        let generation = self.departures.generation();
+        if self.departures_applied.swap(generation, Ordering::AcqRel) == generation {
+            return false;
         }
         let departures = self.departures.snapshot();
         let active_keys = departures
@@ -508,7 +600,7 @@ impl PeerPresence {
                 )
             })
             .collect::<HashSet<_>>();
-        let departure_changed = self.seen_departures.lock().is_ok_and(|mut seen| {
+        self.seen_departures.lock().is_ok_and(|mut seen| {
             seen.retain(|key| active_keys.contains(key));
             let mut changed = false;
             for departure in departures {
@@ -531,8 +623,7 @@ impl PeerPresence {
                 changed = true;
             }
             changed
-        });
-        cursor_changed || typed_changed || departure_changed
+        })
     }
 
     /// Write the active workspace's room's people into the tree, where
@@ -540,7 +631,69 @@ impl PeerPresence {
     /// answers "did who-is-here change", not "did a peer move" — a peer
     /// named while sitting still changes the former, not the latter.
     /// Returns whether the list changed, a reason to repaint.
+    ///
+    /// Derived again only once one of its inputs moved: the tree was written
+    /// (the active workspace, its room's naming and governance), a peer first
+    /// took part in a room's document, or [`Self::pump`] changed who is seen
+    /// in the active room. A frame where none did locks nothing but this
+    /// relay's own bookkeeping, and [`ROSTER_RECHECK`] bounds how stale a
+    /// missed signal can leave it.
     pub fn refresh_roster(&self, presence: &PresenceCtx) -> bool {
+        self.refresh_roster_at(presence, Instant::now())
+    }
+
+    /// [`Self::refresh_roster`] with the clock supplied, so the recheck can
+    /// be exercised without sleeping.
+    pub fn refresh_roster_at(&self, presence: &PresenceCtx, now: Instant) -> bool {
+        // Loaded before anything is read: a change racing the reads below
+        // leaves a signal this refresh did not record, and is read next time.
+        let inputs = RosterInputs {
+            tree: self.roster_tree.generation(),
+            participants: self.participants_epoch.load(Ordering::Acquire),
+            presence: self.presence_epoch.load(Ordering::Acquire),
+        };
+        let mut seen = self
+            .roster_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(last) = seen.as_mut()
+            && now.saturating_duration_since(last.at) < ROSTER_RECHECK
+        {
+            if last.inputs == inputs {
+                return false;
+            }
+            // Only presence moved. A peer's pointer moving says nothing new
+            // about who is here, and is told apart without the replica.
+            if last.inputs.tree == inputs.tree
+                && last.inputs.participants == inputs.participants
+                && roster_presence_print(presence, &self.anchored, &last.room) == last.presence
+            {
+                last.inputs = inputs;
+                return false;
+            }
+        }
+        let Some((changed, room, tree)) = self.derive_roster(presence, inputs.tree) else {
+            return false;
+        };
+        *seen = Some(RosterSeen {
+            inputs: RosterInputs { tree, ..inputs },
+            presence: roster_presence_print(presence, &self.anchored, &room),
+            room,
+            at: now,
+        });
+        changed
+    }
+
+    /// Derive the active room's roster and write it into the tree if it
+    /// changed. Returns whether it did, the room it was derived for, and the
+    /// tree generation the result stands for: `generation` (loaded before
+    /// the tree was read), or the one this refresh's own write leaves when
+    /// nobody else wrote in between. `None` when the replica cannot be read.
+    fn derive_roster(
+        &self,
+        presence: &PresenceCtx,
+        generation: u64,
+    ) -> Option<(bool, String, u64)> {
         let local = self.net.local_peer_id_hash();
         // Written only on change — a lock every frame would contend
         // with the network thread. `replica` is locked once to compute
@@ -548,9 +701,9 @@ impl PeerPresence {
         // held across both — the network thread's own use of the lock
         // is short, and holding it through an unrelated write extends
         // every contending wait by however long that write takes.
-        let (active, rows) = {
+        let (active, rows, room) = {
             let Ok(replica) = self.net.replica.lock() else {
-                return false;
+                return None;
             };
             let tree = replica.tree.read();
             let Some(ws) = tree
@@ -559,10 +712,10 @@ impl PeerPresence {
                 .iter()
                 .find(|w| w.id == tree.desktop.active)
             else {
-                return false;
+                return Some((false, String::new(), generation));
             };
             if ws.room.is_nil() {
-                return false;
+                return Some((false, String::new(), generation));
             }
             let labels = tree.room_peer_labels(ws.room);
             // Two ways to be present: moving cursor, or CRDT participation.
@@ -604,14 +757,21 @@ impl PeerPresence {
             // than holding it to the end of the block below.
             drop(tree);
             if unchanged {
-                return false;
+                return Some((false, room, generation));
             }
-            (active, rows)
+            (active, rows, room)
         };
         let Ok(replica) = self.net.replica.lock() else {
-            return false;
+            return None;
         };
         let mut tree = replica.tree.write();
+        // The write lock is held, so nobody else writes before this guard's
+        // release advances the generation by one.
+        let written = if self.roster_tree.generation() == generation {
+            generation.wrapping_add(1)
+        } else {
+            generation
+        };
         if let Some(workspace) = tree
             .desktop
             .workspaces
@@ -624,8 +784,54 @@ impl PeerPresence {
         // chrome always reads the active workspace directly, so this cache
         // cannot leak another workspace's presence into the top bar.
         tree.desktop.collaborators = rows;
-        true
+        drop(tree);
+        Some((true, room, written))
     }
+}
+
+/// An order-insensitive fingerprint of what the roster reads from presence
+/// in `room`: whose pointer is seen there (placed, or anchored to a tab this
+/// device does not show), every name, and who is on which tab. Equal prints
+/// mean a re-derived roster would read the same presence.
+fn roster_presence_print(
+    presence: &PresenceCtx,
+    anchored: &Mutex<AnchoredPointers>,
+    room: &str,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn hash_of(value: impl Hash) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+    // A sum, not XOR, so two equal entries do not cancel out.
+    let mut print = 0u64;
+    let mut add = |hash: u64| print = print.wrapping_add(hash);
+    for (key, peers) in &presence.pointers {
+        if matches!(key, PresenceKey::Workspace { id } if id.as_str() == room) {
+            for (user, _) in peers {
+                add(hash_of((0u8, &user.0)));
+            }
+        }
+    }
+    for (user, name) in &presence.names {
+        add(hash_of((1u8, &user.0, name)));
+    }
+    for (key, users) in &presence.here {
+        if let PresenceKey::Tab { id } = key {
+            for user in users {
+                add(hash_of((2u8, id, &user.0)));
+            }
+        }
+    }
+    if let Ok(anchored) = anchored.lock() {
+        for (user, (anchored_in, _, _)) in anchored.iter() {
+            if anchored_in.as_str() == room {
+                add(hash_of((3u8, user)));
+            }
+        }
+    }
+    print
 }
 
 /// The peer handles this session has had presence from in `room`.
@@ -2622,6 +2828,289 @@ mod two_sessions {
         the_room_does_not_list_the_session_reading_it();
         a_named_peer_who_has_not_arrived_reads_as_invited();
         arriving_turns_an_invitation_into_a_participant();
+    }
+
+    /// How long [`while_the_replica_is_held`] holds the lock for frames
+    /// that should not need it: far longer than a hundred frames take.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Run `frames` while another thread holds `net`'s replica lock.
+    /// `None` when they did not finish before that thread let go after
+    /// `patience`: they reached for the replica.
+    fn while_the_replica_is_held<T>(
+        net: &ShellNetwork,
+        patience: std::time::Duration,
+        frames: impl FnOnce() -> T,
+    ) -> Option<T> {
+        use std::sync::atomic::AtomicBool;
+        let (locked, is_locked) = std::sync::mpsc::channel();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let released = AtomicBool::new(false);
+        let released_flag = &released;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let held = net.replica.lock().expect("the replica lock");
+                let _ = locked.send(());
+                let _ = finished.recv_timeout(patience);
+                released_flag.store(true, Ordering::SeqCst);
+                drop(held);
+            });
+            is_locked
+                .recv()
+                .expect("the other thread holds the replica");
+            let answer = frames();
+            // Read before letting go: once told, the other thread releases.
+            let held_throughout = !released.load(Ordering::SeqCst);
+            let _ = done.send(());
+            held_throughout.then_some(answer)
+        })
+    }
+
+    /// `wakeups` frames of the presence pump and roster refresh, as
+    /// [`FrameBuilder::pump_peer_presence`] runs them, while the replica is
+    /// held elsewhere. Whether any frame said something changed, or `None`
+    /// when they reached for the replica.
+    fn frames_without_the_replica(
+        relay: &PeerPresence,
+        net: &ShellNetwork,
+        presence: &mut PresenceCtx,
+        wakeups: usize,
+    ) -> Option<bool> {
+        while_the_replica_is_held(net, PATIENCE, || {
+            let mut changed = false;
+            for _ in 0..wakeups {
+                changed |= relay.pump(presence, &DESK_TILES);
+                changed |= relay.refresh_roster(presence);
+            }
+            changed
+        })
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario walks each roster input in turn on one fixture"
+    )]
+    fn the_roster_is_derived_again_only_after_one_of_its_inputs_changed() {
+        let guest_peer = peer_id(71);
+        let host_peer = peer_id(72);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("tilo-roster-gated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+        let mut on_host = PresenceCtx::default();
+
+        // Phase `the_first_frame_derives_it`.
+        assert!(host.pump(&mut on_host, &DESK_TILES) | host.refresh_roster(&on_host));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("Xaver".to_string(), None, true)],
+            "the room's named invitee is listed before anyone arrives",
+        );
+
+        // Phase `idle_frames_lock_nothing`. Its own write of the roster is
+        // not a reason to derive it again, and nothing else moved: a
+        // hundred frames finish while the replica is held elsewhere.
+        assert_eq!(
+            frames_without_the_replica(&host, &host_net, &mut on_host, 100),
+            Some(false),
+            "an idle frame must not take the replica lock or report a change",
+        );
+
+        // Phase `an_arrival_is_listed_on_the_next_frame`. Joining without a
+        // pointer — the request `accept_invite` sends.
+        {
+            let mut replica = host_net.replica.lock().expect("the replica lock");
+            replica.handle_from(
+                &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
+                &NeighbourMsg::SyncReq {
+                    since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
+                        .expect("empty heads serialise"),
+                    room: room.to_string(),
+                    invite_id: None,
+                    nonce: 0,
+                },
+            );
+        }
+        assert!(
+            host.refresh_roster(&on_host),
+            "a silent joiner reaches the roster on the very next frame",
+        );
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("Xaver".to_string(), None, false)],
+        );
+        assert_eq!(
+            frames_without_the_replica(&host, &host_net, &mut on_host, 100),
+            Some(false),
+            "and once listed, idle frames are free again",
+        );
+
+        // Phase `a_moving_pointer_does_not_rederive_it`. The guest's pointer
+        // lands (the fold changes presence), then moves; who is here does
+        // not change, so the roster is not derived again for the move.
+        let start = Instant::now();
+        guest.set_pointer(Some(on_desk(420.0, 300.0)));
+        assert!(guest.publish_local_cursor_at(&room.to_string(), start));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        assert!(host.pump(&mut on_host, &DESK_TILES), "the pointer lands");
+        host.refresh_roster(&on_host);
+        guest.set_pointer(Some(on_desk(500.0, 310.0)));
+        assert!(guest.publish_local_cursor_at(&room.to_string(), start + MIN_PUBLISH_GAP));
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        let roster_before = roster_of(&host_handle);
+        assert!(host.pump(&mut on_host, &DESK_TILES), "the pointer moves");
+        assert_eq!(
+            while_the_replica_is_held(&host_net, PATIENCE, || host.refresh_roster(&on_host)),
+            Some(false),
+            "a pointer moving is told apart from somebody arriving without the replica",
+        );
+        assert_eq!(roster_of(&host_handle), roster_before);
+
+        // Phase `a_tree_write_rederives_it`. Renaming the guest in the room
+        // is a tree write; the next frame lists the new name.
+        assert!(
+            host_handle
+                .write()
+                .name_peer(room, &OWNER.to_string(), &guest_peer, "Xaver E.")
+        );
+        assert!(host.refresh_roster(&on_host));
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("Xaver E.".to_string(), None, false)],
+        );
+
+        // Phase `a_missed_signal_is_late_not_lost`. The roster is derived
+        // again after `ROSTER_RECHECK` whatever the signals say: that frame
+        // reaches for the replica, and so waits for it.
+        let later = Instant::now() + ROSTER_RECHECK;
+        assert_eq!(
+            while_the_replica_is_held(&host_net, std::time::Duration::from_millis(300), || {
+                host.refresh_roster_at(&on_host, later)
+            }),
+            None,
+            "a frame past the recheck derives the roster again",
+        );
+        assert!(
+            !host.refresh_roster_at(&on_host, later),
+            "and finds the same people",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What an idle frame cost the roster before it was gated (deriving it
+    /// every frame) against what it costs now, in a room naming 30 people.
+    /// Printed for the record; asserted only in the direction that cannot
+    /// flake, since one side takes the replica and parses 30 endpoint ids
+    /// and the other loads three counters.
+    #[test]
+    fn an_idle_frame_costs_the_roster_a_fraction_of_deriving_it() {
+        const FRAMES: u32 = 2_000;
+        let people = (0..30_u8)
+            .map(|seed| (peer_id(100 + seed), format!("Person {seed}")))
+            .collect::<Vec<_>>();
+        let named = people
+            .iter()
+            .map(|(peer, name)| (peer.as_str(), name.as_str()))
+            .collect::<Vec<_>>();
+        let (mut host_tree, _room) = host_naming(&named);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-cost-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, _host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &peer_id(99));
+        let quiet = PresenceCtx::default();
+        assert!(host.refresh_roster(&quiet));
+        assert_eq!(roster_of(&host_handle).len(), 30);
+
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            let (changed, _, _) = host
+                .derive_roster(&quiet, host.roster_tree.generation())
+                .expect("the replica");
+            assert!(!changed);
+        }
+        let derived = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            assert!(!host.refresh_roster(&quiet));
+        }
+        let gated = started.elapsed();
+        eprintln!(
+            "TIL-136 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
+            derived / FRAMES,
+            gated / FRAMES,
+        );
+        assert!(gated < derived, "gated {gated:?} vs derived {derived:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn peer_colours_are_applied_when_one_changes_not_every_frame() {
+        let guest_peer = peer_id(81);
+        let host_peer = peer_id(82);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
+        let mut guest_tree = guest_joining(&mut host_tree, room);
+        looking_at_its_room(&mut host_tree);
+        looking_at_its_room(&mut guest_tree);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+
+        let dir = std::env::temp_dir().join(format!("tilo-colours-gated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        let (guest, _guest_net, mut guest_cmds) =
+            session(&dir, "g.sock", &guest_handle, &guest_peer);
+        let guest = {
+            guest.set_pointer(Some(on_desk(1.0, 2.0)));
+            assert!(guest.publish_local_cursor(&room.to_string()));
+            guest
+        };
+        over_the_wire(published(&mut guest_cmds), &host_net);
+        let user = ui::permissions::UserId(format!("peer@{}", handle_of(&guest_peer)));
+        let worn = host_net
+            .peer_colour(handle_of(&guest_peer))
+            .expect("the guest's frame says what colour they wear");
+
+        let mut on_host = PresenceCtx::default();
+        host.pump(&mut on_host, &DESK_TILES);
+        assert_eq!(
+            on_host.color_overrides.get(&user).copied(),
+            Some(ui::presence::identity_rgb(worn)),
+            "the first frame paints the guest in their colour",
+        );
+
+        // Nothing restates it: a frame with no colour news leaves presence
+        // as it is, which is what not walking every peer's colour looks like.
+        on_host.color_overrides.remove(&user);
+        for _ in 0..10 {
+            host.pump(&mut on_host, &DESK_TILES);
+        }
+        assert_eq!(on_host.color_overrides.get(&user), None);
+
+        let other = if worn == ui::tokens::PresenceHue::Violet {
+            ui::tokens::PresenceHue::Teal
+        } else {
+            ui::tokens::PresenceHue::Violet
+        };
+        host_net.note_peer_colour(handle_of(&guest_peer), Some(other.id()));
+        host.pump(&mut on_host, &DESK_TILES);
+        assert_eq!(
+            on_host.color_overrides.get(&user).copied(),
+            Some(ui::presence::identity_rgb(other)),
+            "a new colour is painted on the next frame",
+        );
+        drop(guest);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

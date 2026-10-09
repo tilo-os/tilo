@@ -115,7 +115,7 @@ use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
 pub use crate::shell::peer_sync_overlay::{
-    InviteRecipientPath, PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot,
+    InvitationTerms, InviteRecipientPath, PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot,
     PendingInvitationSummary, RememberedInvitee,
 };
 use crate::shell::portal_dialog::PortalDialogController;
@@ -137,11 +137,11 @@ use tilo_desktop::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationStack,
 };
 use tilo_desktop::sidebar_wheel_disc::SidebarWheelDisc;
+use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
-use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 use ui::widget::ButtonRole;
 
 fn roster_agent_subject(
@@ -1216,6 +1216,16 @@ pub enum PeerSyncAction {
     /// (`ShellOverlayHost::draw_peer_sync`); submitting it sends a
     /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+    /// Run one typed network request for an invitation action and return
+    /// its JSON output to the tracked caller. Nothing is shown or copied on
+    /// this screen: the caller may be a script, an agent or an assistive
+    /// tool, and an invitation token is a credential. `workspace` is the
+    /// active workspace the action was authorized in; the request fails
+    /// rather than act on a different one.
+    Network {
+        workspace: crate::shell::state::WorkspaceId,
+        request: PeerSyncRequest,
+    },
 }
 
 /// Rows the palette asks the registry for, shared round-robin between the
@@ -2178,6 +2188,12 @@ impl ShellOverlayHost {
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.app_actions = Some(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
+    }
+
+    /// Settles on the next change to any app invocation's status, for a
+    /// control reply waiting on its job. `None` before the broker attaches.
+    pub fn next_invocation_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_invocation_change()
     }
 
     pub(crate) fn attach_task_review(
@@ -3875,30 +3891,83 @@ impl ShellOverlayHost {
                 PeerSyncAction::Tracked { request_id, action } => (Some(request_id), *action),
                 action => (None, action),
             };
-            match action {
+            let result = match action {
                 PeerSyncAction::IssueInvite => {
                     let request = self.peer_sync_overlay.issue_invite_request();
                     self.run_peer_sync_request(&request, false);
+                    Ok(serde_json::Value::Null)
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
                     let _ = copy;
                     self.open_invite_manager();
                     self.peer_sync_overlay.prompt_invite_for(name);
+                    Ok(serde_json::Value::Null)
                 }
-                PeerSyncAction::PromptInvite => self.open_invite_manager(),
-                PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                PeerSyncAction::PromptInvite => {
+                    self.open_invite_manager();
+                    Ok(serde_json::Value::Null)
+                }
+                PeerSyncAction::PromptConnect => {
+                    self.peer_sync_overlay.prompt_connect();
+                    Ok(serde_json::Value::Null)
+                }
+                PeerSyncAction::Network { workspace, request } => {
+                    self.run_network_action(workspace, &request)
+                }
                 #[expect(
                     clippy::unreachable,
                     reason = "the palette queues a tracked request around one plain action, never another tracked one"
                 )]
                 PeerSyncAction::Tracked { .. } => unreachable!("tracked requests are unwrapped"),
-            }
+            };
             if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
                 chrome
                     .borrow_mut()
-                    .complete_peer_sync_request(request_id, Ok(()));
+                    .complete_peer_sync_request(request_id, result);
             }
         }
+    }
+
+    /// Carry out one invitation action's network request against the
+    /// workspace it was authorized in, returning the action's JSON output.
+    /// Resend and cancel are scoped to that workspace's pending invitations,
+    /// so an id from another workspace is not pending here.
+    fn run_network_action(
+        &mut self,
+        workspace: crate::shell::state::WorkspaceId,
+        request: &PeerSyncRequest,
+    ) -> Result<serde_json::Value, String> {
+        let active = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|active| active.id)
+        });
+        if active != Some(workspace) {
+            return Err("the active workspace changed before the invitation request ran".into());
+        }
+        if let PeerSyncRequest::ResendInvitation(id) | PeerSyncRequest::CancelInvitation(id) =
+            request
+        {
+            let PeerSyncResponse::PendingInvitations(pending) =
+                self.peer_sync_call(PeerSyncRequest::ListPendingInvitations)?
+            else {
+                return Err("peer-sync answered an unexpected response".into());
+            };
+            if !pending.iter().any(|invite| &invite.id == id) {
+                return Err("invitation is no longer pending".into());
+            }
+        }
+        let outcome = self.peer_sync_call(request.clone());
+        if matches!(
+            request,
+            PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::CancelInvitation(_)
+        ) {
+            self.refresh_pending_invitations();
+        }
+        crate::shell::peer_sync_overlay::network_action_output(request, outcome?)
     }
 
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
@@ -17471,31 +17540,27 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            // Authority comes from the same function the `member.role.set` /
+            // `member.remove` actions call, not from `is_owner`: that flag
+            // only decides whether the sheet offering the choice is drawn.
             WorkspaceSettingsOutcome::SetMemberRole(user, role) => {
-                let changed = self.chrome.as_ref().is_some_and(|chrome| {
-                    chrome
-                        .borrow()
-                        .tree()
-                        .desktop
-                        .active_workspace()
-                        .and_then(|ws| ws.role_of(&user))
-                        != Some(role)
-                });
-                if is_owner
-                    && changed
-                    && let Some(chrome) = self.chrome.clone()
+                if let Some(chrome) = self.chrome.clone()
+                    && let Err(error) = crate::shell::membership::set_member_role(
+                        &mut chrome.borrow_mut(),
+                        &user,
+                        role,
+                    )
                 {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::set_member_role(ws, actor, &user, role)
-                    });
+                    tracing::debug!(%error, "member role change refused");
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
             WorkspaceSettingsOutcome::ConfirmRemoveMember(user) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::remove_member(ws, actor, &user)
-                    });
+                if let Some(chrome) = self.chrome.clone()
+                    && let Err(error) =
+                        crate::shell::membership::remove_member(&mut chrome.borrow_mut(), &user)
+                {
+                    tracing::debug!(%error, "member removal refused");
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
@@ -17530,16 +17595,22 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
-                    });
+                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
+                        },
+                    );
                 }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    edit_active_workspace_caps(&chrome, move |ws, actor| {
-                        tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
-                    });
+                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
+                        },
+                    );
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
             }
@@ -21853,64 +21924,6 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
-/// Applies a permission edit to the active workspace, then mirrors it
-/// into the replicated doc and flushes — without the mirror, a click
-/// would edit only the in-memory cache and the next boot would read the
-/// old answer back off disk. `edit` runs with the local user as actor.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "st stays borrowed for `actor` up front and `st.bump()` at the end; the inner \
-              `tree` guard it derives feeds `outcome`, which is exactly what decides whether \
-              that final bump runs"
-)]
-fn edit_active_workspace_caps<F>(chrome: &Chrome, edit: F) -> bool
-where
-    F: FnOnce(&mut crate::shell::state::Workspace, &crate::shell::state::UserId) -> CapEdit,
-{
-    let mut st = chrome.borrow_mut();
-    let actor = st.active_local_user();
-    let outcome = {
-        let mut tree = st.tree_mut();
-        let Some(ws_id) = tree.desktop.active_workspace().map(|w| w.id) else {
-            return false;
-        };
-        let Some(room) = tree.desktop.active_workspace().map(|w| w.room) else {
-            return false;
-        };
-        if !tree.governs_room(room) {
-            return false;
-        }
-        let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
-            return false;
-        };
-        let changed = edit(ws, &actor);
-        if changed.is_empty() {
-            None
-        } else {
-            let written: Vec<crate::shell::state::CapOverride> = ws
-                .capabilities
-                .iter()
-                .filter(|c| changed.granted.contains(&c.id))
-                .cloned()
-                .collect();
-            for cap in written {
-                tree.doc_insert_capability(ws_id, &cap);
-            }
-            for id in &changed.revoked {
-                tree.doc_revoke_capability(ws_id, id);
-            }
-            tree.queue_save();
-            Some(())
-        }
-    };
-    if outcome.is_some() {
-        st.bump();
-        true
-    } else {
-        false
-    }
-}
-
 /// Route a click on a grant-composer control. The pickers only move the
 /// draft; `Submit` is the one that writes, and it writes through
 /// [`tilo_desktop::workspace_settings::apply_grant_draft`] so the
@@ -21924,9 +21937,12 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     match hit {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
-            edit_active_workspace_caps(chrome, move |ws, actor| {
-                tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
-            });
+            let _ = crate::shell::membership::edit_active_workspace_caps(
+                &mut chrome.borrow_mut(),
+                move |ws, actor| {
+                    tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
+                },
+            );
         }
         ComposerHit::Subject => {
             let mut st = chrome.borrow_mut();

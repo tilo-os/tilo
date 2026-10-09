@@ -747,15 +747,14 @@ impl Widget for OverviewPanel {
             self.metrics = metrics;
             self.dirty = true;
         }
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: percent(1.0_f32),
             },
             ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

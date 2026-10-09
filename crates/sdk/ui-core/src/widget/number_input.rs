@@ -853,7 +853,7 @@ impl Widget for NumberInput {
         self.minimum = size;
         self.field_padding = px_f32(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(size.width),
                 height: Dimension::length(size.height),
@@ -863,9 +863,8 @@ impl Widget for NumberInput {
             // leaf below its own size — see `Toggle::build_layout`).
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn adjust_layout_with_measure(
@@ -1179,18 +1178,7 @@ impl Widget for NumberInput {
 }
 
 impl crate::widget::controls::ActionControls for NumberInput {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
@@ -1200,14 +1188,6 @@ impl crate::widget::controls::ActionControls for NumberInput {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::SemanticAction(control_id.to_string()),
             }]
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
         }
     }
 }

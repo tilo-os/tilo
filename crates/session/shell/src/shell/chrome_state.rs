@@ -616,8 +616,11 @@ pub struct ChromeState {
     /// caller is blocked — see [`PendingPrompt`].
     pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for `is_active_workspace_owner`. `None` is
-    /// production behaviour (always owner, no logged-in-user identity
-    /// yet); `Some(false)` exercises the disabled-Revoke path.
+    /// production behaviour: ownership is computed from the active
+    /// workspace's capabilities. `Some(false)` exercises the disabled-Revoke
+    /// path. It only decides which controls are offered; member role changes
+    /// and removals are authorized by `crate::shell::membership` whatever it
+    /// says.
     pub test_only_owner_override: Option<bool>,
     /// Seeded at boot from the device identity.
     pub local_user_id: crate::shell::state::UserId,
@@ -719,7 +722,9 @@ pub struct ChromeState {
     tracked_record_requests: Vec<RecordRequest>,
     record_request_results: BTreeMap<u64, Result<(), String>>,
     next_record_request_id: u64,
-    peer_sync_request_results: BTreeMap<u64, Result<(), String>>,
+    /// Terminal results of tracked peer-sync requests: `Null` for one that
+    /// only presented something, the action output for a network request.
+    peer_sync_request_results: BTreeMap<u64, Result<serde_json::Value, String>>,
     next_peer_sync_request_id: u64,
     /// Foreign surfaces whose tab close affordance was activated. The native
     /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
@@ -987,7 +992,7 @@ impl ChromeState {
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,
-        result: Result<(), String>,
+        result: Result<serde_json::Value, String>,
     ) {
         self.peer_sync_request_results.insert(request_id, result);
     }
@@ -1011,7 +1016,7 @@ impl ChromeState {
     pub(crate) fn take_peer_sync_request_result(
         &mut self,
         request_id: u64,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<serde_json::Value, String>> {
         self.peer_sync_request_results.remove(&request_id)
     }
 

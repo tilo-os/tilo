@@ -77,6 +77,8 @@ pub enum DisplayOrigin {
     Published([u8; 16]),
 }
 
+mod action_directory;
+pub use action_directory::*;
 pub mod audio_output;
 pub mod committed_document;
 pub use agent_messages::{AgentMessageInput, AgentMessageObservation};
@@ -95,103 +97,6 @@ pub mod settings;
 pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
-
-/// Opaque capability naming MLS state held by the shell's vault provider.
-/// Bytes are useful only while registered in that provider; this type carries
-/// neither a key nor a filesystem path.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsVaultHandle([u8; 32]);
-
-impl MlsVaultHandle {
-    /// Wrap a freshly random identifier issued by a trusted broker/vault.
-    /// Possession alone is insufficient: the receiving provider must have the
-    /// identifier in its capability registry.
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque handle for one vault-registered MLS key package.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsKeyPackageHandle([u8; 32]);
-
-impl MlsKeyPackageHandle {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque broker receipt proving an encrypted snapshot reached durable
-/// document history. It resolves to a digest only in the issuing broker.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsSnapshotReceipt([u8; 32]);
-
-impl MlsSnapshotReceipt {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Broker-internal MLS membership command. This is not exposed
-/// as a `CollabService` RPC: applications never submit governance commands.
-/// The shell's authenticated workspace authority constructs it from live
-/// membership state and vault-issued handles.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MlsAuthorityTransaction {
-    pub idempotency_key: [u8; 32],
-    pub channel: [u8; 16],
-    pub workspace: String,
-    pub expected_membership_revision: u64,
-    pub vault: MlsVaultHandle,
-    pub action: MlsAuthorityAction,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum MlsAuthorityAction {
-    Admit {
-        recipient: [u8; 32],
-        role: MlsWorkspaceRole,
-        key_package: MlsKeyPackageHandle,
-    },
-    Remove {
-        recipient: [u8; 32],
-        leaf_index: u32,
-    },
-    EnableEncryption {
-        snapshot: MlsSnapshotReceipt,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MlsWorkspaceRole {
-    Admin,
-    Editor,
-    Commenter,
-    Viewer,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {
@@ -1478,7 +1383,7 @@ impl ChannelHandle {
                 // `action_count` above already proved `actions.len()` fits in
                 // u32, so every index here does too.
                 let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                encode_exported_action(list.reborrow().get(idx), a)?;
+                write_exported_action(list.reborrow().get(idx), a)?;
             }
         }
         req.send().promise.await?;
@@ -2470,506 +2375,6 @@ impl ActionStream {
             from_user_id,
         })
     }
-}
-
-/// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
-/// Kept here rather than depending on `tilo-actions` so this crate stays
-/// a client for one socket; an app wanting the richer type converts at
-/// its own edge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        /// Whether that text names content already in this machine's
-        /// store rather than words somebody says.
-        wants_content: bool,
-    },
-}
-
-/// Explicit resource-view metadata attached to the action that opens it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedView {
-    pub id: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub open_action: String,
-    pub primary: bool,
-    pub mount: Option<ExportedViewMount>,
-    pub range: Option<ExportedViewRange>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedViewRange {
-    pub action: String,
-    pub start_param: String,
-    pub end_param: String,
-    pub unit_param: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedViewMount {
-    pub action: String,
-    pub capability_param: String,
-    pub view_param: String,
-}
-
-/// Bounded descriptive source identity; never permission or authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedResourceSemanticIdentity {
-    pub kind: String,
-    pub key: String,
-}
-
-impl ExportedResourceSemanticIdentity {
-    pub const MAX_KIND_BYTES: usize = 128;
-    pub const MAX_KEY_BYTES: usize = 4096;
-
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        !self.kind.is_empty()
-            && self.kind.len() <= Self::MAX_KIND_BYTES
-            && self
-                .kind
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-            && !self.key.is_empty()
-            && self.key.len() <= Self::MAX_KEY_BYTES
-            && !self.key.chars().any(char::is_control)
-    }
-}
-
-/// One inert operation an application exports, without execution authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub semantic_identity: Option<ExportedResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    /// `document`, `effect`, or `view`.
-    pub operation_kind: String,
-    /// JSON encoding of the canonical typed parameter descriptors.
-    pub params_json: String,
-    /// JSON encoding of the complete safety/lifecycle/result contract.
-    pub contract_json: String,
-    pub view: Option<ExportedView>,
-    pub input: ExportedInput,
-}
-
-/// Complete inert expected state for explicit fresh semantic resolution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FreshActionBinding {
-    pub descriptor: ExportedAction,
-    /// Canonical JSON encoding of the action descriptor's execution locus.
-    pub locus: String,
-    /// Optional application operation type within the descriptor's broader
-    /// document/effect/view class.
-    pub operation_type: Option<String>,
-}
-
-/// Bounded, revision-aware request to an application-owned action directory.
-///
-/// `cursor` is opaque to callers. A source must reject it as stale when its
-/// revision no longer names the same ordering, rather than silently skipping
-/// or duplicating rows. Every numeric field is an upper bound, never a hint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryQuery {
-    /// Broker-issued live connection id. Zero requests the broker's root
-    /// directory; non-zero addresses one application directory.
-    pub peer_id: u64,
-    pub revision: String,
-    pub cursor: Vec<u8>,
-    pub needle: String,
-    pub parent_resource: String,
-    pub max_results: u32,
-    pub max_bytes: u32,
-    pub max_work: u32,
-    pub max_depth: u16,
-}
-
-/// A hierarchy-preserving directory row. Resource rows have no action or
-/// descriptor; action rows contain the canonical descriptor for that exact
-/// resource/action address.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryRow {
-    pub parent_resource: String,
-    pub resource: String,
-    /// Stable kind and user-facing label for resource/container rows. Action
-    /// rows repeat their descriptor values here so a shell can render either
-    /// shape without parsing raw resource identifiers.
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub resource_presentation_json: String,
-    pub action: Option<String>,
-    pub descriptor: Option<ExportedAction>,
-    pub fresh_binding: Option<FreshActionBinding>,
-    pub has_children: bool,
-    /// Permission-bearing action used only to disclose a container row.
-    pub visibility_action: Option<String>,
-    /// Contract paired with [`Self::visibility_action`].
-    pub visibility_contract_json: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryPage {
-    pub revision: String,
-    pub rows: Vec<ActionDirectoryRow>,
-    pub next_cursor: Vec<u8>,
-    pub exhausted: bool,
-    pub stale_cursor: bool,
-    pub budget_exhausted: bool,
-}
-
-/// Exact, current-authority response before an invocation is admitted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActionDirectoryResolution {
-    Found(Box<ActionDirectoryRow>),
-    NotFound,
-    StaleRevision,
-    Unavailable,
-}
-
-/// The two mutually exclusive ways to ask a live application to resolve one
-/// exact directory action.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ActionDirectoryResolutionRequest {
-    RevisionBound {
-        revision: String,
-        resource: String,
-        action: String,
-    },
-    FreshBinding {
-        resource: String,
-        action: String,
-        expected: Box<FreshActionBinding>,
-    },
-}
-
-/// An exact-resolution outcome and the live owner's authoritative revision.
-/// Revision-bound replies keep `revision` empty; a successful fresh reply must
-/// carry a non-empty revision.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActionDirectoryResolutionReply {
-    pub resolution: ActionDirectoryResolution,
-    pub revision: String,
-}
-
-#[cfg(feature = "client")]
-fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
-    value.to_str().map(str::to_owned).map_err(|error| {
-        capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
-    })
-}
-
-#[cfg(feature = "client")]
-/// Encode one complete exported action into its Cap'n Proto representation.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when the descriptor carries an invalid
-/// semantic identity.
-pub fn encode_exported_action(
-    mut row: collab_capnp::exported_action::Builder<'_>,
-    action: &ExportedAction,
-) -> Result<(), capnp::Error> {
-    row.set_resource(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        if !identity.is_valid() || identity.kind != action.resource_kind {
-            return Err(capnp::Error::failed(
-                "invalid resource semantic identity".into(),
-            ));
-        }
-        let mut out = row.reborrow().init_semantic_identity();
-        out.set_kind(&identity.kind);
-        out.set_key(&identity.key);
-    }
-    row.set_action(&action.action);
-    row.set_resource_kind(&action.resource_kind);
-    row.set_resource_label(&action.resource_label);
-    row.set_action_label(&action.action_label);
-    row.set_description(action.description.as_deref().unwrap_or(""));
-    row.set_operation_kind(&action.operation_kind);
-    row.set_params_json(&action.params_json);
-    row.set_contract_json(&action.contract_json);
-    if let Some(view) = &action.view {
-        let mut out = row.reborrow().init_view();
-        out.set_id(&view.id);
-        out.set_label(&view.label);
-        out.set_description(view.description.as_deref().unwrap_or(""));
-        out.set_open_action(&view.open_action);
-        out.set_primary(view.primary);
-        if let Some(range) = &view.range {
-            let mut range_out = out.reborrow().init_range();
-            range_out.set_action(&range.action);
-            range_out.set_start_param(&range.start_param);
-            range_out.set_end_param(&range.end_param);
-            range_out.set_unit_param(&range.unit_param);
-        }
-        if let Some(mount) = &view.mount {
-            let mut out = out.init_mount();
-            out.set_action(&mount.action);
-            out.set_capability_param(&mount.capability_param);
-            out.set_view_param(&mount.view_param);
-        }
-    }
-    let mut input = row.init_input();
-    match &action.input {
-        ExportedInput::None => input.set_none(()),
-        ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-    Ok(())
-}
-
-/// Encode a complete fresh semantic binding into its Cap'n Proto form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when the descriptor's semantic identity is
-/// invalid.
-#[cfg(feature = "client")]
-pub fn encode_fresh_action_binding(
-    mut out: collab_capnp::fresh_action_binding::Builder<'_>,
-    binding: &FreshActionBinding,
-) -> Result<(), capnp::Error> {
-    encode_exported_action(out.reborrow().init_descriptor(), &binding.descriptor)?;
-    out.set_locus(&binding.locus);
-    out.set_operation_type(binding.operation_type.as_deref().unwrap_or(""));
-    Ok(())
-}
-
-#[cfg(feature = "client")]
-/// Decode one complete exported action from its Cap'n Proto representation.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when required data is absent, malformed, or
-/// exceeds the bounded semantic-identity vocabulary.
-pub fn decode_exported_action(
-    row: collab_capnp::exported_action::Reader<'_>,
-) -> Result<ExportedAction, capnp::Error> {
-    let description = capnp_text(row.get_description()?)?;
-    let semantic_identity = if row.has_semantic_identity() {
-        let identity = row.get_semantic_identity()?;
-        let kind = identity.get_kind()?;
-        let key = identity.get_key()?;
-        if kind.len() > ExportedResourceSemanticIdentity::MAX_KIND_BYTES
-            || key.len() > ExportedResourceSemanticIdentity::MAX_KEY_BYTES
-        {
-            return Err(capnp::Error::failed(
-                "oversized resource semantic identity".into(),
-            ));
-        }
-        let identity = ExportedResourceSemanticIdentity {
-            kind: capnp_text(kind)?,
-            key: capnp_text(key)?,
-        };
-        if !identity.is_valid() || identity.kind != capnp_text(row.get_resource_kind()?)? {
-            return Err(capnp::Error::failed(
-                "invalid resource semantic identity".into(),
-            ));
-        }
-        Some(identity)
-    } else {
-        None
-    };
-    let input = match row.get_input()?.which()? {
-        collab_capnp::action_input::Which::None(()) => ExportedInput::None,
-        collab_capnp::action_input::Which::Text(text) => ExportedInput::Text {
-            prompt: capnp_text(text.get_prompt()?)?,
-            placeholder: capnp_text(text.get_placeholder()?)?,
-            wants_content: text.get_wants_content(),
-        },
-    };
-    let view = row
-        .has_view()
-        .then(|| row.get_view())
-        .transpose()?
-        .map(|view| {
-            let description = capnp_text(view.get_description()?)?;
-            Ok::<_, capnp::Error>(ExportedView {
-                id: capnp_text(view.get_id()?)?,
-                label: capnp_text(view.get_label()?)?,
-                description: (!description.is_empty()).then_some(description),
-                open_action: capnp_text(view.get_open_action()?)?,
-                primary: view.get_primary(),
-                range: view
-                    .has_range()
-                    .then(|| view.get_range())
-                    .transpose()?
-                    .map(|range| {
-                        Ok::<_, capnp::Error>(ExportedViewRange {
-                            action: capnp_text(range.get_action()?)?,
-                            start_param: capnp_text(range.get_start_param()?)?,
-                            end_param: capnp_text(range.get_end_param()?)?,
-                            unit_param: capnp_text(range.get_unit_param()?)?,
-                        })
-                    })
-                    .transpose()?,
-                mount: view
-                    .has_mount()
-                    .then(|| view.get_mount())
-                    .transpose()?
-                    .map(|mount| {
-                        Ok::<_, capnp::Error>(ExportedViewMount {
-                            action: capnp_text(mount.get_action()?)?,
-                            capability_param: capnp_text(mount.get_capability_param()?)?,
-                            view_param: capnp_text(mount.get_view_param()?)?,
-                        })
-                    })
-                    .transpose()?,
-            })
-        })
-        .transpose()?;
-    Ok(ExportedAction {
-        resource: capnp_text(row.get_resource()?)?,
-        semantic_identity,
-        action: capnp_text(row.get_action()?)?,
-        resource_kind: capnp_text(row.get_resource_kind()?)?,
-        resource_label: capnp_text(row.get_resource_label()?)?,
-        action_label: capnp_text(row.get_action_label()?)?,
-        description: (!description.is_empty()).then_some(description),
-        operation_kind: capnp_text(row.get_operation_kind()?)?,
-        params_json: capnp_text(row.get_params_json()?)?,
-        contract_json: capnp_text(row.get_contract_json()?)?,
-        view,
-        input,
-    })
-}
-
-/// Decode a complete fresh semantic binding from its Cap'n Proto form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when the descriptor or text is malformed.
-#[cfg(feature = "client")]
-pub fn decode_fresh_action_binding(
-    binding: collab_capnp::fresh_action_binding::Reader<'_>,
-) -> Result<FreshActionBinding, capnp::Error> {
-    let operation_type = capnp_text(binding.get_operation_type()?)?;
-    Ok(FreshActionBinding {
-        descriptor: decode_exported_action(binding.get_descriptor()?)?,
-        locus: capnp_text(binding.get_locus()?)?,
-        operation_type: (!operation_type.is_empty()).then_some(operation_type),
-    })
-}
-
-#[cfg(feature = "client")]
-fn decode_action_directory_row(
-    row: collab_capnp::action_directory_row::Reader<'_>,
-) -> Result<ActionDirectoryRow, capnp::Error> {
-    let action = capnp_text(row.get_action()?)?;
-    let visibility_action = capnp_text(row.get_visibility_action()?)?;
-    let descriptor = row
-        .has_descriptor()
-        .then(|| row.get_descriptor())
-        .transpose()?
-        .map(decode_exported_action)
-        .transpose()?;
-    let fresh_binding = row
-        .has_fresh_binding()
-        .then(|| row.get_fresh_binding())
-        .transpose()?
-        .map(decode_fresh_action_binding)
-        .transpose()?;
-    Ok(ActionDirectoryRow {
-        parent_resource: capnp_text(row.get_parent_resource()?)?,
-        resource: capnp_text(row.get_resource()?)?,
-        resource_kind: capnp_text(row.get_resource_kind()?)?,
-        resource_label: capnp_text(row.get_resource_label()?)?,
-        resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
-        action: (!action.is_empty()).then_some(action),
-        descriptor,
-        fresh_binding,
-        has_children: row.get_has_children(),
-        visibility_action: (!visibility_action.is_empty()).then_some(visibility_action),
-        visibility_contract_json: capnp_text(row.get_visibility_contract_json()?)?,
-    })
-}
-
-/// Decode a broker-validated directory page for an in-process shell client.
-/// Public so the shell can use the same typed bridge without reserialising a
-/// Cap'n Proto page into an eager JSON catalogue.
-/// Decode one bounded action-directory page from its Cap'n Proto wire form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when a field is absent, malformed, or cannot
-/// be decoded into the typed resource/action representation.
-#[cfg(feature = "client")]
-pub fn decode_action_directory_page(
-    page: collab_capnp::action_directory_page::Reader<'_>,
-) -> Result<ActionDirectoryPage, capnp::Error> {
-    let rows = page
-        .get_rows()?
-        .iter()
-        .map(decode_action_directory_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ActionDirectoryPage {
-        revision: capnp_text(page.get_revision()?)?,
-        rows,
-        next_cursor: page.get_next_cursor()?.to_vec(),
-        exhausted: page.get_exhausted(),
-        stale_cursor: page.get_stale_cursor(),
-        budget_exhausted: page.get_budget_exhausted(),
-    })
-}
-
-/// Decode a broker-validated exact resolution for an in-process shell client.
-/// Decode an exact action-directory resolution from its Cap'n Proto wire form.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when the union or a contained action row is
-/// malformed.
-#[cfg(feature = "client")]
-pub fn decode_action_directory_resolution(
-    resolution: collab_capnp::action_directory_resolution::Reader<'_>,
-) -> Result<ActionDirectoryResolution, capnp::Error> {
-    match resolution.which()? {
-        collab_capnp::action_directory_resolution::Which::Found(row) => Ok(
-            ActionDirectoryResolution::Found(Box::new(decode_action_directory_row(row?)?)),
-        ),
-        collab_capnp::action_directory_resolution::Which::NotFound(()) => {
-            Ok(ActionDirectoryResolution::NotFound)
-        }
-        collab_capnp::action_directory_resolution::Which::StaleRevision(()) => {
-            Ok(ActionDirectoryResolution::StaleRevision)
-        }
-        collab_capnp::action_directory_resolution::Which::Unavailable(()) => {
-            Ok(ActionDirectoryResolution::Unavailable)
-        }
-    }
-}
-
-/// Decode an exact directory result together with any authoritative current
-/// revision supplied by its live owner.
-///
-/// # Errors
-///
-/// Returns a Cap'n Proto error when either the resolution or revision is
-/// malformed.
-#[cfg(feature = "client")]
-pub fn decode_action_directory_resolution_reply(
-    resolution: collab_capnp::action_directory_resolution::Reader<'_>,
-) -> Result<ActionDirectoryResolutionReply, capnp::Error> {
-    Ok(ActionDirectoryResolutionReply {
-        revision: capnp_text(resolution.get_revision()?)?,
-        resolution: decode_action_directory_resolution(resolution)?,
-    })
 }
 
 /// One invocation off an [`InvocationStream`].
@@ -4070,8 +3475,12 @@ mod tests {
                 .expect("page reader");
             let decoded = decode_action_directory_page(reader).expect("page decodes");
             assert_eq!(
-                decoded.rows[0].resource_presentation_json,
-                r#"{"detail":"expires in 18 s","badge":"438 291"}"#
+                decoded.rows[0].presentation,
+                Some(tilo_actions::ResourcePresentation {
+                    detail: Some("expires in 18 s".into()),
+                    badge: Some("438 291".into()),
+                    preview: None,
+                })
             );
         }
         // phase: exported_view_metadata_round_trips
@@ -5269,12 +4678,43 @@ mod reliable_invocation_tests {
         b.set_device(&[4; 32]);
         b.set_target_binding(&[5; 32]);
     }
-    fn row(mut r: collab_capnp::action_directory_row::Builder<'_>) {
-        r.set_resource("r");
-        r.set_action("a");
-        let mut d = r.init_descriptor();
-        d.set_resource("r");
-        d.set_action("a");
+    /// A complete exact row for `r`/`a`, as the broker writes one: the
+    /// decoder refuses a descriptor without its operation kind and contract.
+    fn row(r: collab_capnp::action_directory_row::Builder<'_>) {
+        let contract = tilo_actions::ActionContract::view();
+        let descriptor = ExportedAction {
+            resource: "r".into(),
+            semantic_identity: None,
+            action: "a".into(),
+            resource_kind: "note".into(),
+            resource_label: "Note".into(),
+            action_label: "Open".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::View,
+            params: Vec::new(),
+            contract: contract.clone(),
+            view: None,
+            input: ExportedInput::None,
+        };
+        write_action_directory_row(
+            r,
+            &ActionDirectoryRow {
+                parent_resource: String::new(),
+                resource: "r".into(),
+                resource_kind: "note".into(),
+                resource_label: "Note".into(),
+                presentation: None,
+                action: Some("a".into()),
+                descriptor: Some(descriptor),
+                fresh_binding: None,
+                has_children: false,
+                visibility: Some(RowVisibility {
+                    action: "a".into(),
+                    contract,
+                }),
+            },
+        )
+        .unwrap();
     }
     fn observation(mut o: collab_capnp::published_invocation_observation::Builder<'_>, mode: u8) {
         o.set_host(&HOST);

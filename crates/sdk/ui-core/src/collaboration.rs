@@ -562,31 +562,9 @@ pub enum ActionDirectoryRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: String,
-    pub params_json: String,
-    pub contract_json: String,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: ExportedInput,
-}
+/// One inert operation this application exports, and what invoking it
+/// carries: the one exported-action shape, shared with the broker.
+pub use runtime_collab::{ExportedAction, ExportedInput};
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {

@@ -137,9 +137,7 @@ impl Widget for Spacer {
                 ..Default::default()
             },
         };
-        let node = taffy.leaf_node(style);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -2387,7 +2387,7 @@ impl Widget for VideoPlayer {
         // `ImageViewer`. `auto` only fills when a flex parent stretches the
         // node; as the root of a tree (a gallery cell, a harness) it
         // resolved to 0×0 and the placeholder glyph landed on the origin.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -2395,9 +2395,8 @@ impl Widget for VideoPlayer {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -880,7 +880,7 @@ impl Widget for Chip {
         let width = self
             .footprint
             .map_or_else(taffy::Dimension::auto, |size| length(size.width));
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             // A pill wider than its line gives way and elides its label rather
             // than running past the edge.
             flex_shrink: 1.0,
@@ -893,9 +893,8 @@ impl Widget for Chip {
                 height: length(self.metrics.height as f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// Replace the seed with the measured pill.

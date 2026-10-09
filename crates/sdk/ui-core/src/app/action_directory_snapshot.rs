@@ -111,16 +111,16 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: descriptor.address.resource.clone(),
                     resource_kind: descriptor.resource_kind.clone(),
                     resource_label: descriptor.resource_label.clone(),
-                    resource_presentation_json: resource
+                    presentation: resource
                         .presentation
-                        .as_ref()
-                        .filter(|value| value.is_valid())
-                        .and_then(|value| serde_json::to_string(value).ok())
-                        .unwrap_or_default(),
+                        .clone()
+                        .filter(tilo_actions::ResourcePresentation::is_valid),
                     action: Some(descriptor.address.action.clone()),
                     has_children: false,
-                    visibility_action: Some(descriptor.address.action.clone()),
-                    visibility_contract_json: exported.contract_json.clone(),
+                    visibility: Some(tilo_actions::remote::RowVisibility {
+                        action: descriptor.address.action.clone(),
+                        contract: exported.contract.clone(),
+                    }),
                     descriptor: Some(exported),
                     fresh_binding: App::directory_fresh_binding(resource, action),
                 };
@@ -151,19 +151,18 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     resource: resource.id.as_str().to_owned(),
                     resource_kind: resource.kind.clone(),
                     resource_label: resource.label.clone(),
-                    resource_presentation_json: resource
+                    presentation: resource
                         .presentation
-                        .as_ref()
-                        .filter(|value| value.is_valid())
-                        .and_then(|value| serde_json::to_string(value).ok())
-                        .unwrap_or_default(),
+                        .clone()
+                        .filter(tilo_actions::ResourcePresentation::is_valid),
                     action: None,
                     descriptor: None,
                     fresh_binding: None,
                     has_children: !actions.is_empty() || !children.is_empty(),
-                    visibility_action: Some(descriptor.address.action.clone()),
-                    visibility_contract_json: serde_json::to_string(&descriptor.contract)
-                        .unwrap_or_default(),
+                    visibility: Some(tilo_actions::remote::RowVisibility {
+                        action: descriptor.address.action.clone(),
+                        contract: descriptor.contract.clone(),
+                    }),
                 }]
             } else {
                 // Mutating/effect contracts disclose only their typed actions,

@@ -29,6 +29,8 @@ pub mod client_cursor;
 pub mod client_input;
 #[cfg(target_os = "linux")]
 pub mod client_settle;
+#[cfg(target_os = "linux")]
+pub(crate) mod control_invocation;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;

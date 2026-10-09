@@ -1423,7 +1423,7 @@ impl Widget for Button {
             self.metrics = metrics;
         }
         let height = px_f32(self.face_height());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             // An intrinsic button never shrinks below its label: a parent
             // with room shows it whole, and only a parent without room
             // (capped by `max_size`) makes the painter elide it.
@@ -1445,9 +1445,8 @@ impl Widget for Button {
                 height: Dimension::length(height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1869,18 +1868,7 @@ impl crate::resources::PublishesResources for Button {
 }
 
 impl crate::widget::controls::ActionControls for Button {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         use crate::widget::{ControlBindingKind, ControlBindingMetadata};
         if let Some(action) = &self.action {
