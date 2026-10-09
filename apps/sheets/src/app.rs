@@ -258,12 +258,6 @@ struct TabRename {
     editor: EditableLabel,
 }
 
-/// The palette ids of the annotation editors: the chart or comment id
-/// follows.
-const EDIT_CHART: &str = "sheets.edit-chart:";
-const EDIT_COMMENT: &str = "sheets.edit-comment:";
-const REPLY_COMMENT: &str = "sheets.reply-comment:";
-
 /// How many theme-derived tab colours the picker offers. A sheet stores a
 /// slot index, not an RGB, so the tab's colour dot follows the live theme.
 const TAB_PALETTE_LEN: usize = 6;
@@ -3353,7 +3347,6 @@ impl SheetsApp {
         if let Some(i) = self.palette.row_at(p) {
             self.palette.set_cursor(i);
             self.palette.activate_selected(state, path);
-            self.take_annotation_edit(state);
         } else if !Widget::get_rect(&self.palette).contains(p) {
             self.palette.close();
         }
@@ -3436,67 +3429,22 @@ impl SheetsApp {
         true
     }
 
-    /// Ask in the palette for the text an annotation control edits:
-    /// `prompt` names it, `prefill` is what it holds now. The answer comes
-    /// back as the palette's outcome with `id`
-    /// ([`Self::take_annotation_edit`]).
-    fn open_annotation_editor(&mut self, id: String, prompt: &str, prefill: String) {
-        let entry = CommandEntry::new(id, prompt).with_argument(prompt, String::new());
+    /// Ask in the palette for what the published action `action` of the
+    /// annotation `place` (`chart:<id>`, `comment:<id>`) takes, starting
+    /// from `prefill`; the palette invokes it as Ctrl+K does.
+    fn ask_annotation(&mut self, place: &str, action: &str, prefill: String) -> bool {
+        let resources = self.published();
+        let Some(flat) = tilo_actions::flatten(&resources)
+            .into_iter()
+            .find(|flat| flat.action.id == action && flat.resource_id.0.ends_with(place))
+        else {
+            self.status = "That is no longer there".into();
+            return false;
+        };
+        let entry = CommandEntry::from_flat_action(&flat);
         self.palette.open_action_argument(entry, Some(prefill));
         self.pending.redraw = true;
-    }
-
-    /// Apply what the person answered in an annotation editor the palette
-    /// asked for.
-    fn take_annotation_edit(&mut self, state: &mut Edits<'_>) {
-        let Some(outcome) = self.palette.take_outcome() else {
-            return;
-        };
-        let Some(sheet) = self.active_sheet_id() else {
-            return;
-        };
-        let text = outcome.argument.unwrap_or_default();
-        let invoke = if let Some(id) = outcome.id.strip_prefix(EDIT_CHART) {
-            Self::chart_edit(&sheet, &Id::from_raw(id), &text)
-        } else if let Some(id) = outcome.id.strip_prefix(EDIT_COMMENT) {
-            let path = Workbook::paths().comments.item(&Id::from_raw(id)).body;
-            Invoke::edit(&path.replace(text.trim())).ok()
-        } else {
-            outcome.id.strip_prefix(REPLY_COMMENT).map(|id| {
-                Workbook::REPLY.with(verbs::Reply {
-                    comment: Id::from_raw(id),
-                    text,
-                })
-            })
-        };
-        if let Some(invoke) = invoke
-            && self.submit(state, invoke)
-        {
-            self.status = "Saved".into();
-        }
-        self.reload();
-    }
-
-    /// The edit a chart form (`title | type | range`) asks for, as one step;
-    /// `None` when the form does not read.
-    fn chart_edit(sheet: &Id, chart: &Id, form: &str) -> Option<Invoke<Workbook>> {
-        let mut parts = form.split('|').map(str::trim);
-        let (Some(title), Some(kind), Some(range), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return None;
-        };
-        let kind = ChartKind::parse(kind)?;
-        crate::resource::parse_range(range)?;
-        let path = Workbook::paths().sheets.item(sheet).charts.item(chart);
-        let title = Invoke::edit(&path.title.set(Atom(title.to_owned()))).ok()?;
-        let kind = Invoke::edit(&path.kind.set(kind)).ok()?;
-        let moved = Workbook::MOVE_CHART.with(verbs::MoveChart {
-            sheet: sheet.clone(),
-            chart: chart.clone(),
-            range: range.to_owned(),
-        });
-        Some(Invoke::group([title, kind, moved]))
+        true
     }
 
     fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut Edits<'_>) {
@@ -3513,15 +3461,10 @@ impl SheetsApp {
                     self.status = "Chart no longer exists".into();
                     return;
                 };
-                let form = format!(
-                    "{} | {} | {}:{}",
-                    chart.title,
-                    chart.kind.code(),
-                    crate::model::addr_to_a1(chart.start.0, chart.start.1),
-                    crate::model::addr_to_a1(chart.end.0, chart.end.1),
-                );
-                self.open_annotation_editor(format!("{EDIT_CHART}{id}"), "Edit chart", form);
-                self.status = "Edit chart: title | type | source range".into();
+                let title = chart.title.clone();
+                if self.ask_annotation(&format!("chart:{id}"), "edit-chart", title) {
+                    self.status = "Editing chart".into();
+                }
             }
             AnnotationClick::DeleteChart(id) => {
                 self.submit(
@@ -3534,12 +3477,9 @@ impl SheetsApp {
                 self.status = "Deleted chart".into();
             }
             AnnotationClick::Reply(id) => {
-                self.open_annotation_editor(
-                    format!("{REPLY_COMMENT}{id}"),
-                    "Reply to comment",
-                    String::new(),
-                );
-                self.status = "Replying to comment".into();
+                if self.ask_annotation(&format!("comment:{id}"), "reply", String::new()) {
+                    self.status = "Replying to comment".into();
+                }
             }
             AnnotationClick::EditComment(id) => {
                 let Some(thread) = self.sheet_comments.iter().find(|thread| thread.id == id) else {
@@ -3547,8 +3487,9 @@ impl SheetsApp {
                     return;
                 };
                 let body = thread.body.clone();
-                self.open_annotation_editor(format!("{EDIT_COMMENT}{id}"), "Edit comment", body);
-                self.status = "Editing comment".into();
+                if self.ask_annotation(&format!("comment:{id}"), "edit-comment", body) {
+                    self.status = "Editing comment".into();
+                }
             }
             AnnotationClick::ToggleComment(id, resolved) => {
                 let path = Workbook::paths().comments.item(&Id::from_raw(id)).resolved;
@@ -3743,7 +3684,6 @@ impl SheetsApp {
                     taffy: ctx.taffy,
                 },
             );
-            self.take_annotation_edit(state);
             self.pending.redraw = true;
             *handled = true;
             return;
@@ -6280,6 +6220,195 @@ pub(crate) mod tests {
             app.go_to_cell("not-a-ref");
             assert!(app.status.contains("not a valid"), "status: {}", app.status);
         }
+    }
+
+    /// Run the published action the palette emitted against `doc`, as the
+    /// door does, and let the app follow.
+    fn run_palette_action(app: &mut SheetsApp, doc: &mut AutoCommit) {
+        let intent = ui::widget::controls::take_control_invocation(app)
+            .expect("the palette invoked a published action");
+        let resources = app.published();
+        let spec = tilo_actions::door::resolve(&resources, &intent.address)
+            .expect("the palette's address resolves");
+        let encoded = spec
+            .build_json(&intent.arguments)
+            .expect("the palette's arguments build");
+        let action: <Workbook as ui::tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).expect("a workbook action");
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply_action(&action).expect("the action applies");
+        *doc = book.doc().clone();
+        app.sync(doc, &automerge::ROOT);
+    }
+
+    /// Type `text` over the palette's argument, then press Enter.
+    fn answer_palette(app: &mut SheetsApp, doc: &mut AutoCommit, text: &str) {
+        assert!(app.palette.in_argument_mode(), "the palette asks");
+        for ch in text.chars() {
+            feed(app, doc, &char_event(&ch.to_string()), Modifiers::default());
+        }
+        feed(
+            app,
+            doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default(),
+        );
+    }
+
+    /// Editing a chart, replying to a comment and editing a comment ask in
+    /// the palette for the argument of the action the chart or comment
+    /// publishes, and invoke that action.
+    #[test]
+    fn annotation_edits_ask_for_the_published_actions() {
+        let (mut app, mut doc) = seeded_app();
+        let sheet = app.sheet_ids[0].clone();
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "B2:C4".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        book.apply(Workbook::COMMENT.with(verbs::Comment {
+            sheet: sheet.clone(),
+            range: "B2".into(),
+            text: "Check this".into(),
+        }))
+        .unwrap();
+        doc = book.doc().clone();
+        app.sync(&doc, &automerge::ROOT);
+        let state = doc_workbook(&doc);
+        let chart = state
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+        let comment = state.comments.ids().next().unwrap().clone();
+
+        app.apply_annotation_click(
+            AnnotationClick::EditChart(chart.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        assert_eq!(app.palette.argument_buffer(), Some("Spend"));
+        answer_palette(&mut app, &mut doc, "Costs");
+        run_palette_action(&mut app, &mut doc);
+        let charted = doc_workbook(&doc);
+        let edited = charted
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .get(&chart)
+            .unwrap();
+        assert_eq!(edited.title.0, "Costs");
+        assert_eq!(edited.kind, ChartKind::Column, "the type is kept");
+
+        app.apply_annotation_click(
+            AnnotationClick::Reply(comment.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        answer_palette(&mut app, &mut doc, "Done");
+        run_palette_action(&mut app, &mut doc);
+
+        app.apply_annotation_click(
+            AnnotationClick::EditComment(comment.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        assert_eq!(app.palette.argument_buffer(), Some("Check this"));
+        answer_palette(&mut app, &mut doc, "Checked");
+        run_palette_action(&mut app, &mut doc);
+
+        let state = doc_workbook(&doc);
+        let thread = state.comments.get(&comment).unwrap();
+        assert_eq!(thread.body, "Checked");
+        let replies: Vec<&str> = thread
+            .replies
+            .values()
+            .map(|reply| reply.body.as_str())
+            .collect();
+        assert_eq!(replies, ["Done"]);
+    }
+
+    /// An agent edits a chart's title, type and cells in one call, and a
+    /// comment's text and replies on the comment itself.
+    #[test]
+    fn an_agent_edits_charts_and_comments_in_one_call_each() {
+        let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
+        let sheet = app.state().sheets.ids().next().unwrap().clone();
+        app.invoke(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "A1:B3".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        app.invoke(Workbook::COMMENT.with(verbs::Comment {
+            sheet: sheet.clone(),
+            range: "A1".into(),
+            text: "Check this".into(),
+        }))
+        .unwrap();
+        let state = app.state();
+        let chart = state
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+        let comment = state.comments.ids().next().unwrap().clone();
+        let on_sheet = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
+        let on_comment =
+            ui::tilo_resource::items::item_resource_id::<Workbook>("comments", &comment);
+
+        app.call_on(
+            &on_sheet,
+            "edit-chart",
+            serde_json::json!({"chart": chart, "title": "Costs", "kind": "line", "range": "B2:C5"}),
+        )
+        .unwrap();
+        assert!(
+            app.call_on(
+                &on_sheet,
+                "edit-chart",
+                serde_json::json!({"chart": chart, "title": "Costs", "range": "B2:"}),
+            )
+            .is_err(),
+            "a range is cells"
+        );
+        app.call_on(
+            &on_comment,
+            "edit-comment",
+            serde_json::json!({"body": "Checked"}),
+        )
+        .unwrap();
+        app.call_on(&on_comment, "reply", serde_json::json!({"text": "Done"}))
+            .unwrap();
+
+        let state = app.state();
+        let sheet_state = state.sheets.get(&sheet).unwrap();
+        let edited = sheet_state.charts.get(&chart).unwrap();
+        assert_eq!(
+            (edited.title.0.as_str(), edited.kind),
+            ("Costs", ChartKind::Line)
+        );
+        let layout = sheet_state.layout();
+        let snapshot = sheet_state
+            .chart_snapshots(&layout)
+            .into_iter()
+            .find(|snapshot| snapshot.id == chart.as_str())
+            .unwrap();
+        assert_eq!((snapshot.start, snapshot.end), ((1, 1), (2, 4)));
+        let thread = state.comments.get(&comment).unwrap();
+        assert_eq!(thread.body, "Checked");
+        assert_eq!(thread.replies.len(), 1);
     }
 
     /// Sum-selection, row/column insertion, formula view and new-sheet commands.

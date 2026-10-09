@@ -97,6 +97,39 @@ pub fn parse_range(text: &str) -> Option<(Addr, Addr)> {
     (range.1.0 <= MAX_COLUMN && range.1.1 <= MAX_ROW).then_some(range)
 }
 
+/// Cells as people write them: `B3`, or `B3:D9`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellRange {
+    pub start: Addr,
+    pub end: Addr,
+}
+
+impl serde::Serialize for CellRange {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&range_label(self.start, self.end))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CellRange {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let (start, end) = parse_range(&text).ok_or_else(|| {
+            serde::de::Error::custom(format!("`{text}` is not a cell or range such as A1:D6"))
+        })?;
+        Ok(Self { start, end })
+    }
+}
+
+impl tilo_resource::JsonSchema for CellRange {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "string",
+            "pattern": "^[A-Za-z]+[0-9]+(:[A-Za-z]+[0-9]+)?$",
+            "description": "A cell or a range of cells, e.g. B3 or B2:D6"
+        })
+    }
+}
+
 fn range_of(text: &str) -> Result<(Addr, Addr), Refusal> {
     parse_range(text)
         .ok_or_else(|| Refusal::new(format!("`{text}` is not a cell or range such as A1:D6")))
@@ -587,24 +620,40 @@ impl Workbook {
         Ok(())
     }
 
-    /// Chart another range.
+    /// Edit a chart: its title, and its type and cells when given.
     #[action(item = sheets)]
-    pub fn move_chart(
+    pub fn edit_chart(
         &mut self,
         sheet: &Id,
         #[param("The chart")] chart: Id,
-        #[param("The cells to chart, e.g. B2:D6")] range: String,
+        #[param("Title")] title: String,
+        #[param("Chart type; none keeps it")] kind: Option<ChartKind>,
+        #[param("The cells to chart, e.g. B2:D6; none keeps them")] range: Option<CellRange>,
     ) -> Result<(), Refusal> {
-        let (start, end) = range_of(&range)?;
         let target = self.sheet_mut(sheet)?;
-        let area = target
-            .area(start, end)
-            .ok_or_else(|| Refusal::new("the range is outside the sheet"))?;
-        target
+        let area = match range {
+            Some(range) => Some(
+                target
+                    .area(range.start, range.end)
+                    .ok_or_else(|| Refusal::new("the range is outside the sheet"))?,
+            ),
+            None => None,
+        };
+        let chart = target
             .charts
             .get_mut(&chart)
-            .ok_or_else(|| Refusal::new("no such chart"))?
-            .area = area;
+            .ok_or_else(|| Refusal::new("no such chart"))?;
+        let title = title.trim();
+        if title.len() > MAX_ANNOTATION_BYTES {
+            return Err(Refusal::new("a title of at most 4 KiB"));
+        }
+        chart.title = Atom(if title.is_empty() { "Chart" } else { title }.to_owned());
+        if let Some(kind) = kind {
+            chart.kind = kind;
+        }
+        if let Some(area) = area {
+            chart.area = area;
+        }
         Ok(())
     }
 
@@ -672,6 +721,21 @@ impl Workbook {
         Ok(())
     }
 
+    /// Edit a comment's text.
+    #[action(item = comments)]
+    pub fn edit_comment(
+        &mut self,
+        comment: &Id,
+        #[param("Comment")] body: String,
+    ) -> Result<(), Refusal> {
+        let body = annotation(&body)?;
+        self.comments
+            .get_mut(comment)
+            .ok_or_else(|| Refusal::new("the comment no longer exists"))?
+            .body = body;
+        Ok(())
+    }
+
     /// Delete a comment.
     #[action(destructive, item = comments)]
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
@@ -701,9 +765,9 @@ impl Workbook {
                             row: chart.start.1,
                         })
                         .with(
-                            Self::MOVE_CHART
-                                .bind(verbs::MoveChart::paths().sheet, sheet_id.clone())
-                                .and(verbs::MoveChart::paths().chart, id.clone()),
+                            Self::EDIT_CHART
+                                .bind(verbs::EditChart::paths().sheet, sheet_id.clone())
+                                .and(verbs::EditChart::paths().chart, id.clone()),
                         )
                         .with(
                             Self::DELETE_CHART
@@ -728,6 +792,7 @@ impl Workbook {
                         row: thread.start.1,
                     })
                     .with(Self::REPLY.bind(verbs::Reply::paths().comment, id.clone()))
+                    .with(Self::EDIT_COMMENT.bind(verbs::EditComment::paths().comment, id.clone()))
                     .with(Self::DELETE_COMMENT.bind(verbs::DeleteComment::paths().comment, id)),
                 );
             }

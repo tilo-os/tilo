@@ -708,10 +708,10 @@ description = "Title"
 type = "string"
 
 [[resources.verbs]]
-description = "Chart another range."
-id = "move-chart"
+description = "Edit a chart: its title, and its type and cells when given."
+id = "edit-chart"
 kind = "undoable"
-label = "Chart another range"
+label = "Edit a chart: its title, and its type and cells when given"
 
 [[resources.verbs.params]]
 name = "sheet"
@@ -730,12 +730,41 @@ description = "The chart"
 type = "string"
 
 [[resources.verbs.params]]
-name = "range"
+name = "title"
 required = true
 
 [resources.verbs.params.schema]
-description = "The cells to chart, e.g. B2:D6"
+description = "Title"
 type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = false
+
+[resources.verbs.params.schema]
+description = "Chart type; none keeps it"
+
+[[resources.verbs.params.schema.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.oneOf]]
+enum = [
+    "column",
+    "line",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "range"
+required = false
+
+[resources.verbs.params.schema]
+description = "The cells to chart, e.g. B2:D6; none keeps them"
+pattern = "^[A-Za-z]+[0-9]+(:[A-Za-z]+[0-9]+)?$"
+type = [
+    "string",
+    "null",
+]
 
 [[resources.verbs]]
 description = "Delete a chart."
@@ -818,6 +847,32 @@ required = true
 
 [resources.verbs.params.schema]
 description = "Reply"
+type = "string"
+
+[[resources.verbs]]
+description = "Edit a comment's text."
+id = "edit-comment"
+kind = "undoable"
+label = "Edit a comment's text"
+writes = [
+    "record",
+    "comments.*",
+]
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+description = "Comment"
+type = "string"
+
+[[resources.verbs.params]]
+name = "body"
+required = true
+
+[resources.verbs.params.schema]
+description = "Comment"
 type = "string"
 
 [[resources.verbs]]
