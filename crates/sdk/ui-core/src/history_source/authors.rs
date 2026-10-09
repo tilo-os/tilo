@@ -354,6 +354,34 @@ pub fn device_actor(handle: &str, device: &automerge::ActorId) -> Vec<u8> {
     actor
 }
 
+/// The actors a device writes as, to tell its changes apart: its record
+/// writer, and the [`device_actor`] of any handle on it.
+#[derive(Clone, Debug)]
+pub struct DeviceActors {
+    writer: String,
+    suffix: Vec<u8>,
+}
+
+impl DeviceActors {
+    /// The actors of the device whose record writer is `device`.
+    pub fn of(device: &automerge::ActorId) -> Self {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(device.to_bytes());
+        let mut suffix = vec![DEVICE_SEPARATOR as u8];
+        suffix.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
+        Self {
+            writer: device.to_hex_string(),
+            suffix,
+        }
+    }
+
+    /// Whether the actor `actor_hex` wrote from this device.
+    pub fn wrote(&self, actor_hex: &str) -> bool {
+        actor_hex == self.writer
+            || hex::decode(actor_hex).is_ok_and(|bytes| bytes.ends_with(&self.suffix))
+    }
+}
+
 /// The bare handle's actor of a [`device_actor`], hex-encoded.
 fn handle_actor_hex(actor_hex: &str) -> Option<String> {
     let bytes = hex::decode(actor_hex).ok()?;

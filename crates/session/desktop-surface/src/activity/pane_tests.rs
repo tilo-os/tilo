@@ -24,7 +24,6 @@ mod tests {
     use automerge::transaction::{CommitOptions, Transactable};
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
-    use ui::widget::op_class_is_revertible;
 
     #[derive(Clone)]
     struct NativeTree(WorkspaceTree);
@@ -1088,7 +1087,7 @@ mod tests {
         let resource_entry = HistoryEntry {
             id: HistoryEntryId([71; 16]),
             author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH,
             summary: "Edited launch brief".into(),
@@ -1527,7 +1526,7 @@ mod tests {
         pane.open_external_entry(HistoryEntry {
             id,
             author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
-            op_class: collab_types::OpClass::Compaction,
+            entry_kind: EntryKind::Compaction,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
             summary: "Edited · Launch brief.md".into(),
@@ -1875,7 +1874,7 @@ mod tests {
     }
 
     #[test]
-    fn action_type_chips_narrow_by_op_class() {
+    fn action_type_chips_narrow_by_entry_kind() {
         use ui::widget::activity_timeline::ChipKind;
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
@@ -1890,8 +1889,8 @@ mod tests {
         assert!(gov < all, "governance is a subset: {gov} of {all}");
         for i in 0..pane.visible_len() {
             assert_eq!(
-                pane.visible_entry(i).unwrap().op_class,
-                OpClass::Govern,
+                pane.visible_entry(i).unwrap().entry_kind,
+                EntryKind::Access,
                 "the Governance chip must only show governance rows"
             );
         }
@@ -1970,7 +1969,7 @@ mod tests {
         for i in 0..pane.visible_len() {
             let e = pane.visible_entry(i).unwrap();
             assert!(
-                !op_class_is_revertible(e.op_class),
+                !e.entry_kind.is_revertible(),
                 "{:?} offered a revert chip",
                 e.summary
             );
@@ -1998,7 +1997,7 @@ mod tests {
             "the grant names verb, scope and subject: {:?}",
             grant.summary
         );
-        assert_eq!(grant.op_class, OpClass::Govern);
+        assert_eq!(grant.entry_kind, EntryKind::Access);
     }
 
     #[test]
@@ -3711,7 +3710,7 @@ mod resume_card_tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new(author, 210.0, ui::history_source::short_id(author)),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::File,
             timestamp,
             summary: "Edited assumptions".into(),

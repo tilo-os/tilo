@@ -131,7 +131,8 @@ pub mod text;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Stamped, Undoing, fresh_uuid, minted_ids, take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, reverting_type,
+    take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
@@ -173,8 +174,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionKind, ActionParam, ActionSpec, ChangeKind, OperationKind, PROMPTED_PARAM,
-        ParamType, Resource, ResourceViewSpec, RiskLevel,
+        ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, ChangeKind, OperationKind,
+        PROMPTED_PARAM, ParamType, Resource, ResourceViewSpec, RiskLevel,
     };
 
     /// A parameter's schema: its type's, described, with an example.

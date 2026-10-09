@@ -1590,9 +1590,10 @@ mod tests {
     use super::*;
     use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -1604,7 +1605,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -1794,9 +1795,10 @@ mod tests {
 mod version_tests {
     use super::*;
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -1809,7 +1811,7 @@ mod version_tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))

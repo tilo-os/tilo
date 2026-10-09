@@ -7,9 +7,9 @@
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::widget::EntryKind;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
-use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
@@ -261,7 +261,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[1].summary, "+6 -0 chars", "\" world\"");
         assert_eq!(rows[2].summary, "+1 -0 chars", "\"!\"");
         for r in &rows {
-            assert_eq!(r.op_class, OpClass::Splice, "text edits are splices");
+            assert_eq!(r.entry_kind, EntryKind::Text, "text edits are splices");
         }
     }
     // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
@@ -310,10 +310,10 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             rows[1].summary, "+0 -5 chars",
             "deleting \" this\" is five chars"
         );
-        assert_eq!(rows[1].op_class, OpClass::Splice);
+        assert_eq!(rows[1].entry_kind, EntryKind::Text);
         assert_eq!(
-            rows[2].op_class,
-            OpClass::Tombstone,
+            rows[2].entry_kind,
+            EntryKind::Delete,
             "a removed block is a delete"
         );
         assert_eq!(rows[2].summary, "-1 block");
@@ -337,12 +337,12 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(entries.len(), 3, "three commits, three rows");
         assert_eq!(entries[0].summary, "+5 -0 chars");
         assert_eq!(entries[1].summary, "+6 -0 chars");
-        assert_eq!(entries[1].op_class, OpClass::Splice);
+        assert_eq!(entries[1].entry_kind, EntryKind::Text);
         assert_eq!(
             entries[2].summary, "Edited title",
             "a map put names the field it edited"
         );
-        assert_eq!(entries[2].op_class, OpClass::EditMeta);
+        assert_eq!(entries[2].entry_kind, EntryKind::Details);
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
             "single-actor document, single author"

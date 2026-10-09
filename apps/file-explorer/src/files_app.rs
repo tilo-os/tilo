@@ -4326,7 +4326,7 @@ impl FileExplorerWidget {
                         ),
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
-                        op_class: ui::widget::OpClass::Compaction,
+                        entry_kind: ui::widget::EntryKind::Compaction,
                         artifact_kind: ui::widget::ArtifactKind::File,
                         timestamp: UNIX_EPOCH
                             .checked_add(Duration::from_millis(version.timestamp_ms))

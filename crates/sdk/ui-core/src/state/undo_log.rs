@@ -21,6 +21,7 @@ use tilo_resource::history::Version;
 
 use super::owned_restore;
 use crate::application::InstanceId;
+use crate::history_source::authors;
 use crate::history_source::steps::{self, UNDONE_KEY};
 use crate::permissions::UserId;
 
@@ -148,6 +149,12 @@ struct Restoration {
     settles: bool,
 }
 
+/// What a history may take back: not the open step, only this device's.
+struct Reach {
+    open: HashSet<ChangeHash>,
+    device: authors::DeviceActors,
+}
+
 /// Where a history move was taken (the window and its caret), and what
 /// undoing it applies when that is an action.
 struct Placement {
@@ -268,10 +275,10 @@ impl UndoLog {
         version: &Version,
         author: Option<&UserId>,
         instance: Option<InstanceId>,
-        open: &HashSet<ChangeHash>,
+        reach: &Reach,
     ) -> bool {
         // The open step is no step yet: it ends at the next boundary.
-        if open.contains(&version.hash) {
+        if reach.open.contains(&version.hash) {
             return false;
         }
         let presented = self.presented.get(&step_key(version));
@@ -290,8 +297,11 @@ impl UndoLog {
                 None => presented.is_some(),
             },
         };
+        // Only what was done here: a step on another device is that
+        // device's to take back (or the published undo's, by scope).
         by && instance
             .is_none_or(|instance| presented.is_none_or(|step| step.instance_id == Some(instance)))
+            && (presented.is_some() || reach.device.wrote(&version.actor))
     }
 
     /// The step a change is taken back with: the step this session closed
@@ -303,21 +313,26 @@ impl UndoLog {
         }
     }
 
-    /// The changes this history cannot take back: those since it began that
-    /// it never closed a step over.
-    fn open_changes(&self, doc: &AutoCommit) -> HashSet<ChangeHash> {
+    /// What this history can take back in `doc`: not the changes since it
+    /// began that it never closed a step over, and only what this device
+    /// wrote.
+    fn open_changes(&self, doc: &AutoCommit) -> Reach {
         // Changes made since this history began that it never closed a step
         // over (the open step, an unrecorded raw write) are nobody's step.
         let mut index = self.index.borrow_mut();
         index.refresh(doc);
-        index
+        let open = index
             .versions()
             .get(self.origin_len..)
             .unwrap_or_default()
             .iter()
             .map(|version| version.hash)
             .filter(|hash| !self.presented.contains_key(hash))
-            .collect()
+            .collect();
+        Reach {
+            open,
+            device: authors::DeviceActors::of(doc.get_actor()),
+        }
     }
 
     fn step_entry(&self, doc: &AutoCommit, step: &[Version]) -> UndoEntry {
@@ -354,22 +369,16 @@ impl UndoLog {
         instance: Option<InstanceId>,
     ) -> Option<Vec<Version>> {
         let open = self.open_changes(doc);
-        let mut index = self.index.borrow_mut();
-        // This window's own steps first; then the author's from elsewhere
-        // (another device, an earlier session).
-        let here = |version: &Version| {
-            self.presented.contains_key(&version.hash)
-                && self.claims(version, author, instance, &open)
-        };
-        let anywhere = |version: &Version| self.claims(version, author, instance, &open);
-        [&here as &dyn Fn(&Version) -> bool, &anywhere]
+        self.index
+            .borrow_mut()
+            .steps(
+                doc,
+                &|version| self.claims(version, author, instance, &open),
+                &|version| self.step_of(version),
+                1,
+            )
             .into_iter()
-            .find_map(|owns| {
-                index
-                    .steps(doc, owns, &|version| self.step_of(version), 1)
-                    .into_iter()
-                    .next()
-            })
+            .next()
     }
 
     fn next_redo_undo(

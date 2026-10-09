@@ -176,6 +176,41 @@ fn undo_and_redo_take_back_the_callers_own_steps() {
     assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
 }
 
+/// Exchange what each device has, as sync does.
+fn sync(a: &mut TestApp<BoardApp>, b: &mut TestApp<BoardApp>) {
+    let mut doc = b.peer_document();
+    a.merge_peer(&mut doc).unwrap();
+    b.merge_peer(&mut doc).unwrap();
+    a.settle();
+    b.settle();
+}
+
+#[test]
+fn ctrl_z_takes_back_only_what_was_done_on_this_device() {
+    let mut laptop = TestApp::<BoardApp>::on_device("laptop").unwrap();
+    let mut phone = TestApp::<BoardApp>::on_device("phone").unwrap();
+    sync(&mut laptop, &mut phone);
+    laptop.call("add", json!({"text": "milk"})).unwrap();
+    sync(&mut laptop, &mut phone);
+    phone.call("add", json!({"text": "eggs"})).unwrap();
+    sync(&mut laptop, &mut phone);
+    assert_eq!(cards(&laptop), ["milk", "eggs"]);
+
+    // The same person's newer step from the phone is not the laptop's to
+    // take back with a key press.
+    assert!(laptop.undo());
+    assert_eq!(cards(&laptop), ["eggs"]);
+    assert!(
+        !laptop.undo(),
+        "Ctrl+Z on the laptop never undoes phone work"
+    );
+    assert_eq!(cards(&laptop), ["eggs"]);
+
+    // It stays reachable through the published undo.
+    laptop.call("undo", json!({})).unwrap();
+    assert_eq!(cards(&laptop), Vec::<String>::new());
+}
+
 /// The newest listed version, with what it carries over filled in.
 fn newest(app: &mut TestApp<BoardApp>) -> Value {
     let listed = history(app);

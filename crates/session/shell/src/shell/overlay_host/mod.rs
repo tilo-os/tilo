@@ -1640,16 +1640,16 @@ fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> St
             return t_args("host-activity-working-in", &[("app", app.into())]);
         }
     }
-    match entry.op_class {
-        collab_types::OpClass::Splice => t("host-activity-editing"),
-        collab_types::OpClass::Move => t("host-activity-organizing"),
-        collab_types::OpClass::EditMeta => t("host-activity-updating-details"),
-        collab_types::OpClass::Comment => t("host-activity-reviewing-discussion"),
-        collab_types::OpClass::Tombstone => t("host-activity-cleaning-up"),
-        collab_types::OpClass::Restore => t("host-activity-restoring"),
-        collab_types::OpClass::Govern => t("host-activity-managing-access"),
-        collab_types::OpClass::Compaction => t("host-activity-maintaining-history"),
-        collab_types::OpClass::Redact => t("host-activity-reviewing-sensitive"),
+    match entry.entry_kind {
+        ui::widget::EntryKind::Text => t("host-activity-editing"),
+        ui::widget::EntryKind::Move => t("host-activity-organizing"),
+        ui::widget::EntryKind::Details => t("host-activity-updating-details"),
+        ui::widget::EntryKind::Comment => t("host-activity-reviewing-discussion"),
+        ui::widget::EntryKind::Delete => t("host-activity-cleaning-up"),
+        ui::widget::EntryKind::Restore => t("host-activity-restoring"),
+        ui::widget::EntryKind::Access => t("host-activity-managing-access"),
+        ui::widget::EntryKind::Compaction => t("host-activity-maintaining-history"),
+        ui::widget::EntryKind::Redaction => t("host-activity-reviewing-sensitive"),
     }
 }
 

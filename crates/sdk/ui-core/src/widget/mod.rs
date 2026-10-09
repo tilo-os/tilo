@@ -3059,14 +3059,13 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    AuthorRelation, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
-    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph,
-    op_class_is_revertible,
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
-// The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
+// The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
-pub use collab_types::{ArtifactKind, OpClass};
+pub use collab_types::ArtifactKind;
 
 // Wheel-disc spoke overflow integration lives in `shell`.
 pub mod channel_browser;

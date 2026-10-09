@@ -279,6 +279,20 @@ impl Planner {
         self.events.push(cx.id(), Event { title, remote });
     }
 
+    /// Import a calendar's events, one undo step.
+    #[action]
+    pub fn import_events(&mut self, cx: &mut ActionCx, titles: Vec<String>) {
+        for title in titles {
+            self.events.push(
+                cx.id(),
+                Event {
+                    title,
+                    remote: true,
+                },
+            );
+        }
+    }
+
     /// Take the events a server sent.
     #[action(external)]
     pub fn ingest(&mut self, cx: &mut ActionCx, titles: Vec<String>) {
@@ -442,5 +456,42 @@ fn a_read_only_outbox_takes_its_settlement() {
             .unwrap()
             .settled
             .is_some()
+    );
+}
+
+#[test]
+fn a_change_too_large_to_record_its_restoring_edits_still_undoes_through_apply() {
+    let mut planner = Replica::<Planner>::new();
+    let mut peer = planner.fork();
+    let titles: Vec<String> = (0..3000)
+        .map(|n| format!("Imported event {n:04}"))
+        .collect();
+    let imported = planner
+        .apply(Planner::IMPORT_EVENTS.with(titles))
+        .unwrap()
+        .clone();
+    assert_eq!(planner.state().unwrap().events.len(), 3000);
+    assert_eq!(uploads(&planner).len(), 3000);
+
+    // Its 3000 restoring edits do not fit the history: the entry names the
+    // change instead, and a peer replaying it computes the same.
+    let compensation = imported.context.clone().unwrap().compensation.unwrap();
+    assert_eq!(compensation.type_id, "test.planner+revert");
+    assert!(serde_json::to_vec(&compensation).unwrap().len() < 1024);
+    peer.replay(&imported).unwrap();
+    assert_eq!(peer.state().unwrap().events.len(), 3000);
+
+    // Undo derives the edits from the change and runs the record's queue.
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilo_resource::group::register::<Planner>(&mut registry);
+    let undo = registry.decode(&compensation).unwrap();
+    undo.apply(planner.doc_mut()).unwrap();
+    planner.doc_mut().commit();
+    let state = planner.state().unwrap();
+    assert!(state.events.is_empty(), "the import is taken back");
+    assert_eq!(
+        state.uploads.entries().count(),
+        3000,
+        "taking events back queues nothing new for them"
     );
 }

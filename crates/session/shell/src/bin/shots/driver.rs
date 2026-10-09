@@ -2062,7 +2062,7 @@ impl ShellDriver {
     pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
         self.scene_room_activity();
         if !explore {
-            use collab_types::{ArtifactKind, OpClass};
+            use collab_types::ArtifactKind;
             use ui::tilo_actions::ActionContext;
             use ui::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -2073,7 +2073,7 @@ impl ShellDriver {
                 .open_external_entry(HistoryEntry {
                     id: HistoryEntryId([0x51; 16]),
                     author: ui::history_source::author_for_identity(local.clone(), &local),
-                    op_class: OpClass::Splice,
+                    entry_kind: ui::widget::EntryKind::Text,
                     artifact_kind: ArtifactKind::File,
                     timestamp: std::time::SystemTime::now(),
                     summary: "Updated revenue assumptions".into(),

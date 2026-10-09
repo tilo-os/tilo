@@ -12,7 +12,7 @@ mod task_review_view;
 //
 // A row's `[Revert]` writes the delta back as a **new forward change**;
 // history is appended to, never rewritten. Governance rows
-// ([`OpClass::Govern`]) are non-revertible — an owner counters a
+// ([`EntryKind::Access`]) are non-revertible — an owner counters a
 // governance act with another one rather than rewinding it.
 
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
@@ -31,11 +31,11 @@ use ui::time::{Duration, Instant, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
-use collab_types::OpClass;
 use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::EntryKind;
 use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
@@ -2305,7 +2305,7 @@ impl RoomActivityPane {
                         ui::history_source::short_id(&actor),
                         self.source.authors().colour_for(&actor),
                     ),
-                    op_class: OpClass::EditMeta,
+                    entry_kind: EntryKind::Details,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH
                         .checked_add(Duration::from_secs(
@@ -8627,11 +8627,11 @@ fn describe_room_changes(
             .entry(hash)
             .or_insert_with(|| RoomChange::read(doc, deps, hash));
         *tag = change.workspace;
-        if let Some((summary, op_class)) = change.counts.describe() {
+        if let Some((summary, entry_kind)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
-            entry.op_class = op_class;
+            entry.entry_kind = entry_kind;
             if !change.counts.feed_kind().belongs_in_feed() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
@@ -8872,11 +8872,11 @@ impl PatchCounts {
     /// noise, and a whole-list write (the first `seed_doc_from_cache`) is
     /// recognised before the per-field cases, or a flush that granted
     /// nothing reads as "granted 4 capabilities".
-    fn describe(&self) -> Option<(String, OpClass)> {
+    fn describe(&self) -> Option<(String, EntryKind)> {
         if self.workspaces_removed > 0 && self.workspaces_added == 0 {
             return Some((
                 counted("activity-event-removed-workspaces", self.workspaces_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.workspaces_added > 0 {
@@ -8894,7 +8894,7 @@ impl PatchCounts {
                     ],
                 ),
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         // A room document's first change names the room, its owner and its
         // name at once: that is the workspace being made.
@@ -8903,7 +8903,7 @@ impl PatchCounts {
                 Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
                 None => t("activity-event-created"),
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
 
         if !self.grants.is_empty() {
@@ -8918,19 +8918,19 @@ impl PatchCounts {
             } else {
                 counted("activity-event-granted-capabilities", self.grants.len())
             };
-            return Some((s, OpClass::Govern));
+            return Some((s, EntryKind::Access));
         }
         if self.revokes > 0 {
             return Some((
                 counted("activity-event-revoked-capabilities", self.revokes),
-                OpClass::Govern,
+                EntryKind::Access,
             ));
         }
         if self.owner_set {
-            return Some((t("activity-event-owner"), OpClass::Govern));
+            return Some((t("activity-event-owner"), EntryKind::Access));
         }
         if self.room_set {
-            return Some((t("activity-event-identity"), OpClass::Govern));
+            return Some((t("activity-event-identity"), EntryKind::Access));
         }
         if let Some(name) = self.names.first() {
             let s = if name.is_empty() {
@@ -8938,7 +8938,7 @@ impl PatchCounts {
             } else {
                 t_args("activity-event-named", &[("name", name.into())])
             };
-            return Some((s, OpClass::EditMeta));
+            return Some((s, EntryKind::Details));
         }
         if self.tabs_added > 0 {
             let s = if self.tab_titles.is_empty() {
@@ -8949,19 +8949,19 @@ impl PatchCounts {
                     &[("titles", join_titles(&self.tab_titles).into())],
                 )
             };
-            return Some((s, OpClass::Splice));
+            return Some((s, EntryKind::Text));
         }
         if self.tabs_removed > 0 {
             return Some((
                 counted("activity-event-closed-windows", self.tabs_removed),
-                OpClass::Tombstone,
+                EntryKind::Delete,
             ));
         }
         if self.groups_moved > 0 {
-            return Some((t("activity-event-rearranged"), OpClass::Move));
+            return Some((t("activity-event-rearranged"), EntryKind::Move));
         }
         if self.geometry > 0 {
-            return Some((t("activity-event-resized"), OpClass::EditMeta));
+            return Some((t("activity-event-resized"), EntryKind::Details));
         }
         if self.active_switched {
             return Some((
@@ -8970,7 +8970,7 @@ impl PatchCounts {
                 // workspace-switch confirmation to truncate at accessibility
                 // text sizes.
                 t("activity-event-switched"),
-                OpClass::EditMeta,
+                EntryKind::Details,
             ));
         }
         None

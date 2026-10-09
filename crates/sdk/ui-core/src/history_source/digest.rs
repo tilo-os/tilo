@@ -239,7 +239,8 @@ mod tests {
     use super::*;
     use crate::time::Duration;
 
-    use collab_types::{ArtifactKind, OpClass};
+    use crate::widget::EntryKind;
+    use collab_types::ArtifactKind;
     use tilo_actions::ActionContext;
 
     use crate::widget::{HistoryEntryId, history::HistoryAuthor};
@@ -250,7 +251,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new(author, 120.0, format!("id{id}")),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(at))
@@ -330,7 +331,7 @@ mod tests {
             // unnamed group so this exercises the aggregate outcome title.
             second.author = first.author.clone();
             for item in [&mut first, &mut second] {
-                item.op_class = OpClass::Govern;
+                item.entry_kind = EntryKind::Access;
                 item.text_delta = None;
                 if let Some(context) = item.context.as_mut() {
                     context.group = None;
@@ -466,9 +467,6 @@ mod tests {
 
         use crate::widget::activity_timeline::ChipKind;
         assert_eq!(ChipKind::Governance.label(), "Zugriff");
-        assert_eq!(
-            super::super::op_class_label(OpClass::Splice),
-            "Text / Struktur"
-        );
+        assert_eq!(EntryKind::Text.label(), "Text / Struktur");
     }
 }

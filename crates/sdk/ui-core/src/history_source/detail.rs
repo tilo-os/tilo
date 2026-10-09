@@ -101,7 +101,8 @@ impl HistorySelectionDetail {
 mod tests {
     use crate::time::SystemTime;
 
-    use collab_types::{ArtifactKind, OpClass};
+    use crate::widget::EntryKind;
+    use collab_types::ArtifactKind;
     use tilo_actions::{ActionContext, ActionFacet};
 
     use super::*;
@@ -111,7 +112,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new(author, 0.0, author),
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             timestamp: SystemTime::UNIX_EPOCH,
             summary: format!("Edited {resource}"),

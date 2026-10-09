@@ -1568,6 +1568,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             type State = #self_ty;
             type Action = #krate::Stamped<#action_enum>;
 
+            /// Its actions, and the undo of a change too large to record
+            /// its restoring edits.
+            fn register(registry: &mut #krate::__private::ActionRegistry) {
+                registry.register::<Self::Action>(<Self as #krate::Resource>::ACTION_TYPE);
+                registry.register::<#krate::Reverting<#action_enum>>(
+                    #krate::reverting_type(<#action_enum as #krate::Operation>::KIND),
+                );
+            }
+
             fn read(doc: &#krate::Doc) -> ::core::result::Result<Self, #krate::ModelError> {
                 #krate::evolution::check_version::<Self>(doc)?;
                 <Self as #krate::Fields>::read_fields(doc, &#krate::__private::ROOT)

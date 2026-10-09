@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 
+use crate::widget::EntryKind;
 use automerge::{AutoCommit, ChangeHash};
-use collab_types::OpClass;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_doc::snapshot::DocSnapshot;
 
@@ -82,7 +82,7 @@ struct Logged {
 
 struct Reading {
     summary: String,
-    op_class: OpClass,
+    entry_kind: EntryKind,
     text_delta: Option<(usize, usize)>,
     /// The change only named a version or recorded a run: no row.
     marker: bool,
@@ -253,7 +253,7 @@ impl HistoryLog {
         let (hash, time_ms) = (meta.hash, meta.time_ms);
         self.push(meta, None);
         let after = self.heads.clone();
-        let (summary, op_class, text_delta) = match (&self.snapshot, &current, &patches) {
+        let (summary, entry_kind, text_delta) = match (&self.snapshot, &current, &patches) {
             (Some(prev), Some(cur), _) => structural_summary(prev, cur),
             (_, _, Some(patches)) => summarize_patches(&self.replica, patches, source.field_paths),
             _ => patch_summary(doc, &before, &after, source.field_paths),
@@ -271,7 +271,7 @@ impl HistoryLog {
         if let Some(logged) = self.changes.last_mut() {
             logged.reading = Some(Reading {
                 summary,
-                op_class,
+                entry_kind,
                 text_delta,
                 marker,
                 store_genesis,
@@ -353,7 +353,7 @@ impl HistoryLog {
                 author: source
                     .authors
                     .resolve_entry(&logged.actor, context.as_ref()),
-                op_class: reading.op_class,
+                entry_kind: reading.entry_kind,
                 artifact_kind: source.artifact_kind,
                 timestamp: timestamp_from_ms(logged.time_ms),
                 summary,

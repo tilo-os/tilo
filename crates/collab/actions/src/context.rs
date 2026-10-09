@@ -90,6 +90,10 @@ pub struct ActionContext {
     pub change: ChangeKind,
 }
 
+/// The most an entry's [`compensation`](ActionContext::compensation) may
+/// take, encoded: an action whose inverse is larger is refused.
+pub const COMPENSATION_BUDGET: usize = 128 * 1024;
+
 /// The most an entry's [`action`](ActionContext::action) may take, encoded.
 pub const HISTORY_BUDGET: usize = 1024 * 1024;
 

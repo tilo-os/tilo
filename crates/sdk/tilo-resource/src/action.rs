@@ -554,15 +554,123 @@ impl<O: Operation> Stamped<O> {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        match members.len() {
-            0 => None,
-            1 => tilo_actions::EncodedAction::encode(O::KIND, &members.pop()?).ok(),
+        let restore = match members.len() {
+            0 => return None,
+            1 => tilo_actions::EncodedAction::encode(O::KIND, &members.pop()?).ok()?,
             _ => tilo_actions::EncodedAction::encode(
                 format!("{}+group", O::KIND),
                 &crate::ActionGroup { actions: members },
             )
-            .ok(),
+            .ok()?,
+        };
+        if serde_json::to_vec(&restore).ok()?.len() <= tilo_actions::context::COMPENSATION_BUDGET {
+            return Some(restore);
         }
+        // Too large to record (an import of thousands of items): undo
+        // derives the same restoring edits from the change itself.
+        let reverting = Reverting::<O> {
+            actor: doc.get_actor().to_hex_string(),
+            deps: doc
+                .committed_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            now_ms: self.now_ms,
+            operation: PhantomData,
+        };
+        tilo_actions::EncodedAction::encode(reverting_type(O::KIND), &reverting).ok()
+    }
+}
+
+/// The type id [`Reverting`] actions of the record kind `kind` encode as.
+pub fn reverting_type(kind: &str) -> String {
+    format!("{kind}+revert")
+}
+
+/// The undo of one change of a record that queues, too large to record its
+/// restoring field edits: it names the change (its writer and the heads it
+/// was made on), derives the edits that restore what the change wrote from
+/// the record before and after it, applies them, and runs the record's
+/// `queue` so what the change queued outside is compensated.
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Reverting<O> {
+    actor: String,
+    deps: Vec<String>,
+    #[serde(rename = "at", default)]
+    now_ms: i64,
+    #[serde(skip)]
+    operation: PhantomData<O>,
+}
+
+impl<O> std::fmt::Debug for Reverting<O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reverting")
+            .field("actor", &self.actor)
+            .field("deps", &self.deps)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<O: Operation> Reverting<O> {
+    /// The change this takes back, by its writer and the heads it was made
+    /// on.
+    fn change(&self, doc: &mut Doc) -> Result<automerge::ChangeHash, ActionError> {
+        let refused = |why: &str| ActionError::Refused(why.into());
+        let mut deps = self
+            .deps
+            .iter()
+            .map(|hash| hash.parse())
+            .collect::<Result<Vec<automerge::ChangeHash>, _>>()
+            .map_err(|_| refused("a reverted change names invalid heads"))?;
+        deps.sort();
+        doc.get_changes(&deps)
+            .into_iter()
+            .find(|change| {
+                change.actor_id().to_hex_string() == self.actor && {
+                    let mut of = change.deps().to_vec();
+                    of.sort();
+                    of == deps
+                }
+            })
+            .map(|change| change.hash())
+            .ok_or_else(|| refused("the change to take back is not in this document"))
+    }
+}
+
+impl<O: Operation> tilo_actions::Action for Reverting<O> {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
+        let change = self.change(doc)?;
+        let deps: Vec<automerge::ChangeHash> = doc
+            .get_change_meta_by_hash(&change)
+            .map(|meta| meta.deps)
+            .unwrap_or_default();
+        let read_at = |heads: &[automerge::ChangeHash]| -> Result<O::Record, ActionError> {
+            let at = doc
+                .committed_fork_at(heads)
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+            O::Record::read_fields(&at, &ROOT).map_err(refused)
+        };
+        let before = read_at(&deps)?;
+        let after = read_at(&[change])?;
+        let mut restore: Vec<crate::Edit<O::Record>> = Vec::new();
+        crate::Model::diff(&after, &before, &[], &mut restore);
+        let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
+        let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
+        let current = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+        for edit in &restore {
+            edit.apply(doc, &mut cx).map_err(refused)?;
+        }
+        let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
+        let minting = MintScope::enter(&cx);
+        O::queue(&mut record, &current, &mut cx);
+        drop(minting);
+        record.write_fields(doc, &ROOT).map_err(refused)
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
     }
 }
 

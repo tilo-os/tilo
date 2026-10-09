@@ -127,7 +127,7 @@ fn envelope_for(
         && serde_json::to_vec(compensation)
             .map_err(ActionError::Encode)?
             .len()
-            > 128 * 1024
+            > crate::context::COMPENSATION_BUDGET
     {
         return Err(ActionError::Refused(
             "document compensation exceeds the history budget".into(),

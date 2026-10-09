@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use collab_types::OpClass;
+use crate::widget::EntryKind;
 
 use crate::widget::HistoryEntry;
 
@@ -27,7 +27,7 @@ impl HistoryFacetIndex {
         let mut index = Self::default();
         for entry in entries {
             bump(&mut index.people, &entry.author.name);
-            bump(&mut index.operations, &op_class_label(entry.op_class));
+            bump(&mut index.operations, &entry.entry_kind.label());
             let Some(context) = entry.context.as_ref() else {
                 index.unclassified = index.unclassified.saturating_add(1);
                 continue;
@@ -58,19 +58,22 @@ fn bump(map: &mut BTreeMap<String, usize>, key: &str) {
     *count = count.saturating_add(1);
 }
 
-/// What kind of change `class` is, in the desktop's language.
-pub fn op_class_label(class: OpClass) -> String {
-    crate::i18n!(match class {
-        OpClass::Splice => "history-op-splice",
-        OpClass::EditMeta => "history-op-edit-meta",
-        OpClass::Move => "history-op-move",
-        OpClass::Comment => "history-op-comment",
-        OpClass::Tombstone => "history-op-tombstone",
-        OpClass::Restore => "history-op-restore",
-        OpClass::Govern => "history-op-govern",
-        OpClass::Compaction => "history-op-compaction",
-        OpClass::Redact => "history-op-redact",
-    })
+impl EntryKind {
+    /// What kind of change this is, in the desktop's language.
+    #[must_use]
+    pub fn label(self) -> String {
+        crate::i18n!(match self {
+            EntryKind::Text => "history-op-splice",
+            EntryKind::Details => "history-op-edit-meta",
+            EntryKind::Move => "history-op-move",
+            EntryKind::Comment => "history-op-comment",
+            EntryKind::Delete => "history-op-tombstone",
+            EntryKind::Restore => "history-op-restore",
+            EntryKind::Access => "history-op-govern",
+            EntryKind::Compaction => "history-op-compaction",
+            EntryKind::Redaction => "history-op-redact",
+        })
+    }
 }
 
 #[cfg(test)]
@@ -90,7 +93,7 @@ mod tests {
             id: HistoryEntryId([1; 16]),
             author,
             timestamp: SystemTime::UNIX_EPOCH,
-            op_class: OpClass::EditMeta,
+            entry_kind: EntryKind::Details,
             artifact_kind: ArtifactKind::File,
             summary: "Rename".into(),
             text_delta: None,

@@ -21,7 +21,7 @@
 use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
 
-use collab_types::OpClass;
+use crate::widget::EntryKind;
 
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 
@@ -94,12 +94,14 @@ pub enum OpFamily {
 }
 
 impl OpFamily {
-    pub fn of(op: OpClass) -> Self {
+    pub fn of(op: EntryKind) -> Self {
         match op {
-            OpClass::Splice | OpClass::Move | OpClass::EditMeta => OpFamily::Edit,
-            OpClass::Comment => OpFamily::Comment,
-            OpClass::Govern | OpClass::Compaction | OpClass::Redact => OpFamily::Governance,
-            OpClass::Tombstone | OpClass::Restore => OpFamily::Deletion,
+            EntryKind::Text | EntryKind::Move | EntryKind::Details => OpFamily::Edit,
+            EntryKind::Comment => OpFamily::Comment,
+            EntryKind::Access | EntryKind::Compaction | EntryKind::Redaction => {
+                OpFamily::Governance
+            }
+            EntryKind::Delete | EntryKind::Restore => OpFamily::Deletion,
         }
     }
 
@@ -514,7 +516,7 @@ fn derived_groups(
         // past it, at absolute index `lo + offset + 1`.
         let i = lo.saturating_add(offset).saturating_add(1);
         let author_changed = author_key(prev) != author_key(cur);
-        let family_changed = OpFamily::of(prev.op_class) != OpFamily::of(cur.op_class);
+        let family_changed = OpFamily::of(prev.entry_kind) != OpFamily::of(cur.entry_kind);
         // No recorded clock is not evidence of a gap — splitting on it would
         // tear a session differently per peer. A clock running backwards
         // (skewed peer, merged late) likewise reads as no gap, not a
@@ -580,7 +582,7 @@ fn finish_group(
         {
             authors.push(e.author.clone());
         }
-        let f = OpFamily::of(e.op_class);
+        let f = OpFamily::of(e.entry_kind);
         if !families.contains(&f) {
             families.push(f);
         }
@@ -660,13 +662,13 @@ mod tests {
     use crate::time::Duration;
     use collab_types::ArtifactKind;
 
-    fn entry(id: u8, author: &str, secs: u64, op: OpClass) -> HistoryEntry {
+    fn entry(id: u8, author: &str, secs: u64, op: EntryKind) -> HistoryEntry {
         let mut bytes = [0u8; 16];
         bytes[0] = id;
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new(author, 120.0, "aaaaaaaa"),
-            op_class: op,
+            entry_kind: op,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -689,7 +691,7 @@ mod tests {
             // Ten changes a second apart by one author: exactly the shape a
             // debounced editor produces, and exactly what must not be ten rows.
             let entries: Vec<HistoryEntry> = (0..10)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
             assert_eq!(
@@ -705,11 +707,11 @@ mod tests {
 
         fn a_five_minute_gap_ends_the_session() {
             let mut entries: Vec<HistoryEntry> = (0..3)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             // Six minutes later, same person, same kind of change.
             entries.extend(
-                (3..6).map(|i| entry(i, "Alice", 1000 + 360 + u64::from(i), OpClass::Splice)),
+                (3..6).map(|i| entry(i, "Alice", 1000 + 360 + u64::from(i), EntryKind::Text)),
             );
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
             assert_eq!(groups.len(), 2);
@@ -729,10 +731,10 @@ mod tests {
             // One second apart, same op class — only the author differs. The
             // grouping must still split, or the header's attribution is a lie.
             let entries = vec![
-                entry(0, "Alice", 1000, OpClass::Splice),
-                entry(1, "Alice", 1001, OpClass::Splice),
-                entry(2, "Bob", 1002, OpClass::Splice),
-                entry(3, "Alice", 1003, OpClass::Splice),
+                entry(0, "Alice", 1000, EntryKind::Text),
+                entry(1, "Alice", 1001, EntryKind::Text),
+                entry(2, "Bob", 1002, EntryKind::Text),
+                entry(3, "Alice", 1003, EntryKind::Text),
             ];
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
             assert_eq!(groups.len(), 3);
@@ -746,9 +748,9 @@ mod tests {
 
         fn a_governance_act_is_not_swallowed_by_a_typing_run() {
             let entries = vec![
-                entry(0, "Alice", 1000, OpClass::Splice),
-                entry(1, "Alice", 1001, OpClass::Govern),
-                entry(2, "Alice", 1002, OpClass::Splice),
+                entry(0, "Alice", 1000, EntryKind::Text),
+                entry(1, "Alice", 1001, EntryKind::Access),
+                entry(2, "Alice", 1002, EntryKind::Text),
             ];
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
             assert_eq!(groups.len(), 3, "the grant is its own thing");
@@ -759,7 +761,7 @@ mod tests {
             let entries: Vec<HistoryEntry> = (0u32..250)
                 .map(|i| {
                     let id = u8::try_from(i % 251).unwrap_or(0);
-                    entry(id, "Alice", 1000 + u64::from(i), OpClass::Splice)
+                    entry(id, "Alice", 1000 + u64::from(i), EntryKind::Text)
                 })
                 .collect();
             let cfg = GroupingConfig {
@@ -774,9 +776,9 @@ mod tests {
 
         fn explicit_work_group_collapses_across_people_and_action_families() {
             let mut entries = vec![
-                entry(1, "Ada", 1000, OpClass::Splice),
-                entry(2, "Maren", 1010, OpClass::Comment),
-                entry(3, "Ada", 1020, OpClass::EditMeta),
+                entry(1, "Ada", 1000, EntryKind::Text),
+                entry(2, "Maren", 1010, EntryKind::Comment),
+                entry(3, "Ada", 1020, EntryKind::Details),
             ];
             for entry in &mut entries {
                 entry.context = Some(
@@ -814,12 +816,12 @@ mod tests {
             // Six changes that would automatically split three ways (author changes
             // twice). One name over all six must produce one group.
             let entries = vec![
-                entry(0, "Alice", 1000, OpClass::Splice),
-                entry(1, "Bob", 1001, OpClass::Splice),
-                entry(2, "Alice", 1002, OpClass::Splice),
-                entry(3, "Alice", 1003, OpClass::Splice),
-                entry(4, "Bob", 1004, OpClass::Splice),
-                entry(5, "Alice", 1005, OpClass::Splice),
+                entry(0, "Alice", 1000, EntryKind::Text),
+                entry(1, "Bob", 1001, EntryKind::Text),
+                entry(2, "Alice", 1002, EntryKind::Text),
+                entry(3, "Alice", 1003, EntryKind::Text),
+                entry(4, "Bob", 1004, EntryKind::Text),
+                entry(5, "Alice", 1005, EntryKind::Text),
             ];
             let auto = group_entries(&entries, &[], &GroupingConfig::default());
             assert!(auto.len() > 1, "the fixture must split without a name");
@@ -841,7 +843,7 @@ mod tests {
 
         fn an_open_group_absorbs_everything_after_its_start() {
             let entries: Vec<HistoryEntry> = (0..5)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i) * 1000, OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i) * 1000, EntryKind::Text))
                 .collect();
             let named = vec![NamedRange {
                 id: "r1".into(),
@@ -862,7 +864,7 @@ mod tests {
 
         fn a_name_inside_a_name_nests_one_level() {
             let entries: Vec<HistoryEntry> = (0..8)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             let named = vec![
                 NamedRange {
@@ -895,7 +897,7 @@ mod tests {
 
         fn a_third_level_of_naming_is_not_rendered_as_a_group() {
             let entries: Vec<HistoryEntry> = (0..8)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             let named = vec![
                 NamedRange {
@@ -942,7 +944,7 @@ mod tests {
             // earlier start keeps its range; the later one is clipped to the tail.
             // Both peers see the same thing whichever order the names merged in.
             let entries: Vec<HistoryEntry> = (0..9)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             let alice = NamedRange {
                 id: "alice".into(),
@@ -988,7 +990,7 @@ mod tests {
 
         fn a_name_whose_first_change_is_missing_is_skipped_not_guessed() {
             let entries: Vec<HistoryEntry> = (0..3)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             let named = vec![NamedRange {
                 id: "ghost".into(),
@@ -1018,7 +1020,7 @@ mod tests {
     fn group_summaries_report_spans_counts_authors_and_ids_honestly() {
         fn an_unclocked_change_does_not_drag_the_span_back_to_1970() {
             let mut entries: Vec<HistoryEntry> = (0..3)
-                .map(|i| entry(i, "Alice", 100_000 + u64::from(i) * 120, OpClass::Splice))
+                .map(|i| entry(i, "Alice", 100_000 + u64::from(i) * 120, EntryKind::Text))
                 .collect();
             entries[1].timestamp = SystemTime::UNIX_EPOCH;
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
@@ -1032,7 +1034,7 @@ mod tests {
 
         fn a_partial_character_count_is_not_reported_as_a_total() {
             let mut entries: Vec<HistoryEntry> = (0..3)
-                .map(|i| entry(i, "Alice", 1000 + u64::from(i), OpClass::Splice))
+                .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
             entries[1].text_delta = None;
             let groups = group_entries(&entries, &[], &GroupingConfig::default());
@@ -1046,10 +1048,10 @@ mod tests {
 
         fn many_authors_name_two_people_and_make_the_remainder_scannable() {
             let mut entries = vec![
-                entry(1, "Alice", 1000, OpClass::Splice),
-                entry(2, "Bob", 1001, OpClass::Splice),
-                entry(3, "Chen", 1002, OpClass::Splice),
-                entry(4, "Dara", 1003, OpClass::Splice),
+                entry(1, "Alice", 1000, EntryKind::Text),
+                entry(2, "Bob", 1001, EntryKind::Text),
+                entry(3, "Chen", 1002, EntryKind::Text),
+                entry(4, "Dara", 1003, EntryKind::Text),
             ];
             for entry in &mut entries {
                 entry.context = Some(tilo_actions::ActionContext::default().with_group(
