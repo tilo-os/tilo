@@ -4119,21 +4119,31 @@ impl ShellNetwork {
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
             replica.tree.clone()
         };
-        let tree = tree_handle.read();
-        let Some(ws) = tree.desktop.workspaces.iter().find(|w| w.id == local) else {
-            drop(tree);
-            return Err(format!("no workspace {} to invite into", local.raw()));
+        let missing = || format!("no workspace {} to invite into", local.raw());
+        // The room's governor is read outside the tree's lock (see
+        // `invite_policy::native_governor`); the decision below is taken on
+        // the workspace as it stands under one read, and issued for it.
+        let (room, owner) = {
+            let tree = tree_handle.read();
+            let room = tree.room_of(local).ok_or_else(missing)?;
+            (room, tree.installed_native_owner())
         };
-        let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-        // The same decision the invite composer and the palette are gated
-        // on: who may invite, and which authority signs it.
-        let route = crate::shell::invite_policy::may_issue_invitation(
-            &tree,
-            ws,
-            ws.actor_for_person(&actor),
-        );
-        let ws = ws.clone();
-        drop(tree);
+        let governor = crate::shell::invite_policy::native_governor(owner, room);
+        let local_user = crate::shell::state::local_user_id_for_room(&room);
+        let (route, ws) = {
+            let tree = tree_handle.read();
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == local && w.room == room)
+                .ok_or_else(missing)?;
+            // The same decision the invite composer and the palette are
+            // gated on: who may invite, and which authority signs it.
+            let route =
+                crate::shell::invite_policy::may_issue_invitation(&tree, ws, &local_user, governor);
+            (route, ws.clone())
+        };
         let relay_room = match route {
             InviteRoute::Relay => Some(
                 self.administered_room(ws.room)

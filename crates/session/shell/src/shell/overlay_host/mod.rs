@@ -10673,27 +10673,14 @@ impl ShellOverlayHost {
     /// person governs is not shown a composer the issuer would refuse.
     /// Fail-closed at every missing piece (no chrome, no workspace,
     /// peer-sync off).
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st feeds peer_sync_enabled, then tree(), then local_user_id right through to \
-                  the final policy call built from tree/workspace/actor, all borrowed from it; \
-                  nothing to drop earlier without cloning the tree data out for no real gain"
-    )]
     fn may_invite_here(&self) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
         let st = chrome.borrow();
-        if !st.peer_sync_enabled {
-            return false;
-        }
-        let tree = st.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return false;
-        };
-        let actor_id = st.local_user_for_room(&workspace.room);
-        let actor = workspace.actor_for_person(&actor_id);
-        crate::shell::invite_policy::may_issue_invitation(&tree, workspace, actor).issues_here()
+        st.peer_sync_enabled
+            && crate::shell::invite_policy::active_invite_route(&st)
+                .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here)
     }
 
     /// Lays the room-activity sheet out (by hand, not taffy, like the

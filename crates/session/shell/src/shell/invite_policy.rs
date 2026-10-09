@@ -14,10 +14,14 @@
 //! govern is sent to the owner rather than minting a token nobody would
 //! honour.
 
+use crate::shell::chrome_state::ChromeState;
+use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use crate::shell::search::ResourceKind;
 use crate::shell::search::action_api::{ActionVisibility as _, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
-use crate::shell::state::{Actor, Workspace, WorkspaceTree};
+use crate::shell::state::{
+    RoomId, UserId, Workspace, WorkspaceAuthority as _, WorkspaceTree, person_id_of,
+};
 
 /// The shell action whose capability gates every invitation.
 pub(crate) const INVITE_ACTION: &str = "peer.invite.named";
@@ -74,13 +78,23 @@ impl InviteRoute {
     }
 }
 
-/// Decide whether `actor` may invite into `workspace`, and through which
-/// authority, as `tree` knows the room.
+/// Decide whether the person this device acts as in `workspace`'s room,
+/// `local_user`, may invite into it, and through which authority, as `tree`
+/// knows the room.
+///
+/// `native_governor` is the user root governing the room's admitted native
+/// state, when this device holds it (read by [`native_governor`] outside the
+/// tree's lock). The room is this person's own when that root is the
+/// identity selected for this room, which may be a workspace-specific
+/// identity rather than the device's default person: the identity
+/// `ShellNetwork::administered_room` then signs the relay request with.
 pub(crate) fn may_issue_invitation(
     tree: &WorkspaceTree,
     workspace: &Workspace,
-    actor: Actor,
+    local_user: &UserId,
+    native_governor: Option<[u8; 32]>,
 ) -> InviteRoute {
+    let actor = workspace.actor_for_person(local_user);
     let permitted = CapabilityVisibility::new(workspace, actor).can_see(
         &ResourceRef::new("actions", INVITE_ACTION),
         &ResourceKind::Action,
@@ -89,18 +103,114 @@ pub(crate) fn may_issue_invitation(
         return InviteRoute::Refused(InviteRefusal::NotPermitted);
     }
     let room = workspace.room;
-    let native_governor = tree.installed_native_owner().and_then(|owner| {
-        owner
-            .with_current(room, |view| Ok(view.governor().user_public_key))
-            .ok()
-    });
     match native_governor {
-        Some(governor) if tree.local_person == Some(governor) => InviteRoute::Relay,
+        Some(governor) if person_id_of(governor).as_ref() == Some(local_user) => InviteRoute::Relay,
         Some(_) => InviteRoute::ViaGovernor,
         None if tree.requires_native_owner(room) => {
             InviteRoute::Refused(InviteRefusal::AuthorityUnavailable)
         }
         None if tree.governs_room(room) => InviteRoute::ShareOnRelay,
         None => InviteRoute::ViaGovernor,
+    }
+}
+
+/// The user root governing `room`'s admitted native state, when `owner`
+/// holds it.
+///
+/// Call it without holding the tree's lock: this takes the owner's lock, and
+/// publishing a native commit takes that lock before the tree's writer.
+pub(crate) fn native_governor(
+    owner: Option<NativeWorkspaceOwner>,
+    room: RoomId,
+) -> Option<[u8; 32]> {
+    owner?
+        .with_current(room, |view| Ok(view.governor().user_public_key))
+        .ok()
+}
+
+/// [`may_issue_invitation`] for the workspace the chrome shows, as the
+/// person the chrome acts as in its room. `None` without an active
+/// workspace.
+pub(crate) fn active_invite_route(state: &ChromeState) -> Option<InviteRoute> {
+    let (local, room, owner) = {
+        let tree = state.tree();
+        let workspace = tree.desktop.active_workspace()?;
+        (workspace.id, workspace.room, tree.installed_native_owner())
+    };
+    let governor = native_governor(owner, room);
+    let local_user = state.local_user_for_room(&room);
+    let tree = state.tree();
+    let workspace = tree
+        .desktop
+        .active_workspace()
+        .filter(|workspace| workspace.id == local && workspace.room == room)?;
+    Some(may_issue_invitation(
+        &tree,
+        workspace,
+        &local_user,
+        governor,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InviteRoute, may_issue_invitation, native_governor};
+    use crate::shell::native_workspace_owner::{test_enrolled_owner, test_tree_of};
+    use crate::shell::state::{CapOverride, Scope, Subject, Verb, person_id_of};
+
+    /// A person who governs a relay room under a workspace-specific identity
+    /// issues through that relay, whatever the device's default person is:
+    /// the policy compares the governor with the identity this room selects,
+    /// the one the relay request is signed with, not with `local_person`.
+    /// Another person who merely holds an `Invite` grant is sent to them.
+    #[test]
+    fn a_workspace_identity_that_governs_the_relay_room_issues_through_it() {
+        let (_directory, owner, room, _now, _key) = test_enrolled_owner();
+        let governor = native_governor(Some(owner.clone()), room).expect("admitted governor");
+        let workspace_identity = person_id_of(governor).expect("person id");
+        let member = person_id_of(
+            ed25519_dalek::SigningKey::from_bytes(&[64; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .expect("person id");
+        let handle = test_tree_of(&owner);
+        {
+            let mut tree = handle.write();
+            // The device's default person is somebody other than the
+            // identity this workspace selects.
+            tree.local_person = Some([0x35; 32]);
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("the enrolled room's workspace");
+            for person in [&workspace_identity, &member] {
+                workspace.capabilities.push(CapOverride::grant(
+                    Subject::person(person.clone()),
+                    Scope::Workspace,
+                    Verb::Invite,
+                ));
+            }
+        }
+        let tree = handle.read();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("the enrolled room's workspace");
+
+        assert_eq!(
+            may_issue_invitation(&tree, workspace, &workspace_identity, Some(governor)),
+            InviteRoute::Relay,
+            "the governing workspace identity issues through its relay"
+        );
+        assert_eq!(
+            may_issue_invitation(&tree, workspace, &member, Some(governor)),
+            InviteRoute::ViaGovernor,
+            "a delegated inviter is sent to the governor"
+        );
     }
 }

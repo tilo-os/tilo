@@ -92,10 +92,13 @@ and capabilities. Whether this device may invite, and through which authority,
 is one decision (`shell::invite_policy::may_issue_invitation`) that the invite
 composer, the palette's `peer.invite` rows and the issuer all ask: `Invite` on
 the `peer.invite.named` action under the workspace's capability policy, then
-the room's governor — this person's relay, this device sharing a room it
-governs on its home relay, or, for a member who holds a delegated `Invite`
-grant in a room someone else governs, a refusal that sends them to the owner
-rather than a composer the issuer would reject. Ordinary role controls expose Viewer, Commenter, and Editor;
+the room's governor — this person's relay (the admitted governor is the
+identity this room selects, which may be a workspace-specific identity rather
+than the device's default person), this device sharing a room it governs on
+its home relay, or, for a member who holds a delegated `Invite` grant in a
+room someone else governs, a refusal that sends them to the owner rather than
+a composer or palette row the issuer would reject. Ordinary role controls
+expose Viewer, Commenter, and Editor;
 Owner is structural governance authority and is never created or transferred
 by cycling a role chip. What a role may change depends on the path the change
 takes:
