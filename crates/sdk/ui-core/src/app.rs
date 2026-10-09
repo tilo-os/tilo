@@ -2711,7 +2711,6 @@ fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
 }
 
 #[cfg(test)]
-#[allow(dead_code, reason = "used by feature-gated render retry tests")]
 fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant> {
     matches!(outcome, FrameOutcome::Skipped | FrameOutcome::Reconfigured).then(|| {
         now.checked_add(Duration::from_nanos(16_666_667))
