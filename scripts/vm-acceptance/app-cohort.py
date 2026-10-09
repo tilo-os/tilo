@@ -5,6 +5,7 @@ Never stages packages, grants trust, closes windows, restarts sessions or reads 
 Run only after the deployment owner hands off the matched cohort.
 """
 import argparse
+import copy
 import re
 import json
 import shlex
@@ -57,6 +58,13 @@ def choose(rows, app, kind, operation, args, bound=None, semantic=None):
     return row
 
 
+def native_worker_identity(subject):
+    """Retain every authenticated anchor; focus/layout can change input geometry."""
+    if subject is None:
+        return None
+    return {key: value for key, value in subject.items() if key != "input_rect"}
+
+
 class AppDoor:
     def __init__(self, vm, app, kind, bound, out, semantic=None, subject=None):
         self.vm, self.app, self.kind, self.bound, self.out = vm, app, kind, bound, out
@@ -69,7 +77,7 @@ class AppDoor:
                     and semantic[0] == kind, "invalid original resource semantic identity")
         if subject is not None:
             require(isinstance(subject, dict), "invalid original worker subject")
-            self.worker = dict(subject)
+            self.worker = copy.deepcopy(subject)
             self.tab = (subject.get("room"), str(subject.get("tab_id")), str(subject.get("surface_id")))
         if vm is not None:
             require(len(bound) == 4 and all(isinstance(part, str) and part for part in bound)
@@ -88,7 +96,7 @@ class AppDoor:
             worker = native_subject(state, tabs[0], self.app)
             if worker is None:
                 return None
-            self.tab, self.worker = tabs[0], dict(worker)
+            self.tab, self.worker = tabs[0], copy.deepcopy(worker)
         self._check_custody()
         rows = catalog(self.vm, self.app, self.bound, self.kind)
         identities = {identity for row in rows
@@ -111,7 +119,7 @@ class AppDoor:
                 "original owner session is not observably unlocked")
         require(self.tab[0] == self.bound[1] and mapped_record(state, self.tab, self.app) == self.bound[2],
                 "original worker differs from the bound room or record")
-        require(native_subject(state, self.tab, self.app) == self.worker,
+        require(native_worker_identity(native_subject(state, self.tab, self.app)) == native_worker_identity(self.worker),
                 "original authenticated worker custody changed")
 
     def call(self, operation, args=None, timeout=120):

@@ -363,6 +363,31 @@ class AdoptedAppDoor(unittest.TestCase):
                     door.call("show-runtime-details",{"runtime":"test"})
                 self.assertEqual(vm.effects,[])
 
+    def test_focus_geometry_change_keeps_the_same_authenticated_worker_door(self):
+        vm=self.vm();vm.worker["input_rect"]=None
+        with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+            door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+            vm.worker["input_rect"]=[252.0,120.0,916.0,800.0]
+            self.assertEqual(door.call("show-runtime-details",{"runtime":"test"}),"reviewed")
+            vm.worker.pop("input_rect")
+            self.assertEqual(door.call("show-runtime-details",{"runtime":"test"}),"reviewed")
+        self.assertEqual(len(vm.effects),2)
+
+    def test_geometry_change_never_masks_certificate_or_future_anchor_changes(self):
+        for fault in ("certificate-record","certificate-room","certificate-application","certificate-missing","future-anchor"):
+            vm=self.vm();vm.worker["input_rect"]=None
+            with tempfile.TemporaryDirectory() as directory,patch.object(app,"wait_until",polls):
+                door=app.AppDoor(vm,app.STORE,"store.catalog",app.binding(vm.descriptor),Path(directory))
+                vm.worker["input_rect"]=[252.0,120.0,916.0,800.0]
+                if fault=="certificate-record":vm.worker["certified_checkout"]["record"]="foreign"
+                elif fault=="certificate-room":vm.worker["certified_checkout"]["room"]="foreign"
+                elif fault=="certificate-application":vm.worker["certified_checkout"]["application"]=app.BROWSER
+                elif fault=="certificate-missing":vm.worker["certified_checkout"]=None
+                else:vm.worker["future_anchor"]="changed"
+                with self.subTest(fault=fault),self.assertRaises(VmError):
+                    door.call("show-runtime-details",{"runtime":"test"})
+                self.assertEqual(vm.effects,[])
+
     def test_replaced_closed_or_unattested_worker_never_inherits_the_original_door(self):
         for fault in ("pid","start","adoption","record","package","closed"):
             vm=self.vm()
