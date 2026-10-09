@@ -4105,6 +4105,13 @@ impl ShellNetwork {
         role: crate::network::invite::InviteRole,
         recipient_user_public_key: Option<[u8; 32]>,
     ) -> Result<String, String> {
+        use crate::shell::invite_policy::InviteRoute;
+        // Attach the native owner, when this device has one, so the policy
+        // below reads the admitted governor of a relay-governed room. A
+        // device without one only holds self-governed rooms.
+        if let Err(error) = self.native_owner() {
+            tracing::debug!(%error, "inviting without a native owner");
+        }
         let tree_handle = {
             let replica = self
                 .replica
@@ -4118,21 +4125,23 @@ impl ShellNetwork {
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
         let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-        let governs = tree.governs_room(ws.room)
-            && ws.allows(
-                &ws.actor_for_person(&actor),
-                &crate::shell::state::ResourceRef::Workspace,
-                crate::shell::state::Verb::Invite,
-            );
+        // The same decision the invite composer and the palette are gated
+        // on: who may invite, and which authority signs it.
+        let route = crate::shell::invite_policy::may_issue_invitation(
+            &tree,
+            ws,
+            ws.actor_for_person(&actor),
+        );
         let ws = ws.clone();
         drop(tree);
-        let relay_room = match self.administered_room(ws.room) {
-            Some(room) => Some(room),
-            None if governs => self.share_on_home_relay(local, ws.room, &ws.name)?,
-            None => {
-                return Err(
-                    "only a governing workspace administrator can create invitations".into(),
-                );
+        let relay_room = match route {
+            InviteRoute::Relay => Some(
+                self.administered_room(ws.room)
+                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?,
+            ),
+            InviteRoute::ShareOnRelay => self.share_on_home_relay(local, ws.room, &ws.name)?,
+            InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
+                return Err(route.refusal().unwrap_or_default().into());
             }
         };
         if let Some(relay_room) = relay_room {
@@ -12911,7 +12920,15 @@ mod tests {
                     crate::network::invite::InviteRole::Editor,
                 )
                 .expect_err("a guest must not sign invites for somebody else's room");
-            assert!(error.contains("governing workspace administrator"));
+            // The guest holds no Invite grant, so the one invitation policy
+            // refuses before asking who governs the room.
+            assert_eq!(
+                Some(error.as_str()),
+                crate::shell::invite_policy::InviteRoute::Refused(
+                    crate::shell::invite_policy::InviteRefusal::NotPermitted,
+                )
+                .refusal(),
+            );
         }
 
         /// A token that does not verify joins nothing and asks nothing.
