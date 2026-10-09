@@ -26,7 +26,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use shell::shell::chrome_state::{ChromeState, WsTab};
 use shell::shell::quick_settings::QsLevel;
 
-use super::driver::ShellDriver;
+use super::driver::{AgentReviewTheme, ShellDriver};
 
 /// One step in a scenario.
 ///
@@ -213,7 +213,7 @@ pub enum Action {
     OpenAgentQuickComposer,
     /// Pin visual-review theme independently of the builder environment.
     SetAgentQuickReviewTheme {
-        high_contrast: bool,
+        theme: AgentReviewTheme,
         text_scale: f32,
     },
     SeedInferredStatus(&'static str),
@@ -724,10 +724,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.seed_agent_screen_exposure_for_shots(*surface_id);
         }
         Action::OpenAgentQuickComposer => driver.open_agent_quick_composer_for_shots(),
-        Action::SetAgentQuickReviewTheme {
-            high_contrast,
-            text_scale,
-        } => driver.set_agent_quick_review_theme(*high_contrast, *text_scale),
+        Action::SetAgentQuickReviewTheme { theme, text_scale } => {
+            driver.set_agent_quick_review_theme(*theme, *text_scale);
+        }
         Action::SeedInferredStatus(text) => driver.seed_inferred_status_for_shots(text),
         Action::SeedCrowdedWorkspace => driver.seed_crowded_workspace_for_shots(),
         Action::SeedForeignAppWork {
@@ -1682,15 +1681,12 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
     }
 }
 
-fn agent_quick_composer(name: &'static str, high_contrast: bool, text_scale: f32) -> Scenario {
+fn agent_quick_composer(name: &'static str, theme: AgentReviewTheme, text_scale: f32) -> Scenario {
     Scenario {
         name,
         description: "Compare the ordinary desktop with the compact Message, Queue and Steer surface opened from an agent action marker.",
         actions: vec![
-            Action::SetAgentQuickReviewTheme {
-                high_contrast,
-                text_scale,
-            },
+            Action::SetAgentQuickReviewTheme { theme, text_scale },
             Action::Wait(4),
             Action::Relayout,
             Action::Snapshot("01-before"),
@@ -2972,8 +2968,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-expanded-agent-disclosure"),
             ],
         },
-        agent_quick_composer("agent_quick_composer_light", false, 1.0),
-        agent_quick_composer("agent_quick_composer_hc200", true, 2.0),
+        agent_quick_composer("agent_quick_composer_light", AgentReviewTheme::Light, 1.0),
+        agent_quick_composer("agent_quick_composer_dark", AgentReviewTheme::Dark, 1.0),
+        agent_quick_composer(
+            "agent_quick_composer_hc200",
+            AgentReviewTheme::HighContrast,
+            2.0,
+        ),
         Scenario {
             name: "collaboration_product_proof",
             description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",

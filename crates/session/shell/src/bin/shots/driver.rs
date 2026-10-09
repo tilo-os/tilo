@@ -38,6 +38,13 @@ use taffy::prelude::NodeId;
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
 
+#[derive(Clone, Copy, Debug)]
+pub enum AgentReviewTheme {
+    Light,
+    Dark,
+    HighContrast,
+}
+
 pub struct ShellDriver {
     /// Layout + paint core, shared with the native compositor mode.
     /// The driver wraps it and adds input dispatch, focus tracking,
@@ -281,11 +288,11 @@ impl ShellDriver {
         self.fb.relayout();
     }
 
-    pub fn set_agent_quick_review_theme(&mut self, high_contrast: bool, text_scale: f32) {
-        let theme = if high_contrast {
-            ui::Theme::high_contrast()
-        } else {
-            ui::Theme::light()
+    pub fn set_agent_quick_review_theme(&mut self, theme: AgentReviewTheme, text_scale: f32) {
+        let theme = match theme {
+            AgentReviewTheme::Light => ui::Theme::light(),
+            AgentReviewTheme::Dark => ui::Theme::dark(),
+            AgentReviewTheme::HighContrast => ui::Theme::high_contrast(),
         }
         .with_text_scale(text_scale);
         self.fb.set_theme_for_shots(theme);
@@ -1810,7 +1817,11 @@ impl ShellDriver {
                     .ok();
             }
             st.overlays.ws_settings = true;
-            st.ws_settings_tab = WsTab::Members;
+            st.open_workspace_profile(
+                shell::shell::chrome_state::WorkspaceSettingsSubject::Person(hex::encode(
+                    recipient_public.as_bytes(),
+                )),
+            );
         });
         self.fb.host_mut().force_ws_settings_settled();
     }
@@ -1827,8 +1838,9 @@ impl ShellDriver {
         self.seed_workspace_permissions();
         self.seed_agent_member_for_shots();
         self.with_chrome(|st| {
-            st.overlays.ws_settings = true;
-            st.ws_settings_tab = WsTab::Agents;
+            st.open_workspace_profile(shell::shell::chrome_state::WorkspaceSettingsSubject::Agent(
+                "scribe".into(),
+            ));
         });
         self.fb.host_mut().force_ws_settings_settled();
     }

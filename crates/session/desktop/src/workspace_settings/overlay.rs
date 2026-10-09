@@ -21,10 +21,11 @@ use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, UserId};
 
 use super::{
-    AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
-    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, ownership_action_rect, ownership_transfer_resource,
-    permission_profiles_rect, permissions_pane_layout,
+    AppDirectory, DefaultAppsCtx, GrantDraft, MemberPaneIdentity, WorkspaceSettingsSubject, WsTab,
+    agents_add_rect, agents_pane_rows_for, default_app_rows, draw_agents_pane_for,
+    draw_default_apps_pane, draw_members_pane_for, draw_permissions_pane, members_pane_rows_for,
+    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
+    permissions_pane_layout,
 };
 use ui::TextRole;
 use ui::text_render::TextStyle;
@@ -50,6 +51,8 @@ fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color)
 pub struct WorkspaceSettingsModel<'a> {
     pub desktop: &'a DesktopTree,
     pub tab: WsTab,
+    /// Exact durable participant revealed by navigation, if any.
+    pub selected_subject: Option<&'a WorkspaceSettingsSubject>,
     pub grant_draft: GrantDraft,
     /// This device's person principal.
     pub local_user: &'a UserId,
@@ -1635,16 +1638,23 @@ impl WorkspaceSettingsOverlay {
             if !ownership_transfer_resource(ws, actor).actions.is_empty() {
                 self.ownership_action_rect = ownership_action_rect(body_rect);
             }
-            for row in members_pane_rows(ws, body_rect) {
+            let selected_user = match model.selected_subject {
+                Some(WorkspaceSettingsSubject::Person(user)) => Some(user.as_str()),
+                _ => None,
+            };
+            for row in members_pane_rows_for(ws, body_rect, selected_user) {
                 self.member_control_rects
                     .push((row.user.clone(), row.role_rect, row.remove_rect));
             }
-            draw_members_pane(
+            draw_members_pane_for(
                 scene,
                 transform,
                 body_rect,
                 ws,
-                model.local_user,
+                MemberPaneIdentity {
+                    local_user: model.local_user,
+                    selected_user,
+                },
                 is_owner,
                 text_renderer,
                 theme,
@@ -1674,19 +1684,24 @@ impl WorkspaceSettingsOverlay {
         self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
-            for row in agents_pane_rows(ws, body_rect) {
+            let selected_agent = match model.selected_subject {
+                Some(WorkspaceSettingsSubject::Agent(agent)) => Some(agent.as_str()),
+                _ => None,
+            };
+            for row in agents_pane_rows_for(ws, body_rect, selected_agent) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
                     row.review_rect,
                     row.remove_rect,
                 ));
             }
-            draw_agents_pane(
+            draw_agents_pane_for(
                 scene,
                 transform,
                 body_rect,
                 ws,
                 is_owner,
+                selected_agent,
                 text_renderer,
                 theme,
             );
@@ -2512,6 +2527,7 @@ mod tests {
         let model = WorkspaceSettingsModel {
             desktop: &desktop,
             tab: WsTab::General,
+            selected_subject: None,
             grant_draft: GrantDraft::default(),
             local_user: &local_user,
             acting_user: &local_user,
@@ -2553,6 +2569,7 @@ mod tests {
         let mut model = WorkspaceSettingsModel {
             desktop: &desktop,
             tab: WsTab::General,
+            selected_subject: None,
             grant_draft: GrantDraft::default(),
             local_user: &local_user,
             acting_user: &local_user,
@@ -2654,6 +2671,7 @@ mod tests {
             let model = WorkspaceSettingsModel {
                 desktop: &desktop,
                 tab: WsTab::General,
+                selected_subject: None,
                 grant_draft: GrantDraft::default(),
                 local_user: &user,
                 acting_user: &user,

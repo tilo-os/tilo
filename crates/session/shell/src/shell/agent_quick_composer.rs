@@ -1734,35 +1734,39 @@ mod tests {
     impl MessageOfferHost {
         fn row() -> tilo_actions::remote::CatalogueRow {
             let resource = "chat.person:scribe".to_owned();
+            let action = tilo_actions::ActionDescriptor {
+                address: ActionAddress::new(&resource, "message"),
+                semantic_identity: Some(tilo_actions::ResourceSemanticIdentity {
+                    kind: "chat.agent".into(),
+                    key: resource.clone(),
+                }),
+                resource_kind: "chat.agent".into(),
+                resource_label: "Agent".into(),
+                action_label: "Message".into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            };
             tilo_actions::remote::CatalogueRow {
                 provider: "chat-provider".into(),
                 app_id: "so.tilo.chat".into(),
-                parent_resource: String::new(),
+                parent_resource: resource.clone(),
                 resource: tilo_actions::remote::CatalogueResource {
-                    id: resource.clone(),
+                    id: resource,
                     kind: "chat.agent".into(),
                     label: "Agent".into(),
                     presentation: None,
                 },
-                action: Some(tilo_actions::ActionDescriptor {
-                    address: ActionAddress::new(&resource, "message"),
-                    semantic_identity: Some(tilo_actions::ResourceSemanticIdentity {
-                        kind: "chat.agent".into(),
-                        key: resource,
-                    }),
-                    resource_kind: "chat.agent".into(),
-                    resource_label: "Agent".into(),
-                    action_label: "Message".into(),
-                    description: None,
-                    locus: tilo_actions::ExecutionLocus::ClientLocal,
-                    kind: tilo_actions::OperationKind::Document,
-                    contract: tilo_actions::ActionContract::default(),
-                    input: tilo_actions::InputSpec::None,
-                    params: Vec::new(),
-                    view: None,
-                }),
+                action: Some(action.clone()),
                 has_children: false,
-                fresh_binding: None,
+                fresh_binding: Some(tilo_actions::remote::FreshActionBinding {
+                    descriptor: action,
+                    operation_type: Some("chat.action".into()),
+                }),
                 visibility: None,
             }
         }
@@ -1789,7 +1793,11 @@ mod tests {
                         record_id: String::new(),
                         browsable: true,
                     });
-            } else if query.target.is_none() || self.authorized.load(Ordering::Relaxed) {
+            } else if query.provider.as_deref() == Some("chat-provider")
+                && query.target.is_none()
+                && query.needle == "message"
+                && self.authorized.load(Ordering::Relaxed)
+            {
                 page.rows.push(Self::row());
             }
             Pending::ready(Ok(page))
@@ -1800,6 +1808,18 @@ mod tests {
             _caller: &Caller,
             request: InvokeRequest,
         ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            if !self.authorized.load(Ordering::Relaxed) {
+                return Pending::ready(Err(ActionHostError::NotPermitted));
+            }
+            let row = Self::row();
+            if request.revision.is_some()
+                || request.target != row.target().expect("Message fixture target")
+                || request.fresh_binding != row.fresh_binding
+            {
+                return Pending::ready(Err(ActionHostError::InvalidRequest {
+                    reason: "fixture requires the current Message binding".into(),
+                }));
+            }
             self.invokes.fetch_add(1, Ordering::Relaxed);
             Pending::ready(Ok(InvocationReceipt {
                 invocation: request.invocation,

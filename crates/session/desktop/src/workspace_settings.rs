@@ -634,6 +634,29 @@ pub enum WsTab {
     Apps,
 }
 
+/// One exact durable workspace participant selected for read-only profile
+/// presentation. This is navigation state, never an authority grant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceSettingsSubject {
+    Person(UserId),
+    Agent(String),
+}
+
+impl WorkspaceSettingsSubject {
+    pub const fn tab(&self) -> WsTab {
+        match self {
+            Self::Person(_) => WsTab::Members,
+            Self::Agent(_) => WsTab::Agents,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Person(id) | Self::Agent(id) => id,
+        }
+    }
+}
+
 impl WsTab {
     pub fn label(&self) -> String {
         t(match self {
@@ -1061,6 +1084,28 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
         f64::from(theme.tokens.radii.control),
         theme.tokens.colors.surfaces.raised,
     );
+}
+
+fn draw_profile_selection(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    selected: bool,
+    theme: &Theme,
+) {
+    if !selected {
+        return;
+    }
+    let tier = ui::chrome::selection_tier_on(
+        theme,
+        ui::chrome::SelectionState::active(true),
+        theme.tokens.colors.surfaces.raised,
+    );
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
+    scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
+    if let Some(border) = tier.border {
+        scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
+    }
 }
 
 /// A concise explanation and live status at the top of each policy pane.
@@ -2135,6 +2180,7 @@ pub struct MemberRow {
     /// The owner's role is structural, so their role chip is inert.
     pub is_workspace_owner: bool,
     pub grant_count: usize,
+    pub selected: bool,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub remove_rect: Rect,
@@ -2154,6 +2200,7 @@ pub struct AgentRow {
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
     pub service: Option<ServiceMember>,
+    pub selected: bool,
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub review_rect: Rect,
@@ -2337,8 +2384,20 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
 
 /// Stable, policy-backed rows for the Agents pane.
 pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
+    agents_pane_rows_for(ws, pane_rect, None)
+}
+
+pub fn agents_pane_rows_for(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_agent: Option<&str>,
+) -> Vec<AgentRow> {
     let mut agents = ws.agent_members();
-    agents.sort_by(|a, b| a.0.cmp(&b.0));
+    agents.sort_by(|a, b| {
+        let a_selected = selected_agent == Some(a.0.as_str());
+        let b_selected = selected_agent == Some(b.0.as_str());
+        b_selected.cmp(&a_selected).then_with(|| a.0.cmp(&b.0))
+    });
     let mut rows = Vec::new();
     let mut cursor_y = pane_rect.y0
         + PANE_PAD_TOP
@@ -2386,6 +2445,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
         let preset = agent_authority_preset(ws, &agent);
         let service = service_purpose(ws, &agent, tilo_clock::unix_now());
         rows.push(AgentRow {
+            selected: selected_agent == Some(agent.as_str()),
             agent,
             role,
             grant_count,
@@ -2417,13 +2477,23 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
 
 /// Pure geometry; feeds both the renderer and the click router.
 pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
+    members_pane_rows_for(ws, pane_rect, None)
+}
+
+pub fn members_pane_rows_for(
+    ws: &Workspace,
+    pane_rect: Rect,
+    selected_user: Option<&str>,
+) -> Vec<MemberRow> {
     let mut rows = Vec::new();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return rows;
     }
     let mut cursor_y =
         pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
-    for (user, role) in ordered_roster(ws) {
+    let mut roster = ordered_roster(ws);
+    roster.sort_by_key(|(user, _)| selected_user != Some(user.as_str()));
+    for (user, role) in roster {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
             cursor_y,
@@ -2457,6 +2527,7 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
             })
             .count();
         rows.push(MemberRow {
+            selected: selected_user == Some(user.as_str()),
             user,
             role,
             is_workspace_owner,
@@ -2482,15 +2553,46 @@ pub fn draw_members_pane(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    draw_members_pane_for(
+        scene,
+        transform,
+        pane_rect,
+        ws,
+        MemberPaneIdentity {
+            local_user,
+            selected_user: None,
+        },
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+#[derive(Clone, Copy)]
+pub struct MemberPaneIdentity<'a> {
+    pub local_user: &'a UserId,
+    pub selected_user: Option<&'a str>,
+}
+
+pub fn draw_members_pane_for(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    ws: &Workspace,
+    identity: MemberPaneIdentity<'_>,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let rows = members_pane_rows(ws, pane_rect);
+    let rows = members_pane_rows_for(ws, pane_rect, identity.selected_user);
 
     let roster_count = ordered_roster(ws).len();
-    let transfer_status = ownership_transfer_status(ws, local_user);
+    let transfer_status = ownership_transfer_status(ws, identity.local_user);
     let member_help = transfer_status.unwrap_or_else(|| t("workspace-settings-members-help"));
-    let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
+    let can_manage_transfer = !ownership_transfer_resource(ws, identity.local_user)
         .actions
         .is_empty();
     draw_pane_intro(
@@ -2561,7 +2663,7 @@ pub fn draw_members_pane(
         scene,
         transform,
         workspace: ws,
-        local_user,
+        local_user: identity.local_user,
         is_owner,
         text_renderer,
         theme,
@@ -2642,6 +2744,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     draw_row_card(scene, *transform, row.row_rect, theme);
+    draw_profile_selection(scene, *transform, row.row_rect, row.selected, theme);
 
     let avatar_size = 28.0_f64;
     let avatar = Rect::new(
@@ -2742,6 +2845,28 @@ fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) 
     person_name(ws, local_user, &row.user)
 }
 
+pub fn member_profile_presentation(
+    ws: &Workspace,
+    row: &MemberRow,
+    local_user: &UserId,
+) -> (String, String) {
+    let displayed_role = if row.role == CapRole::Owner && !row.is_workspace_owner {
+        t("workspace-settings-role-admin")
+    } else {
+        role_label(row.role)
+    };
+    (
+        ws_member_display_name(ws, row, local_user),
+        t_args(
+            "workspace-settings-member-detail",
+            &[
+                ("role", displayed_role.into()),
+                ("count", row.grant_count.into()),
+            ],
+        ),
+    )
+}
+
 /// A person or agent as every workspace-settings pane names them: "You" for
 /// the viewer, their collaborator name, or a shortened id for someone the
 /// workspace has no name for.
@@ -2840,10 +2965,32 @@ pub fn draw_agents_pane(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    draw_agents_pane_for(
+        scene,
+        transform,
+        pane_rect,
+        ws,
+        is_owner,
+        None,
+        text_renderer,
+        theme,
+    );
+}
+
+pub fn draw_agents_pane_for(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    ws: &Workspace,
+    is_owner: bool,
+    selected_agent: Option<&str>,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let rows = agents_pane_rows(ws, pane_rect);
+    let rows = agents_pane_rows_for(ws, pane_rect, selected_agent);
     let count = ws.agent_members().len();
     draw_pane_intro(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
@@ -2993,6 +3140,7 @@ fn draw_agent_row(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     draw_row_card(scene, transform, row.row_rect, theme);
+    draw_profile_selection(scene, transform, row.row_rect, row.selected, theme);
     let avatar = draw_agent_avatar(scene, transform, row, theme);
     let name = match &row.service {
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
@@ -3072,6 +3220,26 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
+}
+
+pub fn agent_profile_presentation(row: &AgentRow) -> (String, String) {
+    let name = match &row.service {
+        Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
+        _ => short_id(&row.agent),
+    };
+    let detail = if let Some(service) = &row.service {
+        service_member_detail(service)
+    } else {
+        t_args(
+            "workspace-settings-agent-detail",
+            &[
+                ("admission", agent_admission_label(row.role).into()),
+                ("profile", row.preset.label().into()),
+                ("count", row.grant_count.into()),
+            ],
+        )
+    };
+    (name, detail)
 }
 
 fn agent_admission_label(role: CapRole) -> String {
@@ -4422,11 +4590,20 @@ mod members_pane_tests {
     fn ws_with_two_members() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
         ws.set_owner(OWNER);
-        let cap =
-            CapOverride::membership(Subject::person(PEER), ws.id.raw().to_string(), Verb::Read);
+        let cap = CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Read);
         ws.grant_as(&OWNER.to_string(), cap)
             .expect("owner may grant membership");
         ws
+    }
+
+    #[test]
+    fn exact_member_profile_is_revealed_first_without_changing_access() {
+        let ws = ws_with_two_members();
+        let before = ws.role_of(&PEER.to_string());
+        let rows = members_pane_rows_for(&ws, Rect::new(0.0, 0.0, 640.0, 480.0), Some(PEER));
+        assert_eq!(rows.first().map(|row| row.user.as_str()), Some(PEER));
+        assert!(rows.first().is_some_and(|row| row.selected));
+        assert_eq!(ws.role_of(&PEER.to_string()), before);
     }
 
     #[test]
@@ -4896,6 +5073,16 @@ mod agents_pane_tests {
         )
         .expect("owner grants scoped access");
         ws
+    }
+
+    #[test]
+    fn exact_agent_profile_is_revealed_without_granting_authority() {
+        let ws = ws_with_agent();
+        let before = ws.capabilities.len();
+        let rows = agents_pane_rows_for(&ws, Rect::new(0.0, 0.0, 640.0, 480.0), Some(AGENT));
+        assert_eq!(rows.first().map(|row| row.agent.as_str()), Some(AGENT));
+        assert!(rows.first().is_some_and(|row| row.selected));
+        assert_eq!(ws.capabilities.len(), before);
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::shell::state::{
 use tilo_desktop::notifications::{
     HistoryActivation, Notification, NotificationIconKind, NotificationLog, NotificationSeverity,
 };
-pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
+pub use tilo_desktop::workspace_settings::{GrantDraft, WorkspaceSettingsSubject, WsTab};
 
 /// An action-owned request to initialize only this freshly minted scratch tab.
 /// It is intentionally session-local; reopening a saved tab never recreates it.
@@ -580,6 +580,8 @@ pub struct ChromeState {
     /// button its settings pick) is held. See [`crate::shell::pad_map`].
     pub pad_map: Option<crate::shell::pad_map::PadMap>,
     pub ws_settings_tab: WsTab,
+    /// Exact durable participant revealed in Workspace Settings.
+    pub ws_settings_subject: Option<WorkspaceSettingsSubject>,
     /// Window-logical bounds of the top-bar workspace pill. Published by the
     /// top bar without bumping revision so the workspace lens can animate
     /// from the exact context that opened it.
@@ -843,6 +845,7 @@ impl ChromeState {
             osd: None,
             pad_map: None,
             ws_settings_tab: WsTab::default(),
+            ws_settings_subject: None,
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
@@ -1605,6 +1608,15 @@ impl ChromeState {
     /// action-level repaint boundary.
     pub fn open_workspace_settings(&mut self, tab: WsTab) {
         self.ws_settings_tab = tab;
+        self.ws_settings_subject = None;
+        self.overlays.ws_settings = true;
+        self.overlays.quick_settings = false;
+    }
+
+    /// Reveal one exact durable participant without changing their authority.
+    pub fn open_workspace_profile(&mut self, subject: WorkspaceSettingsSubject) {
+        self.ws_settings_tab = subject.tab();
+        self.ws_settings_subject = Some(subject);
         self.overlays.ws_settings = true;
         self.overlays.quick_settings = false;
     }

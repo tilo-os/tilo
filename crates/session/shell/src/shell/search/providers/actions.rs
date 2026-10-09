@@ -111,6 +111,19 @@ const PRESENCE_FOLLOW_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Stable collaborator id returned by the workspace roster.",
 )];
 
+const PARTICIPANT_PROFILE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "kind",
+        ParamType::Text,
+        "`person` or `agent`, as returned by the workspace roster.",
+    ),
+    ActionParam::required(
+        "id",
+        ParamType::Text,
+        "Exact durable person or agent id returned by the workspace roster.",
+    ),
+];
+
 const SCREENSHOT_SEND_PARAMS: &[ActionParam] = &[ActionParam::required(
     "target",
     ParamType::Text,
@@ -161,6 +174,13 @@ fn is_alarm_action(id: &str) -> bool {
         || crate::shell::notification::is_snoozed_alarm_action(id)
 }
 
+fn reversible_view_contract() -> tilo_actions::ActionContract {
+    let mut contract = tilo_actions::ActionContract::view();
+    contract.retry = tilo_actions::RetryPolicy::AtMostOnce;
+    contract.reversible = true;
+    contract
+}
+
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     use tilo_actions::{
         ActionContract, ConfirmationPolicy, PermissionRequirement, RetryPolicy, RiskLevel,
@@ -172,14 +192,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
-            contract = ActionContract::view();
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
+            contract = reversible_view_contract();
         }
         "desktop-tour.open"
         | "settings.open"
         | "settings.members.open"
         | "settings.agents.open"
+        | "settings.participant.open"
         | "settings.privacy.open"
         | "settings.apps.open"
         | "quick-settings.open"
@@ -254,9 +273,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Navigation and focus each advance one step when repeated.
         id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
-            contract = ActionContract::view();
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
+            contract = reversible_view_contract();
         }
         // Layout, undone by the opposite move.
         id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
@@ -277,6 +294,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "settings.open"
         | "settings.members.open"
         | "settings.agents.open"
+        | "settings.participant.open"
         | "settings.privacy.open"
         | "settings.apps.open"
         | "quick-settings.open"
@@ -1054,6 +1072,42 @@ impl Action {
                 Ok(())
             },
         ),
+        Action {
+            id: "settings.participant.open",
+            label: "search-action-settings-participant-open",
+            subtitle: "search-action-settings-participant-open-subtitle",
+            params: PARTICIPANT_PROFILE_PARAMS,
+            apply: |st, args| {
+                use tilo_desktop::workspace_settings::WorkspaceSettingsSubject;
+                let id = args.text("id").unwrap_or_default();
+                let subject = match args.text("kind") {
+                    Some("person") => st
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .filter(|ws| {
+                            ws.roster_in_room_at(&ws.room.to_string(), unix_now())
+                                .iter()
+                                .any(|(person, _)| person == id)
+                        })
+                        .map(|_| WorkspaceSettingsSubject::Person(id.to_string())),
+                    Some("agent") => st
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .and_then(|ws| {
+                            ws.agent_members_in_room_at(&ws.room.to_string(), unix_now())
+                                .into_iter()
+                                .find(|(agent, _)| agent == id)
+                        })
+                        .map(|(agent, _)| WorkspaceSettingsSubject::Agent(agent)),
+                    _ => None,
+                }
+                .ok_or_else(|| ActionError::Refused(t("settings-participant-no-longer-present")))?;
+                st.open_workspace_profile(subject);
+                Ok(())
+            },
+        },
         chrome(
             "settings.privacy.open",
             "search-action-settings-privacy-open",
@@ -3849,6 +3903,159 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    fn invoke_participant_profile(
+        action: &crate::shell::search::SearchResult,
+        document: &mut AutoCommit,
+        chrome: &Chrome,
+        kind: &str,
+        id: &str,
+    ) -> Result<(), ActionError> {
+        let args = ActionArgs::bind(
+            &action.params,
+            [
+                ("kind".into(), tilo_actions::ArgValue::Text(kind.into())),
+                ("id".into(), tilo_actions::ArgValue::Text(id.into())),
+            ],
+        )
+        .expect("typed participant-profile arguments bind");
+        (action.on_open)(
+            &mut ui::widget::Edits::lend(document),
+            &automerge::ROOT,
+            chrome,
+            &args,
+        )
+    }
+
+    #[test]
+    fn participant_profile_action_revalidates_and_opens_exact_subject() {
+        use crate::shell::state::{CapOverride, Subject, Verb};
+        use tilo_desktop_model::Collaborator;
+
+        let chrome = chrome_with_room();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has a workspace");
+            workspace
+                .collaborators
+                .push(Collaborator::new("ada", "Ada"));
+            let room = workspace.room.to_string();
+            for subject in [Subject::person("ada"), Subject::agent("scribe")] {
+                workspace
+                    .grant_as(
+                        &"shell-fixture".to_string(),
+                        CapOverride::membership(subject, room.clone(), Verb::Read),
+                    )
+                    .expect("owner admits fixture participant");
+            }
+            drop(tree);
+        }
+        let provider = ActionsProvider::new();
+        let results = action_results(&provider, &chrome);
+        let action = results
+            .iter()
+            .find(|action| action.id == "settings.participant.open")
+            .expect("exact participant action is published");
+        let mut document = AutoCommit::new();
+        for (kind, id, expected) in [
+            (
+                "person",
+                "ada",
+                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Person("ada".into()),
+            ),
+            (
+                "agent",
+                "scribe",
+                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Agent("scribe".into()),
+            ),
+        ] {
+            invoke_participant_profile(action, &mut document, &chrome, kind, id).unwrap();
+            assert_eq!(chrome.borrow().ws_settings_subject, Some(expected));
+        }
+
+        chrome
+            .borrow_mut()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .collaborators
+            .retain(|person| person.id != "ada");
+        invoke_participant_profile(action, &mut document, &chrome, "person", "ada")
+            .expect("offline durable member remains navigable");
+        assert_eq!(
+            chrome.borrow().ws_settings_subject,
+            Some(tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Person("ada".into()))
+        );
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.desktop.active_workspace_mut().unwrap();
+            let actor = "shell-fixture".to_string();
+            assert!(
+                !tilo_desktop::workspace_settings::remove_member(
+                    workspace,
+                    &actor,
+                    &"ada".to_string(),
+                )
+                .revoked
+                .is_empty()
+            );
+            assert!(
+                !tilo_desktop::workspace_settings::remove_agent(workspace, &actor, "scribe",)
+                    .revoked
+                    .is_empty()
+            );
+            drop(tree);
+        }
+        assert!(matches!(
+            invoke_participant_profile(action, &mut document, &chrome, "person", "ada"),
+            Err(ActionError::Refused(_))
+        ));
+        assert!(matches!(
+            invoke_participant_profile(action, &mut document, &chrome, "agent", "scribe"),
+            Err(ActionError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn participant_profile_action_refuses_membership_from_another_room() {
+        use crate::shell::state::{CapOverride, Subject, Verb};
+
+        let chrome = chrome_with_room();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.desktop.active_workspace_mut().unwrap();
+            for subject in [Subject::person("ada"), Subject::agent("scribe")] {
+                workspace
+                    .grant_as(
+                        &"shell-fixture".to_string(),
+                        CapOverride::membership(subject, "a-foreign-room", Verb::Read),
+                    )
+                    .expect("owner records the foreign-room fixture grant");
+            }
+            drop(tree);
+        }
+        let provider = ActionsProvider::new();
+        let results = action_results(&provider, &chrome);
+        let action = results
+            .iter()
+            .find(|action| action.id == "settings.participant.open")
+            .unwrap();
+        let mut document = AutoCommit::new();
+        for (kind, id) in [("person", "ada"), ("agent", "scribe")] {
+            assert!(matches!(
+                invoke_participant_profile(action, &mut document, &chrome, kind, id),
+                Err(ActionError::Refused(_))
+            ));
+        }
+        assert_eq!(chrome.borrow().ws_settings_subject, None);
     }
 
     #[test]

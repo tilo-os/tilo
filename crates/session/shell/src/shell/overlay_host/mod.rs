@@ -144,6 +144,23 @@ use tilo_desktop::workspace_settings::overlay::{
 use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 use ui::widget::ButtonRole;
 
+fn roster_agent_subject(
+    workspace: &crate::shell::state::Workspace,
+    row: &RosterRow,
+) -> Option<String> {
+    let agents =
+        workspace.agent_members_in_room_at(&workspace.room.to_string(), tilo_clock::unix_now());
+    if let Some((agent, _)) = agents.iter().find(|(agent, _)| agent == &row.id) {
+        return Some(agent.clone());
+    }
+    let mut matching = agents
+        .into_iter()
+        .filter(|(agent, _)| agent.eq_ignore_ascii_case(&row.label))
+        .map(|(agent, _)| agent);
+    let subject = matching.next()?;
+    matching.next().is_none().then_some(subject)
+}
+
 #[derive(Debug)]
 struct SessionActionResult {
     action: os_actions::SessionAction,
@@ -15148,6 +15165,39 @@ impl ShellOverlayHost {
     }
 
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
+        if self.apply_collaborator_navigation(hit) {
+            *handled = true;
+            return;
+        }
+        if self.apply_collaborator_status(hit) {
+            *handled = true;
+            return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let mut state = chrome.borrow_mut();
+            match hit {
+                CollaboratorsHit::Invite => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptInvite);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Join => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptConnect);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::RoomActivity => state.open_room_activity(None),
+                CollaboratorsHit::Dismiss => {
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                _ => {}
+            }
+        }
+        *handled = true;
+    }
+
+    fn apply_collaborator_navigation(&mut self, hit: CollaboratorsHit) -> bool {
         if matches!(
             hit,
             CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
@@ -15167,8 +15217,7 @@ impl ShellOverlayHost {
                 .unwrap_or_default();
             self.collaborators_overlay
                 .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
-            *handled = true;
-            return;
+            return true;
         }
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self
@@ -15193,38 +15242,63 @@ impl ShellOverlayHost {
                     self.set_followed_peer(Some(target.id));
                 }
             }
-            *handled = true;
-            return;
+            return true;
         }
         if let CollaboratorsHit::OpenSettings(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .settings_target(index)
-                .map(|(id, is_agent)| (id.to_string(), is_agent));
-            if let (Some((target_id, target_is_agent)), Some(chrome)) =
-                (target, self.chrome.clone())
-            {
-                let mut state = chrome.borrow_mut();
-                let local_user = state.active_local_user();
-                let current = tilo_desktop::collaborators::collaborator_roster_rows(
-                    &state.tree().desktop,
-                    &local_user,
-                )
-                .into_iter()
-                .find(|row| row.id == target_id && row.is_agent == target_is_agent);
-                if current.is_some() {
-                    state.open_workspace_settings(if target_is_agent {
-                        tilo_desktop::workspace_settings::WsTab::Agents
-                    } else {
-                        tilo_desktop::workspace_settings::WsTab::Members
-                    });
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-            }
-            *handled = true;
-            return;
+            self.open_collaborator_profile(index);
+            return true;
         }
+        false
+    }
+
+    fn open_collaborator_profile(&self, index: usize) {
+        let target = self
+            .collaborators_overlay
+            .settings_target(index)
+            .map(|(id, is_agent)| (id.to_string(), is_agent));
+        let (Some((target_id, target_is_agent)), Some(chrome)) = (target, self.chrome.clone())
+        else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        let local_user = state.active_local_user();
+        let current = tilo_desktop::collaborators::collaborator_roster_rows(
+            &state.tree().desktop,
+            &local_user,
+        )
+        .into_iter()
+        .find(|row| row.id == target_id && row.is_agent == target_is_agent);
+        let subject = current.and_then(|row| {
+            if !target_is_agent {
+                return state
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .filter(|workspace| {
+                        workspace
+                            .roster_in_room_at(&workspace.room.to_string(), tilo_clock::unix_now())
+                            .iter()
+                            .any(|(person, _)| person == &row.id)
+                    })
+                    .map(|_| {
+                        tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Person(row.id)
+                    });
+            }
+            state
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| roster_agent_subject(workspace, &row))
+                .map(tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Agent)
+        });
+        if let Some(subject) = subject {
+            state.open_workspace_profile(subject);
+            state.overlays.collaborators = false;
+            state.bump();
+        }
+    }
+
+    fn apply_collaborator_status(&mut self, hit: CollaboratorsHit) -> bool {
         match hit {
             CollaboratorsHit::EditStatus => {
                 self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
@@ -15236,46 +15310,14 @@ impl ShellOverlayHost {
                 self.status_selection =
                     ui::text_selection::Selection::collapsed(self.status_draft.len());
                 self.status_editing = true;
-                *handled = true;
-                return;
+                true
             }
             CollaboratorsHit::SetStatusSharing(mode) => {
                 self.set_status_sharing(mode);
-                *handled = true;
-                return;
+                true
             }
-            _ => {}
+            _ => false,
         }
-        if let Some(chrome) = self.chrome.clone() {
-            let mut state = chrome.borrow_mut();
-            match hit {
-                CollaboratorsHit::Invite => {
-                    state.push_peer_sync_request(PeerSyncAction::PromptInvite);
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-                CollaboratorsHit::Join => {
-                    state.push_peer_sync_request(PeerSyncAction::PromptConnect);
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-                CollaboratorsHit::RoomActivity => {
-                    state.open_room_activity(None);
-                }
-                CollaboratorsHit::Dismiss => {
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-                CollaboratorsHit::ToggleFollow(_)
-                | CollaboratorsHit::OpenSettings(_)
-                | CollaboratorsHit::PreviousPeople
-                | CollaboratorsHit::NextPeople
-                | CollaboratorsHit::EditStatus
-                | CollaboratorsHit::SetStatusSharing(_)
-                | CollaboratorsHit::Absorb => {}
-            }
-        }
-        *handled = true;
     }
 
     fn handle_collaborators_keyboard(
@@ -17332,6 +17374,7 @@ impl ShellOverlayHost {
                     let mut st = chrome.borrow_mut();
                     st.commit_workspace_name();
                     st.ws_settings_tab = tab;
+                    st.ws_settings_subject = None;
                     st.bump();
                 }
             }
@@ -20167,6 +20210,58 @@ impl Widget for ShellOverlayHost {
                                         ..Default::default()
                                     }),
                             );
+                        } else if let (Some(workspace), Some(subject)) = (
+                            state.tree().desktop.active_workspace(),
+                            state
+                                .ws_settings_subject
+                                .as_ref()
+                                .filter(|subject| subject.tab() == state.ws_settings_tab),
+                        ) {
+                            let body = WorkspaceSettingsOverlay::body_rect_for(
+                                self.workspace_settings_overlay.rect(),
+                            );
+                            let profile = match subject {
+                                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Person(
+                                    user,
+                                ) => tilo_desktop::workspace_settings::members_pane_rows_for(
+                                    workspace,
+                                    body,
+                                    Some(user),
+                                )
+                                .into_iter()
+                                .find(|row| row.user == *user)
+                                .map(|row| {
+                                    let (name, detail) = tilo_desktop::workspace_settings::member_profile_presentation(
+                                        workspace,
+                                        &row,
+                                        &state.local_user_id,
+                                    );
+                                    (format!("workspace-profile:person:{user}"), name, detail, row.row_rect)
+                                }),
+                                tilo_desktop::workspace_settings::WorkspaceSettingsSubject::Agent(
+                                    agent,
+                                ) => tilo_desktop::workspace_settings::agents_pane_rows_for(
+                                    workspace,
+                                    body,
+                                    Some(agent),
+                                )
+                                .into_iter()
+                                .find(|row| row.agent == *agent)
+                                .map(|row| {
+                                    let (name, detail) = tilo_desktop::workspace_settings::agent_profile_presentation(&row);
+                                    (format!("workspace-profile:agent:{agent}"), name, detail, row.row_rect)
+                                }),
+                            };
+                            if let Some((key, name, detail, bounds)) = profile {
+                                settings.children.push(
+                                    AccessNode::new(Role::ListItem)
+                                        .with_semantic_key(key)
+                                        .with_name(name)
+                                        .with_description(detail)
+                                        .with_bounds(bounds)
+                                        .with_state(AccessState::new().selected(true)),
+                                );
+                            }
                         }
                     }
                     root.children.push(settings);
@@ -22392,6 +22487,7 @@ impl ShellOverlayHost {
                 &tilo_desktop::workspace_settings::overlay::WorkspaceSettingsModel {
                     desktop: &tree.desktop,
                     tab: state.ws_settings_tab,
+                    selected_subject: state.ws_settings_subject.as_ref(),
                     grant_draft: state.ws_grant_draft,
                     local_user: &state.local_user_id,
                     acting_user: &acting_user,
