@@ -338,12 +338,15 @@ fn read_graphics_assignment() -> Result<GraphicsAssignment, String> {
         .map_err(|error| format!("graphics assignment record is invalid: {error}"))
 }
 
+/// `_` is allowed because the backend names a lease after its purpose
+/// (`egress-windows_update-<t>`); a lease ID still cannot name another
+/// directory or file type.
 fn lease_path(id: &str) -> Result<std::path::PathBuf, String> {
     if !id.starts_with("egress-")
         || id.len() > 128
         || !id
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
     {
         return Err("invalid egress lease identifier".to_string());
     }
@@ -1029,8 +1032,8 @@ mod tests {
 
     use super::{
         LeaseScan, REAP_GIVE_UP_SECONDS, REAP_RETRY_MAX_SECONDS, REAP_RETRY_SECONDS, ReapPass,
-        ReaperSchedule, STATUS_REFRESH_SECONDS, Wake, discard_records, parse_lease_record,
-        reap_lease_records, scan_lease_records, set_aside,
+        ReaperSchedule, STATUS_REFRESH_SECONDS, Wake, discard_records, lease_path,
+        parse_lease_record, reap_lease_records, scan_lease_records, set_aside,
     };
 
     /// Records which leases the reaper detached. Detaching fails on demand,
@@ -1307,6 +1310,19 @@ mod tests {
             schedule.last_error.as_deref(),
             Some("cannot lock Windows controller")
         );
+    }
+
+    #[test]
+    fn every_lease_id_egress_open_creates_has_a_record_path() {
+        for purpose in [EgressPurpose::Activation, EgressPurpose::WindowsUpdate] {
+            // The ID `LibvirtBackend::open_egress` returns for this purpose.
+            let id = format!("egress-{}-1000", purpose.as_str());
+            assert!(lease_path(&id).is_ok(), "{id} has no lease record path");
+        }
+        assert!(lease_path("egress-pending-42").is_ok());
+        assert!(lease_path("egress-../leases").is_err());
+        assert!(lease_path("egress-a/b").is_err());
+        assert!(lease_path("windows_update-1").is_err());
     }
 
     #[test]
