@@ -4621,22 +4621,24 @@ impl DrmRuntime {
         self.dispatch.pump_mouse_keys(now);
     }
 
-    /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
+    /// Test-only seam: a dispatch state driving `outputs` — `(connector name, mode size)`, in
+    /// enumeration order — as if each had just been modeset, laid out with no saved
+    /// arrangement. `super::mod` tests use it to drive `DrmBackend` without real hardware.
     #[cfg(test)]
-    pub fn synthesize_for_tests(outputs: Vec<(OutputId, Output)>) -> DrmDispatchState {
-        let mut registry = OutputRegistry::new();
-        // Re-intern so the registry's `next_id` is consistent with the synthesised ids — arbitrary keys, since the test only cares about `output_meta`.
-        for (id, _) in &outputs {
-            registry.intern(super::outputs::DrmOutputKey {
+    pub(super) fn synthesize_for_tests(outputs: &[(&str, (u32, u32))]) -> DrmDispatchState {
+        let mut state = DrmDispatchState::default();
+        for (connector, (name, size)) in (0_u32..).zip(outputs) {
+            let id = state.outputs.intern(DrmOutputKey {
                 device: 0,
-                connector: id.0,
+                connector,
             });
+            state.live.push(tests::named(
+                tests::entry_on_device(0, id.0, connector, *size, None),
+                name,
+            ));
         }
-        DrmDispatchState {
-            outputs: registry,
-            output_meta: outputs.into_iter().collect(),
-            ..Default::default()
-        }
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        state
     }
 }
 
@@ -6521,7 +6523,7 @@ mod tests {
     /// Fake one modeset output without a real card.  Giving the fixture a
     /// device id lets topology tests cover the exact identity boundary where
     /// DRM connector and CRTC handles restart on a second GPU.
-    fn entry_on_device(
+    pub(super) fn entry_on_device(
         device: u64,
         id: u32,
         connector: u32,
@@ -7203,20 +7205,52 @@ mod tests {
                 "a user who set a scale is not asking for a second opinion"
             );
         }
-        // Phase `synthesize_for_tests_populates_output_meta`.
+        // Phase `synthesize_for_tests_publishes_its_outputs`.
         {
-            let outs = vec![
-                (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
-                (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
-            ];
-            let state = DrmRuntime::synthesize_for_tests(outs);
+            let state =
+                DrmRuntime::synthesize_for_tests(&[("eDP-1", (1920, 1080)), ("DP-2", (1280, 720))]);
             assert_eq!(state.output_meta.len(), 2);
-            assert!(state.output_meta.contains_key(&OutputId(0)));
-            assert!(state.output_meta.contains_key(&OutputId(1)));
+            assert_eq!(
+                state
+                    .output_table()
+                    .iter()
+                    .map(|output| (output.id, output.size))
+                    .collect::<Vec<_>>(),
+                [(OutputId(0), (1920, 1080)), (OutputId(1), (1280, 720))],
+                "the seam must publish through the live set, as hardware bring-up does"
+            );
         }
     }
 
-    fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
+    #[test]
+    fn output_table_publishes_live_outputs_in_layout_order() {
+        let (mut state, _rx) = dispatch_with_channel();
+        // The external monitor enumerated first.
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), None), "DP-2"),
+            named(entry(1, 11, (1920, 1080), None), "eDP-1"),
+        ];
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        // A record for an output no longer driven — unplugged or powered off since the last
+        // relayout — must not be advertised to clients.
+        state
+            .output_meta
+            .insert(OutputId(7), Output::new(OutputId(7), (3840, 2160), 1.0));
+
+        let table = state.output_table();
+        assert_eq!(
+            table
+                .iter()
+                .map(|output| (output.id, output.size))
+                .collect::<Vec<_>>(),
+            [(OutputId(1), (1920, 1080)), (OutputId(0), (2560, 1440))],
+            "the built-in panel is published first, the external after it, and only live outputs"
+        );
+        assert_eq!(table[0].position, (0, 0));
+        assert_eq!(table[1].position, (1920, 0));
+    }
+
+    pub(super) fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
         entry.connector_name = connector.into();
         entry.config_key = connector.into();
         entry

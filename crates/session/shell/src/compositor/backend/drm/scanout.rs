@@ -340,7 +340,7 @@ impl Drop for GbmScanoutBuffers {
 /// flip event arrives.  Consequently there is no renderable image while a
 /// flip is pending on a two-slot swapchain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectScanoutState {
+pub(super) struct DirectScanoutState {
     front: usize,
     pending: Option<usize>,
 }
@@ -359,6 +359,9 @@ pub struct DirectScanoutTargets {
     /// CRTC still shows the dumb front.
     presented: bool,
     state: DirectScanoutState,
+    /// When the pending flip was queued. An output whose flip nothing waits for (it is
+    /// slower than the output pacing the frames) is demoted once that flip is overdue.
+    flip_queued_at: Option<Instant>,
 }
 
 /// Result of handing a completed imported target to KMS.
@@ -454,6 +457,7 @@ impl DirectScanoutTargets {
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
+            flip_queued_at: None,
         })
     }
 
@@ -464,6 +468,11 @@ impl DirectScanoutTargets {
     /// A queued flip onto one of these targets has not retired yet.
     pub fn flip_pending(&self) -> bool {
         self.state.pending.is_some()
+    }
+
+    /// When the pending flip was queued, while one is.
+    pub fn flip_queued_at(&self) -> Option<Instant> {
+        self.state.pending.and(self.flip_queued_at)
     }
 
     /// KMS has accepted a frame from these targets, so the CRTC no longer shows
@@ -483,7 +492,7 @@ impl DirectScanoutTargets {
 }
 
 impl DirectScanoutState {
-    const fn new(front: usize) -> Self {
+    pub(super) const fn new(front: usize) -> Self {
         Self {
             front,
             pending: None,
@@ -492,7 +501,7 @@ impl DirectScanoutState {
 
     /// Reserve the only slot which is not currently owned by scanout.  The
     /// caller must render successfully before handing it to [`Self::submit`].
-    fn render_slot(self) -> Option<usize> {
+    pub(super) fn render_slot(self) -> Option<usize> {
         self.pending
             .is_none()
             .then_some(1usize.saturating_sub(self.front))
@@ -501,7 +510,7 @@ impl DirectScanoutState {
     /// Transfer a successfully rendered slot to KMS.  This records ownership
     /// only after `page_flip` itself succeeds; a rejected flip remains safely
     /// renderable on the next attempt.
-    fn submit(&mut self, slot: usize) -> bool {
+    pub(super) fn submit(&mut self, slot: usize) -> bool {
         if self.render_slot() != Some(slot) {
             return false;
         }
@@ -521,7 +530,7 @@ impl DirectScanoutState {
 
     /// Retire the queued flip.  Only now is the old front released back to the
     /// renderer and the queued target promoted to the visible front.
-    fn complete(&mut self) -> bool {
+    pub(super) fn complete(&mut self) -> bool {
         let Some(front) = self.pending.take() else {
             return false;
         };
@@ -3232,6 +3241,7 @@ impl DrmScanout {
                 if targets.state.submit(index) {
                     self.flip_submission = self.flip_submission.wrapping_add(1);
                     targets.presented = true;
+                    targets.flip_queued_at = Some(Instant::now());
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -3319,6 +3329,7 @@ impl DrmScanout {
             self.log_flip_completion();
             self.flip_pending = false;
             let _ = targets.state.complete();
+            targets.flip_queued_at = None;
         }
     }
 

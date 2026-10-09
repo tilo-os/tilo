@@ -7615,20 +7615,22 @@ impl PortalBackend {
 
 /// Stand the portal backend up inside the compositor.
 ///
-/// ## Why here and not in `--portal-server-only`
+/// ## Why here and not in a separate daemon
 ///
 /// The portal answers questions about *this session* — workspace, prior
 /// grants, the decision now — all live in the `WorkspaceTree` this process
-/// owns. The standalone daemon has none: its `WorkspaceTree::default()`
-/// misses every grant lookup, and its `PromptResolver::Channel` drains to
-/// nowhere since it has no output to render a dialog on.
+/// owns. The standalone daemon that used to serve it (`shell
+/// --portal-server-only`) had none: its `WorkspaceTree::default()` missed
+/// every grant lookup, and its `PromptResolver::Channel` drained to nowhere
+/// since it had no output to render a dialog on.
 ///
 /// Giving that daemon IPC back to the compositor was rejected: it would
 /// split "the permissions" across two processes — the drift
 /// `crates/packaging/launcher/src/capabilities.rs` warns against — and it
 /// still couldn't draw the dialog, making it a proxy for one process,
-/// which is that process. `shell-portal.service` and its D-Bus activation
-/// are removed with this change.
+/// which is that process. `shell-portal.service`, its D-Bus activation and
+/// the `--portal-server-only` mode are removed; the binary now refuses the
+/// flag (see `compositor::removed_run_mode_refusal`).
 ///
 /// Registration on the session bus completes in the background. With no
 /// session bus (headless rig, no user bus) it fails there, and the compositor
@@ -7731,9 +7733,9 @@ fn start_portal_backend(
             } else {
                 tracing::error!(
                     "portal: another process already owns {} — this session's file \
-                     dialog will never be reached. The standalone \
-                     `shell --portal-server-only` daemon is the usual culprit; it is \
-                     no longer part of the image and its unit should be disabled.",
+                     dialog will never be reached. Check `busctl --user status {}` \
+                     for the owner and disable whatever started it.",
+                    crate::portal::BUS_NAME,
                     crate::portal::BUS_NAME
                 );
             }
