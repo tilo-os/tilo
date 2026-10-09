@@ -3437,25 +3437,28 @@ mod tests {
 
     #[test]
     fn catalogue_failed_directory_retries_without_false_exhaustion() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("directory runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            assert_catalogue_directory_retries();
+        });
+    }
+
+    fn assert_catalogue_directory_retries() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible};
         use crate::shell::search::{QueryArgs, SearchRegistry};
         let chrome = chrome();
-        let broker = broker_for(&chrome);
-        let room = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .unwrap()
-            .room
-            .to_string();
-        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
-            peer_id: 9,
-            app_id: "so.tilo.notes".into(),
-            cluster_id: room,
-            record_id: "notes-fixture".into(),
-        }]);
+        // Keep the actual authority and directory bridge alive so the admitted
+        // query remains pending until this test supplies its transport result.
+        // A dropped bridge legitimately refuses within the same catalogue call.
+        let directory =
+            crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                chrome.borrow().tree_handle(),
+            );
+        let broker = directory.broker.clone();
         let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
             broker.clone(),
         ));
