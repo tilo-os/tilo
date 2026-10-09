@@ -69,10 +69,10 @@ impl ConflictWatch {
         let (generation, written) = repository.written_since(workspace_id, self.records_checked);
         let mut check = std::mem::take(&mut self.records_retry);
         check.extend(written);
-        let mut published = false;
+        let mut any_published = false;
         for record in check {
             match publisher.publish_concurrent_head_conflict(record) {
-                Ok(changed) => published |= changed,
+                Ok(changed) => any_published |= changed,
                 Err(error) => {
                     eprintln!("record conflict publication failed: {error}");
                     // A record at a size bound fails the same way every
@@ -84,7 +84,7 @@ impl ConflictWatch {
             }
         }
         self.records_checked = Some(generation);
-        published
+        any_published
     }
 
     /// The namespace's content conflicts still to materialise, scanned for
