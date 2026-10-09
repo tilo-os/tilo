@@ -62,16 +62,16 @@ pub struct WorkspaceTreeReplica {
     /// Advanced each time a peer is first seen taking part in a room, so the
     /// roster can tell that nobody new arrived without locking the replica.
     participants_epoch: Arc<AtomicU64>,
-    /// When this replica last asked a room back for changes a peer's request
-    /// showed it lacked (see [`PULL_BACK_GAP`]).
-    pulled_back: std::collections::HashMap<RoomId, Instant>,
+    /// The heads a peer's request named that this replica asked a room back
+    /// for, and when (see [`PULL_BACK_REPEAT`]).
+    pulled_back: std::collections::HashMap<RoomId, (Vec<automerge::ChangeHash>, Instant)>,
 }
 
-/// The least time between two requests a replica makes of one room because
-/// a peer asked with heads it does not hold. A peer whose changes this
-/// machine refuses keeps holding them, and must not get a request back for
-/// every one it makes.
-const PULL_BACK_GAP: Duration = Duration::from_secs(10);
+/// How long a replica waits before asking a room back again for the same
+/// heads it lacked. Changes this machine refuses stay unknown here however
+/// often they are offered; two peers that each refuse the other's would
+/// otherwise ask each other back forever. New heads are asked for at once.
+const PULL_BACK_REPEAT: Duration = Duration::from_secs(300);
 
 impl WorkspaceTreeReplica {
     pub fn new(id: u64, tree: WorkspaceTreeHandle) -> Self {
@@ -86,17 +86,16 @@ impl WorkspaceTreeReplica {
         }
     }
 
-    /// Whether `room` may be asked back now, noting that it is.
-    fn pull_back_due(&mut self, room: RoomId) -> bool {
+    /// Whether `room` may be asked back now for the `heads` a peer named,
+    /// noting that it is.
+    fn pull_back_due(&mut self, room: RoomId, heads: &[automerge::ChangeHash]) -> bool {
         let now = Instant::now();
-        if self
-            .pulled_back
-            .get(&room)
-            .is_some_and(|at| now.saturating_duration_since(*at) < PULL_BACK_GAP)
-        {
+        if self.pulled_back.get(&room).is_some_and(|(asked, at)| {
+            asked.as_slice() == heads && now.saturating_duration_since(*at) < PULL_BACK_REPEAT
+        }) {
             return false;
         }
-        self.pulled_back.insert(room, now);
+        self.pulled_back.insert(room, (heads.to_vec(), now));
         true
     }
 
@@ -245,7 +244,7 @@ impl WorkspaceTreeReplica {
                 // machine's own next pull, which an idle desktop makes only
                 // every few minutes; the asker's pull after its own activity
                 // is what repairs a push its peers missed.
-                if behind && self.pull_back_due(room_id) {
+                if behind && self.pull_back_due(room_id, &since_heads) {
                     self.request_sync_of(&[room_id]);
                 }
                 if changes.is_empty() {
