@@ -86,23 +86,23 @@ fn measure_capture(format: wl_shm::Format, damage: Option<ShmRegion>) -> BenchRe
     };
     let mut frame = vec![0_u8; bytes];
     let mut scratch = Vec::new();
-    let mut copies = Vec::with_capacity(100);
+    let mut copy_times = Vec::with_capacity(100);
     let mut conversions = Vec::with_capacity(100);
-    let mut copied = 0;
+    let mut copied_bytes = 0;
     for sample in 0..108 {
         let began = Instant::now();
         let owned = copy_from_pool(black_box(&pool), &layout, &request, scratch)?;
         let copied_at = Instant::now();
         apply_owned_shm(&owned, black_box(&mut frame))?;
         let converted = Instant::now();
-        copied = owned.copied_bytes();
+        copied_bytes = owned.copied_bytes();
         scratch = owned.into_bytes();
         if sample >= 8 {
-            copies.push(copied_at.duration_since(began).as_nanos());
+            copy_times.push(copied_at.duration_since(began).as_nanos());
             conversions.push(converted.duration_since(copied_at).as_nanos());
         }
     }
-    let totals = copies
+    let totals = copy_times
         .iter()
         .zip(&conversions)
         .map(|(copy, conversion)| copy.saturating_add(*conversion))
@@ -114,8 +114,8 @@ fn measure_capture(format: wl_shm::Format, damage: Option<ShmRegion>) -> BenchRe
             "format": format!("{format:?}"),
             "damage": damage.map(|region| [region.x, region.y, region.width, region.height]),
             "arch": std::env::consts::ARCH, "debug_assertions": cfg!(debug_assertions),
-            "copied_bytes": copied,
-            "copy": percentiles(copies)?,
+            "copied_bytes": copied_bytes,
+            "copy": percentiles(copy_times)?,
             "conversion": percentiles(conversions)?,
             "total": percentiles(totals)?,
         })
