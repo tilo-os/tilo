@@ -349,6 +349,40 @@ run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
 `tools/binary-budget.toml` is different: it is a weekly guard against static
 linking in release binaries, not this KPI.
 
+## Runtime size
+
+Every thin app maps one shared Rust dylib, `libruntime_dylib.so`. A device
+downloads it when an app's runtime is missing, and every app process applies
+its dynamic relocations before `main`. `tools/perf/runtime_size_ratchet.py`
+reads four numbers from the ELF file, per architecture: `bytes`,
+`relocation_bytes` (the relocation tables), `relocated_bytes` (the 4 KiB pages
+those relocations dirty in each app process) and `symbol_relocations` (the
+relocations that need a symbol lookup). It also names any media library the
+runtime makes every app load. The budgets are in
+`tools/perf/runtime-size-budget/budget.toml`, with the same headroom, rounding
+and raise files as the app budgets above:
+
+- **Release / apps** (`Shared runtime within its size budget`) measures the
+  dylib it has just built.
+- **Perf / scheduled** (footprint group) fetches the newest published
+  `so.tilo.runtime` of each architecture, holds it to the budgets and records
+  `footprint.runtime.<metric>.<arch>`.
+- **CI / fast quality** fails when a budget grows without a raise file new in
+  the same change.
+
+To raise a budget for an intended growth, add one file per change:
+
+```toml
+# tools/perf/runtime-size-budget/raises/<change>.toml
+reason = "the toolkit gained a PDF engine"  # at least 20 characters
+run = 90210                  # the Release / apps run that measured the growth
+
+[runtime.x86_64]             # added to each metric's budget
+bytes = 4194304
+```
+
+When the runtime shrinks, both gates print the lower budget to commit.
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
