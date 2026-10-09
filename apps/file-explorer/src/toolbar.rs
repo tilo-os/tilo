@@ -365,12 +365,7 @@ fn rect_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
         reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
     )]
     let l = taffy.layout(node).unwrap();
-    Rect::new(
-        origin.x + f64::from(l.location.x),
-        origin.y + f64::from(l.location.y),
-        origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-        origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-    )
+    ui::widget::placed(l, origin)
 }
 
 /// The header's leading fill: the nav cluster and the path bar.

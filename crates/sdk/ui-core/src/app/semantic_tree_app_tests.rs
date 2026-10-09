@@ -2350,3 +2350,7 @@ fn a_needle_finds_an_action_by_its_parameters() {
         .collect::<Vec<_>>();
     assert_eq!(found, [("test.counter", Some("set-label"))], "{page:?}");
 }
+
+#[cfg(all(target_os = "linux", feature = "native"))]
+#[path = "native_pty_wake_tests.rs"]
+mod native_pty_wake_tests;

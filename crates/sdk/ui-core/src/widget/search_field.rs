@@ -586,13 +586,7 @@ impl Widget for SearchField {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
             self.input
                 .apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
@@ -972,13 +966,7 @@ impl Widget for Filtered {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(field) = self.field_node {
             let band = taffy.parent(field);

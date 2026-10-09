@@ -800,10 +800,11 @@ fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
 }
 
 /// A transition the presenter could not take stays pending. The park while
-/// the pipe is full is not animation time; the next submit still has the
-/// frame run ahead of it.
-fn present_hold_credit(presenter_full: bool, transition_pending: bool) -> bool {
-    presenter_full && transition_pending
+/// the pipe is full with a frame due is not animation time; the next submit
+/// still has the frame run ahead of it. A full pipe before the frame is due is
+/// the normal wait for a vblank-paced presenter's flip, and is animation time.
+fn present_hold_credit(presenter_full: bool, frame_due: bool, transition_pending: bool) -> bool {
+    presenter_full && frame_due && transition_pending
 }
 
 /// A widget deadline only matters while the presenter can accept the frame
@@ -9172,6 +9173,7 @@ pub fn run() {
             pacing::FrameClock::fallback(Instant::now())
         };
     let frame_period = frame_clock.interval();
+    let mut vblank_scheduler = pacing::VblankScheduler::from_env();
     let mut projection_capture = super::projection_capture::ProjectionCapture::default();
 
     // Reused per-iteration scratch so backend events process *after*
@@ -9375,20 +9377,35 @@ pub fn run() {
                 .defer_running_transitions(transition_hold_sleep);
             transition_hold_sleep = Duration::ZERO;
         }
-        if let Some((serial, retired_at)) = present_pipe
-            .as_ref()
-            .and_then(present::PresentPipe::latest_retirement)
+        if let Some(pipe) = present_pipe.as_mut()
+            && let Some(retired) = pipe.latest_retirement()
         {
-            metrics.note_retirement(serial, retired_at);
-            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, retired_at);
+            let serial = retired.serial;
+            metrics.note_retirement(serial, retired.at);
+            // A frame that queued its own flip reached the panel at that
+            // flip's vblank, not when the presenter returned.
+            let shown_at = retired
+                .display
+                .flip_queued_at
+                .and(retired.display.vblank)
+                .unwrap_or(retired.at);
+            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, shown_at);
             for sample in keys {
                 eprintln!("{sample}");
             }
             if serial > frame_clock_retired_serial {
-                // A virtual present can retire several intervals after the
-                // frame was admitted. The grid point after that late time
-                // would hold the waiting frame for another interval.
-                frame_clock.note_blocked_retirement(retired_at);
+                // A vblank-paced presenter re-anchors the grid on the vblank,
+                // one lead before the next. Otherwise a virtual present can
+                // retire several intervals after the frame was admitted, and
+                // the grid point after that late time would hold the waiting
+                // frame for another interval (`note_blocked_retirement`).
+                let min_depth = vblank_scheduler.note_retired(
+                    &retired,
+                    &mut frame_clock,
+                    pipe.queue_depth(),
+                    iter_t0,
+                );
+                pipe.set_min_queue_depth(min_depth);
                 frame_clock_retired_serial = serial;
             }
         }
@@ -11981,12 +11998,13 @@ pub fn run() {
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
-        // thread is behind would only grow the queue (and input-to-photon latency); capped at `QUEUE_DEPTH + 1`, the tick still services input/clients without rendering.
+        // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
         let pipe_ready = present_pipe
             .as_ref()
             .is_none_or(super::present::PresentPipe::has_capacity);
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
+            cadence_due,
             frame_builder.host().transition_present_pending(),
         );
         if content_changed
@@ -12607,8 +12625,15 @@ pub fn run() {
             // iteration. Advancing here at scene handoff used to run the
             // software clock ahead of KMS page-flip completion, repeatedly
             // filling the bounded queue and collapsing a 144 Hz panel toward
-            // 60 Hz. Synchronous/headless presentation still retires here.
-            if !async_present {
+            // 60 Hz. A grid already locked to the vblank steps to its next
+            // point, which the retirement re-anchors on that vblank anyway.
+            // Synchronous/headless presentation still retires here.
+            if async_present {
+                if let Some(serial) = submitted_serial {
+                    vblank_scheduler.note_built(serial, iter_t0, &frame_clock);
+                }
+                frame_clock.note_submitted(submit_done);
+            } else {
                 frame_clock.note_presented(submit_done);
             }
             if sleep_lock_frame_pending
@@ -13788,11 +13813,16 @@ mod tests {
 
     #[test]
     fn a_full_presenter_holds_a_pending_transition() {
-        assert!(present_hold_credit(true, true));
-        assert!(!present_hold_credit(false, true));
+        assert!(present_hold_credit(true, true, true));
+        assert!(!present_hold_credit(false, true, true));
         assert!(
-            !present_hold_credit(true, false),
+            !present_hold_credit(true, true, false),
             "an idle desktop must not freeze its clock on a full presenter"
+        );
+        assert!(
+            !present_hold_credit(true, false, true),
+            "a vblank-paced presenter is full from each handoff to its flip; \
+             crediting that wait would slow every transition by the lead"
         );
     }
 

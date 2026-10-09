@@ -804,13 +804,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let viewport = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let viewport = crate::widget::layout_rect(taffy, node, origin);
         // Default when the host hasn't supplied tighter bounds via `layout_within`.
         if self.bounds.width() <= 0.0 {
             self.bounds = viewport;

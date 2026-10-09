@@ -801,12 +801,7 @@ impl Widget for DiffMergeApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below
