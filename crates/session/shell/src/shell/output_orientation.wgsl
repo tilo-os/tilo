@@ -10,19 +10,19 @@
 // `orientation`: 0 normal, 1 rotated 90°, 2 rotated 180°, 3 rotated 270°
 // (`shell::render::orientation::shader_code`).
 
-fn oriented_source_pixel(target: vec2<i32>, surface: vec2<i32>, orientation: u32) -> vec2<i32> {
+fn oriented_source_pixel(scanout: vec2<i32>, surface: vec2<i32>, orientation: u32) -> vec2<i32> {
     switch orientation {
         case 1u: {
-            return vec2<i32>(target.y, surface.y - 1 - target.x);
+            return vec2<i32>(scanout.y, surface.y - 1 - scanout.x);
         }
         case 2u: {
-            return vec2<i32>(surface.x - 1 - target.x, surface.y - 1 - target.y);
+            return vec2<i32>(surface.x - 1 - scanout.x, surface.y - 1 - scanout.y);
         }
         case 3u: {
-            return vec2<i32>(surface.x - 1 - target.y, target.x);
+            return vec2<i32>(surface.x - 1 - scanout.y, scanout.x);
         }
         default: {
-            return target;
+            return scanout;
         }
     }
 }
