@@ -104,6 +104,40 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "IDLE_SYNC_SLO"
 
+# The conflict step of a writer's reconciliation pass over a 50,000-file
+# workspace (TIL-608). Idle: the namespace merge generation under one lock hold,
+# no node examined (the gate also asserts that count). After a merge: the
+# namespace lock holds of the stepwise scan, one step of
+# fs::conflict::SCAN_STEP_NODES nodes each at any workspace size. The mean
+# hold is the steady gate; the longest only bounds a stall, since one
+# step on the shared runner held 50-77 ms against a 3.3 ms mean.
+[kpi."fs.conflict-idle-pass-50k"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "IDLE_CONFLICT_SLO"
+
+[kpi."fs.conflict-scan-mean-lock-hold-50k"]
+unit = "ms"
+max = 10.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_MEAN_HOLD_SLO"
+
+[kpi."fs.conflict-scan-longest-lock-hold-50k"]
+unit = "ms"
+max = 200.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
 # registry index, over the apps of tools/perf/tapp-size-budget/ (the default
 # collection; runtime and provider stubs and withdrawn packages are not apps).
