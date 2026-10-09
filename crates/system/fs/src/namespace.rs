@@ -400,7 +400,7 @@ pub struct Namespace {
     merge_generation: u64,
     /// Calls of [`crate::conflict::detect`] on this namespace.
     #[cfg(test)]
-    conflict_scans: std::sync::atomic::AtomicU64,
+    conflict_scans: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
@@ -523,7 +523,7 @@ impl Namespace {
             verified_generation: next_verified_generation(),
             merge_generation: next_verified_generation(),
             #[cfg(test)]
-            conflict_scans: std::sync::atomic::AtomicU64::new(0),
+            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
@@ -591,7 +591,7 @@ impl Namespace {
             verified_generation: next_verified_generation(),
             merge_generation: next_verified_generation(),
             #[cfg(test)]
-            conflict_scans: std::sync::atomic::AtomicU64::new(0),
+            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
