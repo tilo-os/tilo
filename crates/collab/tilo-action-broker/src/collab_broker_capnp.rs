@@ -878,13 +878,16 @@ fn verify_join_presentation(
     }
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
-    VerifyingKey::from_bytes(&cert.device_public_key)
-        .map_err(|_| "device certificate contains an invalid device key".to_string())?
-        .verify(
-            &runtime_identity::collaboration_join_signing_bytes(&presentation.workspace_id),
-            &Signature::from_bytes(&proof),
-        )
-        .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
+    let room = presentation.workspace_id.as_str();
+    admission_memo::join_proof_verified(&cert.device_public_key, room, &proof, || {
+        VerifyingKey::from_bytes(&cert.device_public_key)
+            .map_err(|_| "device certificate contains an invalid device key".to_string())?
+            .verify(
+                &runtime_identity::collaboration_join_signing_bytes(room),
+                &Signature::from_bytes(&proof),
+            )
+            .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
+    })?;
     // Without an authority to ask who governs the room, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
@@ -1572,6 +1575,7 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+mod admission_memo;
 mod app_consent;
 mod launchable;
 mod local_action_host;
@@ -1632,6 +1636,8 @@ impl CapnpBrokerState {
         if uuid::Uuid::parse_str(room).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
+        #[cfg(test)]
+        admission_memo::count_verification();
         let admitted = verify_join_identity(
             &CrdtRoute::cluster(room),
             presentation,
@@ -1687,6 +1693,9 @@ impl CapnpBrokerState {
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
         self.checked_policy_time(caller.policy_time.as_ref())?;
+        if let Some(admitted) = admission_memo::admitted_now(caller) {
+            return Ok(admitted);
+        }
         let current = if let Some(evidence) = &caller.network {
             self.verify_network_action_caller_with_policy_time(
                 evidence,
