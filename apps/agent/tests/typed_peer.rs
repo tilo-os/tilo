@@ -311,8 +311,7 @@ pub fn service_document_invocation(
         actor: actor.as_bytes(),
         ambient: context,
     };
-    let mut registry = ActionRegistry::new();
-    register(&mut registry);
+    let registry = ActionRegistry::with(register);
     let mut transport = LocalTransport::new();
     let before = replica.get_heads();
     let result = if let Some(json) =
