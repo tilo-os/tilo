@@ -310,13 +310,7 @@ impl Widget for TabContent {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(child) = first_child(taffy, node) {
             let origin = self.rect.origin();
             self.active_mut().apply_layout(taffy, child, origin);
@@ -1616,12 +1610,7 @@ impl Widget for MonitorApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let Some(shell) = first_child(taffy, node) {
             self.shell
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));

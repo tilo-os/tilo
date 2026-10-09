@@ -1590,7 +1590,10 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
         if let Some(row) = self

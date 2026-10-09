@@ -424,12 +424,7 @@ impl Widget for ChordChart {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::placed(&l, origin);
     }
     #[allow(
         clippy::too_many_lines,
