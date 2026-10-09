@@ -535,11 +535,7 @@ fn apply_native_ime(
 }
 
 fn apply_native_ime_content(window: &Window, intent: ImeWindowState) {
-    #[cfg(target_os = "linux")]
-    {
-        use winit::platform::wayland::WindowExtWayland;
-        window.set_ime_multiline(intent.multiline);
-    }
+    tilo_presentation::text_input::set_multiline(window, intent.multiline);
     window.set_ime_purpose(intent.purpose);
 }
 
