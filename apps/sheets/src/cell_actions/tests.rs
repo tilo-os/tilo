@@ -229,6 +229,138 @@ fn delete_rows_removes_several_rows_in_one_step_and_moves_bold() {
     assert_eq!(read_back(&book, None)["bold"], json!(["A4"]));
 }
 
+/// What `invoke` (cell edit `action`) answers its caller with, as the door
+/// computes it from the change it applied.
+fn answer(
+    book: &mut Replica<Workbook>,
+    action: &str,
+    invoke: Invoke<Workbook>,
+) -> serde_json::Value {
+    let before = book.heads();
+    book.apply_confirmed(invoke).unwrap();
+    let after = book.heads();
+    let changes = book.doc_mut().diff(&before, &after);
+    super::answer(book.doc(), action, &changes).unwrap_or(serde_json::Value::Null)
+}
+
+fn set_cells(book: &Replica<Workbook>, start: &str, rows: serde_json::Value) -> Invoke<Workbook> {
+    let rows = serde_json::from_value(rows).unwrap();
+    Workbook::SET_CELLS.with(verbs::SetCells {
+        sheet: sheet(book),
+        start: start.into(),
+        rows,
+    })
+}
+
+#[test]
+fn cell_edits_answer_with_the_range_they_changed() {
+    let mut book = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
+    let invoke = set_cells(&book, "A4", json!([["Total", "=SUM(B2:B3)"]]));
+    let set = answer(&mut book, "set-cells", invoke);
+    assert_eq!(
+        set,
+        json!({"sheet": "Data", "range": "A4:B4", "rows": [["Total", 210.0]],
+            "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
+    );
+    let invoke = Workbook::FORMAT_CELLS.with(verbs::FormatCells {
+        sheet: sheet(&book),
+        range: "A1:B1".into(),
+        format: None,
+        bold: Some(true),
+    });
+    let bolded = answer(&mut book, "format-cells", invoke);
+    assert_eq!(bolded["range"], "A1:B1");
+    assert_eq!(bolded["bold"], json!(["A1", "B1"]));
+    let invoke = Workbook::SORT_ROWS.with(verbs::SortRows {
+        sheet: sheet(&book),
+        range: "A2:B3".into(),
+        by: "B".into(),
+        descending: None,
+    });
+    let sorted = answer(&mut book, "sort-rows", invoke);
+    assert_eq!(sorted["range"], "A2:B3");
+    assert_eq!(sorted["rows"], json!([["South", 90.0], ["North", 120.0]]));
+    let invoke = Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+        sheet: sheet(&book),
+        rows: vec![1],
+    });
+    let deleted = answer(&mut book, "delete-rows", invoke);
+    // Deleting rows moves everything below, so it answers what remains from
+    // the top.
+    assert_eq!(deleted["range"], "A1:B3");
+    assert_eq!(
+        deleted["rows"],
+        json!([["South", 90.0], ["North", 120.0], ["Total", 210.0]])
+    );
+    assert_eq!(deleted["formulas"], json!({"B3": "=SUM(B1:B2)"}));
+    assert_eq!(deleted["bold"], json!([]));
+    assert!(sorted.get("changed").is_none());
+}
+
+#[test]
+fn a_large_edit_answers_its_first_rows_and_names_the_whole_range() {
+    let mut book = workbook(&[&["x"]]);
+    let rows: Vec<serde_json::Value> = (0..100).map(|row| json!([row, row, row, row])).collect();
+    let invoke = set_cells(&book, "A1", json!(rows));
+    let set = answer(&mut book, "set-cells", invoke);
+    assert_eq!(set["changed"], "A1:D100");
+    assert_eq!(set["range"], "A1:D64");
+    assert_eq!(set["rows"].as_array().map(Vec::len), Some(64));
+
+    let wide: Vec<serde_json::Value> = (0..300).map(|col| json!(col)).collect();
+    let invoke = set_cells(&book, "A200", json!([wide]));
+    let set = answer(&mut book, "set-cells", invoke);
+    assert_eq!(set["changed"], "A200:KN200");
+    assert_eq!(set["rows"][0].as_array().map(Vec::len), Some(256));
+}
+
+#[test]
+fn the_app_answers_a_cell_edit_through_its_action_door() {
+    use ui::framework::testing::TestApp;
+    let mut app = TestApp::<crate::SheetsShell>::new().unwrap();
+    let sheet = app.state().sheets.ids().next().unwrap().clone();
+    let item = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
+    let value = app
+        .call_on(
+            &item,
+            "set-cells",
+            json!({"start": "Z90", "rows": [["=1+2"]]}),
+        )
+        .unwrap();
+    assert_eq!(
+        value
+            .as_ref()
+            .map(|value| (&value["range"], &value["rows"])),
+        Some((&json!("Z90"), &json!([[3.0]]))),
+        "{value:?}"
+    );
+}
+
+#[test]
+fn only_the_cell_edits_declare_an_answer() {
+    use ui::tilo_actions::{OperationKind, ResultSpec};
+    use ui::tilo_resource::Resource as _;
+    let book = workbook(&[&["x"]]);
+    let state = book.state().unwrap();
+    let published = ui::tilo_resource::publish::<Workbook>(Workbook::KIND, Workbook::LABEL, &state);
+    let item = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet(&book));
+    let sheet = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == item)
+        .expect("the sheet is published");
+    for spec in &sheet.actions {
+        let answers = matches!(spec.contract.result, ResultSpec::Json { .. })
+            && spec.kind == OperationKind::Document;
+        assert_eq!(
+            answers,
+            ANSWERING_EDITS.contains(&spec.id.as_str()),
+            "{}",
+            spec.id
+        );
+    }
+}
+
 #[test]
 fn malformed_arguments_are_refused_by_name() {
     let mut book = workbook(&[&["x"]]);

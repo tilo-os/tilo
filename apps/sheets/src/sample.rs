@@ -11,8 +11,9 @@ use crate::model::{CellFormat, Currency, DateStyle, a1_to_addr};
 use crate::resource::verbs;
 use crate::workbook::{Cell, ChartKind, Comment, FIRST_SHEET_ID, Sheet, Workbook};
 
-/// The budget sheet's identity.
-pub const BUDGET_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0001";
+/// The budget sheet's identity: a new workbook's first sheet, which the
+/// sample fills.
+pub const BUDGET_SHEET_ID: &str = FIRST_SHEET_ID;
 /// The sales sheet's identity.
 pub const SALES_SHEET_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0002";
 
@@ -37,18 +38,18 @@ impl Cells {
     }
 }
 
-/// The sample workbook, in place of a new workbook's blank first sheet:
-/// the edits that write it, in order.
+/// The sample workbook: a new workbook's blank first sheet filled as the
+/// budget, and the sales sheet after it — the edits that write it, in order.
 pub fn workbook() -> Vec<Invoke<Workbook>> {
     let sheets = Workbook::paths().sheets;
-    [
-        sheets.insert_as(&Id::from_raw(BUDGET_SHEET_ID), 0, &budget()),
-        sheets.insert_as(&Id::from_raw(SALES_SHEET_ID), 1, &sales()),
-        sheets.remove(&Id::from_raw(FIRST_SHEET_ID)),
-    ]
-    .iter()
-    .filter_map(|edit| Invoke::edit(edit).ok())
-    .collect()
+    let mut edits = sheets
+        .item_path(&budget_id())
+        .edits(&Sheet::named("Sheet1"), &budget());
+    edits.push(sheets.insert_as(&Id::from_raw(SALES_SHEET_ID), 1, &sales()));
+    edits
+        .iter()
+        .filter_map(|edit| Invoke::edit(edit).ok())
+        .collect()
 }
 
 fn budget() -> Sheet {
@@ -188,6 +189,7 @@ const COMMENT_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0201";
 pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
     let mut budget = budget();
     let comment = budget.area((1, 1), (4, 1)).map(|area| Comment {
+        sheet: budget_id(),
         area,
         author: Atom("Alex".into()),
         body: "Check the rent increase before sending this budget.".into(),
@@ -195,11 +197,10 @@ pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
         replies: ui::tilo_resource::Collection::new(),
     });
     let ask = comment.and_then(|comment| {
-        let path = Workbook::paths().sheets.item(&budget_id()).comments;
+        let path = Workbook::paths().comments;
         Invoke::edit(&path.insert_as(&Id::from_raw(COMMENT_ID), 0, &comment)).ok()
     });
     let reply = Workbook::REPLY.with(verbs::Reply {
-        sheet: budget_id(),
         comment: Id::from_raw(COMMENT_ID),
         text: "I will verify the change.".into(),
     });
@@ -212,8 +213,6 @@ pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
 /// Resolve the sample comment thread.
 pub fn resolve_comment() -> Option<Invoke<Workbook>> {
     let path = Workbook::paths()
-        .sheets
-        .item(&budget_id())
         .comments
         .item(&Id::from_raw(COMMENT_ID))
         .resolved;

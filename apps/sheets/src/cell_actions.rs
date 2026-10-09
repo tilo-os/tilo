@@ -199,6 +199,136 @@ fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Va
     })
 }
 
+/// The cell edits that answer with the range they changed, so a caller sees
+/// the values it produced without reading them back.
+pub const ANSWERING_EDITS: [&str; 5] = [
+    "set-cells",
+    "write-cells",
+    "format-cells",
+    "sort-rows",
+    "delete-rows",
+];
+
+/// The most cells an edit answers with; a larger change answers its first
+/// rows and names the whole range for `read-cells`.
+pub const MAX_ANSWERED_CELLS: u32 = 256;
+
+/// The answer of cell edit `action`, which applied to `doc` as `changes`:
+/// the changed range as `read-cells` shows it, clipped to
+/// [`MAX_ANSWERED_CELLS`] with `"changed"` naming the whole range when cut.
+/// Deleting rows moves everything below, so it answers the used range from
+/// the top.
+pub fn answer(
+    doc: &ui::tilo_resource::Doc,
+    action: &str,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    use ui::tilo_resource::Resource as _;
+    if !ANSWERING_EDITS.contains(&action) {
+        return None;
+    }
+    let workbook = crate::workbook::Workbook::read(doc).ok()?;
+    let touched = touched_cells(changes);
+    let sheet_id = touched
+        .first()
+        .map(|(sheet, _, _)| sheet.clone())
+        .or_else(|| changes.iter().find_map(|patch| sheet_of(&props(patch))))?;
+    let sheet = workbook.sheet(&ui::tilo_resource::Id::from_raw(sheet_id.clone()))?;
+    let snap = sheet.snapshot();
+    let (start, end) = if action == "delete-rows" {
+        let used = snap.raw.keys().chain(snap.bold.iter()).copied();
+        used.fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
+            ((0, 0), (end.0.max(col), end.1.max(row)))
+        })
+    } else {
+        let layout = sheet.layout();
+        let cells: Vec<Addr> = touched
+            .iter()
+            .filter(|(sheet, _, _)| *sheet == sheet_id)
+            .filter_map(|(_, row, column)| {
+                layout.addr(
+                    &ui::tilo_resource::Id::from_raw(row.clone()),
+                    &ui::tilo_resource::Id::from_raw(column.clone()),
+                )
+            })
+            .collect();
+        let (first, rest) = cells.split_first()?;
+        rest.iter()
+            .fold((*first, *first), |(start, end), &(col, row)| {
+                (
+                    (start.0.min(col), start.1.min(row)),
+                    (end.0.max(col), end.1.max(row)),
+                )
+            })
+    };
+    let width = end.0.saturating_sub(start.0).saturating_add(1);
+    let shown_width = width.min(MAX_ANSWERED_CELLS);
+    let shown_rows = MAX_ANSWERED_CELLS
+        .checked_div(shown_width)
+        .unwrap_or(1)
+        .max(1);
+    let shown_end = (
+        start.0.saturating_add(shown_width.saturating_sub(1)),
+        end.1
+            .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
+    );
+    let mut content = range_content(&snap, start, shown_end);
+    if shown_end != end
+        && let Some(fields) = content.as_object_mut()
+    {
+        fields.insert("changed".into(), range_label(start, end).into());
+    }
+    Some(content)
+}
+
+/// The keys a patch walks from the root, its own key last.
+fn props(patch: &automerge::Patch) -> Vec<String> {
+    let mut out: Vec<String> = patch
+        .path
+        .iter()
+        .map(|(_, prop)| prop.to_string())
+        .collect();
+    match &patch.action {
+        automerge::PatchAction::PutMap { key, .. } | automerge::PatchAction::DeleteMap { key } => {
+            out.push(key.clone());
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The sheet a patch is in: the item of `sheets` it walks through.
+fn sheet_of(props: &[String]) -> Option<String> {
+    let at = props.iter().position(|prop| prop == "sheets")?;
+    props.get(at + 1).cloned()
+}
+
+/// The cells `changes` wrote, as (sheet, row, column) ids: every patch that
+/// reaches below a sheet's `cells` grid map at a row and a column.
+fn touched_cells(changes: &[automerge::Patch]) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for patch in changes {
+        let props = props(patch);
+        let Some(sheet) = sheet_of(&props) else {
+            continue;
+        };
+        let Some(at) = props
+            .windows(2)
+            .position(|pair| matches!(pair, [field, map] if field == "cells" && map == "cells"))
+        else {
+            continue;
+        };
+        // A grid keeps its cells flat, each under `<row>/<column>`.
+        if let Some((row, column)) = props.get(at + 2).and_then(|key| key.split_once('/')) {
+            let cell = (sheet, row.to_owned(), column.to_owned());
+            if !out.contains(&cell) {
+                out.push(cell);
+            }
+        }
+    }
+    out
+}
+
 /// The schema of what `read-cells` answers.
 pub fn read_result_schema() -> serde_json::Value {
     serde_json::json!({"type":"object","required":["sheet","range","rows","formulas","bold"],"additionalProperties":false,"properties":{

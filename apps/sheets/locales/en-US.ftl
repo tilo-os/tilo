@@ -2,6 +2,7 @@
 sheets-new-sheet = Added a sheet
 sheets-duplicate-sheet = Duplicated a sheet
 sheets-delete-sheet = Deleted a sheet
+sheets-set-cells = Set cells from { $start }
 sheets-write-cells = Wrote cells
 sheets-format-cells = Formatted { $range }
 sheets-sort-rows = Sorted { $range } by column { $by }

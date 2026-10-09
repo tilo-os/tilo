@@ -1155,11 +1155,16 @@ impl SheetsApp {
         let current = self
             .active_sheet_id()
             .and_then(|id| state.sheet(&id).map(|sheet| (sheet, sheet.layout())));
+        let no_sheet = Id::default();
         let (snap, charts, comments) = match &current {
             Some((sheet, layout)) => (
                 sheet.snapshot_in(layout),
                 sheet.chart_snapshots(layout),
-                sheet.comment_snapshots(layout),
+                crate::workbook::Sheet::comment_snapshots(
+                    self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),
+                    &state.comments,
+                    layout,
+                ),
             ),
             None => Default::default(),
         };
@@ -3454,17 +3459,11 @@ impl SheetsApp {
         let invoke = if let Some(id) = outcome.id.strip_prefix(EDIT_CHART) {
             Self::chart_edit(&sheet, &Id::from_raw(id), &text)
         } else if let Some(id) = outcome.id.strip_prefix(EDIT_COMMENT) {
-            let path = Workbook::paths()
-                .sheets
-                .item(&sheet)
-                .comments
-                .item(&Id::from_raw(id))
-                .body;
+            let path = Workbook::paths().comments.item(&Id::from_raw(id)).body;
             Invoke::edit(&path.replace(text.trim())).ok()
         } else {
             outcome.id.strip_prefix(REPLY_COMMENT).map(|id| {
                 Workbook::REPLY.with(verbs::Reply {
-                    sheet,
                     comment: Id::from_raw(id),
                     text,
                 })
@@ -3552,12 +3551,7 @@ impl SheetsApp {
                 self.status = "Editing comment".into();
             }
             AnnotationClick::ToggleComment(id, resolved) => {
-                let path = Workbook::paths()
-                    .sheets
-                    .item(&sheet)
-                    .comments
-                    .item(&Id::from_raw(id))
-                    .resolved;
+                let path = Workbook::paths().comments.item(&Id::from_raw(id)).resolved;
                 if let Ok(invoke) = Invoke::edit(&path.set(resolved)) {
                     self.submit(state, invoke);
                 }
@@ -3572,7 +3566,6 @@ impl SheetsApp {
                 self.submit(
                     state,
                     Workbook::DELETE_COMMENT.with(verbs::DeleteComment {
-                        sheet,
                         comment: Id::from_raw(id),
                     }),
                 );
@@ -4320,6 +4313,21 @@ pub(crate) mod tests {
             .and_then(|sheet| sheet.color)
     }
 
+    /// Apply what the app asked the person to confirm (a destructive verb
+    /// waits for them), as the door does once they agree, and follow it.
+    pub(crate) fn confirm(app: &mut SheetsApp, doc: &mut AutoCommit) {
+        let Some(dispatch) = app.dispatch.clone() else {
+            return;
+        };
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        for action in dispatch.take_asked().expect("what was asked builds") {
+            book.apply_action(&action)
+                .expect("a confirmed change applies");
+        }
+        *doc = book.doc().clone();
+        app.sync(doc, &automerge::ROOT);
+    }
+
     /// An app over the sample workbook a screenshot shows, staged as a plain
     /// capture is and synced once, as every frame is before it draws.
     pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
@@ -4717,6 +4725,7 @@ pub(crate) mod tests {
             assert!(offered, "the sheet offers its delete");
 
             app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
+            confirm(&mut app, &mut doc);
             assert_eq!(
                 doc_sheet_count(&doc),
                 count_before - 1,
@@ -5813,6 +5822,7 @@ pub(crate) mod tests {
             let (mut app, mut doc) = seeded_app();
             // Seed: Budget, Sales. Remove Sales.
             app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
+            confirm(&mut app, &mut doc);
             assert_eq!(doc_sheet_names(&doc), vec!["Budget"]);
             // The last remaining sheet cannot be deleted away.
             app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Delete);
@@ -6308,6 +6318,7 @@ pub(crate) mod tests {
             // Delete that blank top row again → header returns to A1.
             app.grid.select_only((0, 0));
             app.dispatch_command(&mut Edits::lend(&mut doc), "delete_row", None);
+            confirm(&mut app, &mut doc);
             assert_eq!(
                 doc_cell_raw(&doc, 0, (0, 0)),
                 "Category",

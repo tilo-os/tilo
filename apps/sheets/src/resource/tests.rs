@@ -80,7 +80,7 @@ fn a_capture_stages_the_sample_workbook() {
     let state = charts.state();
     let sheet = sheet_of(&state, &budget());
     assert_eq!(sheet.charts.len(), 2);
-    let comments = sheet.comment_snapshots(&sheet.layout());
+    let comments = Sheet::comment_snapshots(&budget(), &state.comments, &sheet.layout());
     assert_eq!(comments.len(), 1);
     assert!(comments[0].resolved);
     assert_eq!(comments[0].author, "Alex", "signed by who wrote it");
@@ -105,7 +105,7 @@ fn a_comment_is_signed_by_its_invoker() {
     }))
     .unwrap();
     let state = app.state();
-    let comments: Vec<_> = sheet_of(&state, &sheet).comments.values().collect();
+    let comments: Vec<_> = state.comments.values().collect();
     assert_eq!(comments.len(), 1);
     assert_eq!(comments[0].author.0, "test-author");
 
@@ -384,7 +384,6 @@ fn two_replicas_converge() {
 /// Two people writing the first cells of the same row at once both keep
 /// their cell.
 #[test]
-#[ignore = "a grid creates a row's cell map on the first write, and two first writes conflict"]
 fn first_writes_into_one_row_both_survive() {
     let mut ours = sample();
     let mut theirs = ours.fork();

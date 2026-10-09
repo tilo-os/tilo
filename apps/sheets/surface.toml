@@ -103,8 +103,8 @@ title = "Right"
 type = "Id"
 
 [[resources.fields]]
-owner = "sheet"
-path = "sheets.*.comments"
+owner = "workbook"
+path = "comments"
 stored = "collection"
 title = "Comments"
 type = "Collection<Comment>"
@@ -112,7 +112,15 @@ unit = true
 
 [[resources.fields]]
 owner = "comment"
-path = "sheets.*.comments.*.area"
+path = "comments.*.sheet"
+readonly = true
+stored = "value"
+title = "Sheet"
+type = "Id"
+
+[[resources.fields]]
+owner = "comment"
+path = "comments.*.area"
 readonly = true
 stored = "record"
 title = "Range"
@@ -120,35 +128,35 @@ type = "Area"
 
 [[resources.fields]]
 owner = "area"
-path = "sheets.*.comments.*.area.top"
+path = "comments.*.area.top"
 stored = "value"
 title = "Top"
 type = "Id"
 
 [[resources.fields]]
 owner = "area"
-path = "sheets.*.comments.*.area.left"
+path = "comments.*.area.left"
 stored = "value"
 title = "Left"
 type = "Id"
 
 [[resources.fields]]
 owner = "area"
-path = "sheets.*.comments.*.area.bottom"
+path = "comments.*.area.bottom"
 stored = "value"
 title = "Bottom"
 type = "Id"
 
 [[resources.fields]]
 owner = "area"
-path = "sheets.*.comments.*.area.right"
+path = "comments.*.area.right"
 stored = "value"
 title = "Right"
 type = "Id"
 
 [[resources.fields]]
 owner = "comment"
-path = "sheets.*.comments.*.author"
+path = "comments.*.author"
 readonly = true
 stored = "value"
 title = "Author"
@@ -156,28 +164,28 @@ type = "Atom"
 
 [[resources.fields]]
 owner = "comment"
-path = "sheets.*.comments.*.body"
+path = "comments.*.body"
 stored = "value"
 title = "Comment"
 type = "String"
 
 [[resources.fields]]
 owner = "comment"
-path = "sheets.*.comments.*.resolved"
+path = "comments.*.resolved"
 stored = "value"
 title = "Resolved"
 type = "bool"
 
 [[resources.fields]]
 owner = "comment"
-path = "sheets.*.comments.*.replies"
+path = "comments.*.replies"
 stored = "collection"
 title = "Replies"
 type = "Collection<Reply>"
 
 [[resources.fields]]
 owner = "reply"
-path = "sheets.*.comments.*.replies.*.author"
+path = "comments.*.replies.*.author"
 readonly = true
 stored = "value"
 title = "Author"
@@ -185,7 +193,7 @@ type = "Atom"
 
 [[resources.fields]]
 owner = "reply"
-path = "sheets.*.comments.*.replies.*.body"
+path = "comments.*.replies.*.body"
 stored = "value"
 title = "Reply"
 type = "String"
@@ -261,11 +269,15 @@ description = "Sheet"
 type = "string"
 
 [[resources.verbs]]
-description = "Delete a sheet."
+description = "Delete a sheet, with its comments."
 destructive = true
 id = "delete-sheet"
 kind = "undoable"
-label = "Delete a sheet"
+label = "Delete a sheet, with its comments"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "sheet"
@@ -274,6 +286,41 @@ required = true
 [resources.verbs.params.schema]
 description = "Sheet"
 type = "string"
+
+[[resources.verbs]]
+description = "Set cells from a start cell, row by row."
+id = "set-cells"
+kind = "undoable"
+label = "Set cells from a start cell, row by row"
+
+[[resources.verbs.params]]
+name = "sheet"
+required = true
+
+[resources.verbs.params.schema]
+description = "Sheet"
+type = "string"
+
+[[resources.verbs.params]]
+name = "start"
+required = true
+
+[resources.verbs.params.schema]
+description = "Top-left cell, e.g. A1"
+type = "string"
+
+[[resources.verbs.params]]
+name = "rows"
+required = true
+
+[resources.verbs.params.schema]
+description = 'Rows of values written rightward and down from start; "=…" is a formula, "" clears, null skips'
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "array"
+
+[resources.verbs.params.schema.items.items]
 
 [[resources.verbs]]
 description = "Write cells: values, formulas, formats and bold."
@@ -456,6 +503,10 @@ destructive = true
 id = "delete-rows"
 kind = "undoable"
 label = "Delete rows"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "sheet"
@@ -519,6 +570,10 @@ destructive = true
 id = "delete-columns"
 kind = "undoable"
 label = "Delete columns"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "sheet"
@@ -710,6 +765,10 @@ description = "Comment on cells."
 id = "comment"
 kind = "undoable"
 label = "Comment on cells"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "sheet"
@@ -740,21 +799,17 @@ description = "Reply to a comment."
 id = "reply"
 kind = "undoable"
 label = "Reply to a comment"
-
-[[resources.verbs.params]]
-name = "sheet"
-required = true
-
-[resources.verbs.params.schema]
-description = "Sheet"
-type = "string"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "The comment"
+description = "Comment"
 type = "string"
 
 [[resources.verbs.params]]
@@ -771,19 +826,15 @@ destructive = true
 id = "delete-comment"
 kind = "undoable"
 label = "Delete a comment"
-
-[[resources.verbs.params]]
-name = "sheet"
-required = true
-
-[resources.verbs.params.schema]
-description = "Sheet"
-type = "string"
+writes = [
+    "record",
+    "comments.*",
+]
 
 [[resources.verbs.params]]
 name = "comment"
 required = true
 
 [resources.verbs.params.schema]
-description = "The comment"
+description = "Comment"
 type = "string"

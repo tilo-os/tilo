@@ -158,9 +158,14 @@ pub struct Reply {
     pub body: String,
 }
 
-/// A comment thread anchored at a range of cells.
+/// A comment thread anchored at a range of cells of one sheet.
 #[derive(Model, Clone, Debug, PartialEq)]
 pub struct Comment {
+    /// Sheet
+    ///
+    /// The sheet it is on.
+    #[model(readonly)]
+    pub sheet: Id,
     /// Range
     ///
     /// The cells it is about.
@@ -199,9 +204,6 @@ pub struct Sheet {
     pub cells: Grid<Cell>,
     /// Charts
     pub charts: Collection<Chart>,
-    /// Comments
-    #[model(unit)]
-    pub comments: Collection<Comment>,
 }
 
 impl Sheet {
@@ -213,7 +215,6 @@ impl Sheet {
             color: None,
             cells: Grid::new(),
             charts: Collection::new(),
-            comments: Collection::new(),
         }
     }
 
@@ -353,11 +354,16 @@ impl Sheet {
         out
     }
 
-    /// The comment threads by position, as the sheet shows them.
-    pub fn comment_snapshots(&self, layout: &Layout) -> Vec<CommentThread> {
-        let mut out: Vec<CommentThread> = self
-            .comments
+    /// The comment threads of `comments` on sheet `id`, by position, as the
+    /// sheet shows them.
+    pub fn comment_snapshots(
+        id: &Id,
+        comments: &Collection<Comment>,
+        layout: &Layout,
+    ) -> Vec<CommentThread> {
+        let mut out: Vec<CommentThread> = comments
             .iter()
+            .filter(|(_, comment)| comment.sheet == *id)
             .filter_map(|(id, comment)| {
                 let (start, end) = Self::corners(layout, &comment.area)?;
                 Some(CommentThread {
@@ -385,7 +391,7 @@ impl Sheet {
 
     /// Whether the sheet holds nothing.
     pub fn is_blank(&self) -> bool {
-        self.cells.cells().next().is_none() && self.charts.is_empty() && self.comments.is_empty()
+        self.cells.cells().next().is_none() && self.charts.is_empty()
     }
 }
 
@@ -508,6 +514,12 @@ fn extension(line: &[Id], index: u32, prefix: char) -> Vec<Id> {
 pub struct Workbook {
     /// Sheets
     pub sheets: Collection<Sheet>,
+    /// Comments
+    ///
+    /// The comment threads of every sheet: a unit of their own, so who may
+    /// only comment writes nothing else.
+    #[model(unit)]
+    pub comments: Collection<Comment>,
     /// Document settings
     pub settings: DocSettings,
 }
@@ -519,6 +531,7 @@ impl Default for Workbook {
         sheets.push(Id::from_raw(FIRST_SHEET_ID), Sheet::named("Sheet1"));
         Self {
             sheets,
+            comments: Collection::new(),
             settings: DocSettings::default(),
         }
     }
@@ -569,7 +582,9 @@ impl Workbook {
     /// Whether the workbook is still what a new one is: one sheet with
     /// nothing in it.
     pub fn is_blank(&self) -> bool {
-        self.sheets.len() == 1 && self.sheets.values().all(Sheet::is_blank)
+        self.sheets.len() == 1
+            && self.sheets.values().all(Sheet::is_blank)
+            && self.comments.is_empty()
     }
 
     /// The currency the workbook shows money in when a format names none.

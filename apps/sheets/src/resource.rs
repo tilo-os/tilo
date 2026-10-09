@@ -151,10 +151,12 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Rewrite `sheet` for one inserted or deleted row or column `edit`: the
-/// formulas pointing past it, and the charts and comments it cuts into.
+/// Rewrite the sheet `id` for one inserted or deleted row or column `edit`:
+/// the formulas pointing past it, and the charts and comments it cuts into.
 /// The line itself is inserted or removed by the caller.
-fn rewrite_for(sheet: &mut Sheet, layout: &Layout, edit: GridEdit) {
+fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, Refusal> {
+    let sheet = book.sheet_mut(id)?;
+    let layout = sheet.layout();
     let cells: Vec<(Id, Id, String)> = sheet
         .cells
         .cells()
@@ -169,70 +171,76 @@ fn rewrite_for(sheet: &mut Sheet, layout: &Layout, edit: GridEdit) {
             cell.raw = Atom(moved);
         }
     }
-    let deleting = matches!(edit, GridEdit::DeleteRow(_) | GridEdit::DeleteColumn(_));
-    if !deleting {
-        return;
+    if !matches!(edit, GridEdit::DeleteRow(_) | GridEdit::DeleteColumn(_)) {
+        return Ok(layout);
     }
-    // A deleted first or last line of an anchor gives way to its neighbour;
-    // an anchor whose every cell goes is dropped.
-    let after = |start: Addr, end: Addr| edit.map_range(start, end);
-    let reanchor = |area: &Area| -> Option<Area> {
-        let (start, end) = Sheet::corners(layout, area)?;
-        let (start, end) = after(start, end)?;
-        // Positions after the delete name the line that slides up into place.
-        let line = |at: u32, axis: &[Id], gone: Option<u32>| -> Option<Id> {
-            let at = match gone {
-                Some(gone) if at >= gone => at + 1,
-                _ => at,
-            };
-            axis.get(usize::try_from(at).ok()?).cloned()
-        };
-        let (gone_row, gone_column) = match edit {
-            GridEdit::DeleteRow(at) => (Some(at), None),
-            GridEdit::DeleteColumn(at) => (None, Some(at)),
-            _ => (None, None),
-        };
-        Some(Area {
-            top: line(start.1, layout.rows(), gone_row)?,
-            left: line(start.0, layout.columns(), gone_column)?,
-            bottom: line(end.1, layout.rows(), gone_row)?,
-            right: line(end.0, layout.columns(), gone_column)?,
-        })
-    };
     let charts: Vec<Id> = sheet.charts.ids().cloned().collect();
-    for id in charts {
+    for chart in charts {
         let moved = sheet
             .charts
-            .get(&id)
-            .and_then(|chart| reanchor(&chart.area));
+            .get(&chart)
+            .and_then(|it| reanchored(&layout, edit, &it.area));
         match moved {
             Some(area) => {
-                if let Some(chart) = sheet.charts.get_mut(&id) {
-                    chart.area = area;
+                if let Some(it) = sheet.charts.get_mut(&chart) {
+                    it.area = area;
                 }
             }
             None => {
-                sheet.charts.remove(&id);
+                sheet.charts.remove(&chart);
             }
         }
     }
-    let comments: Vec<Id> = sheet.comments.ids().cloned().collect();
-    for id in comments {
-        let moved = sheet
+    let comments: Vec<Id> = book
+        .comments
+        .iter()
+        .filter(|(_, comment)| comment.sheet == *id)
+        .map(|(comment, _)| comment.clone())
+        .collect();
+    for comment in comments {
+        let moved = book
             .comments
-            .get(&id)
-            .and_then(|comment| reanchor(&comment.area));
+            .get(&comment)
+            .and_then(|it| reanchored(&layout, edit, &it.area));
         match moved {
             Some(area) => {
-                if let Some(comment) = sheet.comments.get_mut(&id) {
-                    comment.area = area;
+                if let Some(it) = book.comments.get_mut(&comment) {
+                    it.area = area;
                 }
             }
             None => {
-                sheet.comments.remove(&id);
+                book.comments.remove(&comment);
             }
         }
     }
+    Ok(layout)
+}
+
+/// Where `area` is after deleting the line `edit` names, by the ids of the
+/// lines then at its corners: a deleted first or last line gives way to its
+/// neighbour; `None` when every cell of it goes.
+fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
+    let (start, end) = Sheet::corners(layout, area)?;
+    let (start, end) = edit.map_range(start, end)?;
+    // Positions after the delete name the line that slides up into place.
+    let line = |at: u32, axis: &[Id], gone: Option<u32>| -> Option<Id> {
+        let at = match gone {
+            Some(gone) if at >= gone => at + 1,
+            _ => at,
+        };
+        axis.get(usize::try_from(at).ok()?).cloned()
+    };
+    let (gone_row, gone_column) = match edit {
+        GridEdit::DeleteRow(at) => (Some(at), None),
+        GridEdit::DeleteColumn(at) => (None, Some(at)),
+        _ => (None, None),
+    };
+    Some(Area {
+        top: line(start.1, layout.rows(), gone_row)?,
+        left: line(start.0, layout.columns(), gone_column)?,
+        bottom: line(end.1, layout.rows(), gone_row)?,
+        right: line(end.0, layout.columns(), gone_column)?,
+    })
 }
 
 #[resource(
@@ -240,6 +248,7 @@ fn rewrite_for(sheet: &mut Sheet, layout: &Layout, edit: GridEdit) {
     label = "Workbook",
     children = Workbook::annotations,
     search = Workbook::search,
+    answer = crate::cell_actions::answer,
     params = verbs,
 )]
 impl Workbook {
@@ -269,7 +278,7 @@ impl Workbook {
     }
 
     /// Duplicate a sheet.
-    #[action]
+    #[action(item = sheets)]
     pub fn duplicate_sheet(&mut self, cx: &mut ActionCx, sheet: &Id) -> Result<(), Refusal> {
         let original = self
             .sheet(sheet)
@@ -285,17 +294,63 @@ impl Workbook {
         Ok(())
     }
 
-    /// Delete a sheet.
-    #[action(destructive)]
+    /// Delete a sheet, with its comments.
+    #[action(destructive, writes = comments, item = sheets)]
     pub fn delete_sheet(&mut self, sheet: &Id) -> Result<(), Refusal> {
         self.sheets
             .remove(sheet)
-            .map(drop)
-            .ok_or_else(|| Refusal::new("no such sheet"))
+            .ok_or_else(|| Refusal::new("no such sheet"))?;
+        let gone: Vec<Id> = self
+            .comments
+            .iter()
+            .filter(|(_, comment)| comment.sheet == *sheet)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for comment in gone {
+            self.comments.remove(&comment);
+        }
+        Ok(())
+    }
+
+    /// Set cells from a start cell, row by row.
+    #[action(answers, item = sheets)]
+    pub fn set_cells(
+        &mut self,
+        sheet: &Id,
+        #[param("Top-left cell, e.g. A1")] start: String,
+        #[param(
+            "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips"
+        )]
+        rows: Vec<Vec<serde_json::Value>>,
+    ) -> Result<(), Refusal> {
+        let start = cell_of(&start)?;
+        let mut cells = Vec::new();
+        for (dr, row) in (0u32..).zip(&rows) {
+            for (dc, value) in (0u32..).zip(row) {
+                let input = match value {
+                    serde_json::Value::Null => continue,
+                    serde_json::Value::String(text) => text.clone(),
+                    serde_json::Value::Number(number) => number.to_string(),
+                    serde_json::Value::Bool(true) => "TRUE".into(),
+                    serde_json::Value::Bool(false) => "FALSE".into(),
+                    _ => {
+                        return Err(Refusal::new(
+                            "cell values are strings, numbers, booleans or null",
+                        ));
+                    }
+                };
+                let addr = (start.0.saturating_add(dc), start.1.saturating_add(dr));
+                cells.push(CellWrite::at(addr, input, None));
+            }
+        }
+        if cells.is_empty() {
+            return Err(Refusal::new("rows hold no values to write"));
+        }
+        write_into(self.sheet_mut(sheet)?, &cells)
     }
 
     /// Write cells: values, formulas, formats and bold.
-    #[action]
+    #[action(answers, item = sheets)]
     pub fn write_cells(
         &mut self,
         sheet: &Id,
@@ -308,7 +363,7 @@ impl Workbook {
     }
 
     /// Format cells.
-    #[action]
+    #[action(answers, item = sheets)]
     pub fn format_cells(
         &mut self,
         sheet: &Id,
@@ -333,7 +388,7 @@ impl Workbook {
     }
 
     /// Sort rows by a column.
-    #[action]
+    #[action(answers, item = sheets)]
     pub fn sort_rows(
         &mut self,
         sheet: &Id,
@@ -353,7 +408,7 @@ impl Workbook {
     }
 
     /// Insert rows above a row.
-    #[action]
+    #[action(item = sheets)]
     pub fn insert_rows(
         &mut self,
         cx: &mut ActionCx,
@@ -366,18 +421,17 @@ impl Workbook {
             .filter(|at| *at <= MAX_ROW)
             .ok_or_else(|| Refusal::new("rows are numbered from 1"))?;
         let count = count.unwrap_or(1).clamp(1, 1000);
-        let target = self.sheet_mut(sheet)?;
-        target.reach((0, at));
+        self.sheet_mut(sheet)?.reach((0, at));
         for _ in 0..count {
-            let layout = target.layout();
-            rewrite_for(target, &layout, GridEdit::InsertRow(at));
-            target.cells.insert_row(at as usize, cx.id());
+            rewrite_for(self, sheet, GridEdit::InsertRow(at))?;
+            let id = cx.id();
+            self.sheet_mut(sheet)?.cells.insert_row(at as usize, id);
         }
         Ok(())
     }
 
     /// Delete rows.
-    #[action(destructive)]
+    #[action(destructive, answers, writes = comments, item = sheets)]
     pub fn delete_rows(
         &mut self,
         sheet: &Id,
@@ -395,20 +449,26 @@ impl Workbook {
         }
         rows.sort_unstable();
         rows.dedup();
-        let target = self.sheet_mut(sheet)?;
         for at in rows.into_iter().rev() {
-            let layout = target.layout();
-            let Some(id) = layout.rows().get(at as usize).cloned() else {
+            if self
+                .sheet_mut(sheet)?
+                .layout()
+                .rows()
+                .get(at as usize)
+                .is_none()
+            {
                 continue;
-            };
-            rewrite_for(target, &layout, GridEdit::DeleteRow(at));
-            target.cells.remove_row(&id);
+            }
+            let layout = rewrite_for(self, sheet, GridEdit::DeleteRow(at))?;
+            if let Some(id) = layout.rows().get(at as usize) {
+                self.sheet_mut(sheet)?.cells.remove_row(id);
+            }
         }
         Ok(())
     }
 
     /// Insert columns left of a column.
-    #[action]
+    #[action(item = sheets)]
     pub fn insert_columns(
         &mut self,
         cx: &mut ActionCx,
@@ -420,18 +480,17 @@ impl Workbook {
             .filter(|at| *at <= MAX_COLUMN)
             .ok_or_else(|| Refusal::new("name a column by its letter, e.g. C"))?;
         let count = count.unwrap_or(1).clamp(1, 1000);
-        let target = self.sheet_mut(sheet)?;
-        target.reach((at, 0));
+        self.sheet_mut(sheet)?.reach((at, 0));
         for _ in 0..count {
-            let layout = target.layout();
-            rewrite_for(target, &layout, GridEdit::InsertColumn(at));
-            target.cells.insert_column(at as usize, cx.id());
+            rewrite_for(self, sheet, GridEdit::InsertColumn(at))?;
+            let id = cx.id();
+            self.sheet_mut(sheet)?.cells.insert_column(at as usize, id);
         }
         Ok(())
     }
 
     /// Delete columns.
-    #[action(destructive)]
+    #[action(destructive, writes = comments, item = sheets)]
     pub fn delete_columns(
         &mut self,
         sheet: &Id,
@@ -450,14 +509,20 @@ impl Workbook {
         }
         columns.sort_unstable();
         columns.dedup();
-        let target = self.sheet_mut(sheet)?;
         for at in columns.into_iter().rev() {
-            let layout = target.layout();
-            let Some(id) = layout.columns().get(at as usize).cloned() else {
+            if self
+                .sheet_mut(sheet)?
+                .layout()
+                .columns()
+                .get(at as usize)
+                .is_none()
+            {
                 continue;
-            };
-            rewrite_for(target, &layout, GridEdit::DeleteColumn(at));
-            target.cells.remove_column(&id);
+            }
+            let layout = rewrite_for(self, sheet, GridEdit::DeleteColumn(at))?;
+            if let Some(id) = layout.columns().get(at as usize) {
+                self.sheet_mut(sheet)?.cells.remove_column(id);
+            }
         }
         Ok(())
     }
@@ -496,7 +561,7 @@ impl Workbook {
     }
 
     /// Chart a range.
-    #[action]
+    #[action(item = sheets)]
     pub fn add_chart(
         &mut self,
         cx: &mut ActionCx,
@@ -523,7 +588,7 @@ impl Workbook {
     }
 
     /// Chart another range.
-    #[action]
+    #[action(item = sheets)]
     pub fn move_chart(
         &mut self,
         sheet: &Id,
@@ -544,7 +609,7 @@ impl Workbook {
     }
 
     /// Delete a chart.
-    #[action(destructive)]
+    #[action(destructive, item = sheets)]
     pub fn delete_chart(
         &mut self,
         sheet: &Id,
@@ -558,7 +623,7 @@ impl Workbook {
     }
 
     /// Comment on cells.
-    #[action(writes = comments)]
+    #[action(writes = comments, item = sheets)]
     pub fn comment(
         &mut self,
         cx: &mut ActionCx,
@@ -570,13 +635,14 @@ impl Workbook {
         let body = annotation(&text)?;
         let author = Atom(cx.author().unwrap_or_default().to_owned());
         let id = cx.id();
-        let target = self.sheet_mut(sheet)?;
-        let area = target
+        let area = self
+            .sheet_mut(sheet)?
             .area(start, end)
             .ok_or_else(|| Refusal::new("the range is outside the sheet"))?;
-        target.comments.push(
+        self.comments.push(
             id,
             Comment {
+                sheet: sheet.clone(),
                 area,
                 author,
                 body,
@@ -588,20 +654,18 @@ impl Workbook {
     }
 
     /// Reply to a comment.
-    #[action(writes = comments)]
+    #[action(item = comments)]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,
-        sheet: &Id,
-        #[param("The comment")] comment: Id,
+        comment: &Id,
         #[param("Reply")] text: String,
     ) -> Result<(), Refusal> {
         let body = annotation(&text)?;
         let author = Atom(cx.author().unwrap_or_default().to_owned());
         let id = cx.id();
-        self.sheet_mut(sheet)?
-            .comments
-            .get_mut(&comment)
+        self.comments
+            .get_mut(comment)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))?
             .replies
             .push(id, Reply { author, body });
@@ -609,15 +673,10 @@ impl Workbook {
     }
 
     /// Delete a comment.
-    #[action(destructive, writes = comments)]
-    pub fn delete_comment(
-        &mut self,
-        sheet: &Id,
-        #[param("The comment")] comment: Id,
-    ) -> Result<(), Refusal> {
-        self.sheet_mut(sheet)?
-            .comments
-            .remove(&comment)
+    #[action(destructive, item = comments)]
+    pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
+        self.comments
+            .remove(comment)
             .map(drop)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))
     }
@@ -653,7 +712,7 @@ impl Workbook {
                         ),
                 );
             }
-            for thread in sheet.comment_snapshots(&layout) {
+            for thread in Sheet::comment_snapshots(sheet_id, &self.comments, &layout) {
                 let id = Id::from_raw(thread.id.clone());
                 places.push(
                     Derived::new(format!(
@@ -668,16 +727,8 @@ impl Workbook {
                         col: thread.start.0,
                         row: thread.start.1,
                     })
-                    .with(
-                        Self::REPLY
-                            .bind(verbs::Reply::paths().sheet, sheet_id.clone())
-                            .and(verbs::Reply::paths().comment, id.clone()),
-                    )
-                    .with(
-                        Self::DELETE_COMMENT
-                            .bind(verbs::DeleteComment::paths().sheet, sheet_id.clone())
-                            .and(verbs::DeleteComment::paths().comment, id),
-                    ),
+                    .with(Self::REPLY.bind(verbs::Reply::paths().comment, id.clone()))
+                    .with(Self::DELETE_COMMENT.bind(verbs::DeleteComment::paths().comment, id)),
                 );
             }
         }

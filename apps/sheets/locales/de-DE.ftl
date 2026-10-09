@@ -2,6 +2,7 @@
 sheets-new-sheet = Tabelle hinzugefügt
 sheets-duplicate-sheet = Tabelle dupliziert
 sheets-delete-sheet = Tabelle gelöscht
+sheets-set-cells = Zellen ab { $start } gesetzt
 sheets-write-cells = Zellen geschrieben
 sheets-format-cells = { $range } formatiert
 sheets-sort-rows = { $range } nach Spalte { $by } sortiert
