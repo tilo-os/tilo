@@ -3911,8 +3911,37 @@ def terminal_status_refusal_detail(error):
         and error.get("code") == "action_failed" and error.get("message") == known else "other"
 
 
+def direction_refusal_reason(error):
+    """Classify exact public task-door refusals without retaining their message."""
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str):
+        return "other"
+    return {
+        "task run or instruction frontier changed; review before steering": "frontier_changed",
+        "workspace task certificate is not current admitted evidence": "certificate_not_current",
+        "workspace task agent is not a current room member": "agent_not_current_member",
+        "workspace task person lacks write authority": "person_lacks_write_authority",
+        "task invocation is no longer admitted": "invocation_not_admitted",
+        "task invocation has no durable admission": "durable_admission_missing",
+        "task invocation binding changed": "invocation_binding_changed",
+        "task original custody unavailable": "original_custody_unavailable",
+        "task owner cannot observe its committed result": "committed_result_not_observable",
+        "task owner lost its exact committed result": "exact_committed_result_missing",
+        "task owner returned an unbound room projection": "owner_projection_unbound",
+        "only a person may direct an active task": "person_required",
+        "only an active task accepts a direction": "task_not_active",
+        "active task has no execution control": "execution_control_missing",
+        "task has no execution control": "execution_control_missing",
+        "active task has no live run epoch": "live_run_missing",
+        "task directions exceed the run instruction bound": "instruction_bound_exceeded",
+        "task direction revision exhausted": "direction_revision_exhausted",
+        "task direction byte count overflow": "direction_byte_count_overflow",
+        "task direction character count overflow": "direction_character_count_overflow",
+    }.get(message, "other")
+
+
 def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
-                  diagnostic_path=None):
+                  diagnostic_path=None, closed_failure_path=None):
     """Observe the original invocation; admission is not completed work."""
     receipt = acknowledgement.get("receipt")
     if not isinstance(receipt, dict):
@@ -3925,9 +3954,14 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
     unchanged = True
     status_refusal = None
     status_refusal_detail = None
+    terminal_state = None
+    terminal_error_code = None
+    refusal_reason = None
 
     def completed():
         nonlocal receipt, broker_identity, unchanged, status_refusal, status_refusal_detail
+        nonlocal terminal_state, terminal_error_code
+        nonlocal refusal_reason
         update = receipt.get("update")
         if not isinstance(update, dict) or update.get("invocation") != original:
             unchanged = False
@@ -3938,6 +3972,19 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
         if state == "succeeded":
             return receipt
         if state in {"failed", "cancelled"}:
+            terminal_state = state
+            error = update.get("error")
+            code = error.get("code") if isinstance(error, dict) else None
+            # Actual DoorError wire codes and the routing exceptions retained
+            # by door_error_code; arbitrary application strings stay private.
+            terminal_error_code = code if isinstance(code, str) and code in {
+                "unknown_action", "invalid_arguments", "action_unavailable",
+                "action_confirmation_required", "action_failed",
+                "cross_record_reentry", "ambiguous_action_target",
+                "bound_broker_route_unavailable", "undeclared_document_mutation",
+                "workspace_task_refused",
+            } else "other"
+            refusal_reason = direction_refusal_reason(error)
             # Opt in only for a known public, test-owned operation. Generic
             # calls may carry private drafts/results and must not export them.
             if public_failure_path is not None:
@@ -3969,6 +4016,17 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
     try:
         return wait_for("original ordinary action terminal success", completed, process)
     except (ProofTimeout, RuntimeError) as error:
+        if closed_failure_path is not None:
+            try:
+                closed_failure_path.write_text(json.dumps({
+                    "terminal_state": terminal_state,
+                    "terminal_error_code": terminal_error_code,
+                    "refusal_reason": refusal_reason,
+                    "original_invocation_matches": unchanged,
+                    "states_seen": dict(sorted(states.items())),
+                }, indent=2) + "\n")
+            except OSError:
+                error.add_note("closed action failure diagnostic could not be written")
         if diagnostic_path is not None:
             # Whitelist only inert correlation and closed lifecycle counters.
             # Never serialize a receipt, result, error, prompt or action text.
@@ -3989,6 +4047,11 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
             except OSError:
                 error.add_note("closed terminal diagnostic could not be written")
         raise
+
+
+def wait_for_direction_terminal(socket, action, arguments, process, output):
+    return wait_terminal(socket, invoke(socket, action, arguments), process,
+                         closed_failure_path=output / "managed-direction-terminal-failure.json")
 
 
 def chrome_state(socket):
@@ -7019,11 +7082,11 @@ def managed_task_and_message_lifecycle(
 
     direction = wait_for("exact-run Direction action", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "direct"), process)
-    direction_receipt = wait_terminal(socket, invoke(socket, direction, {
+    direction_receipt = wait_for_direction_terminal(socket, direction, {
         "run_epoch": epoch,
         "after_revision": after,
         "text": "Keep the current task active after acknowledging this direction.",
-    }), process)
+    }, process, output)
     direction_value = terminal_value(direction_receipt)
     added = direction_value.get("result", {}).get("direction_added")
     revision = added.get("revision") if isinstance(added, dict) else None

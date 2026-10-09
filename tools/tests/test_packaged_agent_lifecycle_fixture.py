@@ -1704,6 +1704,112 @@ class PresentedEditorTargetTests(unittest.TestCase):
             calls.assert_called_once_with("socket", {"op": "snapshot", "path": str(
                 output / "physical-selection-refused.png")})
 
+    def test_direction_terminal_success_invokes_once_without_failure_artifact(self):
+        receipt = {"update": {"invocation": "original-private-id", "state": "succeeded",
+                              "output": {"value": "PRIVATE-CANARY"}}}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "invoke", return_value={"receipt": receipt}) as invoke, \
+                patch.object(PROOF, "call") as calls, \
+                patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()):
+            output = pathlib.Path(directory)
+            self.assertIs(PROOF.wait_for_direction_terminal(
+                "socket", {"id": "direct"}, {"text": "PRIVATE-CANARY"}, None, output), receipt)
+            invoke.assert_called_once_with("socket", {"id": "direct"}, {"text": "PRIVATE-CANARY"})
+            calls.assert_not_called()
+            self.assertFalse((output / "managed-direction-terminal-failure.json").exists())
+
+    def test_direction_terminal_failure_is_closed_and_never_reinvokes(self):
+        for code in ("action_unavailable", "bound_broker_route_unavailable", "workspace_task_refused",
+                     "PRIVATE-CANARY", {"private": "PRIVATE-CANARY"}):
+            initial = {"broker_invocation_id": 37, "update": {
+                "invocation": "original-private-id", "state": "accepted"}}
+            failed = {"update": {"invocation": "original-private-id", "state": "failed",
+                                  "error": {"code": code, "message": "PRIVATE-CANARY",
+                                            "details": {"text": "PRIVATE-CANARY"}},
+                                  "output": "PRIVATE-CANARY"}}
+
+            def observe(_label, predicate, _process):
+                self.assertIsNone(predicate())
+                return predicate()
+
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "invoke", return_value={"receipt": initial}) as invoke, \
+                    patch.object(PROOF, "call", return_value={"answer": {"receipt": failed}}) as calls, \
+                    patch.object(PROOF, "wait_for", side_effect=observe), \
+                    self.assertRaisesRegex(RuntimeError, "ordinary action terminated failed"):
+                output = pathlib.Path(directory)
+                try:
+                    PROOF.wait_for_direction_terminal(
+                        "socket", {"id": "direct"}, {"text": "PRIVATE-CANARY"}, None, output)
+                finally:
+                    invoke.assert_called_once()
+                    calls.assert_called_once_with("socket", {"op": "actions_status", "invocation_id": 37})
+                    serialized = (output / "managed-direction-terminal-failure.json").read_text()
+                    self.assertEqual(json.loads(serialized), {
+                        "terminal_state": "failed",
+                        "terminal_error_code": code if isinstance(code, str) and code in {
+                            "action_unavailable", "bound_broker_route_unavailable",
+                            "workspace_task_refused"} else "other",
+                        "refusal_reason": "other",
+                        "original_invocation_matches": True,
+                        "states_seen": {"accepted": 1, "failed": 1},
+                    })
+                    self.assertNotIn("PRIVATE-CANARY", serialized)
+                    self.assertNotIn("original-private-id", serialized)
+                    self.assertNotIn("37", serialized)
+
+    def test_direction_terminal_foreign_identity_is_not_classified_as_original_failure(self):
+        initial = {"broker_invocation_id": 37, "update": {
+            "invocation": "original-private-id", "state": "accepted"}}
+        foreign = {"update": {"invocation": "FOREIGN-PRIVATE-CANARY", "state": "failed",
+                               "error": {"code": "action_failed", "message": "PRIVATE-CANARY"}}}
+
+        def observe(_label, predicate, _process):
+            self.assertIsNone(predicate())
+            return predicate()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "invoke", return_value={"receipt": initial}) as invoke, \
+                patch.object(PROOF, "call", return_value={"answer": {"receipt": foreign}}) as calls, \
+                patch.object(PROOF, "wait_for", side_effect=observe):
+            output = pathlib.Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "observation changed its invocation"):
+                PROOF.wait_for_direction_terminal("socket", {}, {}, None, output)
+            invoke.assert_called_once()
+            calls.assert_called_once()
+            self.assertEqual(json.loads((output / "managed-direction-terminal-failure.json").read_text()), {
+                "terminal_state": None, "terminal_error_code": None, "refusal_reason": None,
+                "original_invocation_matches": False, "states_seen": {"accepted": 1},
+            })
+
+    def test_direction_terminal_refusal_reason_matches_exact_public_literals_only(self):
+        known = "task run or instruction frontier changed; review before steering"
+        for message, reason in ((known, "frontier_changed"),
+                                ("workspace task agent is not a current room member", "agent_not_current_member"),
+                                ("task owner lost its exact committed result", "exact_committed_result_missing"),
+                                (known + " PRIVATE-CANARY", "other"),
+                                ("PRIVATE-CANARY", "other"), ({"text": "PRIVATE-CANARY"}, "other")):
+            receipt = {"update": {"invocation": "PRIVATE-IDENTITY", "state": "failed",
+                                  "error": {"code": "workspace_task_refused", "message": message,
+                                            "details": "PRIVATE-CANARY"}}}
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "invoke", return_value={"receipt": receipt}) as invoke, \
+                    patch.object(PROOF, "call") as calls, \
+                    patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()):
+                output = pathlib.Path(directory)
+                with self.assertRaisesRegex(RuntimeError, "ordinary action terminated failed"):
+                    PROOF.wait_for_direction_terminal("socket", {}, {}, None, output)
+                serialized = (output / "managed-direction-terminal-failure.json").read_text()
+                self.assertEqual(json.loads(serialized), {
+                    "terminal_state": "failed", "terminal_error_code": "workspace_task_refused",
+                    "refusal_reason": reason, "original_invocation_matches": True,
+                    "states_seen": {"failed": 1},
+                })
+                self.assertNotIn("PRIVATE", serialized)
+                self.assertNotIn(known, serialized)
+                invoke.assert_called_once()
+                calls.assert_not_called()
+
     def test_terminal_timeout_diagnostic_is_closed_and_preserves_original_failure(self):
         original = "00000000-0000-0000-0000-000000000021"
         private = "private prompt result error and output"
