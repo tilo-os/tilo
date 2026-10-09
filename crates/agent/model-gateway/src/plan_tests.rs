@@ -55,6 +55,7 @@ const ANTHROPIC_STREAM_REPLY: &str = concat!(
 );
 
 const ERROR_BODY: &str = r#"{"error":{"message":"test instruction echoed back","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
+const QUOTA_BODY: &str = r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota"}}"#;
 
 fn read_request(stream: &mut TcpStream) -> String {
     stream.set_nonblocking(false).unwrap();
@@ -337,6 +338,25 @@ fn shared_transport_limits_transform_without_changing_legacy_requests() {
     }
 }
 
+/// Whether the peer refuses request number `request` (from 1) of `case`
+/// unprocessed: a `-once` case its first, `429-quota` every one.
+fn refuses(case: &str, request: usize) -> bool {
+    (case.ends_with("-once") && request == 1) || case == "429-quota"
+}
+
+fn refusal(case: &str) -> String {
+    if case == "429-quota" {
+        return format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{QUOTA_BODY}",
+            QUOTA_BODY.len()
+        );
+    }
+    format!(
+        "HTTP/1.1 {} Provider Busy\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        case.trim_end_matches("-once")
+    )
+}
+
 fn run_case(test: &str, case: &str) -> Option<Observed> {
     if let Ok(child_case) = std::env::var("PLAN_TEST_CASE") {
         child_plan(&child_case);
@@ -387,6 +407,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 "redirect" => format!(
                     "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
+                case if refuses(case, requests.len()) => refusal(case),
                 value if value.parse::<u16>().is_ok() => format!(
                     "HTTP/1.1 {value} Provider Error\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
@@ -504,9 +525,12 @@ fn plan_dispatch_unreadable_response_is_unknown() {
     }
 }
 
+/// Every status that leaves open whether the provider did the work. A rate
+/// limit (429) or overload (529) says it did not; see
+/// `plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it`.
 #[test]
 fn plan_dispatch_never_replays_provider_status() {
-    for status in [503, 408, 429, 500, 502, 504, 529, 401] {
+    for status in [503, 408, 500, 502, 504, 401] {
         let Some(observed) = run_case(
             "plan_dispatch_never_replays_provider_status",
             &status.to_string(),
@@ -514,6 +538,216 @@ fn plan_dispatch_never_replays_provider_status() {
             return;
         };
         assert_unknown(observed);
+    }
+}
+
+#[test]
+fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
+    let name = "plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it";
+    // Phase: refused as rate-limited or overloaded, then answered: one
+    // success, from the very same request sent again.
+    for case in ["429-once", "529-once"] {
+        let Some(observed) = run_case(name, case) else {
+            return;
+        };
+        assert!(
+            observed.response.ok,
+            "{case}: {:?}",
+            observed.response.error
+        );
+        assert_eq!(observed.response.output.as_deref(), Some(OUTPUT), "{case}");
+        assert_eq!(observed.requests.len(), 2, "{case}");
+        assert_eq!(observed.requests[0], observed.requests[1], "{case}");
+    }
+
+    // Phase: refused every time: bounded, and the error says how often.
+    for case in ["429", "529"] {
+        let Some(observed) = run_case(name, case) else {
+            return;
+        };
+        assert_eq!(observed.requests.len(), 3, "{case}");
+        assert!(!observed.response.ok);
+        let error = observed.response.error.unwrap();
+        assert!(error.contains(&format!("HTTP {case}")), "{error}");
+        assert!(error.contains("(3 attempts)"), "{error}");
+        assert!(!error.contains("outcome is unknown"), "{error}");
+        assert!(!error.contains("fabricated-test-key"));
+    }
+
+    // Phase: an exhausted quota is a 429 that asking again cannot help.
+    let Some(observed) = run_case(name, "429-quota") else {
+        return;
+    };
+    assert_eq!(observed.requests.len(), 1);
+    assert!(!observed.response.ok);
+    let error = observed.response.error.unwrap();
+    assert!(error.contains("insufficient_quota"), "{error}");
+    assert!(error.contains("request was not retried"), "{error}");
+}
+
+struct Sending {
+    left: Duration,
+    waits: Vec<Duration>,
+    calls: usize,
+}
+
+fn refused(status: Option<u16>, unprocessed: bool, asked_for: Option<Duration>) -> ProviderFailure {
+    ProviderFailure {
+        why: status.map_or_else(
+            || "provider transport failed".into(),
+            |status| format!("provider returned HTTP {status}"),
+        ),
+        again: Again::Soon(asked_for),
+        outcome_unknown: !unprocessed,
+        unprocessed,
+        status,
+    }
+}
+
+/// One fake attempt's outcome.
+type Outcome = fn() -> Result<&'static str, ProviderFailure>;
+
+/// [`plan_send`] over `outcomes` (the last repeats) on a fake clock, each
+/// attempt taking 200 ms; `emitted` says whether a frame reached the caller.
+fn send_plan(
+    left: Duration,
+    emitted: bool,
+    outcomes: &[Outcome],
+) -> (Result<&'static str, ProviderFailure>, Sending) {
+    let sending = std::cell::RefCell::new(Sending {
+        left,
+        waits: Vec::new(),
+        calls: 0,
+    });
+    let result = tilo_rt::block_on(plan_send(
+        || {
+            let sending = sending.borrow();
+            (!sending.left.is_zero()).then_some(sending.left)
+        },
+        |duration| {
+            let mut sending = sending.borrow_mut();
+            sending.waits.push(duration);
+            sending.left = sending.left.saturating_sub(duration);
+            std::future::ready(())
+        },
+        &|| emitted,
+        |_budget| {
+            let mut sending = sending.borrow_mut();
+            let index = sending.calls.min(outcomes.len().saturating_sub(1));
+            sending.calls = sending.calls.saturating_add(1);
+            sending.left = sending.left.saturating_sub(Duration::from_millis(200));
+            std::future::ready(outcomes[index]())
+        },
+    ))
+    .unwrap();
+    (result, sending.into_inner())
+}
+
+/// Plan asks again only for a provider that provably did no work, never
+/// once a frame reached the caller, at most three times in all, waiting what
+/// the provider asked for, and only with room left for an answer.
+#[test]
+fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
+    let answered: Outcome = || Ok("answer");
+    let limited: Outcome = || Err(refused(Some(429), true, None));
+    let overloaded_for_two: Outcome =
+        || Err(refused(Some(529), true, Some(Duration::from_secs(2))));
+    let unreachable: Outcome = || Err(refused(None, true, None));
+    let failed: Outcome = || Err(refused(Some(500), false, None));
+
+    // Phase: a rate limit, an overload or a refused connection, then an answer.
+    for refusal in [limited, unreachable] {
+        let (result, sending) = send_plan(Duration::from_secs(20), false, &[refusal, answered]);
+        assert_eq!(result.ok(), Some("answer"));
+        assert_eq!(sending.calls, 2);
+        assert_eq!(sending.waits, [Duration::from_millis(500)]);
+    }
+    let (result, sending) = send_plan(
+        Duration::from_secs(20),
+        false,
+        &[overloaded_for_two, answered],
+    );
+    assert_eq!(result.ok(), Some("answer"));
+    assert_eq!(
+        sending.waits,
+        [Duration::from_secs(2)],
+        "Retry-After is honoured"
+    );
+
+    // Phase: at most three attempts, and the error counts them.
+    let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
+    let failure = result.err().unwrap();
+    assert_eq!(sending.calls, 3);
+    assert_eq!(
+        sending.waits,
+        [Duration::from_millis(500), Duration::from_secs(1)]
+    );
+    assert_eq!(failure.status, Some(429));
+    assert!(failure.why.ends_with("(3 attempts)"), "{}", failure.why);
+
+    // Phase: a failure that may have done the work is never sent again.
+    let (result, sending) = send_plan(Duration::from_secs(20), false, &[failed, answered]);
+    let failure = result.err().unwrap();
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+    assert_eq!(failure.why, "provider returned HTTP 500");
+
+    // Phase: nothing is sent again once a frame reached the caller.
+    let (result, sending) = send_plan(Duration::from_secs(20), true, &[limited, answered]);
+    assert!(result.is_err());
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+
+    // Phase: a wait that would leave no room to answer ends the Plan instead.
+    let (result, sending) = send_plan(
+        Duration::from_secs(6),
+        false,
+        &[overloaded_for_two, answered],
+    );
+    assert_eq!(result.err().unwrap().status, Some(529));
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+}
+
+/// A refused connection never reached the provider and a rate limit or
+/// overload did no work there; an exhausted quota and every other status
+/// leave the outcome as it was.
+#[test]
+fn only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed() {
+    let closed = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let mut profile = ProviderProfile::local_vllm();
+    profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
+    let http = provider_client().unwrap();
+    let failure = tilo_rt::block_on(send_provider(
+        &http,
+        &profile,
+        &provider_url(&profile),
+        None,
+        &serde_json::json!({"model": "test-model"}),
+        Duration::from_secs(5),
+    ))
+    .unwrap()
+    .err()
+    .unwrap();
+    assert!(failure.unprocessed, "{}", failure.why);
+    assert!(!failure.outcome_unknown, "{}", failure.why);
+    assert_eq!(failure.status, None);
+
+    assert!(refused_unprocessed(
+        429,
+        br#"{"error":{"type":"rate_limit_error"}}"#
+    ));
+    assert!(refused_unprocessed(429, b""));
+    assert!(refused_unprocessed(
+        529,
+        br#"{"error":{"type":"overloaded_error"}}"#
+    ));
+    assert!(!refused_unprocessed(429, QUOTA_BODY.as_bytes()));
+    for status in [400, 401, 402, 408, 409, 500, 502, 503, 504] {
+        assert!(!refused_unprocessed(status, b""), "HTTP {status}");
     }
 }
 
