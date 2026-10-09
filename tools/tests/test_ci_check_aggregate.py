@@ -113,11 +113,11 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
         self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", job)
 
-    def test_wasm_qualification_uses_native_arm_without_losing_main_x86(self):
+    def test_wasm_qualification_uses_portable_native_without_losing_main_x86(self):
         job = section(self.workflow, "wasm", 2)
-        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}", job)
-        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}", job)
-        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', job)
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}", job)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", job)
+        self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', job)
         self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
         self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
         self.assertIn('run: bash tools/ci/check-wasm.sh', job)
@@ -132,6 +132,7 @@ class CheckAggregateTests(unittest.TestCase):
         # the small boolean/comparison grammar used here, rejecting new syntax.
         values = {
             "github.event_name": "pull_request",
+            "github.event.inputs.lanes": "all",
             "needs.builder.result": "success",
             "needs.select.result": "success",
             "needs.security.result": "success",
@@ -190,6 +191,15 @@ class CheckAggregateTests(unittest.TestCase):
                 job = section(sdk, name, 2)
                 self.assertIn("needs: [builder, policy]", job)
                 self.assertTrue(admitted(job))
+                for event in ("pull_request", "push"):
+                    self.assertTrue(admitted(job, **{"github.event_name": event,
+                                                     "github.event.inputs.lanes": "linux"}))
+                for lanes in ("all", "", "linux"):
+                    self.assertEqual(
+                        admitted(job, **{"github.event_name": "workflow_dispatch",
+                                         "github.event.inputs.lanes": lanes}),
+                        name == "linux" or lanes != "linux",
+                    )
                 for status in ("failure", "cancelled", "skipped", "", "running"):
                     self.assertFalse(admitted(job, **{"needs.policy.result": status}))
                     self.assertTrue(admitted(job, **{"github.event_name": "push",

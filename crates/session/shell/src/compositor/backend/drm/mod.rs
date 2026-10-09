@@ -180,6 +180,26 @@ pub struct DrmPresenter {
     readback_presenting: Arc<AtomicBool>,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
+    /// Vblanks of the page flips retired during the current frame, by card and CRTC.
+    flip_vblanks: Vec<FlipVblank>,
+    /// [`Presenter::display_timing`] of the frame just presented.
+    display_timing: crate::shell::present::DisplayTiming,
+    /// Frames admitted behind the one presenting while vblank-paced: 0, or 1
+    /// under [`PIPELINED_ENV`].
+    paced_queue_depth: usize,
+}
+
+/// Env var that keeps the vblank-paced presenter admitting one frame behind
+/// the one presenting, as every presenter did before frames were scheduled
+/// against the vblank. A hardware A/B knob for input-to-photon measurement.
+pub const PIPELINED_ENV: &str = "TILO_PRESENT_PIPELINED";
+
+/// One page flip retired by the presenter's blocking wait.
+#[derive(Clone, Copy, Debug)]
+struct FlipVblank {
+    device_id: u64,
+    crtc: smithay::reexports::drm::control::crtc::Handle,
+    at: Instant,
 }
 
 /// Everything the render thread takes over from the backend in
@@ -244,6 +264,58 @@ impl DrmPresenter {
             phase_window: PhaseWindow::default(),
             readback_presenting,
             signal_reports,
+            flip_vblanks: Vec::new(),
+            display_timing: crate::shell::present::DisplayTiming::default(),
+            paced_queue_depth: usize::from(
+                std::env::var_os(PIPELINED_ENV).is_some_and(|value| value == "1"),
+            ),
+        }
+    }
+
+    /// Every powered output renders straight into its own scanout target and
+    /// this presenter waits for its page flip, so a frame retires on a vblank.
+    /// The CPU renderer and the combined readback do not wait for one.
+    fn vblank_paced(&self) -> bool {
+        !self.blanked
+            && !self.paused
+            && self.cpu.is_none()
+            && self.scanouts.iter().any(|entry| !entry.powered_off)
+            && self
+                .scanouts
+                .iter()
+                .filter(|entry| !entry.powered_off)
+                .all(|entry| entry.direct_targets.is_some() && !entry.present_by_readback)
+    }
+
+    /// The display timing of the frame whose flips were just retired. The
+    /// vblank is the earliest among the outputs that pace the loop: the next
+    /// frame must be due before the first of their next vblanks, or that
+    /// output repeats a frame.
+    fn frame_display_timing(
+        &mut self,
+        flip_queued_at: Option<Instant>,
+    ) -> crate::shell::present::DisplayTiming {
+        let retired = std::mem::take(&mut self.flip_vblanks);
+        if !self.vblank_paced() {
+            return crate::shell::present::DisplayTiming::default();
+        }
+        let fastest = fastest_direct_refresh(&self.scanouts, &self.outputs);
+        let vblank = retired
+            .iter()
+            .filter(|flip| {
+                self.scanouts.iter().any(|entry| {
+                    entry.device_id == flip.device_id
+                        && entry.scanout.crtc() == flip.crtc
+                        && !entry.powered_off
+                        && paces(refresh_of(&self.outputs, entry.id), fastest)
+                })
+            })
+            .map(|flip| flip.at)
+            .min();
+        crate::shell::present::DisplayTiming {
+            vblank_paced: true,
+            vblank,
+            flip_queued_at,
         }
     }
 }
@@ -307,20 +379,24 @@ fn flip_wait(
     fastest_mhz: Option<u32>,
     pending_for: Duration,
 ) -> FlipWait {
-    let paces = match (refresh_mhz, fastest_mhz) {
+    if paces(refresh_mhz, fastest_mhz) {
+        FlipWait::Await
+    } else if pending_for >= DIRECT_RETIREMENT_TIMEOUT {
+        FlipWait::Overdue
+    } else {
+        FlipWait::Leave
+    }
+}
+
+/// Whether an output at `refresh_mhz` paces the loop beside the fastest one.
+fn paces(refresh_mhz: Option<u32>, fastest_mhz: Option<u32>) -> bool {
+    match (refresh_mhz, fastest_mhz) {
         (Some(rate), Some(fastest)) => {
             u64::from(rate).saturating_mul(100)
                 >= u64::from(fastest)
                     .saturating_mul(100_u64.saturating_sub(PACING_TOLERANCE_PERCENT))
         }
         _ => true,
-    };
-    if paces {
-        FlipWait::Await
-    } else if pending_for >= DIRECT_RETIREMENT_TIMEOUT {
-        FlipWait::Overdue
-    } else {
-        FlipWait::Leave
     }
 }
 
@@ -958,6 +1034,8 @@ impl DrmPresenter {
         frame: &FramePaint,
     ) -> Option<crate::shell::present::PhysicalPresentation> {
         self.frame_phases = None;
+        self.display_timing = crate::shell::present::DisplayTiming::default();
+        self.flip_vblanks.clear();
         if let Some(bridge) = &mut self.paint {
             let _ = bridge.take_phase_timing();
         }
@@ -1003,6 +1081,7 @@ impl DrmPresenter {
             Some(&mut self.phase_window),
         );
         publish_readback_presenting(&self.scanouts, &self.readback_presenting);
+        let flip_queued_at = sample.direct_queued.then(Instant::now);
         let retirement_started = self.profile_phases.then(Instant::now);
         let retirement_attempted = sample.direct_queued
             || (self.scanouts.len() == 1
@@ -1040,6 +1119,7 @@ impl DrmPresenter {
                     },
                 });
         }
+        self.display_timing = self.frame_display_timing(flip_queued_at);
         self.emit_phase_profile(sample);
         if let Some(bridge) = &mut self.paint {
             let _ = bridge.take_phase_timing();
@@ -1113,6 +1193,21 @@ impl DrmPresenter {
         if retirement != scanout::DirectRetirement::Complete {
             entry.scanout.invalidate_physical_feedback();
         }
+        // Every completion read here comes from this card's event stream. A
+        // driver without monotonic event stamps leaves the wakeup as the vblank.
+        let woke = Instant::now();
+        let monotonic = entry.scanout.monotonic_flip_timestamps();
+        let device_id = entry.device_id;
+        self.flip_vblanks
+            .extend(completions.iter().map(|event| FlipVblank {
+                device_id,
+                crtc: event.crtc,
+                at: if monotonic {
+                    scanout::instant_from_monotonic(event.duration)
+                } else {
+                    woke
+                },
+            }));
         self.phase_window.record_flip_completions(completions.len());
         let proof = physical_flip_proof(
             retirement,
@@ -1132,7 +1227,6 @@ impl DrmPresenter {
             };
             proof
         });
-        let device_id = entry.device_id;
         let completed: Vec<_> = completions
             .iter()
             .map(|event| (device_id, event.crtc))
@@ -3171,6 +3265,23 @@ impl Presenter for DrmPresenter {
         self.frame_phases
     }
 
+    /// No frame waits behind one presenting while every output flips straight
+    /// from its own target: this presenter returns only once the flip has
+    /// retired, so a queued frame would start rendering at that vblank and be
+    /// shown one interval later than a frame built for it. Readback, CPU and
+    /// a blanked or paused session keep one queued frame.
+    fn queue_depth(&self) -> usize {
+        if self.display_timing.vblank_paced {
+            self.paced_queue_depth
+        } else {
+            crate::shell::present::QUEUE_DEPTH
+        }
+    }
+
+    fn display_timing(&self) -> crate::shell::present::DisplayTiming {
+        self.display_timing
+    }
+
     /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
     /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
     fn prepare(&mut self) {
@@ -3818,6 +3929,40 @@ mod tests {
             presenter.commands.is_some(),
             "the scanouts' command channel travels with them"
         );
+    }
+
+    #[test]
+    fn a_presenter_without_a_direct_output_keeps_a_queued_frame_and_no_vblank() {
+        // Only a presenter that waits for every output's flip may refuse a
+        // frame behind the one presenting. With nothing powered (or blanked,
+        // paused, on readback or the CPU path) the frame retires without a
+        // vblank, and the loop must keep its retirement-paced grid.
+        for (blanked, paused) in [(false, false), (true, false), (false, true)] {
+            let (_commands, receiver) = std::sync::mpsc::channel();
+            let mut presenter = DrmPresenter::new(PresenterParts {
+                scanouts: Vec::new(),
+                outputs: vec![Output::new(OutputId(0), (1920, 1080), 1.0)],
+                pointer: (0.0, 0.0),
+                shared_pointer: Arc::new(Mutex::new((0.0, 0.0))),
+                cpu: None,
+                blanked,
+                paused,
+                commands: Some(receiver),
+                present_gate: Some(Arc::new(Mutex::new(()))),
+                profile_phases: false,
+                readback_presenting: Arc::new(AtomicBool::new(false)),
+                signal_reports: None,
+            });
+            assert!(!presenter.vblank_paced());
+            let proof =
+                presenter.present_frame_observed(&FramePaint::full(Scene::new()), OutputId(0));
+            assert_eq!(proof, None);
+            assert_eq!(
+                presenter.display_timing(),
+                crate::shell::present::DisplayTiming::default()
+            );
+            assert_eq!(presenter.queue_depth(), crate::shell::present::QUEUE_DEPTH);
+        }
     }
 }
 

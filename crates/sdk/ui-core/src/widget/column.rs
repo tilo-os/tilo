@@ -722,6 +722,13 @@ impl crate::permissions::capability::PermissionGated for Column {
 }
 
 impl crate::widget::controls::ActionControls for Column {
+    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        self.for_each_child(&mut |child| {
+            bindings.extend(crate::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn has_action_control_bindings(&self) -> bool {
         let mut found = false;
         self.for_each_child(&mut |child| {

@@ -10665,13 +10665,13 @@ impl ShellOverlayHost {
             self.room_activity.layout_window(viewport);
         }
         if let Some(chrome) = self.chrome.clone() {
-            let st = chrome.borrow();
-            let records = st.records().clone();
-            let mut tree = st.tree_mut();
+            let (tree, records) = {
+                let st = chrome.borrow();
+                (st.tree_handle(), st.records().clone())
+            };
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut *tree, &records, &*local);
+                .refresh_observed(&tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -10792,16 +10792,13 @@ impl ShellOverlayHost {
             return;
         }
         let workspace = {
-            let st = chrome.borrow();
-            let records = st.records().clone();
-            let mut tree = st.tree_mut();
+            let (tree, records) = {
+                let st = chrome.borrow();
+                (st.tree_handle(), st.records().clone())
+            };
             let local = self.room_records.borrow();
             self.room_activity
-                .observe_workspace(tree.desktop.active.raw());
-            self.room_activity.refresh(&mut *tree);
-            self.room_activity
-                .refresh_records_with_local(&mut *tree, &records, &*local);
-            tree.desktop.active.raw()
+                .refresh_observed(&tree, &records, &*local)
         };
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
@@ -18076,12 +18073,7 @@ impl Widget for ShellOverlayHost {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         self.workspace_settings_overlay.layout(self.overlay_area());
         let contextual_tour = self
             .onboarding

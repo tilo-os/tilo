@@ -14,8 +14,8 @@
 //! so they survive host restarts; they grant nothing, the subscription itself
 //! is authorised as usual.
 //!
-//! This is delivery v3's cursor idea (`tilo-delivery-protocol`'s host-signed
-//! `CursorToken`) reduced to what one relay host needs: a keyed BLAKE3 MAC in
+//! This is PR 541's delivery-v3 cursor idea (a host-signed cursor token)
+//! reduced to what one relay host needs: a keyed BLAKE3 MAC in
 //! place of a signature, since only the host that issued a position ever
 //! checks it.
 

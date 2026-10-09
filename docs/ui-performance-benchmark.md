@@ -11,6 +11,12 @@ flags, defaults, value parsing, dependencies, and diagnostic caveats. Historic
 measurements belong in version control; they are not evidence for the current
 checkout.
 
+Current results come from the scheduled performance lane, not from this page.
+Each benchmark writes records with `tools/perf/record.py`, and the records are
+stored in the `tilo-perf-results` package. See
+[Performance results](../DEVELOPMENT.md#performance-results) for how a benchmark
+such as `ui-perf` or `redraw_bench` joins that lane.
+
 ## Acceptance commands
 
 Build once so every run measures the same binary:
