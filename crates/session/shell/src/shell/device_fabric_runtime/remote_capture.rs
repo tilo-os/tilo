@@ -49,8 +49,6 @@ impl RemoteCaptureIntegration {
         for received in self.pending_actions.drain(..) {
             if network.personal_route_is_current(&received.route) {
                 runtime.handle_action(&received.envelope, Instant::now());
-            } else {
-                network.revoke_queued_personal_action_authority(&received.envelope);
             }
         }
     }
