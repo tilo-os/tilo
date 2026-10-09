@@ -93,6 +93,8 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
+#[cfg(unix)]
+pub mod update_lock;
 
 pub use approval::{
     APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
