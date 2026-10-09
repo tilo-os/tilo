@@ -85,7 +85,7 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
         let p = dm.insert_block(Some(&img), "paragraph");
         dm.splice_text(&p, 0, 0, instruction);
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -714,7 +714,7 @@ fn connect_photo_editor(
         .build(0)
         .expect("the import builds");
     tilo_actions::Action::apply(&import, &mut photo_replica).expect("the photograph is imported");
-    photo_replica.commit();
+    collab_types::CommitNamed::commit_edit(&mut photo_replica, "photos.library", "photos");
     (photo_peer, photo_replica)
 }
 

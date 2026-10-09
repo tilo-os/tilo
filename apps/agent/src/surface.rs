@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_actions::{ActionContract, ActionKind, ActionRegistry, Resource};
+use tilo_actions::{ActionContract, ActionKind, ActionParam, ActionRegistry, Resource};
 use ui::permissions::{Answer, PermissionContext, PermissionScope, TreePath};
 use ui::tilo_resource::ResourceKind;
 
@@ -1016,20 +1016,7 @@ pub fn from_verbs<'a>(
     if words.is_empty() || offers.is_empty() {
         return Err(NoMatch::Nothing);
     }
-    let mut best: Vec<&Offer> = Vec::new();
-    let mut best_score = 0usize;
-    for offer in offers {
-        let s = score(offer, &words);
-        if s == 0 {
-            continue;
-        }
-        if s > best_score {
-            best_score = s;
-            best = vec![offer];
-        } else if s == best_score {
-            best.push(offer);
-        }
-    }
+    let mut best = best_scored(offers, &words);
     if best.is_empty() {
         return Err(NoMatch::Nothing);
     }
@@ -1112,6 +1099,7 @@ pub fn from_verbs<'a>(
     if chosen.wants_only_choices() {
         return chosen
             .arguments_from_choices(rest)
+            .and_then(|arguments| with_place(chosen, rest, offers, arguments))
             .map(|arguments| (chosen, arguments))
             .map_err(|choices| {
                 NoMatch::Ambiguous(
@@ -1124,12 +1112,165 @@ pub fn from_verbs<'a>(
             });
     }
     if !collects_a_value_said(chosen) {
-        return Ok((chosen, serde_json::Map::new()));
+        return with_place(chosen, rest, offers, serde_json::Map::new())
+            .map(|arguments| (chosen, arguments))
+            .map_err(NoMatch::Ambiguous);
     }
     match chosen.arguments_from_literal(rest) {
         Some(arguments) => Ok((chosen, arguments)),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
+}
+
+/// The offers that answer `words` best, all equally well.
+fn best_scored<'a>(offers: &'a [Offer], words: &[String]) -> Vec<&'a Offer> {
+    let places = place_rows(offers);
+    let mut best: Vec<&Offer> = Vec::new();
+    let mut best_score = 0usize;
+    for offer in offers {
+        // A paragraph published as a place answers by what it does, never
+        // by what it says: its words name where, not what to do.
+        if places.contains(offer.descriptor.address.resource.as_str())
+            && score_action(offer, words) == 0
+        {
+            continue;
+        }
+        let s = score(offer, words);
+        if s == 0 {
+            continue;
+        }
+        if s > best_score {
+            best_score = s;
+            best = vec![offer];
+        } else if s == best_score {
+            best.push(offer);
+        }
+    }
+    best
+}
+
+/// How many of `words` the operation's own label carries.
+fn score_action(offer: &Offer, words: &[String]) -> usize {
+    let action = offer.descriptor.action_label.to_lowercase();
+    words.iter().filter(|w| action.contains(w.as_str())).count()
+}
+
+/// The resources published as places inside another resource that offers
+/// an operation told where to act (`at`): the paragraphs of a document,
+/// each an item of it (`<resource>/<field>/<item>`), of the field the place
+/// names when it names one.
+pub(crate) fn place_rows(offers: &[Offer]) -> std::collections::HashSet<&str> {
+    let placed = placing(offers);
+    offers
+        .iter()
+        .map(|offer| offer.descriptor.address.resource.as_str())
+        .filter(|resource| place_in(&placed, resource).is_some())
+        .collect()
+}
+
+/// Each resource offering an operation told where to act, with the field
+/// its places are items of when the operation names it.
+fn placing(offers: &[Offer]) -> std::collections::HashMap<&str, Option<&str>> {
+    let mut placed = std::collections::HashMap::new();
+    for offer in offers {
+        if let Some(param) = offer
+            .descriptor
+            .params
+            .iter()
+            .find(|param| param.is_place())
+        {
+            placed.insert(
+                offer.descriptor.address.resource.as_str(),
+                param.place_field(),
+            );
+        }
+    }
+    placed
+}
+
+/// The resource `resource` is a place in, and the item it names there.
+fn place_in<'a>(
+    placed: &std::collections::HashMap<&str, Option<&str>>,
+    resource: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    let (parent, rest) = resource.split_once('/')?;
+    let (field, item) = rest.split_once('/')?;
+    let named = placed.get(parent)?;
+    (named.is_none_or(|named| named == field) && !item.is_empty() && !item.contains('/'))
+        .then_some((parent, item))
+}
+
+/// The place inside `offer`'s resource that `rest` names, as the paragraphs
+/// it publishes word it: "the title" is the first, a quoted phrase is the
+/// paragraph that begins with it.
+///
+/// `Ok(None)` when the instruction names none: the operation acts at the
+/// agent's caret.
+///
+/// # Errors
+/// The labels of the paragraphs a quoted phrase begins more than one of.
+fn named_place(
+    offer: &Offer,
+    rest: &str,
+    offers: &[Offer],
+) -> Result<Option<serde_json::Value>, Vec<String>> {
+    let resource = offer.descriptor.address.resource.as_str();
+    let field = offer
+        .descriptor
+        .params
+        .iter()
+        .find(|param| param.is_place())
+        .and_then(ActionParam::place_field);
+    let parent = std::collections::HashMap::from([(resource, field)]);
+    let mut candidates: Vec<(&str, &str)> = Vec::new();
+    for candidate in offers {
+        if let Some((_, item)) = place_in(&parent, candidate.descriptor.address.resource.as_str())
+            && !candidates.iter().any(|(known, _)| *known == item)
+        {
+            candidates.push((item, candidate.descriptor.resource_label.as_str()));
+        }
+    }
+    let item = |item: &str| Some(serde_json::json!({ "item": item }));
+    if let Some(phrase) = quoted_literal(rest) {
+        let phrase = phrase.to_lowercase();
+        let said = |label: &str| {
+            let label = label.trim_end_matches('…').to_lowercase();
+            label.starts_with(&phrase) || phrase.starts_with(&label)
+        };
+        let named: Vec<&(&str, &str)> =
+            candidates.iter().filter(|(_, label)| said(label)).collect();
+        return match named.as_slice() {
+            [] => Ok(None),
+            [(id, _)] => Ok(item(id)),
+            many => Err(many.iter().map(|(_, label)| (*label).to_owned()).collect()),
+        };
+    }
+    if words_of(rest).iter().any(|word| word == "title") {
+        return Ok(candidates.first().and_then(|(id, _)| item(id)));
+    }
+    Ok(None)
+}
+
+/// `arguments` with the place `rest` names inside `offer`'s resource, when
+/// it takes one and the instruction names one.
+fn with_place(
+    offer: &Offer,
+    rest: &str,
+    offers: &[Offer],
+    mut arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, Vec<String>> {
+    let Some(param) = offer
+        .descriptor
+        .params
+        .iter()
+        .find(|param| param.is_place())
+    else {
+        return Ok(arguments);
+    };
+    if let Some(place) = named_place(offer, rest, offers)? {
+        arguments.insert(param.name.to_string(), place);
+    }
+    Ok(arguments)
 }
 
 /// Whether performing `offer` needs a value the instruction could have said.

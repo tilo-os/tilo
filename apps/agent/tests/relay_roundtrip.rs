@@ -78,7 +78,7 @@ fn seed_document_as(actor: &str) -> AutoCommit {
         let p = dm.insert_block(Some(&after), "paragraph");
         dm.splice_text(&p, 0, 0, "Scribe: insert a table");
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -95,13 +95,14 @@ fn seed_sequence_document() -> AutoCommit {
             c: &c,
             ids: &mut ids,
         };
-        let title = dm.insert_block(None, "paragraph");
+        let title = dm.insert_block(None, "heading");
+        dm.set_attr(&title, "level", 1_i64);
         dm.splice_text(&title, 0, 0, "Launch plan");
         let img = dm.insert_block(Some(&title), "image");
         let p = dm.insert_block(Some(&img), "paragraph");
-        dm.splice_text(&p, 0, 0, "Scribe: align centre, then insert a table");
+        dm.splice_text(&p, 0, 0, "Scribe: centre the title, then insert a table");
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -128,7 +129,7 @@ fn seed_unanswerable_sequence_document() -> AutoCommit {
             "Scribe: align centre and then juggle three plates",
         );
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -159,7 +160,7 @@ fn seed_foreign() -> AutoCommit {
         let q = dm.insert_block(Some(&p), "paragraph");
         dm.splice_text(&q, 0, 0, "This folder is empty");
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -944,12 +945,13 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         // Both production actions ran; only the completed plan removes the
         // instruction.
         let b = blocks(&replica);
-        assert_eq!(b[0].kind, "paragraph");
+        assert_eq!(b[0].kind, "heading");
         assert_eq!(b[0].text, "Launch plan");
         assert!(
             matches!(b[0].attrs.get("align"), Some(tilo_doc::AttrVal::Str(v)) if v == "center"),
-            "the first catalogue action aligned the title"
+            "the first catalogue action aligned the title it named"
         );
+
         assert_eq!(
             b.iter().filter(|x| x.kind == "cell").count(),
             4,

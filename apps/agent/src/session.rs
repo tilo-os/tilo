@@ -1906,12 +1906,25 @@ impl Session {
         // in only for an app whose publication has not arrived yet.
         let live: HashSet<String> = offers.iter().map(|offer| offer.app.clone()).collect();
         let mut local = surface::offers(held, &offers, &self.cfg.permissions);
+        // The places inside a record (its paragraphs, by their words) are
+        // read off the held replica even when the app publishes live: they
+        // say where an operation it publishes is told to act.
+        let places: HashSet<String> = {
+            let mut all = offers.clone();
+            all.extend(local.iter().cloned());
+            surface::place_rows(&all)
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        };
         local.retain(|offer| {
-            surface::for_namespace(&offer.app)
-                .is_none_or(|contract| !live.contains(contract.app_id()))
-                && !offers
-                    .iter()
-                    .any(|broker| broker.address() == offer.address())
+            let a_place = places.contains(offer.descriptor.address.resource.as_str());
+            a_place
+                || (surface::for_namespace(&offer.app)
+                    .is_none_or(|contract| !live.contains(contract.app_id()))
+                    && !offers
+                        .iter()
+                        .any(|broker| broker.address() == offer.address()))
         });
         offers.extend(local);
         offers
@@ -4588,7 +4601,11 @@ mod tests {
                 edit.splice_text(&id, 0, 0, "Scribe: run the reviewed handoff plan");
                 id
             };
-            document.commit();
+            collab_types::CommitNamed::commit_edit(
+                &mut document,
+                <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND,
+                "body",
+            );
             let calls = Arc::new(Mutex::new(Calls::new()));
             let stop = Arc::new(AtomicBool::new(false));
             let mut threads = Vec::new();

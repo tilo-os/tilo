@@ -66,7 +66,7 @@ fn seed_document() -> AutoCommit {
         let p = dm.insert_block(Some(&after), "paragraph");
         dm.splice_text(&p, 0, 0, "Scribe: insert a table");
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(&mut doc, typed_peer::WP_DOCUMENT, "body");
     doc
 }
 
@@ -101,7 +101,7 @@ fn type_one(doc: &mut AutoCommit, block: &str, ch: &str) -> Vec<u8> {
         };
         dm.splice_text(block, at, 0, ch);
     }
-    doc.commit();
+    collab_types::CommitNamed::commit_edit(doc, typed_peer::WP_DOCUMENT, "body");
     doc.save_after(&before)
 }
 

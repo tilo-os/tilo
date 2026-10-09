@@ -202,7 +202,7 @@ fn scenario_outcome(
         let p = edit.insert_block(None, "paragraph");
         edit.splice_text(&p, 0, 0, "Owner document");
     }
-    document.commit();
+    collab_types::CommitNamed::commit_edit(&mut document, typed_peer::WP_DOCUMENT, "body");
     let mut invocations = 0;
     let mut observed = Vec::new();
     for restart in [false, true] {

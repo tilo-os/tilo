@@ -519,6 +519,7 @@ fn writing(kind: &str, action: &str) -> Option<(String, String)> {
     }
     let typing = WordProcessorEffect::TypeText {
         text: String::new(),
+        at: None,
     };
     let param = typing.arguments().keys().next()?.clone();
     // Whether the operation takes that parameter is the descriptor's to
@@ -736,6 +737,7 @@ mod tests {
         use word_processor::framework::Document;
         let typing = WordProcessorEffect::TypeText {
             text: String::new(),
+            at: None,
         }
         .id();
         let expected = Some(("text".to_owned(), typing.to_owned()));
