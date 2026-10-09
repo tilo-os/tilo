@@ -1788,7 +1788,9 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
-        app.refresh_control_action_availability();
+        app.track_pointer_buttons(&event);
+        app.refresh_controls_before_input(&event);
+        let resources_before = app.resource_input_mark(&event);
         app.root_widget.handle_event(
             &event,
             &mut crate::widget::EventCtx {
@@ -1803,8 +1805,13 @@ impl AppHandler {
             },
         );
         // `handle_event` may change presentation-only resource declarations
-        // without touching the CRDT (selected tab, open media, local mode).
-        app.invalidate_widget_resource_cache();
+        // without touching the CRDT (selected tab, open media, local mode);
+        // only bare hover that changed nothing keeps the published tree.
+        app.invalidate_resources_after_input(
+            &event,
+            handled || focus_target.is_some(),
+            &resources_before,
+        );
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
         }
