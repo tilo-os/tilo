@@ -184,8 +184,9 @@ pub struct DrmPresenter {
     flip_vblanks: Vec<FlipVblank>,
     /// [`Presenter::display_timing`] of the frame just presented.
     display_timing: crate::shell::present::DisplayTiming,
-    /// [`PIPELINED_ENV`]: keep admitting one frame behind the one presenting.
-    pipelined: bool,
+    /// Frames admitted behind the one presenting while vblank-paced: 0, or 1
+    /// under [`PIPELINED_ENV`].
+    paced_queue_depth: usize,
 }
 
 /// Env var that keeps the vblank-paced presenter admitting one frame behind
@@ -265,7 +266,9 @@ impl DrmPresenter {
             signal_reports,
             flip_vblanks: Vec::new(),
             display_timing: crate::shell::present::DisplayTiming::default(),
-            pipelined: std::env::var_os(PIPELINED_ENV).is_some_and(|value| value == "1"),
+            paced_queue_depth: usize::from(
+                std::env::var_os(PIPELINED_ENV).is_some_and(|value| value == "1"),
+            ),
         }
     }
 
@@ -3268,8 +3271,8 @@ impl Presenter for DrmPresenter {
     /// shown one interval later than a frame built for it. Readback, CPU and
     /// a blanked or paused session keep one queued frame.
     fn queue_depth(&self) -> usize {
-        if self.display_timing.vblank_paced && !self.pipelined {
-            0
+        if self.display_timing.vblank_paced {
+            self.paced_queue_depth
         } else {
             crate::shell::present::QUEUE_DEPTH
         }

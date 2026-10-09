@@ -3896,10 +3896,10 @@ mod tests {
     fn a_flip_timestamp_lands_on_the_instant_timeline_at_its_age() {
         let now = Instant::now();
         let clock = Duration::from_secs(5_000);
-        let vblank = clock - Duration::from_micros(2_500);
+        let vblank = clock.checked_sub(Duration::from_micros(2_500)).unwrap();
         assert_eq!(
             instant_at(vblank, now, clock),
-            now - Duration::from_micros(2_500),
+            now.checked_sub(Duration::from_micros(2_500)).unwrap(),
             "a vblank 2.5 ms before the paired reading is 2.5 ms before `now`"
         );
         assert_eq!(

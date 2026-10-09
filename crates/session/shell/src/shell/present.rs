@@ -256,6 +256,48 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
     }
 }
 
+/// The render thread's half of the state the logic thread reads after a frame.
+struct RetireBoard {
+    physical_results: Arc<Mutex<VecDeque<PhysicalOutcome>>>,
+    last_retirement: Arc<Mutex<Option<Retirement>>>,
+    presented: Arc<AtomicU64>,
+    queue_depth: Arc<AtomicUsize>,
+    inflight: Arc<AtomicUsize>,
+}
+
+impl RetireBoard {
+    fn push_physical(&self, outcome: PhysicalOutcome) {
+        self.physical_results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(outcome);
+    }
+
+    /// Publish one finished frame, ending with the in-flight decrement that
+    /// returns its capacity.
+    fn publish(&self, retirement: Retirement, queue_depth: usize) {
+        let serial = retirement.serial;
+        *self
+            .last_retirement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retirement);
+        self.presented.store(serial, Ordering::Release);
+        // Before the decrement: a loop that finds capacity already sees the
+        // depth that capacity was granted under.
+        self.queue_depth.store(queue_depth, Ordering::Release);
+        // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
+        self.inflight.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Log one presented frame: its lifecycle record and the presenter's own detail.
+fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timing: FrameLifecycle) {
+    log_frame_lifecycle(serial, revision, timing);
+    if let Some(detail) = presenter.frame_detail() {
+        eprintln!("CPU-FRAME serial={serial} revision={revision} {detail}");
+    }
+}
+
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
 ///
 /// Generous enough to cover a frame in flight on any real display (a 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that a wedged GPU cannot hold the session open.
@@ -271,15 +313,17 @@ impl PresentPipe {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
         let queue_depth = Arc::new(AtomicUsize::new(QUEUE_DEPTH));
-        let thread_queue_depth = queue_depth.clone();
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
         let last_retirement = Arc::new(Mutex::new(None));
         let physical_results = Arc::new(Mutex::new(VecDeque::new()));
-        let thread_physical_results = physical_results.clone();
-        let thread_inflight = inflight.clone();
-        let thread_presented = presented_frames.clone();
-        let thread_last_retirement = last_retirement.clone();
+        let board = RetireBoard {
+            physical_results: physical_results.clone(),
+            last_retirement: last_retirement.clone(),
+            presented: presented_frames.clone(),
+            queue_depth: queue_depth.clone(),
+            inflight: inflight.clone(),
+        };
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
         let spawned = std::thread::Builder::new()
@@ -301,16 +345,14 @@ impl PresentPipe {
                             let render_started = Instant::now();
                             let queue_wait = render_started.saturating_duration_since(enqueued_at);
                             let physical = presenter.present_frame_observed(&frame, output);
-                            thread_physical_results
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .push_back((serial, physical));
+                            board.push_physical((serial, physical));
                             let phases = presenter.frame_phase_timing();
                             let display = presenter.display_timing();
                             let render_done = Instant::now();
                             let render = render_done.saturating_duration_since(render_started);
                             let total = render_done.saturating_duration_since(enqueued_at);
-                            log_frame_lifecycle(
+                            report_frame(
+                                &mut *presenter,
                                 serial,
                                 frame.revision,
                                 FrameLifecycle {
@@ -323,27 +365,15 @@ impl PresentPipe {
                                     display,
                                 },
                             );
-                            if let Some(detail) = presenter.frame_detail() {
-                                eprintln!(
-                                    "CPU-FRAME serial={serial} revision={} {detail}",
-                                    frame.revision
-                                );
-                            }
-                            *thread_last_retirement
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                Some(Retirement {
+                            board.publish(
+                                Retirement {
                                     serial,
                                     at: render_done,
                                     queue_wait,
                                     display,
-                                });
-                            thread_presented.store(serial, Ordering::Release);
-                            // Before the decrement: a loop that finds capacity
-                            // already sees the depth that capacity was granted under.
-                            thread_queue_depth.store(presenter.queue_depth(), Ordering::Release);
-                            // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
-                            thread_inflight.fetch_sub(1, Ordering::Release);
+                                },
+                                presenter.queue_depth(),
+                            );
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
