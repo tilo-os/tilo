@@ -1578,6 +1578,89 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     the_composer_refuses_to_mint_for_nobody();
 }
 
+/// The invite composer, the policy and the issuer give one answer: a member
+/// holding a delegated `Invite` grant in a room another person governs is not
+/// offered a composer the issuer would refuse, and the issuer refuses with the
+/// policy's reason; without the grant both refuse for lack of permission.
+#[test]
+fn delegated_inviter_follows_the_capability_policy() {
+    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, may_issue_invitation};
+    use crate::shell::state::{CapOverride, PeerOrigin, RoomAuthority, Scope, Subject, Verb};
+
+    let mut tree = WorkspaceTree::default();
+    let local = tree.append_empty_workspace("Joined room");
+    tree.desktop.active = local;
+    let room = tree.room_of(local).expect("room");
+    tree.room_authority.insert(
+        room,
+        RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
+    );
+    tree.desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .expect("workspace")
+        .set_owner("remote-owner");
+    let handle = tree.shared();
+    let chrome = ChromeState::new_with_handle(handle.clone());
+    chrome.borrow_mut().peer_sync_enabled = true;
+    let host =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
+    let carol = crate::shell::state::local_user_id_for_room(&room);
+    let route = || {
+        let tree = handle.read();
+        let workspace = tree.desktop.active_workspace().expect("active workspace");
+        may_issue_invitation(&tree, workspace, workspace.actor_for_person(&carol))
+    };
+    let issue = || {
+        net.issue_invite_named_with_role(
+            local,
+            3600,
+            "Dave",
+            crate::network::invite::InviteRole::Editor,
+        )
+    };
+
+    let refused = InviteRoute::Refused(InviteRefusal::NotPermitted);
+    assert_eq!(route(), refused, "without a grant Carol may not invite");
+    assert!(!host.may_invite_here(), "so she is offered no composer");
+    assert_eq!(
+        issue().expect_err("and the issuer refuses her"),
+        refused.refusal().expect("a refusal has a reason"),
+    );
+
+    handle
+        .write()
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .expect("workspace")
+        .capabilities
+        .push(CapOverride::grant(
+            Subject::person(carol.clone()),
+            Scope::Workspace,
+            Verb::Invite,
+        ));
+
+    assert_eq!(
+        route(),
+        InviteRoute::ViaGovernor,
+        "the grant lets Carol invite, but only the governing device signs invitations"
+    );
+    assert!(
+        !host.may_invite_here(),
+        "the composer is not offered where the issuer cannot issue"
+    );
+    assert_eq!(
+        issue().expect_err("the issuer sends Carol to the owner"),
+        InviteRoute::ViaGovernor
+            .refusal()
+            .expect("a refusal has a reason"),
+    );
+}
+
 // Proves both halves of the invite-token crossing (mint → clipboard
 // → paste) against the process clipboard.
 
