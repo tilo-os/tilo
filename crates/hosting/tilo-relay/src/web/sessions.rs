@@ -178,12 +178,13 @@ impl Sessions {
     /// First handshake step: the relay's checked `Hello` and its `HelloAck`,
     /// under the live policy as on the relay ALPN.
     pub(crate) fn hello(&self, hello: &Hello) -> Result<SessionChallenge, SessionError> {
-        let relay = &self.web.relay;
-        let (pending, ack) = relay
+        let (pending, ack) = self
+            .web
+            .relay
             .server_auth()
-            .begin(EndpointTrust::Live(&relay.trust_policy), hello)
+            .begin(EndpointTrust::Live(&self.web.relay.trust_policy), hello)
             .map_err(|error| {
-                relay.metrics.inc_auth_rejected();
+                self.web.relay.metrics.inc_auth_rejected();
                 SessionError::Refused(error.to_string())
             })?;
         let handshake: [u8; 16] = rand::random();
