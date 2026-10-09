@@ -11,6 +11,8 @@
     )
 )]
 
+mod workspace_startup;
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
@@ -369,8 +371,16 @@ fn parse_owner(spec: &str) -> Result<(u32, u32)> {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Inspect saved workspace bindings without starting transport or exposing tickets.
+    WorkspaceStatus {
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
     /// Host a collaborative workspace and mount it locally.
     Serve {
+        /// Refuse a fresh namespace; resume saved state or an authenticated discovered workspace only.
+        #[arg(long)]
+        require_existing_workspace: bool,
         /// Where to mount the workspace.
         #[arg(short, long)]
         mount_point: PathBuf,
@@ -599,7 +609,15 @@ async fn run_command() -> Result<()> {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
     match cli.command {
+        Command::WorkspaceStatus { cache_dir } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&workspace_startup::inspect(&cache_dir)?)?
+            );
+            Ok(())
+        }
         Command::Serve {
+            require_existing_workspace,
             mount_point,
             cache_dir,
             seed,
@@ -609,6 +627,12 @@ async fn run_command() -> Result<()> {
             acl,
             data_plane,
         } => {
+            if require_existing_workspace {
+                let cache = cache_dir
+                    .as_deref()
+                    .context("recovery requires --cache-dir")?;
+                workspace_startup::inspect(cache)?.require_existing()?;
+            }
             serve(
                 mount_point,
                 cache_dir,
