@@ -3461,10 +3461,10 @@ mod command_path_tests {
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let person_bytes = root_key.verifying_key().to_bytes();
-        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
-            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
@@ -3597,7 +3597,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
-        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
         let mut widget = FileExplorerWidget::new();
 
         std::fs::write(
@@ -3762,7 +3762,7 @@ mod command_path_tests {
                     uri: "tilo-file://bounded".into(),
                 },
             };
-            let response = collab_types::canonical_bytes(&response).unwrap();
+            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
             stream
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .unwrap();

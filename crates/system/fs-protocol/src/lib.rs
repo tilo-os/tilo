@@ -36,6 +36,12 @@ pub mod files;
 pub mod recipient_control;
 pub mod share_control;
 
+/// The `collab-types` vocabulary these wire types are expressed in: the key
+/// type they name and the canonical encoding every control frame and signed
+/// record uses. A client of the filesystem protocols needs nothing else from
+/// the collaboration core.
+pub use collab_types::{Ed25519PublicKey, canonical};
+
 pub use file_invite::{
     BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
     FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, bearer_secret_hash,
