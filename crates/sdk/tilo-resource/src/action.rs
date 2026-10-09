@@ -223,6 +223,9 @@ pub use tilo_actions::ActionKey;
 pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 'static {
     type Record: Fields;
 
+    /// The resource kind the record is published as.
+    const KIND: &'static str;
+
     /// The field edit this operation is, when it is one: it applies at its
     /// path instead of through [`Self::perform`].
     fn edit(&self) -> Option<&crate::Edit<Self::Record>> {
@@ -298,6 +301,21 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         self.operation.change_kind()
+    }
+
+    fn action_kind(&self) -> ActionKind {
+        self.operation.kind()
+    }
+
+    /// A field edit with the value before and after, or a verb with its
+    /// plain arguments, and the item either addressed.
+    fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {
+        let shape = <O::Record as crate::Model>::SHAPE;
+        if let Some(edit) = self.operation.edit() {
+            return crate::describe::edit(doc, shape, edit);
+        }
+        let value = serde_json::to_value(&self.operation).ok()?;
+        crate::describe::verb(doc, shape, O::KIND, &value)
     }
 }
 

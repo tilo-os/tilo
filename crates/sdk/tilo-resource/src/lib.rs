@@ -115,6 +115,7 @@ pub mod collection;
 pub mod content;
 pub mod delta;
 pub mod derived;
+mod describe;
 pub mod diff;
 pub mod effect;
 pub mod evolution;

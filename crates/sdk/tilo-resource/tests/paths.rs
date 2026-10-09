@@ -4,6 +4,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::panic,
     reason = "test assertions"
 )]
 
@@ -453,4 +454,55 @@ fn a_path_reads_its_value_and_names_its_tree_node() {
         Library::STAR.key("app"),
         tilo_resource::ActionKey::new("app", "test.library", "star")
     );
+}
+
+#[test]
+fn history_records_what_an_edit_or_verb_did_and_to_which_item() {
+    let mut library = Replica::<Library>::new();
+    library
+        .apply(Library::NEW_SNIPPET.with("Deploy script"))
+        .unwrap();
+    let id = first_snippet(&library);
+    edit(
+        &mut library,
+        &Library::paths().snippets.item(&id).favorite.set(true),
+    )
+    .unwrap();
+    let described = |library: &mut Replica<Library>| {
+        library
+            .versions()
+            .last()
+            .and_then(|version| version.context.clone())
+            .and_then(|context| context.described())
+            .unwrap()
+    };
+    let favorite = described(&mut library);
+    let tilo_actions::Did::Edit(edit_entry) = &favorite.what else {
+        panic!("{favorite:?}");
+    };
+    assert_eq!(
+        (edit_entry.ty.as_str(), edit_entry.field.as_str()),
+        ("snippet", "favorite")
+    );
+    assert_eq!(
+        edit_entry.old,
+        tilo_actions::Scalar::from_json(&false.into())
+    );
+    assert_eq!(
+        edit_entry.new,
+        tilo_actions::Scalar::from_json(&true.into())
+    );
+    let item = favorite.item.unwrap();
+    assert_eq!(
+        (item.id.as_str(), item.label.as_str()),
+        (id.as_str(), "Deploy script")
+    );
+
+    library.apply(Library::RECORD_USE.with(id)).unwrap();
+    let used = described(&mut library);
+    let tilo_actions::Did::Verb(verb) = &used.what else {
+        panic!("{used:?}");
+    };
+    assert_eq!(verb.action.action, "record-use");
+    assert_eq!(used.item.unwrap().label, "Deploy script");
 }

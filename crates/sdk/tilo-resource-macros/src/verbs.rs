@@ -1001,6 +1001,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
 
         impl #krate::Operation for #action_enum {
             type Record = #self_ty;
+            const KIND: &'static str = #kind;
             fn edit(&self) -> ::core::option::Option<&#krate::Edit<#self_ty>> {
                 match self {
                     Self::FieldEdit(edit) => ::core::option::Option::Some(edit),
@@ -1067,6 +1068,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
 
             const EDITS: bool = true;
+
+            /// A record's publication is a function of its state.
+            fn publication_cache_epoch(_state: &Self) -> ::core::option::Option<::std::string::String> {
+                ::core::option::Option::Some(::std::string::String::new())
+            }
 
             fn edit_action(edit: #krate::Edit<Self>) -> ::core::option::Option<Self::Action> {
                 ::core::option::Option::Some(#krate::Stamped {
