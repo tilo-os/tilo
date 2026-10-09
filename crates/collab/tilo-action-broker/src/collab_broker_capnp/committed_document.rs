@@ -231,6 +231,7 @@ impl CapnpChannelHandle {
                     .is_some_and(|active| active.capture.id == id)
                 {
                     slot.closed = true;
+                    slot.active = None;
                 }
             }
         });
@@ -390,6 +391,7 @@ impl CapnpChannelHandle {
             slot.closed = true;
         }
         if slot.closed {
+            slot.active = None;
             return Err("committed read channel expired".into());
         }
         match request {

@@ -2265,6 +2265,12 @@ impl ForeignFrameStore {
         seq
     }
 
+    /// Record a non-null buffer at the applied Wayland commit, independently
+    /// of asynchronous pixel capture and the visual presentation gate.
+    pub(crate) fn note_buffer_committed(&self, id: SurfaceId) {
+        self.with_entry(id, |entry| entry.mapped = true);
+    }
+
     /// Whether `id` has committed a non-null buffer and is therefore eligible
     /// for Wayland seat focus. Unlike [`Self::is_presented`], this does not
     /// wait for a captured frame to match the tab's configured size.

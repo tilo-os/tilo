@@ -4069,7 +4069,19 @@ async fn ensure_sdk_route(
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
         tracing::info!("managed Agent action catalogue subscribed");
     }
-    let committed = committed_document::install(&channel, spec, inbound_tx).await?;
+    let committed = committed_document::install(
+        &channel,
+        spec,
+        inbound_tx,
+        committed_document::NativeReadJoin {
+            client: client.clone(),
+            presentation: identity_bytes.to_vec(),
+            participant_handle: participant_handle.unwrap_or("").into(),
+            participant_kind: participant_kind.into(),
+            record_kind: record_kind.into(),
+        },
+    )
+    .await?;
     if native_document_source {
         tracing::debug!(
             target: "tilo_agent_delivery",
