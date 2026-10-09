@@ -11380,7 +11380,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: ui::clock::Instant,
+        now: ui::time::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
