@@ -4,8 +4,9 @@
 //! title, language, tags and a body that may contain `${placeholder}`
 //! variables; the detail pane shows a syntax-highlighted preview, and the
 //! expand-with-variables flow fills the placeholders before copying to the
-//! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
-//! devices and collaborators converge on one shared set of snippets.
+//! clipboard. The library is a typed model (see [`model`]) stored in a CRDT
+//! document, so it syncs across devices and collaborators converge on one
+//! shared set of snippets.
 //!
 //! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
 //! resource: every host mounts it through [`definition`].
@@ -38,10 +39,8 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 mod detail_pane;
-pub mod doc;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
@@ -51,8 +50,8 @@ pub mod resource;
 pub mod seed;
 
 pub use app::SnippetsApp;
-pub use model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
-pub use resource::{LOCALES, Snippets, SnippetsShell};
+pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
+pub use resource::{LOCALES, SnippetsShell, SnippetsView};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

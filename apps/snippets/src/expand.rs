@@ -62,7 +62,7 @@ pub struct ExpandModal {
 }
 
 impl ExpandModal {
-    pub fn new(s: &Snippet) -> Self {
+    pub fn new(id: &SnippetId, s: &Snippet) -> Self {
         let mut fields: Vec<Field> = s
             .placeholders()
             .into_iter()
@@ -81,7 +81,7 @@ impl ExpandModal {
             title: crate::tr("snippets-expand-title"),
             cancel: crate::tr("snippets-cancel"),
             copy: crate::tr("snippets-copy"),
-            snippet_id: s.id,
+            snippet_id: id.clone(),
             body: s.body.clone(),
             language: s.language,
             fields,
@@ -300,7 +300,7 @@ impl ExpandModal {
             match &key.logical_key {
                 Key::Named(NamedKey::Escape) => return ExpandOutcome::Cancel,
                 Key::Named(NamedKey::Enter) => {
-                    return ExpandOutcome::Copy(self.preview(), self.snippet_id);
+                    return ExpandOutcome::Copy(self.preview(), self.snippet_id.clone());
                 }
                 Key::Named(NamedKey::Tab) => {
                     if !self.fields.is_empty() {
@@ -332,7 +332,7 @@ impl ExpandModal {
                     return ExpandOutcome::Cancel;
                 }
                 Some(ModalHit::Action(_)) => {
-                    return ExpandOutcome::Copy(self.preview(), self.snippet_id);
+                    return ExpandOutcome::Copy(self.preview(), self.snippet_id.clone());
                 }
                 _ => {}
             }
@@ -509,7 +509,7 @@ impl ExpandModal {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "snippets.expand.copy" => {
-                    return Some(ExpandOutcome::Copy(self.preview(), self.snippet_id));
+                    return Some(ExpandOutcome::Copy(self.preview(), self.snippet_id.clone()));
                 }
                 "snippets.expand.cancel" => return Some(ExpandOutcome::Cancel),
                 _ => {}
@@ -570,11 +570,15 @@ mod tests {
     }
 
     fn templated() -> Snippet {
-        let mut s = Snippet::blank("");
-        s.title = "Greet".into();
-        s.language = Language::Shell;
-        s.body = "echo hi ${name} from ${host}".into();
-        s
+        Snippet {
+            language: Language::Shell,
+            body: "echo hi ${name} from ${host}".into(),
+            ..Snippet::titled("Greet", "")
+        }
+    }
+
+    fn modal() -> ExpandModal {
+        ExpandModal::new(&SnippetId::from_raw("greet"), &templated())
     }
 
     /// The expand modal: one field per placeholder, preview substitution and IME/backspace editing.
@@ -582,13 +586,13 @@ mod tests {
     fn expand_modal_collects_fields_and_previews_live() {
         // Case `modal_collects_one_field_per_placeholder`.
         {
-            let m = ExpandModal::new(&templated());
+            let m = modal();
             assert_eq!(m.field_count_for_test(), 2);
         }
 
         // Case `preview_substitutes_filled_fields`.
         {
-            let mut m = ExpandModal::new(&templated());
+            let mut m = modal();
             m.set_field_for_test("name", "ada");
             m.set_field_for_test("host", "prod");
             assert_eq!(m.preview_for_test(), "echo hi ada from prod");
@@ -596,14 +600,14 @@ mod tests {
 
         // Case `preview_keeps_unfilled_placeholders_visible`.
         {
-            let mut m = ExpandModal::new(&templated());
+            let mut m = modal();
             m.set_field_for_test("name", "ada");
             assert_eq!(m.preview_for_test(), "echo hi ada from ${host}");
         }
 
         // Case `shared_editor_ime_and_unicode_backspace_drive_live_preview_without_crdt_writes`.
         {
-            let mut modal = ExpandModal::new(&templated());
+            let mut modal = modal();
             let mut doc = AutoCommit::new();
             let before = doc.get_heads();
 
