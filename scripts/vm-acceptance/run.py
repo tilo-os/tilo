@@ -282,8 +282,8 @@ def switch_locale(vm: TiloVm, lang: str) -> None:
     """Set the system locale as the installer seeds it (/etc/locale.conf, which the
     session's PAM login inherits from systemd) and restart the slot's session in it."""
     vm.vm_cmd("ssh", "--", f"localectl set-locale LANG={lang} && systemctl daemon-reload", timeout=60)
-    vm.run("slot", "restart", vm.slot, timeout=300, slot=False)
-    got = vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
+    vm.restart_session()
+    got =vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
                        "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
     if lang not in got:
         raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
@@ -439,6 +439,9 @@ def main() -> int:
                                    status="fail", detail=str(exc), unobservable=True))
     finally:
         meta["finished"] = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+        if ctx is not None and ctx.facts.get("session_recovered_after"):
+            # The checks after which the harness restarted a session left locked.
+            meta["session_recovered_after"] = ctx.facts["session_recovered_after"]
         if not args.keep:
             try:
                 vm.vm_cmd("stop", vm_name, timeout=300, check=False)
