@@ -49,8 +49,11 @@ use ui::widget::identity_flow::IdentityRecord;
 /// wakes `tilo-settings-read`, until an unrelated paint (at the latest the
 /// clock's next minute) ends it; which a run sees depends on the wall clock.
 /// A spin's rate also follows the runner's speed, so until TIL-696 lands
-/// the budget is the spinning measurement plus a half. With it fixed, this
-/// drops to the parked 60/s plus a quarter, 75/s.
+/// the budget is the spinning measurement plus a half.
+///
+/// TIL-704 parked the audio-output authority watchdog while no output is
+/// open (20/s before, 0/s after): the parked desktop measured 31.9/s (run
+/// 89960). With TIL-696 fixed, this drops to that plus a quarter, 40/s.
 const IDLE_WAKEUP_BUDGET: f64 = 3000.0;
 
 /// Most iterations per second the compositor's frame loop may make while
