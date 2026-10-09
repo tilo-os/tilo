@@ -387,10 +387,16 @@ async fn live_grants_follow_announced_changes() {
     let grants = live::LiveGrants::new();
     let authority = live::Authority(grants.clone());
     let observer = tokio::spawn(grants.clone().follow(sessions.clone()));
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        cert: cert.clone(),
+        role: crate::auth::PeerRole::Device,
+    };
     let mut held = Vec::new();
     for id in [81, 82] {
         let grant = grants
-            .issue(&sessions, session.token, &session.peer, id, None)
+            .issue(&sessions, session.token, &peer, id, None)
             .await
             .unwrap();
         held.push(authority.try_admit(&grant.token).unwrap());
