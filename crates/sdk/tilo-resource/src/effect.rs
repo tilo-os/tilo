@@ -195,6 +195,39 @@ pub trait Effect: Sized + 'static {
         })
     }
 
+    /// The effects offered on the item `item` of the collection `field`
+    /// (`#[effect(item = field)]`), each with its first parameter bound to
+    /// the item and the rest still asked.
+    fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
+        Self::declarations()
+            .into_iter()
+            .filter(|decl| decl.item == Some(field))
+            .filter_map(|decl| {
+                let (first, rest) = decl.params.split_first()?;
+                let bound = (
+                    first.name.to_string(),
+                    serde_json::Value::String(item.as_str().to_owned()),
+                );
+                let id = decl.id;
+                Some(decl.spec_with(Self::OPERATION, rest.to_vec(), move |args| {
+                    let mut merged = args.to_json();
+                    merged.insert(bound.0.clone(), bound.1.clone());
+                    EncodedAction::encode_operation(
+                        Self::OPERATION,
+                        &Payload {
+                            effect: id.to_owned(),
+                            args: merged,
+                        },
+                    )
+                    .unwrap_or_else(|_| EncodedAction {
+                        type_id: Self::OPERATION.to_owned(),
+                        payload: Vec::new(),
+                    })
+                }))
+            })
+            .collect()
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -261,6 +294,10 @@ pub struct EffectDecl {
     /// at the invoker's caret): its kind is Undoable, offered to whoever may
     /// edit, and the edits it submits are checked like any other.
     pub edits: bool,
+    /// The collection field whose items the effect is offered on
+    /// (`#[effect(item = connections)]`), its first parameter bound to the
+    /// item's id: published on each item resource, as an item verb is.
+    pub item: Option<&'static str>,
 }
 
 /// The contract tag of an effect that submits only edits of its record

@@ -29,7 +29,10 @@ fn krate() -> Tokens {
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
-/// `String` (written whole, last writer wins, as `Atom` is).
+/// `String` (written whole, last writer wins, as `Atom` is),
+/// `#[model(whole)]` (read every part of a value that loads on demand,
+/// rich text's paragraphs), `#[model(remove = "quiet")]` on a collection whose items are cheap to
+/// remove (removing one by field edit asks no confirmation).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -103,6 +106,7 @@ struct FieldOptions {
     readonly: bool,
     unit: bool,
     atom: bool,
+    quiet_remove: bool,
     whole: bool,
 }
 
@@ -125,9 +129,16 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.atom = true;
             } else if meta.path.is_ident("whole") {
                 options.whole = true;
+            } else if meta.path.is_ident("remove") {
+                let how: syn::LitStr = meta.value()?.parse()?;
+                if how.value() != "quiet" {
+                    return Err(meta.error("expected `remove = \"quiet\"`"));
+                }
+                options.quiet_remove = true;
             } else {
                 return Err(meta.error(
-                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom` or `whole`",
+                    "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
+                     `whole` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -437,6 +448,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 |line| line.trim_end_matches('.').to_owned(),
             );
         let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        let quiet_remove = options.quiet_remove;
         if is_label {
             if label.is_some() {
                 return Err(syn::Error::new(
@@ -526,6 +538,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             unit: #unit,
             readonly: #readonly,
             label: #is_label,
+            quiet_remove: #quiet_remove,
         }));
         path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
         path_inits.push(quote!(#ident: <#ty as #krate::Model>::paths_at(
@@ -605,6 +618,9 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             });
             collections.push(quote!(#krate::items::ItemCollection {
                 field: #field_name,
+                labelled: #items
+                    .next()
+                    .is_some_and(|(_, item)| #krate::Model::label(item).is_some()),
                 items: #items
                     .take(#krate::items::ITEM_PAGE)
                     .map(|(id, item)| {
@@ -898,6 +914,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
         impl #impl_generics #krate::Fields for #name #type_generics #where_clause {
+            const ITEM_FIELDS: &'static [&'static str] = Self::__COLLECTIONS;
+
             fn read_fields(
                 doc: &#krate::Doc,
                 obj: &#krate::__private::ObjId,

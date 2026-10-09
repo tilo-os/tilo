@@ -113,6 +113,9 @@ struct VariantOptions {
     participant: bool,
     edit: bool,
     permission: Option<String>,
+    /// The collection field whose items the effect is offered on, its first
+    /// field bound to the item's id.
+    item: Option<String>,
 }
 
 fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
@@ -159,11 +162,14 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.participant = true;
             } else if meta.path.is_ident("edit") {
                 options.edit = true;
+            } else if meta.path.is_ident("item") {
+                options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `participant`, `edit` or `permission`",
+                     `risk`, `programmatic`, `untrusted`, `participant`, `edit`, `item = field` \
+                     or `permission`",
                 ));
             }
             Ok(())
@@ -357,6 +363,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         let participant = options.participant;
         let edits = options.edit;
+        if options.item.is_some() && fields.is_empty() {
+            return Err(syn::Error::new(
+                variant.span(),
+                "an effect offered on items binds its first field to the item: give it one",
+            ));
+        }
+        let item = options.item.as_ref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |field| quote!(::core::option::Option::Some(#field)),
+        );
         let kind = if options.view || options.edit {
             quote!(View)
         } else {
@@ -380,6 +396,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 untrusted: #untrusted,
                 participant: #participant,
                 edits: #edits,
+                item: #item,
             }
         });
 

@@ -30,12 +30,14 @@ pub(crate) struct ResourceOptions {
     lands: Option<syn::Path>,
     /// What every change of the record queues for the world outside.
     queue: Option<syn::Path>,
+    effects: Option<syn::Path>,
+    answer: Option<syn::Path>,
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
      `read_content = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
-     `locate = path`, `lands = path` or `queue = path`";
+     `locate = path`, `lands = path`, `queue = path`, `effects = Type` or `answer = path`";
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
@@ -57,6 +59,8 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         locate: None,
         lands: None,
         queue: None,
+        effects: None,
+        answer: None,
     };
     let mut kind = None;
     let mut label = None;
@@ -107,6 +111,8 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("locate", Expr::Path(path)) => options.locate = Some(path.path.clone()),
             ("lands", Expr::Path(path)) => options.lands = Some(path.path.clone()),
             ("queue", Expr::Path(path)) => options.queue = Some(path.path.clone()),
+            ("effects", Expr::Path(path)) => options.effects = Some(path.path.clone()),
+            ("answer", Expr::Path(path)) => options.answer = Some(path.path.clone()),
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
     }
@@ -133,10 +139,12 @@ struct ActionOptions {
     destructive: bool,
     housekeeping: bool,
     external: bool,
+    answers: bool,
     item: Option<syn::Ident>,
     /// The function that names the verb compensating this one's outside
     /// consequence on undo.
     undo: Option<syn::ExprPath>,
+    writes: Vec<syn::Ident>,
 }
 
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
@@ -147,8 +155,10 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         destructive: false,
         housekeeping: false,
         external: false,
+        answers: false,
         item: None,
         undo: None,
+        writes: Vec::new(),
     };
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
@@ -170,9 +180,13 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.item = Some(meta.value()?.parse::<syn::Ident>()?);
         } else if meta.path.is_ident("undo") {
             options.undo = Some(meta.value()?.parse::<syn::ExprPath>()?);
+        } else if meta.path.is_ident("answers") {
+            options.answers = true;
+        } else if meta.path.is_ident("writes") {
+            options.writes.push(meta.value()?.parse::<syn::Ident>()?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `permission`, `destructive`, `housekeeping`, `external`, `item = field` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `permission`, `destructive`, `housekeeping`, `external`, `answers`, `writes = field`, `item = field` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -191,6 +205,7 @@ struct ParamOptions {
     name: Option<String>,
     example: Option<Expr>,
     content: bool,
+    flatten: bool,
 }
 
 impl syn::parse::Parse for ParamOptions {
@@ -205,8 +220,12 @@ impl syn::parse::Parse for ParamOptions {
         }
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
-            if key == "content" {
-                options.content = true;
+            if key == "content" || key == "flatten" {
+                if key == "content" {
+                    options.content = true;
+                } else {
+                    options.flatten = true;
+                }
                 if input.is_empty() {
                     break;
                 }
@@ -221,7 +240,7 @@ impl syn::parse::Parse for ParamOptions {
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...` or `content`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `content` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -242,6 +261,9 @@ struct Param {
     example: Option<Expr>,
     /// Content another action produced, carried by its callers as a hash.
     content: bool,
+    /// A struct whose fields are the action's parameters
+    /// (`#[param(flatten)]`, the only parameter).
+    flatten: bool,
 }
 
 enum Input {
@@ -280,6 +302,29 @@ struct Verb {
     options: ActionOptions,
     inputs: Vec<Input>,
     params: Vec<Param>,
+}
+
+/// The rules a verb's parameters keep: a content or flattened parameter is
+/// the only one.
+fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
+    if params.iter().any(|param| param.content)
+        && !(params.len() == 1
+            && params.first().is_some_and(|param| {
+                last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
+            }))
+    {
+        return Err(syn::Error::new(
+            span,
+            "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
+        ));
+    }
+    if params.iter().any(|param| param.flatten) && params.len() != 1 {
+        return Err(syn::Error::new(
+            span,
+            "a `#[param(flatten)]` is the action's only parameter: its fields are the parameters",
+        ));
+    }
+    Ok(())
 }
 
 fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb> {
@@ -348,6 +393,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     description: param_options.description.unwrap_or_else(|| humanize(&name)),
                     example: param_options.example,
                     content: param_options.content,
+                    flatten: param_options.flatten,
                 });
             }
         }
@@ -358,17 +404,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
             "an action takes `&mut self`",
         ));
     }
-    if params.iter().any(|param| param.content)
-        && !(params.len() == 1
-            && params.first().is_some_and(|param| {
-                last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
-            }))
-    {
-        return Err(syn::Error::new(
-            method.sig.span(),
-            "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
-        ));
-    }
+    check_params(&params, method.sig.span())?;
     Ok(Verb {
         method: method_ident,
         id,
@@ -407,6 +443,13 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         let default = last_ident(ty)
             .is_some_and(|(name, _)| name == "Option")
             .then(|| quote!(#[serde(default, skip_serializing_if = "Option::is_none")]));
+        if param.flatten {
+            return quote! {
+                #[doc = #description]
+                #[serde(flatten)]
+                pub #ident: #ty
+            };
+        }
         quote! {
             #[doc = #description]
             #rename
@@ -444,6 +487,9 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
     let path_inits = verb.params.iter().map(|param| {
         let ident = &param.ident;
         let public = &param.public;
+        if param.flatten {
+            return quote!(#ident: #krate::Path::<#name, #name>::root().cast());
+        }
         quote!(#ident: #krate::Path::<#name, #name>::root().child(
             #krate::Segment::Field(::std::string::String::from(#public))
         ))
@@ -493,6 +539,24 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         .is_empty()
         .then(|| quote!(::core::default::Default,));
     let label = &verb.label;
+    let schema_body = verb
+        .params
+        .first()
+        .filter(|param| param.flatten)
+        .map_or_else(
+            || {
+                quote! {
+                    #krate::schema::describe(
+                        #krate::schema::object(::std::vec![#(#schemas),*]),
+                        #label,
+                    )
+                }
+            },
+            |param| {
+                let ty = &param.ty;
+                quote!(#krate::schema::describe(<#ty as #krate::JsonSchema>::json_schema(), #label))
+            },
+        );
     quote! {
         #[doc = #doc]
         #[derive(Clone, Debug, #derive_default #krate::__private::serde::Serialize, #krate::__private::serde::Deserialize)]
@@ -503,10 +567,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
 
         impl #krate::JsonSchema for #name {
             fn json_schema() -> #krate::__private::serde_json::Value {
-                #krate::schema::describe(
-                    #krate::schema::object(::std::vec![#(#schemas),*]),
-                    #label,
-                )
+                #schema_body
             }
         }
 
@@ -609,6 +670,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut consts = Vec::new();
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
+    let mut writes_arms = Vec::new();
     let mut item_checks = Vec::new();
     let mut verb_variants = Vec::new();
     let mut verb_ids = Vec::new();
@@ -710,6 +772,52 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #krate::ActionRef::new(#id, &[]);
         });
 
+        // What the verb may write: its item's unit and the fields it
+        // declares, beside the record unit.
+        let declared_writes: Vec<String> = verb
+            .options
+            .writes
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let item_param = verb
+            .params
+            .first()
+            .filter(|first| last_ident(&first.ty).is_some_and(|(name, _)| name == "Id"));
+        let writes_item = item_param.map_or_else(
+            || quote!(::core::option::Option::None),
+            |first| {
+                let ident = &first.ident;
+                quote!(::core::option::Option::Some(::core::clone::Clone::clone(&params.#ident)))
+            },
+        );
+        let item_field = item_param.map_or_else(
+            || quote!(::core::option::Option::None),
+            |first| {
+                let param = &first.public;
+                let named = verb
+                    .options
+                    .item
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                quote!(#krate::items::item_field(
+                    <#self_ty as #krate::Fields>::ITEM_FIELDS,
+                    #param,
+                    #named,
+                ))
+            },
+        );
+        writes_arms.push(quote! {
+            Self::#variant(params) => {
+                let _ = &params;
+                #krate::footprint::Writes {
+                    item: #writes_item,
+                    fields: &[#(#declared_writes),*],
+                }
+            }
+        });
+
         // An action whose first parameter is an item id acts on an element
         // of a collection: it is also offered on each item, id bound. One
         // naming an outbox (`item = ops`) acts on an entry of it, which is
@@ -744,7 +852,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             };
             item_checks.push(quote! {
                 const _: () = ::core::assert!(
-                    #krate::items::item_target(<#self_ty>::__COLLECTIONS, #param, #named)
+                    #krate::items::item_target(<#self_ty as #krate::Fields>::ITEM_FIELDS, #param, #named)
                         || #krate::items::entry_target(<#self_ty>::__OUTBOXES, #named),
                     #message,
                 );
@@ -755,6 +863,11 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             let name = &param.public;
             let ty = &param.ty;
             let description = &param.description;
+            if param.flatten {
+                return quote!(#krate::__private::flat_params(
+                    &<#ty as #krate::JsonSchema>::json_schema()
+                ));
+            }
             let (param_ty, optional) = param_type(ty, true);
             let example = param.example.as_ref().map_or_else(
                 || quote!(::core::option::Option::None),
@@ -770,12 +883,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 quote!(required_owned)
             };
             quote! {
-                #krate::__private::ActionParam::#constructor(#name, #param_ty, #description)
+                ::std::vec![#krate::__private::ActionParam::#constructor(#name, #param_ty, #description)
                     .with_schema(#krate::__private::param_schema(
                         <#ty as #krate::JsonSchema>::json_schema(),
                         #description,
                         #example,
-                    ))
+                    ))]
             }
         });
         let permission = match verb.options.permission.as_deref() {
@@ -793,6 +906,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         };
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));
+        let answering = verb.options.answers.then(|| quote!(.answering()));
         let (collects, prompted) = match verb.params.iter().find(|param| param.content) {
             Some(param) => {
                 let description = &param.description;
@@ -832,7 +946,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #krate::ActionDecl::new(
                 #id,
                 #label_text,
-                ::std::vec![#(#params),*],
+                {
+                    let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                        ::std::vec::Vec::new();
+                    #(params.extend(#params);)*
+                    params
+                },
                 |args, now_ms| {
                     let mut arguments = args.to_json();
                     let _ = &mut arguments;
@@ -851,7 +970,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .requiring(#krate::__private::PermissionRequirement::#permission)
             .of_kind(#krate::ActionKind::#action_kind)
             #destructive
+            #answering
             #collects
+            .writing(#krate::footprint::declared(
+                <#self_ty as #krate::Model>::SHAPE,
+                #item_field,
+                &[#(#declared_writes),*],
+            ))
         });
     }
 
@@ -887,30 +1012,51 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
-    let item_child = if item_actions.is_empty() {
-        quote!(::core::option::Option::None)
-    } else {
-        quote! {
-            #krate::items::item_child::<Self>(
-                id,
-                <Self>::__COLLECTIONS,
-                &[#(#item_actions),*],
-                |field, item| <Self as #krate::Fields>::item_label(state, field, item),
-            )
-        }
+    // Items are published when an item verb or effect is offered on them
+    // or they carry a label; addressed one by one beyond the page.
+    let item_child = quote! {
+        #krate::items::item_child::<Self>(
+            id,
+            <Self as #krate::Fields>::ITEM_FIELDS,
+            &[#(#item_actions),*],
+            |field, item| <Self as #krate::Fields>::item_label(state, field, item),
+        )
     };
-    let children = if item_actions.is_empty() {
-        derived
-    } else {
-        quote! {{
-            let mut children: ::std::vec::Vec<#krate::__private::Resource> = #derived;
-            children.extend(#krate::items::item_children::<Self>(
-                &<Self as #krate::Fields>::item_collections(state),
-                &[#(#item_actions),*],
-            ));
-            children
-        }}
-    };
+    let children = quote! {{
+        let mut children: ::std::vec::Vec<#krate::__private::Resource> = #derived;
+        children.extend(#krate::items::item_children::<Self>(
+            &<Self as #krate::Fields>::item_collections(state),
+            &[#(#item_actions),*],
+        ));
+        children
+    }};
+    let item_effects = options.effects.as_ref().map_or_else(
+        || quote!(),
+        |effects| {
+            quote! {
+                fn item_effects(
+                    field: &str,
+                    item: &#krate::Id,
+                ) -> ::std::vec::Vec<#krate::__private::ActionSpec> {
+                    <#effects as #krate::Effect>::item_specs(field, item)
+                }
+            }
+        },
+    );
+    let answer = options.answer.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                fn answer(
+                    doc: &#krate::Doc,
+                    action: &str,
+                    changes: &[#krate::__private::Patch],
+                ) -> ::core::option::Option<#krate::__private::serde_json::Value> {
+                    #path(doc, action, changes)
+                }
+            }
+        },
+    );
     let initial = options.initialize.as_ref().map_or_else(
         || quote!(<Self as ::core::default::Default>::default()),
         |path| quote!(#path()),
@@ -1040,16 +1186,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         format!("The replayable actions of [`{type_name}`], one per `#[action]` method.");
     let module_doc = format!("The parameters of each action of [`{type_name}`].");
     let verb_doc = format!("Each action of [`{type_name}`], for its availability.");
-    let risk = if risks.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn risk(&self) -> #krate::__private::RiskLevel {
-                #[allow(unreachable_patterns, reason = "every other operation is low risk")]
-                match self {
-                    #(#risks)*
-                    _ => #krate::__private::RiskLevel::Low,
-                }
+    let risk = quote! {
+        fn risk(&self) -> #krate::__private::RiskLevel {
+            #[allow(unreachable_patterns, reason = "every other operation is low risk")]
+            match self {
+                #(#risks)*
+                Self::FieldEdit(edit) => edit.risk(),
+                _ => #krate::__private::RiskLevel::Low,
             }
         }
     };
@@ -1222,6 +1365,14 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #risk
             #change_kind
             #compensation_fns
+
+            fn writes(&self) -> #krate::footprint::Writes {
+                #[allow(unreachable_patterns, reason = "a field edit writes its path's unit")]
+                match self {
+                    #(#writes_arms)*
+                    _ => #krate::footprint::Writes::record(),
+                }
+            }
         }
 
         impl #self_ty {
@@ -1336,6 +1487,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 let _ = state;
                 #children
             }
+
+            #item_effects
+            #answer
 
             fn child(
                 state: &Self,

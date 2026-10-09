@@ -17,6 +17,8 @@ struct Located {
     owner: Option<(&'static str, String)>,
     /// The last item on the path: its id and label.
     item: Option<(String, Option<String>)>,
+    /// The shape of what the path leads to.
+    shape: Shape,
 }
 
 fn get(doc: &Doc, obj: &ObjId, key: &str) -> Option<(Value<'static>, ObjId)> {
@@ -56,6 +58,7 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
         value: Some((Value::Object(ObjType::Map), ROOT)),
         owner: None,
         item: None,
+        shape: root,
     };
     let mut shape = root;
     for segment in path {
@@ -102,7 +105,21 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
             }
         }
     }
+    located.shape = shape;
     located
+}
+
+/// The label an item written as `value` (its JSON form) carries, for a
+/// collection item of shape `item`.
+fn label_in(item: Shape, value: &serde_json::Value) -> Option<String> {
+    let field = item.fields().iter().find(|field| field.label)?;
+    value
+        .get(field.key)?
+        .as_str()?
+        .lines()
+        .next()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
 }
 
 fn scalar(value: &Value<'_>) -> Option<Scalar> {
@@ -161,7 +178,10 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
     let (owner, field) = located.owner?;
     let old = located.value.as_ref().and_then(|(value, _)| scalar(value));
     let new = match edit.op() {
-        EditOp::Set { value } => Scalar::from_json(value),
+        // A set's value, or the element a set gained or lost.
+        EditOp::Set { value } | EditOp::Insert { value } | EditOp::Remove { value } => {
+            Scalar::from_json(value)
+        }
         EditOp::Add { by } => old
             .as_ref()
             .and_then(|old| serde_json::to_value(old).ok())
@@ -169,6 +189,35 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
             .map(|old| Scalar::from_json(&old.saturating_add(*by).into()))
             .unwrap_or_default(),
         _ => None,
+    };
+    // An item added or removed is the item the entry is about, unless the
+    // collection sits inside an item (a playlist's songs).
+    let item = match (edit.op(), located.shape) {
+        _ if located.item.is_some() => located.item.clone(),
+        (EditOp::InsertItem { id, value, .. }, Shape::Collection(item) | Shape::Keyed(item)) => {
+            let label = label_in(*item, value);
+            let id = id
+                .as_ref()
+                .map(|id| id.as_str().to_owned())
+                .or_else(|| label.clone());
+            id.map(|id| (id, label))
+        }
+        (EditOp::RemoveItem { id }, Shape::Collection(item) | Shape::Keyed(item)) => {
+            let stored = match &located.value {
+                Some((Value::Object(ObjType::Map), collection)) => {
+                    if matches!(located.shape, Shape::Keyed(_)) {
+                        map_at(doc, collection, id.as_str())
+                    } else {
+                        map_at(doc, collection, id.as_str())
+                            .and_then(|entry| map_at(doc, &entry, "v"))
+                    }
+                }
+                _ => None,
+            };
+            let label = stored.and_then(|map| label_of(doc, *item, &map));
+            Some((id.as_str().to_owned(), label))
+        }
+        _ => located.item.clone(),
     };
     let rich = match edit.op() {
         EditOp::Rich { rich } => R::op_describe(edit.path(), rich),
@@ -193,7 +242,7 @@ pub(crate) fn edit<R: crate::Model>(doc: &Doc, shape: Shape, edit: &Edit<R>) -> 
             .flatten(),
         new,
     }));
-    Some(match located.item {
+    Some(match item {
         Some((id, label)) => {
             let label = label.unwrap_or_else(|| id.clone());
             described.on(id, label)

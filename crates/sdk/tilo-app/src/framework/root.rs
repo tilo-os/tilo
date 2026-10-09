@@ -138,6 +138,46 @@ fn open_spec() -> tilo_actions::ActionSpec {
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
+/// `open` on one item resource: show that item, as its search hit would.
+fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
+    let encoded = tilo_actions::EncodedAction::encode_operation(
+        OPEN_TYPE,
+        &serde_json::json!({ OPEN_ANCHOR: anchor }),
+    )
+    .unwrap_or_else(|_| tilo_actions::EncodedAction {
+        type_id: OPEN_TYPE.into(),
+        payload: Vec::new(),
+    });
+    tilo_actions::ActionSpec::typed_operation(
+        "open",
+        "Open",
+        "Open",
+        tilo_actions::OperationKind::View,
+        OPEN_TYPE,
+        Vec::new(),
+        move |_| encoded.clone(),
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description("Show this item.")
+}
+
+/// Offer `open` on every item resource under `resource` (an item of `R`'s
+/// collections), bound to that item.
+fn offer_item_open<R: Resource>(resource: &mut tilo_actions::Resource) {
+    if tilo_resource::items::item_of_resource::<R>(resource.id.as_str()).is_some()
+        && !resource
+            .actions
+            .iter()
+            .any(|existing| existing.id == "open")
+    {
+        let spec = item_open_spec(resource.id.as_str());
+        resource.actions.push(spec);
+    }
+    for child in &mut resource.children {
+        offer_item_open::<R>(child);
+    }
+}
+
 /// The operation type of the framework's `read` view.
 pub(crate) const READ_TYPE: &str = "tilo.resource.read";
 
@@ -1542,6 +1582,9 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         {
             resource = resource.with_action(open_spec());
         }
+        if self.stages.opens() {
+            offer_item_open::<R>(&mut resource);
+        }
         let mut resources = vec![resource];
         resources.append(&mut extras);
         resources
@@ -1591,6 +1634,9 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         };
         if let Some(mut resolved) = resolved {
             self.bind_row_declarations(std::slice::from_mut(&mut resolved));
+            if self.stages.opens() {
+                offer_item_open::<R>(&mut resolved);
+            }
             return Some(resolved);
         }
         // Last, what the content resolves by id beyond what it publishes (a

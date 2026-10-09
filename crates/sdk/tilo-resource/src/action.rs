@@ -330,6 +330,13 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// Returns the method's refusal.
     fn perform(&self, record: &mut Self::Record, cx: &mut ActionCx) -> Result<(), Refusal>;
 
+    /// The units this operation may write beside the record unit (see
+    /// [`crate::footprint`]). `#[resource]` generates it: an item verb its
+    /// item, `#[action(writes = field)]` the fields named.
+    fn writes(&self) -> crate::footprint::Writes {
+        crate::footprint::Writes::record()
+    }
+
     /// The consequence class of this operation. `#[resource]` generates it
     /// from `#[action(destructive)]`, so the
     /// same method reached through the generic `apply` action is confirmed
@@ -507,10 +514,22 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         let mut cx = ActionCx::for_apply(doc, &payload, self.now_ms);
         let refused = |error: crate::ModelError| ActionError::Refused(error.to_string());
+        let shape = <O::Record as crate::Model>::SHAPE;
+        let units = crate::footprint::has_units(shape);
+        // The unit index, kept once something applied: a refused action
+        // writes nothing.
+        let index = |doc: &mut Doc| {
+            if units {
+                crate::footprint::index(doc, shape)
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+            }
+            Ok::<(), ActionError>(())
+        };
         let queues = O::QUEUES && !settles(&self.operation);
         if let Some(edit) = self.operation.edit() {
             if !queues {
-                return edit.apply(doc, &mut cx).map_err(refused);
+                edit.apply(doc, &mut cx).map_err(refused)?;
+                return index(doc);
             }
             // The record's `queue` sees the change the edit made.
             let before = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
@@ -519,9 +538,12 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
             let minting = MintScope::enter(&cx);
             O::queue(&mut record, &before, &mut cx);
             drop(minting);
-            return record.write_fields(doc, &ROOT).map_err(refused);
+            record.write_fields(doc, &ROOT).map_err(refused)?;
+            return index(doc);
         }
-        let before = if queues {
+        // What it was: for the record's `queue`, and to hold what the verb
+        // produced against its footprint.
+        let before = if queues || units {
             Some(O::Record::read_fields(doc, &ROOT).map_err(refused)?)
         } else {
             None
@@ -529,15 +551,20 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         let mut record = O::Record::read_fields(doc, &ROOT).map_err(refused)?;
         let minting = MintScope::enter(&cx);
         let performed = self.operation.perform(&mut record, &mut cx);
-        if let (Ok(()), Some(before)) = (&performed, &before) {
+        if let (Ok(()), Some(before), true) = (&performed, &before, queues) {
             O::queue(&mut record, before, &mut cx);
         }
         drop(minting);
         performed.map_err(|refusal| ActionError::Refused(refusal.0))?;
         crate::Model::check(&record).map_err(|refusal| ActionError::Refused(refusal.0))?;
+        if let (Some(before), true) = (&before, units) {
+            crate::footprint::check(before, &record, &self.operation.writes())
+                .map_err(|refusal| ActionError::Refused(refusal.0))?;
+        }
         record
             .write_fields(doc, &ROOT)
-            .map_err(|error| ActionError::Refused(error.to_string()))
+            .map_err(|error| ActionError::Refused(error.to_string()))?;
+        index(doc)
     }
 
     fn locus(&self) -> ExecutionLocus {

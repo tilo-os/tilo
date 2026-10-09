@@ -108,6 +108,7 @@ mod describe;
 pub mod diff;
 pub mod effect;
 pub mod evolution;
+pub mod footprint;
 pub mod group;
 pub mod history;
 pub mod items;
@@ -131,6 +132,8 @@ pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Stamped, Undoing, fresh_uuid, minted_ids,
 };
+/// A change a document reports, as an `answer` hook reads what its action did.
+pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
@@ -166,11 +169,11 @@ pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
 pub mod __private {
-    pub use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+    pub use automerge::{ObjId, ObjType, Patch, ROOT, ReadDoc, ScalarValue, Value};
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ChangeKind, OperationKind, PROMPTED_PARAM, ParamType,
+        ActionArgs, ActionParam, ActionSpec, ChangeKind, OperationKind, PROMPTED_PARAM, ParamType,
         PermissionRequirement, Resource, ResourceViewSpec, RiskLevel,
     };
 
@@ -236,7 +239,16 @@ pub mod __private {
     #[must_use]
     pub fn param_type_of(schema: &serde_json::Value) -> ParamType {
         fn of(schema: &serde_json::Value) -> Option<ParamType> {
-            if let Some(kind) = schema.get("type").and_then(serde_json::Value::as_str) {
+            // A nullable type: what it is when present.
+            let kind = match schema.get("type") {
+                Some(serde_json::Value::Array(kinds)) => kinds
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .find(|kind| *kind != "null"),
+                Some(kind) => kind.as_str(),
+                None => None,
+            };
+            if let Some(kind) = kind {
                 return Some(match kind {
                     "string" => ParamType::Text,
                     "integer" => ParamType::Integer,
@@ -256,11 +268,49 @@ pub mod __private {
                 .get("oneOf")
                 .or_else(|| schema.get("anyOf"))
                 .and_then(serde_json::Value::as_array)?;
-            let mut kinds = alternatives.iter().map(of);
+            let mut kinds = alternatives
+                .iter()
+                .filter(|alternative| alternative.get("type") != Some(&serde_json::json!("null")))
+                .map(of);
             let first = kinds.next()??;
             kinds.all(|kind| kind == Some(first)).then_some(first)
         }
         of(schema).unwrap_or(ParamType::Object)
+    }
+
+    /// The parameters a `#[param(flatten)]` struct's schema lists: each
+    /// property by name, typed and described by its own schema, required as
+    /// the schema says.
+    #[must_use]
+    pub fn flat_params(schema: &serde_json::Value) -> Vec<ActionParam> {
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .map(|names| names.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        else {
+            return Vec::new();
+        };
+        properties
+            .iter()
+            .map(|(name, property)| {
+                let description = property
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(name)
+                    .to_owned();
+                let ty = param_type_of(property);
+                let param = if required.contains(&name.as_str()) {
+                    ActionParam::required_owned(name.clone(), ty, description)
+                } else {
+                    ActionParam::optional_owned(name.clone(), ty, description)
+                };
+                param.with_schema(property.clone())
+            })
+            .collect()
     }
 
     pub use crate::resource::default_search;

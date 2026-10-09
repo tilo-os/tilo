@@ -35,6 +35,8 @@ pub mod identity;
 pub mod incremental;
 #[path = "item_actions.rs"]
 pub mod item_actions;
+#[path = "item_effects.rs"]
+pub mod item_effects;
 #[path = "kinds.rs"]
 pub mod kinds;
 #[path = "launch.rs"]

@@ -248,6 +248,13 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// The effects offered on the item `item` of the collection `field`,
+    /// bound to it (`#[resource(effects = E)]` with `#[effect(item = field)]`
+    /// variants): published on the item resource beside its item verbs.
+    fn item_effects(_field: &str, _item: &crate::Id) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
     /// The nested resource `id`, when [`children`](Self::children) leaves it
     /// out. A resource with more children than a published tree should carry
     /// (a book of contacts, a long history) publishes a bounded page from
@@ -492,6 +499,16 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
     .reversible()
     // History records the edit itself, not `field-edit`.
     .carrying()
+    // Removing a collection item asks, as a delete verb does.
+    .with_risk(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
+            return tilo_actions::RiskLevel::Low;
+        };
+        read_edit::<R>(serde_json::Value::Object(value.clone()))
+            .map_or(tilo_actions::RiskLevel::Low, |action| {
+                tilo_actions::Action::risk(&action)
+            })
+    })
 }
 
 /// The edits of a resource whose document holds nothing. An app whose data
@@ -779,6 +796,9 @@ pub struct ActionDecl<R: Resource> {
     /// places its invoker (the caret an append leaves its writer at).
     /// See [`bind_declaration`].
     pub refines: bool,
+    /// The units the action writes ([`crate::footprint`]): `record`, an
+    /// item's unit, declared fields'.
+    pub writes: Vec<String>,
     pub build: BuildAction<R>,
 }
 
@@ -796,12 +816,36 @@ impl<R: Resource> Clone for ActionDecl<R> {
             tags: self.tags.clone(),
             content: self.content.clone(),
             refines: self.refines,
+            writes: self.writes.clone(),
             build: Arc::clone(&self.build),
         }
     }
 }
 
 impl<R: Resource> ActionDecl<R> {
+    /// The field edit `edit` offered as the action `id` labelled `label`,
+    /// its value bound: what a place or a live row offers ("Use Proton for
+    /// Adobe Reader"), checked and recorded as the edit itself.
+    pub fn edit(id: &'static str, label: impl Into<String>, edit: crate::Edit<R>) -> Self
+    where
+        crate::Edit<R>: Send + Sync,
+    {
+        let destructive = R::edit_action(edit.clone()).is_some_and(|action| {
+            tilo_actions::Action::risk(&action) == tilo_actions::RiskLevel::Destructive
+        });
+        let decl = Self::new(id, label, Vec::new(), move |_, now_ms| {
+            let mut action = R::edit_action(edit.clone())
+                .ok_or_else(|| format!("{} has no field edits", R::LABEL))?;
+            R::stamp(&mut action, now_ms);
+            Ok(action)
+        });
+        if destructive {
+            decl.destructive()
+        } else {
+            decl
+        }
+    }
+
     pub fn new(
         id: &'static str,
         label: impl Into<String>,
@@ -820,6 +864,7 @@ impl<R: Resource> ActionDecl<R> {
             tags: Vec::new(),
             content: None,
             refines: false,
+            writes: vec![crate::footprint::RECORD_UNIT.to_owned()],
             build: Arc::new(build),
         }
     }
@@ -881,6 +926,14 @@ impl<R: Resource> ActionDecl<R> {
     #[must_use]
     pub fn of_kind(mut self, kind: ActionKind) -> Self {
         self.kind = kind;
+        self
+    }
+
+    /// The units the action writes, as the surface lists them
+    /// ([`crate::footprint`]).
+    #[must_use]
+    pub fn writing(mut self, units: Vec<String>) -> Self {
+        self.writes = units;
         self
     }
 

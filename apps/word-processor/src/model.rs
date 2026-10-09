@@ -182,7 +182,7 @@ impl Document {
     /// Add a comment.
     ///
     /// A comment on the characters `start` to `end` of the paragraph `block`.
-    #[action]
+    #[action(writes = comments)]
     pub fn add_comment(
         &mut self,
         cx: &mut ActionCx,
@@ -257,7 +257,7 @@ impl Document {
     ///
     /// The comments a file brought along with its text become the
     /// document's comment threads.
-    #[action]
+    #[action(writes = comments)]
     pub fn adopt_comments(&mut self, cx: &mut ActionCx) -> Result<(), Refusal> {
         let imported: Vec<tilo_doc::snapshot::CommentView> = self
             .body

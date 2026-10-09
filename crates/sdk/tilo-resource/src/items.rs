@@ -112,6 +112,10 @@ pub struct ItemText {
 pub struct ItemCollection {
     /// The field's Rust name.
     pub field: &'static str,
+    /// Its items carry a `#[model(label)]`: they are published as item
+    /// resources (which search hits and agents name) even with no item
+    /// verbs or effects.
+    pub labelled: bool,
     /// Each item's id and a human label (its first text, else its id).
     pub items: Vec<(Id, String)>,
 }
@@ -217,6 +221,9 @@ fn build_item<R: Resource>(
     for (action, decl) in scoped {
         child = child.with_action(item_spec(decl, action.param, id));
     }
+    for spec in R::item_effects(field, id) {
+        child = child.with_action(spec);
+    }
     child
 }
 
@@ -261,9 +268,6 @@ pub fn item_child<R: Resource>(
     let field = *fields.iter().find(|candidate| **candidate == field)?;
     let declarations = R::declarations();
     let scoped = scoped::<R>(&declarations, actions, fields, field);
-    if scoped.is_empty() {
-        return None;
-    }
     let label = label_of(field, &id)?;
     Some(item_resource(&scoped, field, &id, &label))
 }
@@ -284,6 +288,28 @@ fn scoped<'d, 'a, R: Resource>(
                 .map(|decl| (action, decl))
         })
         .collect()
+}
+
+/// The collection an item action with item parameter `param` (and the
+/// collection `named` by `#[action(item = field)]`, or `""`) acts on.
+#[doc(hidden)]
+#[must_use]
+pub fn item_field(
+    collections: &'static [&'static str],
+    param: &str,
+    named: &str,
+) -> Option<&'static str> {
+    if !named.is_empty() {
+        return collections.iter().copied().find(|field| *field == named);
+    }
+    collections
+        .iter()
+        .copied()
+        .find(|field| *field == param)
+        .or(match collections {
+            [only] => Some(*only),
+            _ => None,
+        })
 }
 
 /// Whether an item action with item parameter `param` (and the collection
@@ -355,7 +381,11 @@ pub fn item_children<R: Resource>(
     let mut children = Vec::new();
     for collection in collections {
         let scoped = scoped::<R>(&declarations, actions, &fields, collection.field);
-        if scoped.is_empty() {
+        let offers_effects = collection
+            .items
+            .first()
+            .is_some_and(|(id, _)| !R::item_effects(collection.field, id).is_empty());
+        if scoped.is_empty() && !offers_effects && !collection.labelled {
             continue;
         }
         for (id, label) in &collection.items {

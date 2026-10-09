@@ -96,7 +96,9 @@ pub struct Playlist {
     pub name: String,
     /// Description
     pub description: String,
-    /// Tracks, in order, as items keyed by track id.
+    /// Tracks, in order, as items keyed by track id. Taking a song off a
+    /// playlist asks nothing: it stays in the library.
+    #[model(remove = "quiet")]
     pub tracks: Collection<TrackId>,
     /// Cover: an HTTPS URL or a bounded embedded PNG data URL; empty for
     /// the procedural placeholder.

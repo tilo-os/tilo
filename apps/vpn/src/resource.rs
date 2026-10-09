@@ -239,11 +239,18 @@ mod tests {
             edit(&mut replica, &profile.kind.set(ConnKind::OpenVpn)).is_err(),
             "the protocol is the imported profile's"
         );
-        edit(
-            &mut replica,
-            &Vpn::paths().connections.remove(&Vpn::item(home)),
-        )
-        .unwrap();
+        // Removing a profile asks first.
+        assert!(
+            edit(
+                &mut replica,
+                &Vpn::paths().connections.remove(&Vpn::item(home))
+            )
+            .unwrap_err()
+            .contains("confirmation")
+        );
+        replica
+            .apply_confirmed(Vpn::paths().connections.remove(&Vpn::item(home)))
+            .unwrap();
         assert!(
             edit(
                 &mut replica,

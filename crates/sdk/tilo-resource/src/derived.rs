@@ -189,6 +189,15 @@ impl<R> Derived<R> {
         self
     }
 
+    /// Offer the effect `effect` on it with the arguments named in `asking`
+    /// left to its caller, the rest bound (select a passage of *this* book,
+    /// from a chapter the caller names).
+    #[must_use]
+    pub fn with_effect_asking<E: crate::Effect>(mut self, effect: &E, asking: &[&str]) -> Self {
+        self.effects.push(effect.bound_asking(asking));
+        self
+    }
+
     /// Identify it by `id` rather than its label, when the label can change.
     #[must_use]
     pub fn identified(mut self, id: impl Into<String>) -> Self {
@@ -217,6 +226,24 @@ impl<R> Derived<R> {
 }
 
 impl<R: Resource> Derived<R> {
+    /// Offer the field edit `edit` on it as the action `id` labelled
+    /// `label`, its value bound ("Use Proton for Adobe Reader" on the app
+    /// it routes): the same edit, checked and recorded as any other.
+    #[must_use]
+    pub fn with_edit(
+        mut self,
+        id: &'static str,
+        label: impl Into<String>,
+        edit: crate::Edit<R>,
+    ) -> Self
+    where
+        crate::Edit<R>: Send + Sync,
+    {
+        let decl = ActionDecl::<R>::edit(id, label, edit);
+        self.effects.push(crate::resource::declaration_spec(&decl));
+        self
+    }
+
     /// The child resource this is published as.
     #[must_use]
     pub fn publish(&self) -> tilo_actions::Resource {

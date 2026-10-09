@@ -141,8 +141,10 @@ pub struct RequestRecord {
     /// URL
     pub url: String,
     /// Query parameters
+    #[model(remove = "quiet")]
     pub params: Collection<Row>,
     /// Headers
+    #[model(remove = "quiet")]
     pub headers: Collection<Row>,
     /// Authentication
     pub auth: Credentials,
@@ -151,6 +153,7 @@ pub struct RequestRecord {
     /// Body: the raw or JSON text.
     pub body: String,
     /// Form fields, sent when the body is a form.
+    #[model(remove = "quiet")]
     pub form: Collection<Row>,
 }
 
@@ -262,6 +265,7 @@ pub struct Environment {
     #[model(label)]
     pub name: String,
     /// Variables
+    #[model(remove = "quiet")]
     pub variables: Collection<Variable>,
 }
 

@@ -47,6 +47,7 @@ fn a_derived_record_lists_its_stored_fields() {
             unit: false,
             readonly: false,
             label: false,
+            quiet_remove: false,
         },
         FieldShape {
             key: "limit",
@@ -59,6 +60,7 @@ fn a_derived_record_lists_its_stored_fields() {
             unit: false,
             readonly: false,
             label: false,
+            quiet_remove: false,
         },
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
@@ -72,6 +74,7 @@ fn a_derived_record_lists_its_stored_fields() {
         unit: false,
         readonly: false,
         label: false,
+        quiet_remove: false,
     }]);
     assert_eq!(
         Board::shape(),
@@ -87,6 +90,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                quiet_remove: false,
             },
             FieldShape {
                 key: "cols",
@@ -99,6 +103,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                quiet_remove: false,
             },
             FieldShape {
                 key: "archived",
@@ -111,6 +116,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                quiet_remove: false,
             },
             FieldShape {
                 key: "filter",
@@ -123,6 +129,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 unit: false,
                 readonly: false,
                 label: false,
+                quiet_remove: false,
             },
         ])),
     );

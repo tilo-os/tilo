@@ -56,8 +56,8 @@ pub struct Library {
 
 #[resource(kind = "test.library", label = "Library")]
 impl Library {
-    /// Create a snippet.
-    #[action]
+    /// Create a snippet: a unit of its own.
+    #[action(writes = snippets)]
     pub fn new_snippet(&mut self, cx: &mut ActionCx, title: String) {
         self.snippets.push(
             cx.id(),
@@ -191,14 +191,22 @@ fn collection_edits_insert_move_and_remove_items() {
     assert_eq!(order(&library), ["c", "a", "b"]);
 
     let mut other = library.fork();
-    edit(&mut library, &snippets.remove(&ids[0])).unwrap();
+    // Removing an item asks first, as a delete verb does.
+    assert!(
+        edit(&mut library, &snippets.remove(&ids[0]))
+            .unwrap_err()
+            .contains("confirmation")
+    );
+    library.apply_confirmed(snippets.remove(&ids[0])).unwrap();
     edit(&mut other, &snippets.insert(1, &titled("d"))).unwrap();
     library.sync_with(&mut other).unwrap();
     assert_eq!(order(&library), ["c", "d", "b"]);
     assert_eq!(order(&other), order(&library));
     assert!(
-        edit(&mut library, &snippets.remove(&ids[0]))
+        library
+            .apply_confirmed(snippets.remove(&ids[0]))
             .unwrap_err()
+            .to_string()
             .contains("no item")
     );
 }
@@ -278,6 +286,34 @@ fn counters_add_up_across_replicas() {
     assert_eq!(library.state().unwrap().stars.get(), 5);
     assert_eq!(other.state().unwrap().stars.get(), 5);
     assert_eq!(library.live().unwrap().stars.get(), 5);
+}
+
+#[test]
+fn first_writes_into_one_row_both_survive() {
+    let mut library = Replica::<Library>::new();
+    let sheet = Library::paths().sheet;
+    edit(&mut library, &sheet.insert_row(0)).unwrap();
+    edit(&mut library, &sheet.insert_column(0)).unwrap();
+    edit(&mut library, &sheet.insert_column(1)).unwrap();
+    let grid = library.state().unwrap().sheet;
+    let row = grid.rows().next().cloned().unwrap();
+    let columns: Vec<Id> = grid.columns().cloned().collect();
+    let mut other = library.fork();
+    edit(
+        &mut library,
+        &sheet.set_cell(&row, &columns[0], Some(&"a".to_owned())),
+    )
+    .unwrap();
+    edit(
+        &mut other,
+        &sheet.set_cell(&row, &columns[1], Some(&"b".to_owned())),
+    )
+    .unwrap();
+    library.sync_with(&mut other).unwrap();
+    let grid = library.state().unwrap().sheet;
+    assert_eq!(grid.cell(&row, &columns[0]).map(String::as_str), Some("a"));
+    assert_eq!(grid.cell(&row, &columns[1]).map(String::as_str), Some("b"));
+    assert_eq!(grid, other.state().unwrap().sheet);
 }
 
 #[test]

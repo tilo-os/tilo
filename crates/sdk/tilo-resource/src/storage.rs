@@ -771,10 +771,14 @@ impl<T: Model> Model for Grid<T> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a grid"));
         }
+        let mut cells: BTreeMap<String, BTreeMap<String, T>> = read_key(doc, id, CELLS)?;
+        // A row's cell map exists from the row's start; an empty one is no
+        // content.
+        cells.retain(|_, row| !row.is_empty());
         Ok(Self {
             rows: read_key(doc, id, ROWS)?,
             columns: read_key(doc, id, COLUMNS)?,
-            cells: read_key(doc, id, CELLS)?,
+            cells,
         })
     }
     fn missing() -> Result<Self, ModelError> {
@@ -784,7 +788,26 @@ impl<T: Model> Model for Grid<T> {
         let map = grid_map(doc, slot)?;
         write_key(doc, &map, ROWS, &self.rows)?;
         write_key(doc, &map, COLUMNS, &self.columns)?;
-        write_key(doc, &map, CELLS, &self.cells)
+        // Every row keeps its cell map from its start, so two people writing
+        // the first cells of one row write into the same map rather than
+        // each creating one and losing the other's.
+        let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
+        let stale: Vec<String> = doc
+            .keys(&cells)
+            .filter(|row| !self.rows.contains(&Id::from_raw(row.as_str())))
+            .collect();
+        for row in stale {
+            doc.delete(&cells, row.as_str())?;
+        }
+        let empty = BTreeMap::new();
+        for row in self.rows.ids() {
+            self.cells
+                .get(row.as_str())
+                .unwrap_or(&empty)
+                .store(doc, Slot::Key(&cells, row.as_str()))
+                .map_err(|error| error.at(row.as_str()))?;
+        }
+        Ok(())
     }
     fn refresh(
         &mut self,
@@ -799,7 +822,9 @@ impl<T: Model> Model for Grid<T> {
         }
         refresh_key(&mut self.rows, doc, id, ROWS, delta)?;
         refresh_key(&mut self.columns, doc, id, COLUMNS, delta)?;
-        refresh_key(&mut self.cells, doc, id, CELLS, delta)
+        refresh_key(&mut self.cells, doc, id, CELLS, delta)?;
+        self.cells.retain(|_, row| !row.is_empty());
+        Ok(())
     }
     fn edit(
         doc: &mut Doc,
@@ -852,22 +877,26 @@ impl<T: Model> Model for Grid<T> {
                 }
             }
             (None, EditOp::InsertRow { id, at } | EditOp::InsertColumn { id, at }) => {
-                let axis = if matches!(op, EditOp::InsertRow { .. }) {
-                    ROWS
-                } else {
-                    COLUMNS
-                };
+                let row = matches!(op, EditOp::InsertRow { .. });
+                let axis = if row { ROWS } else { COLUMNS };
+                let id = id.clone().unwrap_or_else(|| cx.id());
                 Collection::<()>::edit(
                     doc,
                     Slot::Key(&map, axis),
                     &[],
                     &EditOp::InsertItem {
-                        id: id.clone(),
+                        id: Some(id.clone()),
                         at: *at,
                         value: serde_json::Value::Null,
                     },
                     cx,
-                )
+                )?;
+                if row {
+                    // The row's cell map, so its first cells merge.
+                    let cells = Slot::Key(&map, CELLS).object(doc, ObjType::Map)?;
+                    Slot::Key(&cells, id.as_str()).object(doc, ObjType::Map)?;
+                }
+                Ok(())
             }
             (None, EditOp::RemoveRow { id }) => {
                 Collection::<()>::edit(

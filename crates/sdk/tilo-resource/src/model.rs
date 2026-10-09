@@ -393,6 +393,10 @@ pub trait Model: Sized {
 /// it for structs with named fields; a record resource keeps its fields at
 /// the document root.
 pub trait Fields: Model {
+    /// The collection fields whose items are published as item resources
+    /// (`Collection`, `Keyed`, `Ordered`); `#[derive(Model)]` lists them.
+    const ITEM_FIELDS: &'static [&'static str] = &[];
+
     /// # Errors
     /// Returns [`ModelError`] when a field has another shape.
     fn read_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError>;

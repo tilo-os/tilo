@@ -191,7 +191,7 @@ mod tests {
     #[resource(kind = "test.anchored-note", label = "Note")]
     impl Note {
         /// Remark on some text.
-        #[action]
+        #[action(writes = remarks)]
         pub fn add_remark(
             &mut self,
             cx: &mut tilo_resource::ActionCx,

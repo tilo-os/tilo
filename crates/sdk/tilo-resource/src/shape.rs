@@ -28,6 +28,10 @@ pub enum Shape {
 }
 
 /// One named field of a [`Shape::Record`].
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent field attribute"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldShape {
     /// The key the field is stored under (after `#[model(rename)]`).
@@ -52,6 +56,10 @@ pub struct FieldShape {
     pub readonly: bool,
     /// `#[model(label)]`: the field names the record.
     pub label: bool,
+    /// `#[model(remove = "quiet")]` on a collection: removing an item by
+    /// field edit asks no confirmation. Otherwise it is destructive, as a
+    /// delete verb is, so the generic edit is never a quieter way around it.
+    pub quiet_remove: bool,
 }
 
 impl Shape {
@@ -99,6 +107,32 @@ impl Shape {
             }
         }
         unit
+    }
+
+    /// Whether removing an item of the collection at `path` asks first: it
+    /// does unless the collection's field is `#[model(remove = "quiet")]`.
+    #[must_use]
+    pub fn removal_asks(&self, path: &[crate::path::Segment]) -> bool {
+        use crate::path::Segment;
+        let mut shape = *self;
+        let mut quiet = false;
+        for segment in path {
+            match (shape, segment) {
+                (Self::Record(fields), Segment::Field(key)) => {
+                    let Some(field) = fields.iter().find(|field| field.key == key) else {
+                        return true;
+                    };
+                    quiet = field.quiet_remove;
+                    shape = field.shape;
+                }
+                (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => {
+                    quiet = false;
+                    shape = *item;
+                }
+                _ => return true,
+            }
+        }
+        !quiet
     }
 
     /// Whether the field at `path` is `#[model(readonly)]`.

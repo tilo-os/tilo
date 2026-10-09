@@ -34,6 +34,18 @@ pub struct VerbSurface {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
     pub params: Vec<ParamSurface>,
+    /// The units it writes ([`crate::footprint`]), when more than the
+    /// record unit.
+    #[serde(default = "record_unit", skip_serializing_if = "only_record")]
+    pub writes: Vec<String>,
+}
+
+fn record_unit() -> Vec<String> {
+    vec![crate::footprint::RECORD_UNIT.to_owned()]
+}
+
+fn only_record(units: &[String]) -> bool {
+    units == [crate::footprint::RECORD_UNIT]
 }
 
 /// One parameter of a verb.
@@ -93,6 +105,7 @@ impl VerbSurface {
                         .unwrap_or(serde_json::Value::Null),
                 })
                 .collect(),
+            writes: decl.writes.clone(),
         }
     }
 }

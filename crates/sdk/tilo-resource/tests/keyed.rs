@@ -88,7 +88,8 @@ fn submit(timeline: &mut Replica<Timeline>, edits: &[tilo_resource::Edit<Timelin
         .iter()
         .map(|edit| Invoke::edit(edit).unwrap())
         .collect::<Vec<_>>();
-    timeline.apply(Invoke::group(members)).unwrap();
+    // Confirmed: some remove items, which asks first.
+    timeline.apply_confirmed(Invoke::group(members)).unwrap();
 }
 
 #[test]
