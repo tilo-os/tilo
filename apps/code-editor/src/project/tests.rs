@@ -403,3 +403,54 @@ fn the_terminal_records_its_runs_and_queues_asked_commands() {
         .collect();
     assert_eq!(asked, [("cargo test", pane)]);
 }
+
+/// Recording a file's text is one change of the verb: the deterministic text
+/// object it starts from is made beside it, never by splitting the verb's
+/// own writes into a change of their own, so a replica replaying the action
+/// makes the same changes.
+#[test]
+fn recording_text_is_one_change_of_the_verb() {
+    let mut project = Replica::<Project>::new();
+    let id = "00000000-0000-4000-8000-000000000001";
+    act(
+        &mut project,
+        &crate::actions::record_entry_action(id, EntryKind::File, "main.rs", None, "Rust"),
+    )
+    .unwrap();
+    // A record from before texts were kept has no map for them yet: the
+    // verb makes it, in its own change.
+    {
+        use automerge::transaction::Transactable as _;
+        let doc = project.doc_mut();
+        doc.delete(automerge::ROOT, "buffers").unwrap();
+        doc.commit();
+    }
+    let mut cold = project.fork();
+    // Read whole, as an action with no record kept from the last one does.
+    ui::tilo_resource::__private::forget_all();
+    let before = project.doc_mut().get_heads();
+    act(
+        &mut project,
+        &crate::actions::record_text_action(id, "on disk"),
+    )
+    .unwrap();
+    let structure = tilo_actions::FrameworkChange::Structure.change_message();
+    let verbs = project
+        .doc_mut()
+        .get_changes(&before)
+        .into_iter()
+        .filter(|change| change.message() != Some(&structure))
+        .count();
+    assert_eq!(verbs, 1, "one change of the verb besides the slots");
+    let envelope = project.log().last().unwrap().clone();
+    cold.replay(&envelope).unwrap();
+    assert_eq!(
+        cold.doc_mut().get_heads().len(),
+        project.doc_mut().get_heads().len()
+    );
+    let mut theirs = cold.doc_mut().get_heads();
+    let mut ours = project.doc_mut().get_heads();
+    theirs.sort();
+    ours.sort();
+    assert_eq!(theirs, ours, "the replay makes the same changes");
+}

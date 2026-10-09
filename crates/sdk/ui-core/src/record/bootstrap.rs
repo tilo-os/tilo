@@ -38,6 +38,7 @@ fn actor(head: ChangeHash, domain: &[u8], address: &[u8]) -> ActorId {
 /// Construct a missing map or Text with one identity on every cold replica.
 /// Existing state is never replaced; a deleted canonical slot is never
 /// resurrected. Only identified records can use deterministic slots.
+/// `None` inside an action that already wrote: it makes the slot itself.
 pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) -> Option<ObjId> {
     if let Some((value, object)) = doc.get(parent, key).ok()? {
         return (value == Value::Object(kind)).then_some(object);
@@ -47,8 +48,9 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
         ObjType::Text => b"text\0",
         _ => return None,
     };
-    // Reading the change graph closes the open transaction.
-    close_pending(doc);
+    if !between_changes(doc) {
+        return None;
+    }
     let head = creation(doc, parent)?;
     let address = format!("{parent}\0{key}");
     let actor = actor(head, domain, address.as_bytes());
@@ -76,16 +78,12 @@ pub fn object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) ->
     Some(object)
 }
 
-/// Reading the change graph and merging close the open transaction. What it
-/// holds was written directly and names no finer action than an edit of the
-/// whole record, so it is committed as one before the slot joins.
-fn close_pending(doc: &mut AutoCommit) {
-    if doc.pending_ops() != 0 {
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-        );
-    }
+/// Whether a slot can join as a change of its own: reading the change graph
+/// and merging would close an open transaction, splitting the action that
+/// holds it into two changes. Inside one that already wrote, the caller
+/// makes the slot in the action's own change instead.
+fn between_changes(doc: &AutoCommit) -> bool {
+    doc.pending_ops() == 0
 }
 
 /// Seed a newly constructed Text once for this exact initial byte sequence.
@@ -96,7 +94,9 @@ pub fn seed_text(doc: &mut AutoCommit, object: &ObjId, seed: &str) -> Option<()>
     if seed.is_empty() {
         return Some(());
     }
-    close_pending(doc);
+    if !between_changes(doc) {
+        return None;
+    }
     let head = creation(doc, object)?;
     let digest = Sha256::digest(seed.as_bytes());
     let actor = actor(head, b"initial-text\0", digest.as_slice());
