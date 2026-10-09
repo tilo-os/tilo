@@ -1555,15 +1555,24 @@ fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same
     );
 }
 
-const OUTPUT_PIXELS: u64 = NATIVE_WIDTH as u64 * NATIVE_HEIGHT as u64;
-
-/// Pixels a sparse frame rasterises: the area of its damage. Overlap is
-/// counted twice, which only overstates the cost.
-fn raster_pixels(damage: &[FineDamageRect]) -> u64 {
-    damage
+/// Prove `damage` repaints some, but under 1%, of the 4K output, and log
+/// the pixels it rasterises: the area of its rects, overlap counted twice,
+/// which only overstates the cost. A dense frame rasterises every pixel.
+fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
+    let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
+    let pixels: u64 = damage
         .iter()
         .map(|rect| u64::from(rect.width) * u64::from(rect.height))
-        .sum()
+        .sum();
+    let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
+    eprintln!(
+        "TIL-579 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        share(pixels) * 100.0 / share(output)
+    );
+    assert!(
+        pixels > 0 && pixels * 100 < output,
+        "{label}: must repaint under 1% of a 4K output, not {pixels} px: {damage:?}"
+    );
 }
 
 /// Publish one peer, Ada, pointing at `at` in the active workspace, where
@@ -1610,15 +1619,7 @@ fn assert_peer_move_is_sparse(frame: &mut FrameBuilder, label: &str) {
         .damage_regions
         .as_deref()
         .unwrap_or_else(|| panic!("{label}: a peer pointer move must be sparse: {details}"));
-    let pixels = raster_pixels(damage);
-    eprintln!(
-        "TIL-579 raster pixels ({label}): {pixels} of {OUTPUT_PIXELS} ({:.3}%); dense was {OUTPUT_PIXELS}",
-        pixels as f64 * 100.0 / OUTPUT_PIXELS as f64
-    );
-    assert!(
-        pixels > 0 && pixels * 100 < OUTPUT_PIXELS,
-        "{label}: a peer pointer move must repaint under 1% of a 4K output, not {pixels} px: {damage:?}"
-    );
+    assert_repaints_under_one_percent(damage, label);
     assert_damage_covers(
         peer_dot(frame, from),
         damage,
@@ -1702,15 +1703,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
         .damage_regions
         .as_deref()
         .unwrap_or_else(|| panic!("hovering a tab must be sparse: {details}"));
-    let pixels = raster_pixels(damage);
-    eprintln!(
-        "TIL-579 raster pixels (tab hover): {pixels} of {OUTPUT_PIXELS} ({:.3}%); dense was {OUTPUT_PIXELS}",
-        pixels as f64 * 100.0 / OUTPUT_PIXELS as f64
-    );
-    assert!(
-        pixels > 0 && pixels * 100 < OUTPUT_PIXELS,
-        "hovering a tab must repaint under 1% of a 4K output, not {pixels} px: {damage:?}"
-    );
+    assert_repaints_under_one_percent(damage, "tab hover");
     let pill = frame
         .layout_rect_to_scene(pill)
         .expect("the tab is on the output");
