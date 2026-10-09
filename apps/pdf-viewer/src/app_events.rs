@@ -3,7 +3,7 @@
 // `app_draw.rs`, drag lifecycle for the highlight / ink tools, and the
 // keyboard map (tool hotkeys, zoom, page navigation, incremental search).
 //
-// All durable mutations go through `PdfDoc` into the shared CRDT so undo
+// All durable mutations go through the record's typed edits and verbs so undo
 // and live collaboration come for free; view state (zoom, scroll, active
 // tool, the search query) stays local because it is per-peer.
 
@@ -421,7 +421,7 @@ impl PdfApp {
                     .is_some_and(|c| c.resolved);
                 self.perform_action(
                     state,
-                    &crate::actions::set_comment_resolved_action(&id, !cur),
+                    crate::actions::set_comment_resolved_action(&id, !cur),
                 );
                 self.reload(state);
             }
@@ -1055,12 +1055,17 @@ impl PdfApp {
                 }
             } else if mdrag.moved() {
                 if let Some((x, y)) = self.note_pos(&mdrag.id) {
-                    self.perform_action(state, &{
-                        let (ux, uy) = self
-                            .page_map(self.anno_page(&mdrag.id).unwrap_or(1))
-                            .card_to_user((x, y));
-                        crate::actions::set_annotation_position_user_action(&mdrag.id, ux, uy)
-                    });
+                    let (ux, uy) = self
+                        .page_map(self.anno_page(&mdrag.id).unwrap_or(1))
+                        .card_to_user((x, y));
+                    if let Some(action) = crate::actions::set_annotation_position_user_action(
+                        &crate::markup::PdfMarkup::of(state),
+                        &mdrag.id,
+                        ux,
+                        uy,
+                    ) {
+                        self.perform_action(state, action);
+                    }
                     self.reload(state);
                 }
             } else {
@@ -1848,7 +1853,8 @@ mod event_tests {
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
-            PdfDoc::list_annotations(&st.doc)
+            crate::markup::PdfMarkup::of(&st.doc)
+                .list_annotations()
                 .iter()
                 .any(|a| a.id == hl.id && a.color == Swatch::Green),
             "the recolour landed in the shared document"
@@ -2330,7 +2336,10 @@ mod event_tests {
             "a highlight drag through handle_event adds an annotation"
         );
         assert!(
-            PdfDoc::list_annotations(&rig.st.doc).len() > before,
+            crate::markup::PdfMarkup::of(&rig.st.doc)
+                .list_annotations()
+                .len()
+                > before,
             "and it landed in the shared document"
         );
 
@@ -2365,7 +2374,7 @@ mod event_tests {
             rig.app.editing.is_none(),
             "Enter commits and closes the editor"
         );
-        let saved = PdfDoc::list_comments(&rig.st.doc);
+        let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
         assert!(
             saved.iter().any(|c| c.body == "Relay path"),
             "the typed comment body landed in the shared document: {:?}",
@@ -2665,36 +2674,45 @@ mod event_tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
-        use tilo_actions::ActionInput;
+        fn find<'a>(
+            resource: &'a tilo_actions::Resource,
+            id: &str,
+        ) -> Option<&'a tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| find(child, id))
+        }
         let (mut app, mut st) = sample_app();
         let anno = app
             .annotations
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let published = ui::tilo_resource::publish::<crate::PdfViewer>(
+        let published = ui::tilo_resource::publish::<crate::PdfMarkup>(
             "pdf.document",
             "PDF",
-            &<crate::PdfViewer as ui::tilo_resource::Resource>::read(&st.doc).unwrap(),
+            &<crate::PdfMarkup as ui::tilo_resource::Resource>::read(&st.doc).unwrap(),
         );
-        let want_id = format!("pdf.annotation:{}", anno.id);
-        let res = published
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == want_id.as_str())
-            .expect("the annotation is published as a resource");
-        let spec = res.actions.iter().find(|a| a.id == "delete").unwrap();
-        let spec_encoded = match &spec.input {
-            ActionInput::Immediate(e) => e.as_ref().clone(),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
-                panic!("delete is an immediate action")
-            }
-        };
+        let want_id = ui::tilo_resource::items::item_resource_id::<crate::PdfMarkup>(
+            "annotations",
+            &ui::tilo_resource::Id::from_raw(anno.id.clone()),
+        );
+        let res = find(&published, &want_id).expect("the annotation is published as a resource");
+        assert!(
+            res.actions.iter().any(|a| a.id == "delete-annotation"),
+            "{:?}",
+            res.actions
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>()
+        );
         // The palette's delete, applied to a replica of the same document…
         let mut palette = st.doc.fork();
-        let decoded: crate::actions::PdfViewerAction =
-            serde_json::from_slice(&spec_encoded.payload).expect("the palette's delete decodes");
-        ui::tilo_actions::Action::apply(&decoded, &mut palette).expect("the palette deletes");
+        crate::PdfMarkup::apply_to(
+            &mut palette,
+            crate::actions::delete_annotation_action(&anno.id),
+        );
         // …and the real affordance path (Delete key / rail button / context menu).
         app.delete_target(
             &DeleteTarget::Annotation(anno.id.clone()),
@@ -2707,13 +2725,13 @@ mod event_tests {
             comments.into_iter().map(|c| c.id).collect()
         };
         assert_eq!(
-            ids(PdfDoc::list_annotations(&st.doc)),
-            ids(PdfDoc::list_annotations(&palette)),
+            ids(crate::markup::PdfMarkup::of(&st.doc).list_annotations()),
+            ids(crate::markup::PdfMarkup::of(&palette).list_annotations()),
             "one source of truth"
         );
         assert_eq!(
-            comment_ids(PdfDoc::list_comments(&st.doc)),
-            comment_ids(PdfDoc::list_comments(&palette))
+            comment_ids(crate::markup::PdfMarkup::of(&st.doc).list_comments()),
+            comment_ids(crate::markup::PdfMarkup::of(&palette).list_comments())
         );
         assert!(
             app.annotations.iter().all(|a| a.id != anno.id),
@@ -2777,7 +2795,8 @@ mod event_tests {
             "specifically the right-clicked note"
         );
         assert!(
-            !PdfDoc::list_annotations(&rig.st.doc)
+            !crate::markup::PdfMarkup::of(&rig.st.doc)
+                .list_annotations()
                 .iter()
                 .any(|a| a.id == note_id),
             "and it is gone from the shared document"
@@ -2797,7 +2816,8 @@ mod event_tests {
                 .any(|annotation| annotation.id == note_id)
         );
         assert!(
-            !PdfDoc::list_annotations(&rig.st.doc)
+            !crate::markup::PdfMarkup::of(&rig.st.doc)
+                .list_annotations()
                 .iter()
                 .any(|annotation| annotation.id == note_id)
         );

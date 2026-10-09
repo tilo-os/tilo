@@ -1,6 +1,6 @@
 //! What the open PDF itself says, for search: its pages' text, its outline
 //! and the current find hits. The surface publishes these beside the
-//! resource's own entries (the markup people made on it, [`crate::PdfViewer`]'s
+//! resource's own entries (the markup people made on it, [`crate::PdfMarkup`]'s
 //! `search`), so each entity has one search source.
 
 use tilo_actions::ActionAddress;
@@ -25,7 +25,7 @@ fn entry(title: String, text: String, subtitle: String, address: ActionAddress) 
 /// names, the same address the published tree carries.
 pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
-    let document_id = <crate::PdfViewer as ui::tilo_resource::Resource>::KIND.to_string();
+    let document_id = <crate::PdfMarkup as ui::tilo_resource::Resource>::KIND.to_string();
     entries.push(entry(
         ctx.title.clone(),
         "pdf document find save annotated PDF".into(),
@@ -34,7 +34,10 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
     ));
     for (index, page_id) in ctx.page_ids.iter().enumerate() {
         let page = index + 1;
-        let resource = format!("pdf.page:{page_id}");
+        let resource = ui::tilo_resource::items::item_resource_id::<crate::PdfMarkup>(
+            "pages",
+            &ui::tilo_resource::Id::from_raw(page_id.as_str()),
+        );
         let source_page = ctx.page_sources.get(index).copied().unwrap_or(page);
         let text = source_pages
             .get(source_page.saturating_sub(1))
@@ -47,12 +50,13 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
             })
             .unwrap_or_default();
         let subtitle = text.chars().take(120).collect::<String>();
-        entries.push(entry(
-            format!("Page {page}"),
-            format!("pdf page open {text}"),
-            subtitle,
-            ActionAddress::new(&resource, "go-to"),
-        ));
+        // A page opens as the page it is.
+        entries.push(
+            SearchEntry::new(format!("Page {page}"), format!("pdf page open {text}"))
+                .anchored(resource)
+                .grouped(PDF_SEARCH_KIND)
+                .subtitled(subtitle),
+        );
     }
     // Imported PDF bookmarks / outline entries are first-class navigation
     // resources too. Keep their search address identical to the resource

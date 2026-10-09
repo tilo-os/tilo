@@ -51,7 +51,7 @@ use ui::widget::{
     TextInput, ToggleGroup, ViewportState,
 };
 
-use crate::doc::{PagePlanEntry, PdfDoc};
+use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect,
     SearchOptions, Signature, SignatureInk, Swatch, Tool,
@@ -176,6 +176,7 @@ const SNAP_NEAR: f64 = 18.0;
 /// Screen-px a single arrow-key press scrolls the document.
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
+#[cfg(test)]
 /// The reader's app id, the scope its permissions are decided in.
 const APP_ID: &str = "so.tilo.pdf-viewer";
 
@@ -501,7 +502,7 @@ pub struct PdfApp {
     /// False until a file has been loaded — drives the empty state.
     has_document: bool,
     /// The PDF the record's markup is made against, as last presented.
-    record_source: Option<crate::resource::PinnedSource>,
+    record_source: Option<crate::markup::PinnedSource>,
     /// The record's pinned source was asked for from the content store.
     reopen_requested: bool,
     /// A capture shows the reader opening a document whose open never ends.
@@ -554,7 +555,7 @@ pub struct PdfApp {
     resource_page_sources: Vec<usize>,
     /// Imported content metadata parallel to the durable plan; used to build
     /// duplicate actions that retain the imported source identity.
-    resource_page_imports: Vec<Option<crate::doc::ImportedPage>>,
+    resource_page_imports: Vec<Option<crate::markup::ImportedPage>>,
     /// Original text-backend pages, used to materialise a remote plan.
     source_pages: Vec<model::Page>,
     /// What the open document says, for search: rebuilt during state sync
@@ -796,7 +797,7 @@ pub struct PdfApp {
     /// markup records ids. Absent outside a host.
     people: Option<ui::framework::People>,
     /// Where edits go: the resource's dispatcher, attached by the host.
-    dispatcher: Option<ui::framework::Dispatcher<crate::resource::PdfViewer>>,
+    dispatcher: Option<ui::framework::Dispatcher<crate::markup::PdfMarkup>>,
     /// The participant may only view the document.
     read_only: bool,
     /// How each displayed page maps between the engine's page space, PDF
@@ -818,6 +819,9 @@ pub struct PdfApp {
     /// The source hash whose existing markup was asked for, so it is
     /// asked for once.
     existing_request: Option<String>,
+    /// The pages, markup and comments asked to be opened (a search hit, an
+    /// agent's `open`) since the last frame.
+    opens: std::rc::Rc<std::cell::RefCell<Vec<ui::tilo_resource::Id>>>,
     /// The loaded document's record still needs what opening it adds: a
     /// page plan, the pinned source, the markup taken over from the PDF.
     seed_pending: bool,
@@ -1262,17 +1266,13 @@ impl PdfApp {
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
             existing_request: None,
+            opens: std::rc::Rc::default(),
             seed_pending: true,
             reader_markup_hidden: false,
             markup_style: model::MarkupStyle::Highlight,
         }
     }
 
-    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction)
-    /// through the resource's dispatcher — the single mutation path shared
-    /// with the Ctrl+K palette — applied to the document this event received,
-    /// so the reader reads it back at once. One event's actions are one undo
-    /// step.
     /// Test-only: one frame's sync, then what it submitted applied to `doc`
     /// as the host applies it, and shown in the same frame.
     #[cfg(test)]
@@ -1289,33 +1289,43 @@ impl PdfApp {
         }
     }
 
-    /// Submit `action` through the resource's dispatcher to be applied
-    /// after this pass, from a pass that only reads the document (a frame's
-    /// sync, a worker's answer). A refusal is reported by the dispatcher.
-    pub(crate) fn submit(&self, action: &crate::actions::PdfViewerAction) {
+    /// Submit a field edit or verb through the resource's dispatcher to be
+    /// applied after this pass, from a pass that only reads the document (a
+    /// worker's answer). A refusal is reported by the dispatcher.
+    pub(crate) fn submit(&self, invoke: ui::tilo_resource::Invoke<PdfMarkup>) {
         if let Some(dispatcher) = self.dispatcher.as_ref() {
-            dispatcher.apply(action);
+            dispatcher.submit(invoke);
         }
     }
 
+    /// Apply a field edit or verb now, from an input event, as the person's
+    /// change; say why when it is refused.
     pub(crate) fn perform_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::PdfViewerAction,
+        invoke: ui::tilo_resource::Invoke<PdfMarkup>,
     ) {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
             return;
         };
-        if !dispatcher.may_apply(action) {
-            self.status_note = Some("You can view this document but not change it".to_string());
-            self.dirty = true;
-            return;
-        }
-        if let Err(error) = dispatcher.apply_now_with(
-            state,
-            action,
-            tilo_actions::ActionContext::for_app(APP_ID, "PDF Viewer"),
-        ) {
+        // A group applies member by member until `submit_now` takes one
+        // whole; the event's members are still one undo step.
+        let applied = if invoke.id == ui::tilo_resource::GROUP {
+            ui::tilo_resource::group::build_group::<PdfMarkup>(
+                &invoke.arguments,
+                ui::tilo_resource::origin_now_ms(),
+            )
+            .map_err(ui::tilo_actions::ActionError::Refused)
+            .and_then(|group| {
+                group
+                    .actions
+                    .iter()
+                    .try_for_each(|action| dispatcher.apply_now(state, action))
+            })
+        } else {
+            dispatcher.submit_now(state, invoke)
+        };
+        if let Err(error) = applied {
             self.status_note = Some(error.to_string());
             self.dirty = true;
         }
@@ -1324,9 +1334,10 @@ impl PdfApp {
     /// Follow the record's state: which document its markup is made
     /// against. The markup itself is read from the document every sync
     /// receives, the live one or a past version.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PdfMarkup) {
-        if self.record_source != state.source {
-            self.record_source.clone_from(&state.source);
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::markup::PdfMarkup) {
+        let source = state.pinned_source();
+        if self.record_source != source {
+            self.record_source = source;
         }
         self.dirty = true;
     }
@@ -1334,7 +1345,7 @@ impl PdfApp {
     /// Attach the resource's dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
+        dispatcher: ui::framework::Dispatcher<crate::markup::PdfMarkup>,
     ) {
         self.read_only = dispatcher.read_only();
         // What this participant authors is recorded under their id, and
@@ -1570,11 +1581,10 @@ impl PdfApp {
             created_ms: now_ms(),
             ..self.page_map(a.page).annotation_to_user(a)
         };
-        let page_id = self.page_id_of(a.page);
-        self.perform_action(
-            state,
-            &crate::actions::add_annotation_on(&user, page_id.as_deref()),
-        );
+        let Some(page_id) = self.page_id_of(a.page) else {
+            return;
+        };
+        self.perform_action(state, crate::actions::add_annotation_on(&user, &page_id));
     }
 
     /// Pin the open document's bytes in its record the first time the
@@ -1583,12 +1593,15 @@ impl PdfApp {
         let Some((hash, len)) = self.source_blob.clone() else {
             return;
         };
-        match PdfDoc::source(state) {
+        match PdfMarkup::of(state).pinned_source() {
             None if !self.read_only => {
-                let action = crate::actions::pin_source_action(&hash, len, &self.doc_name);
-                self.submit(&action);
+                self.submit(crate::actions::pin_source_action(
+                    &hash,
+                    len,
+                    &self.doc_name,
+                ));
             }
-            Some((pinned, _, _)) if pinned != hash => {
+            Some(pinned) if pinned.hash != hash => {
                 self.status_note = Some(
                     "This file has changed since its markup was made; annotations may not line up"
                         .to_string(),
@@ -1612,13 +1625,17 @@ impl PdfApp {
         let Some((hash, _)) = self.source_blob.clone() else {
             return true;
         };
-        let Some((pinned, _, _)) = PdfDoc::source(state) else {
+        let Some(pinned) = PdfMarkup::of(state).pinned_source() else {
             // The source is pinned first; its markup is taken over after.
             return self.read_only;
         };
         if self.read_only
-            || pinned != hash
-            || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
+            || pinned.hash != hash
+            || PdfMarkup::of(state)
+                .imported_source()
+                .map(str::to_owned)
+                .as_deref()
+                == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
             return true;
@@ -1654,7 +1671,11 @@ impl PdfApp {
         hash: &str,
         existing: &crate::adopt::Existing,
     ) {
-        if PdfDoc::imported_source(state).as_deref() == Some(hash)
+        if PdfMarkup::of(state)
+            .imported_source()
+            .map(str::to_owned)
+            .as_deref()
+            == Some(hash)
             || self
                 .source_blob
                 .as_ref()
@@ -1662,17 +1683,17 @@ impl PdfApp {
         {
             return;
         }
-        let mut known: std::collections::HashSet<String> =
-            PdfDoc::list_annotations_with_hidden(state)
-                .into_iter()
-                .map(|a| a.id)
-                .collect();
-        for comment in PdfDoc::list_comments(state) {
+        let mut known: std::collections::HashSet<String> = PdfMarkup::of(state)
+            .annotations_with_hidden()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        for comment in PdfMarkup::of(state).list_comments() {
             known.extend(comment.replies.into_iter().map(|r| r.id));
             known.insert(comment.id);
         }
         let plan = crate::adopt::plan_import(hash, existing, &known);
-        self.submit(&crate::actions::import_existing_action(hash, &plan));
+        self.submit(crate::actions::import_existing_action(hash, &plan));
         self.reload(state);
         self.dirty = true;
     }
@@ -1680,10 +1701,13 @@ impl PdfApp {
     /// Page images leave the document's own markup out exactly when the
     /// record has taken it over (the reader then draws it from the records).
     fn sync_reader_markup(&mut self, state: &AutoCommit) {
-        let hide = self
-            .source_blob
-            .as_ref()
-            .is_some_and(|(hash, _)| PdfDoc::imported_source(state).as_deref() == Some(hash));
+        let hide = self.source_blob.as_ref().is_some_and(|(hash, _)| {
+            PdfMarkup::of(state)
+                .imported_source()
+                .map(str::to_owned)
+                .as_deref()
+                == Some(hash)
+        });
         if hide == self.reader_markup_hidden {
             return;
         }
@@ -1740,14 +1764,14 @@ impl PdfApp {
         if self.page_maps.len() != self.doc.page_count() {
             self.rebuild_page_maps();
         }
-        self.stored_annotations = PdfDoc::list_annotations(state);
+        self.stored_annotations = PdfMarkup::of(state).list_annotations();
         self.annotations = self
             .stored_annotations
             .iter()
             .map(|a| self.page_map(a.page).annotation_to_card(a))
             .collect();
-        self.adopted = PdfDoc::adopted(state);
-        self.comments = PdfDoc::list_comments(state);
+        self.adopted = PdfMarkup::of(state).adopted_entries();
+        self.comments = PdfMarkup::of(state).list_comments();
         let shown: HashSet<String> = self
             .comments
             .iter()
@@ -1763,11 +1787,12 @@ impl PdfApp {
         self.comment_views
             .get_mut()
             .retain(|key, _| shown.contains(key));
-        self.signatures = PdfDoc::list_signatures(state)
+        self.signatures = PdfMarkup::of(state)
+            .list_signatures()
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
             .collect();
-        self.form_values = PdfDoc::form_values(state);
+        self.form_values = PdfMarkup::of(state).form_values;
     }
 
     // ---- geometry ---------------------------------------------------
@@ -2045,7 +2070,7 @@ impl PdfApp {
                         self.resource_page_ids.get(to - 1).map(String::as_str)
                     };
                     let action = crate::actions::move_page_plan_action(&id, after);
-                    self.perform_action(state, &action);
+                    self.perform_action(state, action);
                 }
                 PageSidebarEvent::Duplicate(i) => {
                     let Some(id) = self.resource_page_ids.get(i) else {
@@ -2053,20 +2078,20 @@ impl PdfApp {
                     };
                     let source_page = self.resource_page_sources.get(i).copied().unwrap_or(i + 1);
                     let action =
-                        crate::actions::duplicate_page_plan_action(&crate::doc::PagePlanEntry {
+                        crate::actions::duplicate_page_plan_action(&crate::markup::PagePlanEntry {
                             id: id.clone(),
                             source_page,
                             imported: self.resource_page_imports.get(i).cloned().flatten(),
                             rotation: 0,
                         });
-                    self.perform_action(state, &action);
+                    self.perform_action(state, action);
                 }
                 PageSidebarEvent::Delete(i) => {
                     let Some(id) = self.resource_page_ids.get(i) else {
                         continue;
                     };
                     let action = crate::actions::delete_page_plan_action(id);
-                    self.perform_action(state, &action);
+                    self.perform_action(state, action);
                 }
                 PageSidebarEvent::Add => self.request_import_via_portal(),
             }
@@ -2105,10 +2130,8 @@ impl PdfApp {
             self.seed_pending = true;
             return;
         }
-        if !PdfDoc::has_page_plan(state) {
-            self.submit(&crate::actions::PdfViewerAction::EnsurePagePlan {
-                source_page_count: self.source_pages.len().max(1),
-            });
+        if !PdfMarkup::of(state).page_plan_seeded {
+            self.submit(PdfMarkup::START_PAGE_PLAN.with(self.source_pages.len().max(1)));
         }
         self.pin_source(state);
         // Asked again on the next frame while the PDF owner cannot be asked.
@@ -2124,7 +2147,7 @@ impl PdfApp {
         reason = "one pass per renderer keeps the plan adoption auditable"
     )]
     fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
-        let plan = PdfDoc::list_page_plan(state);
+        let plan = PdfMarkup::of(state).page_plan();
         if plan.is_empty() {
             return;
         }
@@ -2265,7 +2288,7 @@ impl PdfApp {
     }
 
     /// Test-only local raster-plan helper. Production page controls dispatch
-    /// `PdfViewerAction::MovePagePlan` through the shared action path.
+    /// the record's move-page verb.
     #[cfg(test)]
     fn next_local_page_id(&mut self) -> String {
         let identity = format!("page-local-{}", self.legacy_page_nonce);
@@ -2293,7 +2316,7 @@ impl PdfApp {
     }
 
     /// Test-only local raster-plan helper. Production page controls dispatch
-    /// `PdfViewerAction::DuplicatePagePlan` through the shared action path.
+    /// the record's duplicate-page verb.
     #[cfg(test)]
     pub fn duplicate_page_at(&mut self, i: usize) {
         if i >= self.doc.page_count() {
@@ -2313,7 +2336,7 @@ impl PdfApp {
     }
 
     /// Test-only local raster-plan helper. Production page controls dispatch
-    /// `PdfViewerAction::DeletePagePlan` through the shared action path.
+    /// the record's delete-page verb.
     #[cfg(test)]
     pub fn delete_page_at(&mut self, i: usize) {
         if self.doc.page_count() <= 1 || i >= self.doc.page_count() {
@@ -2426,10 +2449,10 @@ impl PdfApp {
         let pages = sizes
             .into_iter()
             .enumerate()
-            .map(|(index, (width, height))| crate::doc::PagePlanEntry {
+            .map(|(index, (width, height))| crate::markup::PagePlanEntry {
                 id: format!("import-{}", uuid::Uuid::new_v4()),
                 source_page: index + 1,
-                imported: Some(crate::doc::ImportedPage {
+                imported: Some(crate::markup::ImportedPage {
                     hash: hash.clone(),
                     kind: kind.clone(),
                     page: index + 1,
@@ -2443,7 +2466,7 @@ impl PdfApp {
             .resource_page_ids
             .get(at.saturating_sub(1))
             .map(String::as_str);
-        self.submit(&crate::actions::import_pages_action(after, pages));
+        self.submit(crate::actions::import_pages_action(after, pages));
         self.reconcile_shared_page_plan(state);
         self.go_to_page(at + 1);
         self.status_note = Some(
@@ -3332,20 +3355,17 @@ impl PdfApp {
             anno_id: &anno_id,
             comment_id: &comment_id,
             color: self.swatch,
-            author: &self.author,
-            created: self.created_counter,
             body: "",
         };
-        let action = match self.page_id_of(page) {
-            Some(page_id) => crate::actions::create_note_on_action(
-                &note,
-                page,
-                &page_id,
-                self.page_map(page).card_to_user(pt),
-            ),
-            None => crate::actions::create_note_action(&note, page, pt.0, pt.1),
+        let Some(page_id) = self.page_id_of(page) else {
+            return;
         };
-        self.perform_action(state, &action);
+        let action = crate::actions::create_note_on_action(
+            &note,
+            &page_id,
+            self.page_map(page).card_to_user(pt),
+        );
+        self.perform_action(state, action);
         self.selected_anno = Some(anno_id);
         self.selected_sig = None;
         // Open the Comments rail, scroll the brand-new thread into view, and
@@ -3448,14 +3468,13 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                self.perform_action(state, &crate::actions::set_comment_text_action(&id, clips));
+                self.perform_action(state, crate::actions::set_comment_text_action(&id, clips));
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
                 if !text.trim().is_empty() {
-                    let action =
-                        crate::actions::add_reply_text_action(&id, &self.author.clone(), clips);
-                    self.perform_action(state, &action);
+                    let action = crate::actions::add_reply_text_action(&id, clips);
+                    self.perform_action(state, action);
                     self.reload(state);
                 }
             }
@@ -3473,7 +3492,7 @@ impl PdfApp {
             }
             EditTarget::FormField(name) => {
                 let value = model::FormEntry::Text(text.trim_end().to_string());
-                self.perform_action(state, &crate::actions::set_form_value_action(&name, &value));
+                self.perform_action(state, crate::actions::set_form_value_action(&name, &value));
                 self.reload(state);
             }
             EditTarget::FreeText(id) => {
@@ -3483,7 +3502,11 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Annotation(id), state);
                     return;
                 }
-                self.perform_action(state, &crate::actions::set_free_text_action(&id, text));
+                if let Some(action) =
+                    crate::actions::set_free_text_action(&PdfMarkup::of(state), &id, text)
+                {
+                    self.perform_action(state, action);
+                }
                 // Grow the box to hold what was typed.
                 let grown = self
                     .annotations
@@ -3511,6 +3534,47 @@ impl PdfApp {
     fn cancel_edit(&mut self) {
         self.editing = None;
         self.dirty = true;
+    }
+
+    /// What opens a page, a piece of markup or a comment thread of the
+    /// record when asked from outside the window (a search hit, an agent).
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
+    {
+        let opens = std::rc::Rc::clone(&self.opens);
+        move |id| {
+            opens.borrow_mut().push(id.clone());
+            Ok(())
+        }
+    }
+
+    /// Show what was asked to be opened since the last frame: go to the
+    /// page, select the markup on it, reveal the comment thread.
+    fn drain_opens(&mut self) {
+        let opens = std::mem::take(&mut *self.opens.borrow_mut());
+        for id in opens {
+            let id = id.as_str();
+            if let Some(index) = self.resource_page_ids.iter().position(|page| page == id) {
+                self.go_to_page(index + 1);
+            } else if let Some(page) = self.annotations.iter().find(|a| a.id == id).map(|a| a.page)
+            {
+                self.go_to_page(page);
+                self.selected_anno = Some(id.to_owned());
+                self.selected_sig = None;
+            } else if let Some(page) = self.comments.iter().find(|c| c.id == id).map(|c| c.page) {
+                self.go_to_page(page);
+                self.focus_sidebar(SidebarTab::Comments, id.to_owned());
+            } else if let Some(page) = self.signatures.iter().find(|s| s.id == id).map(|s| s.page) {
+                self.go_to_page(page);
+                self.selected_sig = Some(id.to_owned());
+                self.selected_anno = None;
+                self.focus_sidebar(SidebarTab::Signatures, id.to_owned());
+            } else {
+                self.status_note = Some("That is no longer in this document".to_owned());
+            }
+            self.dirty = true;
+        }
     }
 
     /// Reveal a freshly-created item: ensure the sidebar is open on `tab` and
@@ -3586,11 +3650,10 @@ impl PdfApp {
             space: crate::model::GeomSpace::Page,
         };
         let user = self.page_map(page).signature_to_user(&s);
-        let page_id = self.page_id_of(page);
-        self.perform_action(
-            state,
-            &crate::actions::add_signature_on(&user, page_id.as_deref()),
-        );
+        let Some(page_id) = self.page_id_of(page) else {
+            return;
+        };
+        self.perform_action(state, crate::actions::add_signature_on(&user, &page_id));
         self.selected_sig = Some(sig_id.clone());
         self.selected_anno = None;
         // Land the user on the Signatures rail, scrolled to the new field.
@@ -3708,7 +3771,7 @@ impl PdfApp {
         };
         self.perform_action(
             state,
-            &crate::actions::set_form_value_action(&w.name, &value),
+            crate::actions::set_form_value_action(&w.name, &value),
         );
         self.reload(state);
         self.dirty = true;
@@ -3987,11 +4050,14 @@ impl PdfApp {
         };
         if let AnnoKind::FreeText { rect, size, .. } =
             self.page_map(a.page).annotation_to_user(&a).kind
+            && let Some(action) = crate::actions::set_free_text_box_user_action(
+                &PdfMarkup::of(state),
+                id,
+                &rect,
+                size,
+            )
         {
-            self.perform_action(
-                state,
-                &crate::actions::set_free_text_box_user_action(id, &rect, size),
-            );
+            self.perform_action(state, action);
         }
     }
 
@@ -4208,7 +4274,7 @@ impl PdfApp {
     fn delete_target(&mut self, target: &DeleteTarget, state: &mut ui::widget::Edits<'_>) {
         match target {
             DeleteTarget::Annotation(id) => {
-                self.perform_action(state, &crate::actions::delete_annotation_action(id));
+                self.perform_action(state, crate::actions::delete_annotation_action(id));
                 if self.selected_anno.as_deref() == Some(id.as_str()) {
                     self.selected_anno = None;
                 }
@@ -4227,10 +4293,10 @@ impl PdfApp {
                 {
                     self.selected_anno = None;
                 }
-                self.perform_action(state, &crate::actions::delete_comment_action(id));
+                self.perform_action(state, crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
-                self.perform_action(state, &crate::actions::delete_signature_action(id));
+                self.perform_action(state, crate::actions::delete_signature_action(id));
                 if self.selected_sig.as_deref() == Some(id.as_str()) {
                     self.selected_sig = None;
                 }
@@ -4905,7 +4971,7 @@ impl PdfApp {
                         .map(|(index, (width, height))| PagePlanEntry {
                             id: format!("import-{}", uuid::Uuid::new_v4()),
                             source_page: index + 1,
-                            imported: Some(crate::doc::ImportedPage {
+                            imported: Some(crate::markup::ImportedPage {
                                 hash: hash.clone(),
                                 kind: kind.clone(),
                                 page: index + 1,
@@ -4916,7 +4982,7 @@ impl PdfApp {
                         })
                         .collect();
                     self.pending_import = None;
-                    self.submit(&crate::actions::import_pages_action(
+                    self.submit(crate::actions::import_pages_action(
                         request.after.as_deref(),
                         pages,
                     ));
@@ -5077,6 +5143,7 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.drain_opens();
         self.follow_cancellation();
         self.follow_reopen();
         self.follow_signature();
@@ -5757,7 +5824,7 @@ impl Widget for PdfApp {
             if let Some(id) = self.selected_anno.clone() {
                 self.perform_action(
                     state,
-                    &crate::actions::set_annotation_color_action(&id, self.swatch),
+                    crate::actions::set_annotation_color_action(&id, self.swatch),
                 );
                 self.reload(state);
             }
@@ -5814,7 +5881,7 @@ impl Widget for PdfApp {
                 "resolve" => {
                     self.perform_action(
                         state,
-                        &crate::actions::set_comment_resolved_action(id, !comment.resolved),
+                        crate::actions::set_comment_resolved_action(id, !comment.resolved),
                     );
                     self.reload(state);
                 }
@@ -6074,7 +6141,7 @@ impl PdfApp {
     pub(crate) fn open_effect(
         &mut self,
         path: Option<String>,
-        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
     ) -> ui::framework::EffectAnswer {
         if self.portal_action.is_some()
             || self.pending_open.is_some()
@@ -6103,7 +6170,7 @@ impl PdfApp {
     fn open_here_effect(
         &mut self,
         path: std::path::PathBuf,
-        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+        cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
     ) -> ui::framework::EffectAnswer {
         use ui::framework::Effected;
         if self.source_path.as_deref() == Some(path.as_path()) {
@@ -6203,7 +6270,7 @@ mod tests {
     /// The app's search source as the framework builds it from what the open
     /// document says.
     fn searched(app: &PdfApp) -> impl ui::search::SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::PdfViewer>(app.shown_search_entries())
+        ui::framework::testing::search_source::<crate::PdfMarkup>(app.shown_search_entries())
     }
     use crate::model::Reply;
     use serial_test::serial;
@@ -6240,8 +6307,8 @@ mod tests {
 
     /// A highlight on the first page of the open document, as the palette
     /// or an agent adds one.
-    fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfViewer> {
-        ui::tilo_resource::Invoke::apply(&crate::actions::add_annotation_on(
+    fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfMarkup> {
+        crate::actions::add_annotation_on(
             &Annotation {
                 id: "launched-highlight".into(),
                 page: 1,
@@ -6252,9 +6319,8 @@ mod tests {
                 created_ms: 0,
                 space: crate::model::GeomSpace::Page,
             },
-            Some("source-1"),
-        ))
-        .expect("a highlight action")
+            "source-1",
+        )
     }
 
     #[serial(pdfium)]
@@ -6271,7 +6337,7 @@ mod tests {
             assert_eq!(app.state().annotations.len(), 1);
             let a_record = app.record().clone();
             assert_eq!(
-                app.state().source.map(|source| source.name),
+                app.state().pinned_source().map(|source| source.name),
                 Some("a.pdf".to_string()),
                 "the record pins the document it marks up"
             );
@@ -6321,7 +6387,7 @@ mod tests {
             );
             assert!(app.state().annotations.is_empty(), "without a.pdf's markup");
             assert_eq!(
-                app.state().source.map(|source| source.name),
+                app.state().pinned_source().map(|source| source.name),
                 Some("b.pdf".to_string())
             );
             let b_record = app.record().clone();
@@ -6374,7 +6440,9 @@ mod tests {
             sync_fixture(&mut app, &mut st);
             assert!(app.has_document);
             assert_eq!(
-                PdfDoc::source(&st.doc).map(|(hash, ..)| hash),
+                PdfMarkup::of(&st.doc)
+                    .pinned_source()
+                    .map(|source| source.hash),
                 app.source_blob.as_ref().map(|(hash, _)| hash.clone()),
                 "the window's record now marks up the chosen document"
             );
@@ -6482,11 +6550,11 @@ mod tests {
             }
             resource.children.iter().find_map(|child| find(child, id))
         }
-        let state = <crate::PdfViewer as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let state = <crate::PdfMarkup as ui::tilo_resource::Resource>::read(doc).ok()?;
         let published =
-            ui::tilo_resource::publish::<crate::PdfViewer>("pdf.document", "PDF", &state);
+            ui::tilo_resource::publish::<crate::PdfMarkup>("pdf.document", "PDF", &state);
         find(&published, id)
-            .or_else(|| <crate::PdfViewer as ui::tilo_resource::Resource>::child(&state, id))
+            .or_else(|| <crate::PdfMarkup as ui::tilo_resource::Resource>::child(&state, id))
             .or_else(|| {
                 app.document_row(id)
                     .map(ui::framework::LiveRow::into_resource)
@@ -6518,7 +6586,10 @@ mod tests {
         let mut app = crate::scenarios::sample_reader();
         let mut st = ui::State::new();
         sync_fixture(&mut app, &mut st);
-        assert!(PdfDoc::has_page_plan(&st.doc), "opening adds the page plan");
+        assert!(
+            PdfMarkup::of(&st.doc).page_plan_seeded,
+            "opening adds the page plan"
+        );
         let seeded = st.doc.get_heads();
         for _ in 0..3 {
             sync_fixture(&mut app, &mut st);
@@ -6619,35 +6690,41 @@ mod tests {
             let first = provider.search_page(&ui::search::SearchQuery::new(""), None, 1, 1);
             assert_eq!(first.inspected, 1);
             let stale_cursor = first.next.expect("catalogue paging stays bounded");
+            let item = |field: &str, id: &str| {
+                ui::tilo_resource::items::item_resource_id::<PdfMarkup>(
+                    field,
+                    &ui::tilo_resource::Id::from_raw(id),
+                )
+            };
+            let page_prefix = item("pages", "");
             let hit = provider
                 .search("overview")
                 .into_iter()
-                .find_map(|result| result.action_address())
-                .expect("page text is globally searchable by a canonical action");
-            assert!(resolve(&app, &state.doc, &hit.resource).is_some());
+                .map(|result| result.anchor())
+                .find(|anchor| anchor.starts_with(&page_prefix))
+                .expect("page text is globally searchable at its page");
+            assert!(resolve(&app, &state.doc, &hit).is_some());
 
             // The markup people made is searched through the resource, each
             // entry opening the published child it names.
-            let markup = <crate::PdfViewer as ui::tilo_resource::Resource>::read(&state.doc)
+            let markup = <crate::PdfMarkup as ui::tilo_resource::Resource>::read(&state.doc)
                 .expect("the record reads");
-            let entries = <crate::PdfViewer as ui::tilo_resource::Resource>::search(&markup);
+            let entries = <crate::PdfMarkup as ui::tilo_resource::Resource>::search(&markup);
             let markup_hit = |needle: &str| {
                 entries
                     .iter()
                     .find(|entry| entry.title.contains(needle) || entry.text.contains(needle))
-                    .and_then(|entry| entry.action.clone())
-                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"))
+                    .and_then(|entry| entry.anchor.clone())
+                    .unwrap_or_else(|| panic!("{needle:?} should produce a search hit at its item"))
             };
-            for needle in ["highlight", "Iroh relay"] {
-                let address = markup_hit(needle);
-                let resource = resolve(&app, &state.doc, &address.resource)
-                    .expect("search door resolves the addressed annotation/comment resource");
-                assert!(
-                    resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == address.action)
-                );
+            for (needle, delete) in [
+                ("highlight", "delete-annotation"),
+                ("Iroh relay", "delete-comment"),
+            ] {
+                let anchor = markup_hit(needle);
+                let resource = resolve(&app, &state.doc, &anchor)
+                    .expect("search door resolves the anchored annotation/comment item");
+                assert!(resource.actions.iter().any(|action| action.id == delete));
             }
             let bookmark_address = provider
                 .search("security model")
@@ -6663,11 +6740,14 @@ mod tests {
                     .iter()
                     .any(|action| action.id == bookmark_address.action)
             );
-            let reply_address = markup_hit("folded it");
-            assert!(reply_address.resource.starts_with("pdf.reply:"));
+            let reply_anchor = markup_hit("folded it");
             assert!(
-                resolve(&app, &state.doc, &reply_address.resource).is_some(),
-                "a reply search hit resolves to the durable reply resource"
+                reply_anchor.starts_with(&item("comments", "")),
+                "a reply is found in its thread"
+            );
+            assert!(
+                resolve(&app, &state.doc, &reply_anchor).is_some(),
+                "a reply search hit resolves to the durable thread"
             );
 
             app.open_search();
@@ -6705,9 +6785,9 @@ mod tests {
                 "unchanged sync avoids corpus traversal"
             );
 
-            let stale_resource = "pdf.page:source-1".to_string();
+            let stale_resource = item("pages", "source-1");
             let action = crate::actions::delete_page_plan_action("source-1");
-            app.perform_action(&mut Edits::lend(&mut state.doc), &action);
+            app.perform_action(&mut Edits::lend(&mut state.doc), action);
             app.sync_settled(&mut state.doc, &state.root);
             let restarted = searched(&app).search_page(
                 &ui::search::SearchQuery::new(""),
@@ -6731,8 +6811,21 @@ mod tests {
     fn shared_page_plan_keeps_markup_and_addresses_through_edits() {
         eprintln!("phase shared_page_plan_replays_merges_undoes_and_keeps_addresses_stable");
         {
-            use crate::actions::{
-                PdfViewerAction, delete_page_plan_action, encode, move_page_plan_action,
+            use crate::actions::{delete_page_plan_action, move_page_plan_action};
+            use ui::tilo_resource::{Id, Invoke, Replica};
+
+            // One peer authors an action, the other replays its envelope.
+            let author_and_replay =
+                |a: &mut AutoCommit, b: &mut AutoCommit, invoke: Invoke<PdfMarkup>| {
+                    let mut author = Replica::<PdfMarkup>::from_doc(std::mem::take(a));
+                    let mut peer = Replica::<PdfMarkup>::from_doc(std::mem::take(b));
+                    let envelope = author.apply(invoke).expect("author").clone();
+                    peer.replay(&envelope).expect("replay");
+                    *a = std::mem::take(author.doc_mut());
+                    *b = std::mem::take(peer.doc_mut());
+                };
+            let duplicate = |id: &str, copy: &str| {
+                PdfMarkup::DUPLICATE_PAGE.with((Id::from_raw(id), Some(copy.to_owned())))
             };
 
             let (mut a, mut state_a) = app_with_state();
@@ -6741,28 +6834,23 @@ mod tests {
             let mut state_b = ui::State::new();
             state_b.doc = AutoCommit::load(&base).expect("clone shared base");
             let (mut b, _) = app_with_state();
-            let mut registry = tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
 
             // One peer authors an ordered duplicate/reorder sequence. The envelope
             // carries the generated occurrence id, so the other replica need not
             // (and must not) mint one while replaying it.
-            let duplicate = PdfViewerAction::DuplicatePagePlan {
-                id: "source-2".into(),
-                new_id: "copy-of-source-2".into(),
-                source_page: 2,
-                imported: None,
-            };
-            let env = tilo_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
-                .expect("author duplicate");
-            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
-            let moved = move_page_plan_action("source-1", Some("copy-of-source-2"));
-            let env = tilo_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
-                .expect("author reorder");
-            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
+            author_and_replay(
+                &mut state_a.doc,
+                &mut state_b.doc,
+                duplicate("source-2", "copy-of-source-2"),
+            );
+            author_and_replay(
+                &mut state_a.doc,
+                &mut state_b.doc,
+                move_page_plan_action("source-1", Some("copy-of-source-2")),
+            );
             assert_eq!(
-                crate::doc::PdfDoc::list_page_plan(&state_a.doc),
-                crate::doc::PdfDoc::list_page_plan(&state_b.doc),
+                PdfMarkup::of(&state_a.doc).page_plan(),
+                PdfMarkup::of(&state_b.doc).page_plan(),
                 "the exact same action envelopes reproduce durable ids and order"
             );
 
@@ -6771,22 +6859,25 @@ mod tests {
             a.sync_settled(&mut state_a.doc, &state_a.root);
             b.sync_settled(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
-            let source_two_hits: Vec<tilo_actions::ActionAddress> = searched(&a)
+            let source_two_hits: Vec<String> = searched(&a)
                 .search("Per-cluster sandboxing")
                 .into_iter()
-                .filter_map(|result| result.action_address())
+                .map(|result| result.anchor())
                 .collect();
             assert!(
                 source_two_hits
                     .iter()
-                    .any(|address| address.resource.ends_with(":source-2"))
+                    .any(|anchor| anchor.ends_with("/source-2"))
                     && source_two_hits
                         .iter()
-                        .any(|address| address.resource.ends_with(":copy-of-source-2")),
+                        .any(|anchor| anchor.ends_with("/copy-of-source-2")),
                 "duplicate occurrences retain the immutable source page's searchable text"
             );
             let page_id = "source-1";
-            let resource_id = format!("pdf.page:{page_id}");
+            let resource_id = ui::tilo_resource::items::item_resource_id::<PdfMarkup>(
+                "pages",
+                &Id::from_raw(page_id),
+            );
             assert!(
                 resolve(&a, &state_a.doc, &resource_id).is_some(),
                 "the durable page id resolves through the provider"
@@ -6803,10 +6894,11 @@ mod tests {
             // A stale delete cannot target a newly-created or reordered occurrence:
             // after it wins, lazy resolution fails closed instead of falling back to
             // an ordinal page address.
-            let delete = delete_page_plan_action(page_id);
-            let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
-                .expect("author delete");
-            tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
+            author_and_replay(
+                &mut state_a.doc,
+                &mut state_b.doc,
+                delete_page_plan_action(page_id),
+            );
             a.sync_settled(&mut state_a.doc, &state_a.root);
             b.sync_settled(&mut state_b.doc, &state_b.root);
             assert!(resolve(&a, &state_a.doc, &resource_id).is_none());
@@ -6815,23 +6907,12 @@ mod tests {
             // Concurrent page-plan actions merge like the other markup actions.
             let mut left = AutoCommit::load(&base).expect("left replica");
             let mut right = AutoCommit::load(&base).expect("right replica");
-            let left_action = PdfViewerAction::DuplicatePagePlan {
-                id: "source-1".into(),
-                new_id: "copy-left".into(),
-                source_page: 1,
-                imported: None,
-            };
-            let right_action = PdfViewerAction::DuplicatePagePlan {
-                id: "source-3".into(),
-                new_id: "copy-right".into(),
-                source_page: 3,
-                imported: None,
-            };
-            tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
-            tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+            PdfMarkup::apply_to(&mut left, duplicate("source-1", "copy-left"));
+            PdfMarkup::apply_to(&mut right, duplicate("source-3", "copy-right"));
             left.merge_incoming(&mut right)
                 .expect("merge concurrent page edits");
-            let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
+            let merged_ids: Vec<String> = PdfMarkup::of(&left)
+                .page_plan()
                 .into_iter()
                 .map(|entry| entry.id)
                 .collect();
@@ -6843,32 +6924,21 @@ mod tests {
             let mut undo_app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
                 .expect("the reader");
             undo_app
-                .invoke(
-                    ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
-                        source_page_count: 3,
-                    })
-                    .unwrap(),
-                )
+                .invoke(PdfMarkup::START_PAGE_PLAN.with(3))
                 .expect("the plan");
-            let before = undo_app.state().pages;
-            let undo_action = PdfViewerAction::DuplicatePagePlan {
-                id: "source-1".into(),
-                new_id: "copy-undo".into(),
-                source_page: 1,
-                imported: None,
-            };
+            let before = undo_app.state().page_plan();
             undo_app
-                .invoke(ui::tilo_resource::Invoke::apply(&undo_action).unwrap())
+                .invoke(duplicate("source-1", "copy-undo"))
                 .expect("the owner duplicates a page");
-            assert_eq!(undo_app.state().pages.len(), before.len() + 1);
+            assert_eq!(undo_app.state().page_plan().len(), before.len() + 1);
             assert!(undo_app.undo(), "shared page action is an undo step");
-            assert_eq!(undo_app.state().pages, before);
+            assert_eq!(undo_app.state().page_plan(), before);
         }
 
         eprintln!("phase imported_occurrence_keeps_markup_through_move_duplicate_and_delete");
         {
-            use crate::actions::{PdfViewerAction, add_annotation_action, move_page_plan_action};
-            use crate::doc::{ImportedPage, PagePlanEntry};
+            use crate::actions::{add_annotation_on, move_page_plan_action};
+            use crate::markup::{ImportedPage, PagePlanEntry};
 
             let (mut app, mut state) = app_with_state();
             let imported = ImportedPage {
@@ -6886,7 +6956,7 @@ mod tests {
             };
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
+                crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
             );
             app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(app.resource_page_ids[1], "imported-occurrence");
@@ -6908,11 +6978,11 @@ mod tests {
             };
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &add_annotation_action(&annotation),
+                add_annotation_on(&annotation, "imported-occurrence"),
             );
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &move_page_plan_action("imported-occurrence", Some("source-3")),
+                move_page_plan_action("imported-occurrence", Some("source-3")),
             );
             app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
@@ -6926,15 +6996,14 @@ mod tests {
 
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &PdfViewerAction::DuplicatePagePlan {
-                    id: page.id.clone(),
-                    new_id: "imported-copy".into(),
-                    source_page: page.source_page,
-                    imported: page.imported,
-                },
+                PdfMarkup::DUPLICATE_PAGE.with((
+                    ui::tilo_resource::Id::from_raw(page.id),
+                    Some("imported-copy".to_owned()),
+                )),
             );
             assert_eq!(
-                PdfDoc::list_page_plan(&state.doc)
+                PdfMarkup::of(&state.doc)
+                    .page_plan()
                     .into_iter()
                     .find(|entry| entry.id == "imported-copy")
                     .and_then(|entry| entry.imported),
@@ -6943,7 +7012,7 @@ mod tests {
             );
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &crate::actions::delete_page_plan_action("imported-occurrence"),
+                crate::actions::delete_page_plan_action("imported-occurrence"),
             );
             app.sync_settled(&mut state.doc, &state.root);
             assert!(
@@ -6968,14 +7037,15 @@ mod tests {
             let path = concat!(env!("OUT_DIR"), "/sample.pdf");
             let mut app = PdfApp::open(path);
             let mut state = ui::State::new();
+            app.sync_settled(&mut state.doc, &state.root);
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
-                &crate::actions::import_pages_action(
+                crate::actions::import_pages_action(
                     Some("source-1"),
-                    vec![crate::doc::PagePlanEntry {
+                    vec![crate::markup::PagePlanEntry {
                         id: "review-unavailable-import".into(),
                         source_page: 1,
-                        imported: Some(crate::doc::ImportedPage {
+                        imported: Some(crate::markup::ImportedPage {
                             hash: "d".repeat(64),
                             kind: "image".into(),
                             page: 1,
@@ -7518,7 +7588,8 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             seed_selection(&mut app, "Hello", 4);
             let hl = |st: &ui::State| {
-                PdfDoc::list_annotations(&st.doc)
+                PdfMarkup::of(&st.doc)
+                    .list_annotations()
                     .into_iter()
                     .filter(|a| matches!(a.kind, AnnoKind::Markup { .. }))
                     .count()
@@ -7546,7 +7617,8 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             seed_selection(&mut app, "AB", 1);
             let notes = |st: &ui::State| {
-                PdfDoc::list_annotations(&st.doc)
+                PdfMarkup::of(&st.doc)
+                    .list_annotations()
                     .into_iter()
                     .filter(|a| matches!(a.kind, AnnoKind::Note { .. }))
                     .count()
@@ -7889,7 +7961,7 @@ mod tests {
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
             assert_eq!(
-                PdfDoc::list_comments(&st.doc).len(),
+                PdfMarkup::of(&st.doc).list_comments().len(),
                 c0 + 1,
                 "creating a note landed in the shared document"
             );
@@ -7919,12 +7991,15 @@ mod tests {
                 "the marker follows the pointer live"
             );
             // Release persists the new anchor to the shared document.
-            PdfDoc::set_annotation_position(
+            let note = PdfMarkup::paths()
+                .annotations
+                .item(&ui::tilo_resource::Id::from_raw(id.clone()));
+            PdfMarkup::apply_to(
                 &mut st.doc,
-                &id,
-                nx,
-                ny,
-                crate::model::GeomSpace::Page,
+                ui::tilo_resource::Invoke::group([
+                    ui::tilo_resource::Invoke::from(note.mark.set(AnnoKind::Note { x: nx, y: ny })),
+                    ui::tilo_resource::Invoke::from(note.space.set(crate::model::GeomSpace::Page)),
+                ]),
             );
             app.reload(&st.doc);
             let (x, y) = app.note_pos(&id).expect("the note survives the reposition");
@@ -8087,7 +8162,8 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(
-                PdfDoc::list_annotations(&st.doc)
+                PdfMarkup::of(&st.doc)
+                    .list_annotations()
                     .iter()
                     .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
                 "and the ink stroke landed in the shared document"
@@ -8363,7 +8439,7 @@ mod tests {
                 "runtime date is not the hardcoded demo constant"
             );
             // And the real date is what durably lands in the shared CRDT.
-            let stored = PdfDoc::list_signatures(&st.doc);
+            let stored = PdfMarkup::of(&st.doc).list_signatures();
             assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
         }
 
@@ -8387,7 +8463,7 @@ mod tests {
                 "a typed signature carries typed ink"
             );
             // And it durably reaches the shared CRDT as typed ink.
-            let stored = PdfDoc::list_signatures(&st.doc);
+            let stored = PdfMarkup::of(&st.doc).list_signatures();
             assert!(
                 stored
                     .iter()
@@ -8434,7 +8510,7 @@ mod tests {
                 }
                 SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
             }
-            let stored = PdfDoc::list_signatures(&st.doc);
+            let stored = PdfMarkup::of(&st.doc).list_signatures();
             assert!(
                 stored.iter().any(
                     |x| matches!(&x.ink, SignatureInk::Drawn { strokes } if strokes.len() == 1)
@@ -8473,17 +8549,19 @@ mod tests {
         eprintln!("phase comment_authors_read_as_the_rosters_names");
         {
             let (mut app, mut st) = app_with_state();
-            app.author = "me-id".into();
+            // The test dispatcher acts as `test-author`.
+            app.author = "test-author".into();
             app.attach_people(ui::framework::People::named(
-                Some("me-id"),
+                Some("test-author"),
                 &[("peer-id", "Bob Builder")],
             ));
             app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
-            let thread = PdfDoc::list_comments(&st.doc)
+            let thread = PdfMarkup::of(&st.doc)
+                .list_comments()
                 .into_iter()
                 .find(|comment| comment.page == 2)
                 .expect("the new note's thread");
-            assert_eq!(thread.author, "me-id", "the record keeps the id");
+            assert_eq!(thread.author, "test-author", "the record keeps the id");
             assert_eq!(app.author_name(&thread.author), "You");
             assert_eq!(app.author_name("peer-id"), "Bob Builder");
             assert_eq!(
@@ -8521,8 +8599,9 @@ mod tests {
                 "the strokes are kept"
             );
             assert!(
-                PdfDoc::list_signatures(&st.doc).is_empty()
-                    || PdfDoc::list_signatures(&st.doc)
+                PdfMarkup::of(&st.doc).list_signatures().is_empty()
+                    || PdfMarkup::of(&st.doc)
+                        .list_signatures()
                         .iter()
                         .all(|signature| signature.signer != "Ada Lovelace"),
                 "composing a signature writes nothing into the shared document"
@@ -9105,7 +9184,7 @@ mod tests {
             };
             let rz = app.raster.as_mut().unwrap();
             let plan: Vec<_> = (1..=rz.page_count())
-                .map(|page| crate::doc::PagePlanEntry {
+                .map(|page| crate::markup::PagePlanEntry {
                     id: format!("source-{page}"),
                     source_page: page,
                     imported: None,

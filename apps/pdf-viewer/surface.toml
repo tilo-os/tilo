@@ -1,0 +1,1580 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "pdf.document"
+label = "PDF"
+version = 1
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "source"
+readonly = true
+stored = "value"
+title = "The PDF bytes the markup is made against. The first pin wins: a"
+type = "Bytes"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "source_name"
+readonly = true
+stored = "value"
+title = "The file name the source was opened under; empty when unnamed"
+type = "String"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "page_plan_seeded"
+readonly = true
+stored = "value"
+title = "Whether the page plan was made from the source"
+type = "bool"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "imported_source"
+readonly = true
+stored = "value"
+title = "The source whose own markup this record has taken over; empty"
+type = "String"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "pages"
+stored = "collection"
+title = "The pages, in reading order"
+type = "Collection<PageOccurrence>"
+
+[[resources.fields]]
+owner = "page-occurrence"
+path = "pages.*.source_page"
+readonly = true
+stored = "value"
+title = "The page of its PDF it shows, 1-based"
+type = "usize"
+
+[[resources.fields]]
+owner = "page-occurrence"
+path = "pages.*.imported"
+readonly = true
+stored = "value"
+title = "The bytes it comes from when it is not the opened file's"
+type = "Option<ImportedPage>"
+
+[[resources.fields]]
+owner = "page-occurrence"
+path = "pages.*.rotation"
+stored = "value"
+title = "Turn: clockwise, a multiple of 90 degrees"
+type = "i32"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "annotations"
+stored = "keyed"
+title = "Annotations: text markup, ink, notes and free text"
+type = "Keyed<StoredAnnotation>"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.page_id"
+stored = "value"
+title = "Page: the page occurrence it is on"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.mark"
+stored = "value"
+title = "Mark: what it marks, and where"
+type = "AnnoKind"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.color"
+stored = "value"
+title = "Colour"
+type = "Swatch"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.author"
+readonly = true
+stored = "value"
+title = "Who made it"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.chars"
+readonly = true
+stored = "value"
+title = "The engine character range `[start, end)` text markup covers"
+type = "Option<[u32; 2]>"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.created_ms"
+readonly = true
+stored = "value"
+title = "When it was made (unix milliseconds; 0 when unknown)"
+type = "i64"
+
+[[resources.fields]]
+owner = "stored-annotation"
+path = "annotations.*.space"
+stored = "value"
+title = "Which space its geometry is in"
+type = "GeomSpace"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "comments"
+stored = "keyed"
+title = "Comment threads"
+type = "Keyed<StoredComment>"
+unit = true
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.anno"
+readonly = true
+stored = "value"
+title = "The annotation it is pinned to; empty for a comment free on a page"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.page_id"
+stored = "value"
+title = "The page occurrence it is on"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.author"
+readonly = true
+stored = "value"
+title = "Who wrote it"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "stored-comment"
+path = "comments.*.text"
+stored = "value"
+title = "What it says, as plain text"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.rich"
+stored = "value"
+title = "Its paragraphs as written, with their formatting; empty when it is"
+type = "Json<Vec<tilo_document::ClipBlock>>"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.created"
+readonly = true
+stored = "value"
+title = "Ordinal for a stable order: creation order"
+type = "i64"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.resolved"
+stored = "value"
+title = "Resolved"
+type = "bool"
+
+[[resources.fields]]
+owner = "stored-comment"
+path = "comments.*.replies"
+stored = "collection"
+title = "The answers, in the order they were written"
+type = "Collection<StoredReply>"
+
+[[resources.fields]]
+owner = "stored-reply"
+path = "comments.*.replies.*.author"
+readonly = true
+stored = "value"
+title = "Who wrote it"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "stored-reply"
+path = "comments.*.replies.*.text"
+stored = "value"
+title = "What it says, as plain text"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-reply"
+path = "comments.*.replies.*.rich"
+stored = "value"
+title = "Its paragraphs as written, with their formatting; empty when it is"
+type = "Json<Vec<tilo_document::ClipBlock>>"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "signatures"
+stored = "keyed"
+title = "Signatures"
+type = "Keyed<StoredSignature>"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.page_id"
+stored = "value"
+title = "The page occurrence it is on"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.rect"
+stored = "value"
+title = "Where it is on the page"
+type = "PtRect"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.signer"
+readonly = true
+stored = "value"
+title = "Who signed"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.date"
+readonly = true
+stored = "value"
+title = "When they signed, as they wrote it"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.ink"
+readonly = true
+stored = "value"
+title = "What was signed: the typed name or the strokes drawn"
+type = "SignatureInk"
+
+[[resources.fields]]
+owner = "stored-signature"
+path = "signatures.*.space"
+stored = "value"
+title = "Which space `rect` is in"
+type = "GeomSpace"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "form_values"
+stored = "value"
+title = "Form values, by the field's fully qualified name"
+type = "BTreeMap<String, FormEntry>"
+
+[[resources.fields]]
+owner = "pdf-markup"
+path = "adopted"
+readonly = true
+stored = "value"
+title = "Where taken-over annotations came from, by record id"
+type = "BTreeMap<String, AdoptedEntry>"
+
+[[resources.verbs]]
+description = "Make the page plan.  The pages of the opened file, in their order, the first time a record meets it. Page ids are deterministic, so two people opening the same file agree."
+id = "start-page-plan"
+kind = "undoable"
+label = "Make the page plan"
+
+[[resources.verbs.params]]
+name = "pages"
+required = true
+
+[resources.verbs.params.schema]
+description = "How many pages the PDF has"
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Pin the source.  Names the PDF bytes the markup is made against by their content. The first pin of a record wins: it never re-targets its markup."
+id = "pin-source"
+kind = "undoable"
+label = "Pin the source"
+
+[[resources.verbs.params]]
+name = "hash"
+required = true
+
+[resources.verbs.params.schema]
+description = "The content hash of the PDF bytes"
+type = "string"
+
+[[resources.verbs.params]]
+name = "len"
+required = true
+
+[resources.verbs.params.schema]
+description = "How many bytes they are"
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "The file's name"
+type = "string"
+
+[[resources.verbs]]
+description = "Take over the PDF's own markup.  The highlights, notes and their replies, free text, ink and form values the source bytes already carry become records like any other, once per source. Their ids derive from the source, so two people taking it over at once agree."
+id = "adopt-existing"
+kind = "undoable"
+label = "Take over the PDF's own markup"
+
+[[resources.verbs.params]]
+name = "source"
+required = true
+
+[resources.verbs.params.schema]
+description = "The content hash of the source the markup is in"
+type = "string"
+
+[[resources.verbs.params]]
+name = "markup"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The markup it carries"
+required = [
+    "annotations",
+    "comments",
+    "form_values",
+    "adopted",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.adopted]
+type = "array"
+
+[resources.verbs.params.schema.properties.adopted.items]
+additionalProperties = false
+description = "Where a taken-over annotation came from."
+required = [
+    "id",
+    "page",
+    "index",
+    "name",
+    "kind",
+    "print",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.id]
+description = "The record it became: an annotation id, or a reply id for a reply."
+type = "string"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.index]
+description = "Index in that page's annotations."
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.kind]
+description = "The PDF subtype (`kind_key`)."
+type = "string"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.name]
+description = "`/NM`, possibly empty."
+type = "string"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.page]
+description = "0-based page of the source bytes."
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.adopted.items.properties.parent]
+description = "For a reply: the annotation it belongs to."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.adopted.items.properties.print]
+description = "For an annotation: the fingerprint of its thread when imported. Empty for a reply, which follows its parent."
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations]
+type = "array"
+
+[resources.verbs.params.schema.properties.annotations.items]
+additionalProperties = false
+description = "An annotation the PDF already carried, as taken over."
+required = [
+    "id",
+    "page_id",
+    "mark",
+    "color",
+    "author",
+    "created_ms",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.author]
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.color]
+description = "yellow, green, pink, blue, purple, or an exact colour #rrggbb"
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.created_ms]
+type = "integer"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark]
+description = "What an annotation marks: its kind and its geometry."
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf]]
+additionalProperties = false
+description = "Text markup (highlight, underline, strike-through) over one band per line it covers."
+required = [
+    "kind",
+    "style",
+    "quads",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.kind]
+const = "markup"
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads]
+type = "array"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads.items]
+additionalProperties = false
+description = "A rectangle in page-point space (origin top-left of the page)."
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads.items.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads.items.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads.items.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.quads.items.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.style]
+description = "How text markup is drawn and exported."
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.style.oneOf]]
+const = "highlight"
+type = "string"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.style.oneOf]]
+const = "underline"
+type = "string"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.style.oneOf]]
+const = "strikeout"
+type = "string"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.style.oneOf]]
+const = "squiggly"
+description = "A wavy underline (from PDFs that use it; drawn as an underline)."
+type = "string"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf]]
+additionalProperties = false
+description = "Freehand ink: one or more polylines."
+required = [
+    "kind",
+    "strokes",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.kind]
+const = "ink"
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.strokes]
+type = "array"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.strokes.items]
+type = "array"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.strokes.items.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf]]
+additionalProperties = false
+description = "A sticky note anchored at a point. The body text is mirrored into the linked top-level comment so the comments rail can thread it."
+required = [
+    "kind",
+    "x",
+    "y",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.kind]
+const = "note"
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.y]
+type = "number"
+
+[[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf]]
+additionalProperties = false
+description = "Text written on the page inside `rect`, wrapped to its width, at `size` points, in the annotation's colour."
+required = [
+    "kind",
+    "rect",
+    "text",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.kind]
+const = "freetext"
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.rect]
+additionalProperties = false
+description = "A rectangle in page-point space (origin top-left of the page)."
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.rect.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.rect.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.rect.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.rect.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.size]
+type = "number"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.mark.oneOf.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.annotations.items.properties.page_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments]
+type = "array"
+
+[resources.verbs.params.schema.properties.comments.items]
+additionalProperties = false
+description = "A comment thread the PDF already carried."
+required = [
+    "id",
+    "page_id",
+    "author",
+    "text",
+    "created",
+    "replies",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.comments.items.properties.anno]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.comments.items.properties.author]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.created]
+type = "integer"
+
+[resources.verbs.params.schema.properties.comments.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.page_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.replies]
+type = "array"
+
+[resources.verbs.params.schema.properties.comments.items.properties.replies.items]
+additionalProperties = false
+description = "A reply the PDF already carried."
+required = [
+    "id",
+    "author",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.comments.items.properties.replies.items.properties.author]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.replies.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.replies.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.comments.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.form_values]
+type = "object"
+
+[[resources.verbs]]
+description = "Import pages.  Pages of other PDFs or pictures, by content, after a page (first when none is named). Their bytes are in the content store, never here."
+id = "import-pages"
+kind = "undoable"
+label = "Import pages"
+
+[[resources.verbs.params]]
+name = "after"
+required = false
+
+[resources.verbs.params.schema]
+description = "The page they go after; the start when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "pages"
+required = true
+
+[resources.verbs.params.schema]
+description = "The pages, each with the id it is addressed by"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A durable page-plan entry, as the reader works with it: the occurrence `id`, the immutable source page it shows, and its turn."
+required = [
+    "id",
+    "source_page",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.imported]
+additionalProperties = false
+description = "`None` denotes a page of the file which was opened; a populated value names bytes in the app's content store by hash."
+required = [
+    "hash",
+    "kind",
+    "page",
+    "width_milli",
+    "height_milli",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.imported.properties.hash]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.imported.properties.height_milli]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.imported.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.imported.properties.page]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.imported.properties.width_milli]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.rotation]
+description = "Clockwise rotation (0, 90, 180 or 270) added to the source page's own."
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.source_page]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Duplicate page.  Another occurrence of the page right after it. Markup stays with the page it was made on."
+id = "duplicate-page"
+kind = "undoable"
+label = "Duplicate page"
+
+[[resources.verbs.params]]
+name = "page"
+required = true
+
+[resources.verbs.params.schema]
+description = "Page"
+type = "string"
+
+[[resources.verbs.params]]
+name = "copy"
+required = false
+
+[resources.verbs.params.schema]
+description = "The id the copy is addressed by; a new one when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Delete page.  Its markup stays in the record, hidden, and comes back with the page. The last page is never deleted."
+id = "delete-page"
+kind = "undoable"
+label = "Delete page"
+
+[[resources.verbs.params]]
+name = "page"
+required = true
+
+[resources.verbs.params.schema]
+description = "Page"
+type = "string"
+
+[[resources.verbs]]
+description = "Move page.  After another page, or to the start."
+id = "move-page"
+kind = "undoable"
+label = "Move page"
+
+[[resources.verbs.params]]
+name = "page"
+required = true
+
+[resources.verbs.params.schema]
+description = "Page"
+type = "string"
+
+[[resources.verbs.params]]
+name = "after"
+required = false
+
+[resources.verbs.params.schema]
+description = "The page it goes after; the start when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Rotate page.  A quarter turn clockwise."
+id = "rotate-page"
+kind = "undoable"
+label = "Rotate page"
+
+[[resources.verbs.params]]
+name = "page"
+required = true
+
+[resources.verbs.params.schema]
+description = "Page"
+type = "string"
+
+[[resources.verbs]]
+description = "Add annotation.  Text markup, ink, a note or free text on a page, signed by whoever adds it."
+id = "add-annotation"
+kind = "undoable"
+label = "Add annotation"
+
+[[resources.verbs.params]]
+name = "annotation"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The annotation"
+required = [
+    "id",
+    "page_id",
+    "mark",
+    "color",
+    "space",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.chars]
+description = "The engine character range `[start, end)` text markup covers."
+maxItems = 2
+minItems = 2
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.chars.items]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.color]
+description = "yellow, green, pink, blue, purple, or an exact colour #rrggbb"
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+description = "The id it is addressed by."
+type = "string"
+
+[resources.verbs.params.schema.properties.mark]
+description = "What it marks, and where."
+
+[[resources.verbs.params.schema.properties.mark.oneOf]]
+additionalProperties = false
+description = "Text markup (highlight, underline, strike-through) over one band per line it covers."
+required = [
+    "kind",
+    "style",
+    "quads",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.kind]
+const = "markup"
+type = "string"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads]
+type = "array"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads.items]
+additionalProperties = false
+description = "A rectangle in page-point space (origin top-left of the page)."
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads.items.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads.items.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads.items.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.quads.items.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.style]
+description = "How text markup is drawn and exported."
+
+[[resources.verbs.params.schema.properties.mark.oneOf.properties.style.oneOf]]
+const = "highlight"
+type = "string"
+
+[[resources.verbs.params.schema.properties.mark.oneOf.properties.style.oneOf]]
+const = "underline"
+type = "string"
+
+[[resources.verbs.params.schema.properties.mark.oneOf.properties.style.oneOf]]
+const = "strikeout"
+type = "string"
+
+[[resources.verbs.params.schema.properties.mark.oneOf.properties.style.oneOf]]
+const = "squiggly"
+description = "A wavy underline (from PDFs that use it; drawn as an underline)."
+type = "string"
+
+[[resources.verbs.params.schema.properties.mark.oneOf]]
+additionalProperties = false
+description = "Freehand ink: one or more polylines."
+required = [
+    "kind",
+    "strokes",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.kind]
+const = "ink"
+type = "string"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.strokes]
+type = "array"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.strokes.items]
+type = "array"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.strokes.items.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[[resources.verbs.params.schema.properties.mark.oneOf]]
+additionalProperties = false
+description = "A sticky note anchored at a point. The body text is mirrored into the linked top-level comment so the comments rail can thread it."
+required = [
+    "kind",
+    "x",
+    "y",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.kind]
+const = "note"
+type = "string"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.y]
+type = "number"
+
+[[resources.verbs.params.schema.properties.mark.oneOf]]
+additionalProperties = false
+description = "Text written on the page inside `rect`, wrapped to its width, at `size` points, in the annotation's colour."
+required = [
+    "kind",
+    "rect",
+    "text",
+    "size",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.kind]
+const = "freetext"
+type = "string"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.rect]
+additionalProperties = false
+description = "A rectangle in page-point space (origin top-left of the page)."
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.rect.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.rect.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.rect.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.rect.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.size]
+type = "number"
+
+[resources.verbs.params.schema.properties.mark.oneOf.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.page_id]
+description = "The page occurrence it is on."
+type = "string"
+
+[resources.verbs.params.schema.properties.space]
+description = "The space its geometry is in."
+enum = [
+    "page",
+    "user",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete annotation.  The comments pinned to it go with it, so a deleted note leaves no thread behind."
+id = "delete-annotation"
+kind = "undoable"
+label = "Delete annotation"
+
+[[resources.verbs.params]]
+name = "annotation"
+required = true
+
+[resources.verbs.params.schema]
+description = "Annotation"
+type = "string"
+
+[[resources.verbs]]
+description = "Add note.  A sticky note on a page and the comment thread pinned to it, signed by whoever adds it."
+id = "create-note"
+kind = "undoable"
+label = "Add note"
+
+[[resources.verbs.params]]
+name = "note"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The note"
+required = [
+    "annotation",
+    "comment",
+    "page_id",
+    "x",
+    "y",
+    "color",
+    "text",
+    "space",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.annotation]
+description = "The id of the note on the page."
+type = "string"
+
+[resources.verbs.params.schema.properties.color]
+description = "yellow, green, pink, blue, purple, or an exact colour #rrggbb"
+type = "string"
+
+[resources.verbs.params.schema.properties.comment]
+description = "The id of its comment thread."
+type = "string"
+
+[resources.verbs.params.schema.properties.page_id]
+description = "The page occurrence it is on."
+type = "string"
+
+[resources.verbs.params.schema.properties.space]
+description = "The space `x` and `y` are in."
+enum = [
+    "page",
+    "user",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.text]
+description = "What it says."
+type = "string"
+
+[resources.verbs.params.schema.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.y]
+type = "number"
+
+[[resources.verbs]]
+description = "Add a note at the top of a page.  A sticky note with this text, where a reader looks first; for the palette, keyboard users and agents."
+id = "add-note"
+kind = "undoable"
+label = "Add a note at the top of a page"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "What the note says"
+type = "string"
+
+[[resources.verbs.params]]
+name = "page"
+required = false
+
+[resources.verbs.params.schema]
+description = "Page (1 when omitted)"
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Add comment.  Free on a page, or about an annotation, signed by whoever writes it."
+id = "add-comment"
+kind = "undoable"
+label = "Add comment"
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The comment"
+required = [
+    "id",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.anno]
+description = "The annotation it is about; it is on that annotation's page."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.id]
+description = "The id it is addressed by."
+type = "string"
+
+[resources.verbs.params.schema.properties.page_id]
+description = "The page occurrence it is on, when it is about no annotation."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.rich]
+description = "Its paragraphs as written; none for plain text."
+type = "array"
+
+[resources.verbs.params.schema.properties.rich.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.rich.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.properties.rich.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.properties.rich.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.properties.rich.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.rich.items.properties.text]
+type = "string"
+
+[resources.verbs.params.schema.properties.text]
+description = "What it says, as plain text."
+type = "string"
+
+[[resources.verbs]]
+description = "Reply.  Adds an answer to the thread, signed by whoever writes it."
+id = "reply"
+kind = "undoable"
+label = "Reply"
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+description = "Comment"
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "What it says"
+type = "string"
+
+[[resources.verbs.params]]
+name = "id"
+required = false
+
+[resources.verbs.params.schema]
+description = "The id the reply is addressed by; a new one when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "rich"
+required = false
+
+[resources.verbs.params.schema]
+description = "Its paragraphs as written; none for plain text"
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete comment.  A comment pinning a sticky note takes the note with it."
+id = "delete-comment"
+kind = "undoable"
+label = "Delete comment"
+
+[[resources.verbs.params]]
+name = "comment"
+required = true
+
+[resources.verbs.params.schema]
+description = "Comment"
+type = "string"
+
+[[resources.verbs]]
+description = "Sign.  Places a signature on a page."
+id = "add-signature"
+kind = "undoable"
+label = "Sign"
+
+[[resources.verbs.params]]
+name = "signature"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The signature"
+required = [
+    "id",
+    "page_id",
+    "rect",
+    "signer",
+    "date",
+    "ink",
+    "space",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.date]
+description = "When it was signed, as written beside it."
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+description = "The id it is addressed by."
+type = "string"
+
+[resources.verbs.params.schema.properties.ink]
+description = "The visible content of a placed signature: either the signer's typed name (rendered in a signature script) or freehand strokes, normalised into the field's `0..1` box so it scales to any placement size."
+
+[[resources.verbs.params.schema.properties.ink.oneOf]]
+additionalProperties = false
+description = "Render the signer's name as a script-style typed signature."
+required = ["ink"]
+type = "object"
+
+[resources.verbs.params.schema.properties.ink.oneOf.properties.ink]
+const = "typed"
+type = "string"
+
+[[resources.verbs.params.schema.properties.ink.oneOf]]
+additionalProperties = false
+description = "The signer drew this by hand: one or more polylines in normalised `[0,1]²` field space (origin top-left)."
+required = [
+    "ink",
+    "strokes",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.ink.oneOf.properties.ink]
+const = "drawn"
+type = "string"
+
+[resources.verbs.params.schema.properties.ink.oneOf.properties.strokes]
+type = "array"
+
+[resources.verbs.params.schema.properties.ink.oneOf.properties.strokes.items]
+type = "array"
+
+[resources.verbs.params.schema.properties.ink.oneOf.properties.strokes.items.items]
+maxItems = 2
+minItems = 2
+type = "array"
+
+[resources.verbs.params.schema.properties.page_id]
+description = "The page occurrence it is on."
+type = "string"
+
+[resources.verbs.params.schema.properties.rect]
+additionalProperties = false
+description = "A rectangle in page-point space (origin top-left of the page)."
+required = [
+    "x",
+    "y",
+    "w",
+    "h",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.rect.properties.h]
+type = "number"
+
+[resources.verbs.params.schema.properties.rect.properties.w]
+type = "number"
+
+[resources.verbs.params.schema.properties.rect.properties.x]
+type = "number"
+
+[resources.verbs.params.schema.properties.rect.properties.y]
+type = "number"
+
+[resources.verbs.params.schema.properties.signer]
+description = "The name signed; the signer's own when empty."
+type = "string"
+
+[resources.verbs.params.schema.properties.space]
+description = "Which space an annotation's geometry is in. Records store PDF user space (exact however the page is displayed); records written before that stored the reader's page-point space. Everything the reader holds for drawing is in page-point space."
+enum = [
+    "page",
+    "user",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Sign with a typed name.  A typed signature dated today, where a page is signed: for the palette, keyboard users and agents."
+id = "add-typed-signature"
+kind = "undoable"
+label = "Sign with a typed name"
+
+[[resources.verbs.params]]
+name = "signer"
+required = false
+
+[resources.verbs.params.schema]
+description = "The name signed; your own when omitted"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "page"
+required = false
+
+[resources.verbs.params.schema]
+description = "Page (1 when omitted)"
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Delete signature."
+id = "delete-signature"
+kind = "undoable"
+label = "Delete signature"
+
+[[resources.verbs.params]]
+name = "signature"
+required = true
+
+[resources.verbs.params.schema]
+description = "Signature"
+type = "string"
