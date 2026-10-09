@@ -87,7 +87,17 @@ Those are held by thread probes in their own crates.
 - `IDLE_WAKEUP_BUDGET` 3000/s and `LOOP_TICK_BUDGET` 1500/s in
   `idle_wakeups.rs`: the spinning measurement plus a half, because whether a
   run sees TIL-696 depends on the wall clock and a spin's rate on the
-  runner. When TIL-696 lands they drop to 75/s (60/s plus a quarter) and 1/s.
+  runner. TIL-696 dropped them to 75/s (60/s plus a quarter) and 1/s.
+
+## After TIL-696
+
+`EmbeddedApp::update` resamples a hosted app's due wake deadline on the
+compositor's pump, without drawing, and the loop's two per-tick continuity
+policy reads use its cached policy instead of reading settings. Run 89957
+(source d6018b47e5), same method: **51.4 wakeups/s**, 1.2 % of a core, frame
+loop **0 ticks/s**, 0 frames painted; `shell / shell` 0/s and
+`tilo-settings-read` 1/s. What remains is the parked table above (audio output
+authority 19.9/s, collaboration broker 19.4/s, network runtime, …).
 - `IDLE_WAKEUP_BUDGET` 15/s in `idle_quiet_tests.rs`: 11.6/s plus a quarter.
   TIL-690 raised it to 21/s, the shell shard's measured p95 plus a quarter
   (see "The collaboration-plane gate in the shell shard").
