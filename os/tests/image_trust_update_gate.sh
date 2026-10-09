@@ -82,6 +82,8 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/trust" "$work/boot/EFI/Linux/bootc"
+printf '#!/usr/bin/env bash\nexit 3\n' >"$work/bin/successor"
+chmod 0755 "$work/bin/successor"
 cp "$chrony" "$work/chrony.conf"
 chmod 0644 "$work/chrony.conf"
 chmod 0700 "$work/trust"
@@ -128,6 +130,11 @@ if [[ $1 == parse-bootc-status ]]; then
   printf '%s\n%s\n' "$digest" "$verity"
   exit 0
 fi
+if [[ $1 == renew-under-update-lock ]]; then
+  printf '%s\n' "$*" >"$TILO_TEST_VERIFY_ARGS.renew"
+  [[ ${TILO_TEST_REJECT_RENEWAL:-0} != 1 ]]
+  exit $?
+fi
 printf '%s\n' "$*" >"$TILO_TEST_VERIFY_ARGS"
 [[ ${TILO_TEST_REJECT:-0} != 1 ]]
 EOF
@@ -162,6 +169,7 @@ run_update() {
     TILO_IMAGE_TRUST_CHRONYC="$work/bin/chronyc" \
     TILO_IMAGE_TRUST_CHRONY_CONFIG="$work/chrony.conf" \
     TILO_IMAGE_TRUST_UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-$work/update.lock}" \
+    TILO_IMAGE_TRUST_SUCCESSOR="$work/bin/successor" \
     TILO_IMAGE_TRUST_GATE="$work/bin/image-trust-gate" \
     TILO_TEST_GATE_SOURCE="$repo/os/usr/libexec/tilo-image-trust-staged" \
     TILO_TEST_DIGEST="$digest" TILO_TEST_VERITY="${TILO_TEST_VERITY_OVERRIDE-$verity}" \
@@ -213,6 +221,36 @@ if run_gate --require-staged >/dev/null 2>&1; then
 fi
 mv "$work/chrony.conf.valid" "$work/chrony.conf"
 chmod 0644 "$work/chrony.conf"
+
+# Signed successor metadata must match the ACTUAL staged digest and UKI,
+# remain fresh after download, and renew only before exact owner verification.
+expires=$(( $(date +%s) + 600 ))
+run_gate --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null
+grep -Fq "renew-under-update-lock $work/trust /var/lib/tilo/device-private/keypair.bin sha256:$digest 42" "$work/verify.args.renew"
+grep -Fq "verify-and-record $work/trust/root.pub" "$work/verify.args"
+rm "$work/verify.args.renew"
+for invalid in expired generation digest; do
+  selected_digest="sha256:$digest"; selected_generation=42; selected_expiry="$expires"
+  case "$invalid" in
+    expired) selected_expiry="$(date +%s)" ;;
+    generation) selected_generation=43 ;;
+    digest) selected_digest="sha256:$(printf 'f%.0s' {1..64})" ;;
+  esac
+  if run_gate --successor "$selected_digest" "$selected_generation" "$selected_expiry" 8 "$work/update.lock" >/dev/null 2>&1; then
+    echo "invalid successor $invalid was accepted" >&2
+    exit 1
+  fi
+  [ ! -e "$work/verify.args.renew" ]
+done
+if TILO_TEST_REJECT_RENEWAL=1 run_gate --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null 2>&1; then
+  echo 'refused owner renewal was activated' >&2
+  exit 1
+fi
+rm "$work/verify.args.renew"
+if TILO_TEST_CHRONY_UNSYNC=1 run_gate --trusted-time >/dev/null 2>&1; then
+  echo 'successor discovery used unauthenticated time' >&2
+  exit 1
+fi
 
 run_update --quiet >/dev/null
 sed -n '1p' "$work/bootc.calls" | grep -Fqx 'upgrade --download-only --quiet'
