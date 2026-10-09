@@ -7,8 +7,9 @@
 //! because the deletion must win over a concurrent edit; taking in what
 //! firewalld reported is the `import` verb. After every change, each device
 //! running the app applies the stored configuration to its own firewalld (a
-//! projection drain); what it applied last is that device's own setting, so
-//! an unchanged configuration is not pushed again.
+//! job of its window, the latest configuration winning); what it applied
+//! last is that device's own setting, so an unchanged configuration is not
+//! pushed again.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -337,38 +338,16 @@ impl ResourceApp for FirewallShell {
 
 impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
     fn present(&mut self, state: &Rc<Firewall>) {
-        self.show_config(&state.config());
+        let config = state.config();
+        self.show_config(&config);
+        self.apply_to_device(&config);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Firewall>) {
         let applied = cx.settings::<AppliedConfig>();
-        self.attach_framework(cx.dispatcher(), applied.clone());
+        self.attach_framework(cx.dispatcher(), applied);
         // Apply the stored configuration to this device after every change.
-        let outcome = self.apply_outcome();
-        let pending = applied.clone();
-        cx.drain(
-            move |record: &Firewall| pending_apply(&record.config(), &pending.get()),
-            move |config: FirewallConfig, cx| {
-                let applied = applied.clone();
-                let outcome = Rc::clone(&outcome);
-                Ok(cx.thread(
-                    move |_| {
-                        let result = apply_on_device(&config);
-                        (config, result)
-                    },
-                    move |(), (config, result): (FirewallConfig, Applied), _| {
-                        if result.is_err() {
-                            let status = applied_status(&result);
-                            let message = status.text.clone();
-                            *outcome.borrow_mut() = Some(status);
-                            return Err(message);
-                        }
-                        remember_applied(&applied, &config);
-                        Ok(Effected::done())
-                    },
-                ))
-            },
-        );
+        self.follow_jobs(cx.jobs());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

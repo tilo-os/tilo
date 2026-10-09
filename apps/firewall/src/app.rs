@@ -46,6 +46,8 @@ use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, 
 use ui::framework::Submit;
 use ui::tilo_resource::Json;
 
+/// The job that applies the stored configuration to this device.
+const APPLY_JOB: &str = "apply";
 /// How long a result toast stays before it hides itself.
 const TOAST_TTL: Duration = Duration::from_secs(5);
 
@@ -143,6 +145,10 @@ pub struct FirewallApp {
     dispatcher: Option<Dispatcher<Firewall>>,
     /// What this device last applied to its firewalld.
     applied: Option<Setting<AppliedConfig>>,
+    /// Where this window applies the stored configuration to the device.
+    jobs: Option<ui::framework::Jobs<Firewall>>,
+    /// The configuration being applied now, as its canonical text.
+    applying: Option<String>,
     /// A failed apply of the stored configuration on this device, until the
     /// window reports it.
     outcome: ApplyOutcome,
@@ -219,6 +225,8 @@ impl FirewallApp {
             adding: false,
             dispatcher: None,
             applied: None,
+            jobs: None,
+            applying: None,
             outcome: ApplyOutcome::default(),
             built: None,
             listed: None,
@@ -383,10 +391,53 @@ impl FirewallApp {
         self.applied = Some(applied);
     }
 
-    /// Where the projection reports how the latest apply on this device
-    /// ended.
-    pub(crate) fn apply_outcome(&self) -> ApplyOutcome {
-        Rc::clone(&self.outcome)
+    /// Apply the stored configuration to this device with `jobs`, after
+    /// every change of it.
+    pub(crate) fn follow_jobs(&mut self, jobs: ui::framework::Jobs<Firewall>) {
+        self.jobs = Some(jobs);
+    }
+
+    /// Apply `config` to this device's firewalld unless it holds it already
+    /// or is being given it: a job of the window, the latest configuration
+    /// replacing one still being applied. A failure is reported and tried
+    /// again after the next change.
+    pub(crate) fn apply_to_device(&mut self, config: &FirewallConfig) {
+        let (Some(jobs), Some(applied)) = (&self.jobs, &self.applied) else {
+            return;
+        };
+        let Some((canonical, config)) =
+            crate::resource::pending_apply(config, &applied.get()).pop()
+        else {
+            return;
+        };
+        if self.applying.as_deref() == Some(canonical.as_str()) && jobs.is_running(APPLY_JOB) {
+            return;
+        }
+        self.applying = Some(canonical);
+        jobs.start::<Self>(APPLY_JOB, move |cx| {
+            Ok(cx.thread(
+                move |_| {
+                    let result = crate::resource::apply_on_device(&config);
+                    (config, result)
+                },
+                |app: &mut Self,
+                 (config, result): (FirewallConfig, crate::resource::Applied),
+                 _| {
+                    app.applying = None;
+                    if result.is_err() {
+                        let status = crate::resource::applied_status(&result);
+                        let message = status.text.clone();
+                        *app.outcome.borrow_mut() = Some(status);
+                        app.changed = true;
+                        return Err(message);
+                    }
+                    if let Some(applied) = &app.applied {
+                        crate::resource::remember_applied(applied, &config);
+                    }
+                    Ok(ui::framework::Effected::done())
+                },
+            ))
+        });
     }
 
     /// Whether there is a configuration to edit and apply.
