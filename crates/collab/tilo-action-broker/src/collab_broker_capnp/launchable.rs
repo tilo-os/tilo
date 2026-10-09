@@ -701,6 +701,73 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
+    /// Work done in a task is bounded by the task's grant set: what the
+    /// agent may otherwise do, it does in the task only where the task's
+    /// grants allow it.
+    #[test]
+    fn an_agent_working_in_a_task_is_bounded_by_the_tasks_grants() {
+        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
+        workspace.answer(
+            Subject::Task("task:tidy".into()),
+            &TreePath::root().app(APP).rest().action("empty-trash"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+        );
+        workspace.answer(
+            Subject::Task("task:tidy".into()),
+            &TreePath::root().app(APP).rest().action("new-window"),
+            KindSet::READ_UNDOABLE,
+            Answer::Deny,
+        );
+        let (state, room) = broker(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        let in_task =
+            |task: &str| tilo_actions::ActionContext::default().with_group(task, "Tidy up", "task");
+        let invoke_in = |context: Option<tilo_actions::ActionContext>| {
+            state
+                .action_invoke(
+                    &agent,
+                    None,
+                    None,
+                    &InvokeRequest {
+                        on_behalf_of: None,
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: RemoteActionTarget {
+                            provider: "5".into(),
+                            address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                        },
+                        argument: InvokeArgument::None,
+                        context,
+                        confirmation: None,
+                        revision: None,
+                        wait_ms: None,
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("answered")
+        };
+
+        assert!(
+            invoke_in(Some(in_task("task:tidy"))).is_err(),
+            "the task's grants leave this action out"
+        );
+        assert!(app.try_recv().is_err(), "nothing ran");
+        invoke_in(None).expect("outside the task the agent's own grants decide");
+        assert_eq!(app.try_recv().expect("delivered").action, "new-window");
+        invoke_in(Some(in_task("task:other"))).expect("a task without grants bounds nothing");
+        assert_eq!(app.try_recv().expect("delivered").action, "new-window");
+    }
+
     /// An action the room's grants let an agent take only after asking is
     /// offered to it marked as asking for confirmation. The agent's own word
     /// does not confirm it; the person's answer, witnessed on their device,

@@ -5177,13 +5177,20 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
+        // Work done in a task is bounded by the task's grant set.
+        let task = context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == "task")
+            .map(|group| group.id.clone());
         let asks = self
             .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
-                let asks = durable_local_invocation::admit_action_in(
+                let need = offered.1.contract.need();
+                let mut asks = durable_local_invocation::admit_action_in(
                     workspace,
                     (
                         &offered.0.app_id,
@@ -5191,10 +5198,20 @@ impl CapnpBrokerState {
                         &offered.1.resource,
                         &offered.1.action,
                     ),
-                    &offered.1.contract.need(),
+                    &need,
                     actor,
                     now,
                 )?;
+                if let Some(task) = &task {
+                    let node = published_node(workspace, &offered.0.app_id, &offered.1);
+                    match workspace.task_answer_at(task, &node, need.kind, now) {
+                        Some(Answer::Deny) => {
+                            return Err("the task's grants do not cover this action".to_owned());
+                        }
+                        Some(Answer::Ask) => asks = true,
+                        Some(Answer::Allow) | None => {}
+                    }
+                }
                 if actor.is_agent {
                     return Ok::<bool, String>(asks);
                 }
@@ -15193,6 +15210,7 @@ pub mod tests {
                 Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
                     tasks: Vec::new(),
                     controls: std::collections::BTreeMap::default(),
+                    grants: Vec::new(),
                 })
             }
 

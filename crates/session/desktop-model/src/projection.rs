@@ -509,6 +509,29 @@ pub fn project_room_policy(
 
 /// The authority a room document records for `room`. Values that do not
 /// decode are skipped; grants on another room's nodes are dropped.
+/// The grant sets of the open tasks `doc` holds: every grant naming a task
+/// as its subject, while that task is open.
+#[must_use]
+pub fn task_grants_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Grant> {
+    let open = open_task_ids(doc);
+    blob_map_of(doc, ROOM_GRANTS_KEY)
+        .into_iter()
+        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
+        .filter(|grant| matches!(&grant.subject, tilo_action_policy::Subject::Task(task) if open.contains(task)))
+        .collect()
+}
+
+/// The ids of the tasks `doc` holds that are still open: a grant given for
+/// a task ([`tilo_action_policy::Lifetime::Task`]) lives while it is one.
+#[must_use]
+pub fn open_task_ids(doc: &AutoCommit) -> std::collections::HashSet<String> {
+    workspace_tasks_of(doc)
+        .into_iter()
+        .filter(|task| !task.status.is_finished())
+        .map(|task| task.id)
+        .collect()
+}
+
 pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
     use automerge::{ROOT, ReadDoc};
 
@@ -518,10 +541,19 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         .flatten()
         .and_then(|(value, _)| value.into_string().ok());
     let members = blob_map_of(doc, ROOM_MEMBERS_KEY).into_iter().collect();
+    let mut open_tasks = None;
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
         .filter(|grant| grant.node.room_id() == Some(room))
+        // A grant given for a task lives while that task is open: once it
+        // is done, cancelled or gone, the grant is no longer the room's.
+        .filter(|grant| match &grant.lifetime {
+            tilo_action_policy::Lifetime::Task(task) => open_tasks
+                .get_or_insert_with(|| open_task_ids(doc))
+                .contains(task),
+            _ => true,
+        })
         .collect();
     tilo_action_policy::RoomPolicy {
         room: room.to_owned(),

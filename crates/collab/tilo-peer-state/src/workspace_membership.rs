@@ -1,6 +1,7 @@
 //! Typed native workspace membership commands, not grant or identity blobs.
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::AgentPreset;
+use tilo_action_policy::{Answer, GrantId, KindSet, TreePath};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
@@ -15,6 +16,27 @@ pub enum WorkspaceMembershipCommand {
     GrantAppAuthorship {
         app: String,
     },
+    /// Add to open task `task`'s grant set: work done in the task gets
+    /// `answer` for actions of `kinds` at `node`, a path below the room,
+    /// for as long as the task is open. A task's grant set only bounds the
+    /// work: it never gives anyone more than they hold.
+    GrantForTask {
+        task: String,
+        node: TreePath,
+        kinds: KindSet,
+        answer: Answer,
+    },
+    /// Take `grant` out of task `task`'s grant set.
+    RevokeForTask {
+        task: String,
+        grant: GrantId,
+    },
+}
+
+/// The id of the grant task `task`'s grant set holds for `node`.
+#[must_use]
+pub fn task_grant_id(task: &str, node: &TreePath) -> GrantId {
+    GrantId::new(format!("task-grant:{task}:{node}"))
 }
 
 impl WorkspaceMembershipCommand {
@@ -22,7 +44,9 @@ impl WorkspaceMembershipCommand {
     pub fn agent(&self) -> Option<&str> {
         match self {
             Self::AddAgent { agent, .. } | Self::RemoveAgent { agent } => Some(agent),
-            Self::GrantAppAuthorship { .. } => None,
+            Self::GrantAppAuthorship { .. }
+            | Self::GrantForTask { .. }
+            | Self::RevokeForTask { .. } => None,
         }
     }
 
@@ -31,6 +55,27 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
+        if let Self::GrantForTask { task, .. } | Self::RevokeForTask { task, .. } = self {
+            if !task.starts_with("task:")
+                || task.len() > 128
+                || task.chars().any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err("invalid workspace task identifier".into());
+            }
+        }
+        if let Self::GrantForTask { node, .. } = self
+            && node.room_id().is_some()
+        {
+            return Err("a task grant names a path below the room".into());
+        }
+        if let Self::RevokeForTask { task, grant } = self
+            && !grant.as_str().starts_with(&format!("task-grant:{task}:"))
+        {
+            return Err("the grant is not in that task's grant set".into());
+        }
+        if matches!(self, Self::GrantForTask { .. } | Self::RevokeForTask { .. }) {
+            return Ok(());
+        }
         if let Self::GrantAppAuthorship { app } = self {
             if app.is_empty()
                 || app.len() > 128

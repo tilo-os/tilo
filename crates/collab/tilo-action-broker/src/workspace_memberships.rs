@@ -15,6 +15,7 @@ const APP: &str = "so.tilo.desktop";
 const RECORD: &str = "membership";
 const WORKSPACE: &str = "desktop:workspace";
 const AGENT_PREFIX: &str = "desktop:agent:";
+const TASK_PREFIX: &str = "desktop:task:";
 
 impl CapnpBrokerState {
     pub(crate) fn invoke_workspace_membership(
@@ -43,6 +44,27 @@ impl CapnpBrokerState {
                     serde_json::json!({"app": app})
                 );
                 (WORKSPACE.into(), "grant-app-authorship", Some(argument))
+            }
+            WorkspaceMembershipCommand::GrantForTask {
+                task,
+                node,
+                kinds,
+                answer,
+            } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({"node": node, "kinds": kinds, "answer": answer})
+                );
+                (format!("desktop:{task}"), "grant", Some(argument))
+            }
+            WorkspaceMembershipCommand::RevokeForTask { task, grant } => {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::json!({"grant": grant})
+                );
+                (format!("desktop:{task}"), "revoke", Some(argument))
             }
         };
         self.invoke_workspace_person_action(
@@ -380,6 +402,38 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
         let input: AppAuthorship =
             serde_json::from_str(encoded).map_err(|error| error.to_string())?;
         WorkspaceMembershipCommand::GrantAppAuthorship { app: input.app }
+    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
+        && envelope.action == "grant"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TaskGrant {
+            node: tilo_action_policy::TreePath,
+            kinds: tilo_action_policy::KindSet,
+            answer: tilo_action_policy::Answer,
+        }
+        let encoded = bounded_argument(envelope, "task grant")?;
+        let input: TaskGrant = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::GrantForTask {
+            task: format!("task:{task}"),
+            node: input.node,
+            kinds: input.kinds,
+            answer: input.answer,
+        }
+    } else if let Some(task) = envelope.resource.strip_prefix(TASK_PREFIX)
+        && envelope.action == "revoke"
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct TaskRevoke {
+            grant: tilo_action_policy::GrantId,
+        }
+        let encoded = bounded_argument(envelope, "task grant")?;
+        let input: TaskRevoke = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        WorkspaceMembershipCommand::RevokeForTask {
+            task: format!("task:{task}"),
+            grant: input.grant,
+        }
     } else if let Some(agent) = envelope.resource.strip_prefix(AGENT_PREFIX)
         && envelope.action == "remove"
         && envelope.argument.is_none()
@@ -506,6 +560,7 @@ mod tests {
             Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
                 tasks: Vec::new(),
                 controls: std::collections::BTreeMap::default(),
+                grants: Vec::new(),
             })
         }
 

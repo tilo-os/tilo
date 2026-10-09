@@ -237,6 +237,9 @@ pub(super) fn actions(
             Vec::new(),
             true,
         ));
+        if !task.status.is_finished() {
+            result.extend(task_grant_actions(&target, &task.title));
+        }
         if !manual(task)
             && !task.status.is_finished()
             && snapshot
@@ -287,6 +290,48 @@ pub(super) fn actions(
     result
 }
 
+/// The actions that edit an open task's grant set.
+fn task_grant_actions(target: &str, title: &str) -> [PublishedAction; 2] {
+    use tilo_actions::{ActionParam, ParamType};
+    let mut grant = action(
+        target,
+        "grant",
+        title,
+        "Allow in this task",
+        vec![
+            ActionParam::required(
+                "node",
+                ParamType::Text,
+                "Where, as a path below the room, e.g. app:so.tilo.mail",
+            ),
+            ActionParam::required(
+                "kinds",
+                ParamType::Array,
+                "The kinds of action it covers: read, undoable, outside",
+            ),
+            ActionParam::required("answer", ParamType::Text, "allow, ask or deny"),
+        ],
+        false,
+    );
+    grant.description = Some(
+        "Work done in this task gets this answer there while the task is open. A task's grants only bound its work: they give nobody more than they hold.".into(),
+    );
+    let mut revoke = action(
+        target,
+        "revoke",
+        title,
+        "Remove from this task's grants",
+        vec![ActionParam::required(
+            "grant",
+            ParamType::Text,
+            "The grant's id, as inspect lists it",
+        )],
+        false,
+    );
+    revoke.description = Some("Take one grant out of this task's grant set.".into());
+    [grant, revoke]
+}
+
 fn action(
     target: &str,
     operation: &str,
@@ -332,7 +377,26 @@ pub(super) fn inspect(
         .controls
         .get(task_id)
         .ok_or("task control is absent")?;
-    let mut output = serde_json::json!({"task":task,"coordination_only":manual(task),
+    let subject = tilo_action_policy::Subject::Task(task.id.clone());
+    let held: Vec<tilo_action_policy::Grant> = snapshot
+        .grants
+        .iter()
+        .filter(|grant| grant.subject == subject)
+        .cloned()
+        .collect();
+    let grants: Vec<serde_json::Value> = held
+        .iter()
+        .map(|grant| {
+            serde_json::json!({
+                "id": grant.id,
+                "node": grant.node,
+                "kinds": grant.kinds,
+                "answer": grant.answer,
+            })
+        })
+        .collect();
+    let mut output = serde_json::json!({"task":task,"grants":grants,
+        "grants_read":tilo_action_policy::describe(&held, &tilo_action_policy::Ids),"coordination_only":manual(task),
         "managed_route":!manual(task), "run_epoch":control.run_epoch,
         "execution_budget":control.execution_budget,
         "active_run":control.active_run.is_some(),

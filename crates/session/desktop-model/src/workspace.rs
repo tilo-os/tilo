@@ -758,6 +758,33 @@ impl Workspace {
         agents
     }
 
+    /// The answer task `task`'s grant set gives for an action of `kind` at
+    /// `node`; `None` when the task carries no grant set. Work done in the
+    /// task is bounded by it, as an agent is bounded by its delegation.
+    #[must_use]
+    pub fn task_answer_at(
+        &self,
+        task: &str,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> Option<Answer> {
+        let subject = Subject::Task(task.to_owned());
+        if !self
+            .policy
+            .grants
+            .iter()
+            .any(|grant| grant.subject == subject)
+        {
+            return None;
+        }
+        Some(
+            self.subject_authority(subject)
+                .decide(node, kind, &context_at(now))
+                .answer,
+        )
+    }
+
     /// The role a person with `agent`'s reach in the room would hold: what
     /// its grants let it change — the room, only its comments, or nothing.
     /// `None` when no live grant admits it.

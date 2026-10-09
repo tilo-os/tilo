@@ -292,6 +292,109 @@ mod tests {
         );
     }
 
+    /// A task carries its own grant set, changed as the room's governance
+    /// by someone who may work in the room, and ending with the task.
+    #[test]
+    fn a_tasks_grant_set_is_edited_through_commands_and_ends_with_the_task() {
+        use crate::workspace_membership::{WorkspaceMembershipCommand, task_grant_id};
+        let (mut peer, governor, _, now) = peer();
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let authority = WorkspaceTaskAuthority::Person {
+            caller: governor.clone(),
+        };
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(7),
+            [7; 32],
+            &authority,
+            &WorkspaceTaskCommand::Queue {
+                title: "Tidy the inbox".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            now,
+        )
+        .unwrap();
+        let snapshot = |peer: &StatePeer| {
+            crate::workspace_task::snapshot(peer.core.room_doc.as_deref().unwrap())
+        };
+        let task = snapshot(&peer).unwrap().tasks[0].id.clone();
+        let mail = TreePath::root().app("so.tilo.mail");
+        let grant = |task: &str| WorkspaceMembershipCommand::GrantForTask {
+            task: task.into(),
+            node: mail.clone(),
+            kinds: KindSet::READ_UNDOABLE,
+            answer: Answer::Allow,
+        };
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &grant("task:absent"), &key, now)
+                .is_err(),
+            "only an open task carries grants"
+        );
+        assert!(
+            peer.apply_workspace_membership_command(&governor, &grant(&task), &key, now)
+                .unwrap()
+        );
+        let held = snapshot(&peer).unwrap().grants;
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].subject, Subject::Task(task.clone()));
+        assert_eq!(held[0].node, TreePath::room(ROOM).join(&mail));
+        assert_eq!(
+            held[0].lifetime,
+            tilo_action_policy::Lifetime::Task(task.clone())
+        );
+        assert!(
+            peer.permissions(governor.device_public_key, now)
+                .unwrap()
+                .policy
+                .grants
+                .iter()
+                .any(|grant| grant.subject == Subject::Task(task.clone())),
+            "the task's grants are the room's while it is open"
+        );
+
+        peer.apply_workspace_membership_command(
+            &governor,
+            &WorkspaceMembershipCommand::RevokeForTask {
+                task: task.clone(),
+                grant: task_grant_id(&task, &mail),
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+        assert!(snapshot(&peer).unwrap().grants.is_empty());
+
+        peer.apply_workspace_membership_command(&governor, &grant(&task), &key, now)
+            .unwrap();
+        peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(8),
+            [8; 32],
+            &authority,
+            &WorkspaceTaskCommand::CancelForRun {
+                task_id: task.clone(),
+                run_epoch: 0,
+                after_revision: 0,
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            snapshot(&peer).unwrap().grants.is_empty(),
+            "the grant set ends with the task"
+        );
+        assert!(
+            !peer
+                .permissions(governor.device_public_key, now)
+                .unwrap()
+                .policy
+                .grants
+                .iter()
+                .any(|grant| grant.subject == Subject::Task(task.clone())),
+            "and no longer counts as the room's"
+        );
+    }
+
     #[test]
     fn task_execution_budget_requires_actual_owner_and_exact_inactive_frontier() {
         use collab_types::task_budget::TaskExecutionBudget;

@@ -57,5 +57,17 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     // destination operations. Malformed native lookups retain the historical
     // ignored-value behavior inside visit_governance_entries.
     let _ = project(&read::LegacyRead(document), &mut value);
+    // A grant given for a task lives while that task is open.
+    if value
+        .grants
+        .iter()
+        .any(|grant| matches!(grant.lifetime, tilo_action_policy::Lifetime::Task(_)))
+    {
+        let open = tilo_desktop_model::projection::open_task_ids(document);
+        value.grants.retain(|grant| match &grant.lifetime {
+            tilo_action_policy::Lifetime::Task(task) => open.contains(task),
+            _ => true,
+        });
+    }
     value
 }

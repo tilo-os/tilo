@@ -25,6 +25,8 @@ const MAX_TASK_RECEIPTS: usize = 4096;
 pub struct WorkspaceTaskSnapshot {
     pub tasks: Vec<WorkspaceTask>,
     pub controls: std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    /// The open tasks' grant sets: grants whose subject is a task.
+    pub grants: Vec<tilo_action_policy::Grant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub fn snapshot(doc: &AutoCommit) -> Result<WorkspaceTaskSnapshot, String> {
     Ok(WorkspaceTaskSnapshot {
         tasks: tilo_desktop_model::projection::workspace_tasks_of(doc),
         controls: controls_of(doc)?,
+        grants: tilo_desktop_model::projection::task_grants_of(doc),
     })
 }
 
