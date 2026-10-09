@@ -67,6 +67,9 @@ struct Cli {
 enum Cmd {
     /// Run a package directly from an unpacked payload + manifest.
     Run {
+        /// Observe signed SDK and authenticated service admission without spawning the app.
+        #[arg(long)]
+        admission_probe: bool,
         /// Path to the package manifest (TOML).
         #[arg(long)]
         manifest: PathBuf,
@@ -291,6 +294,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Run {
+            admission_probe,
             manifest,
             expected_package_hash,
             payload_root,
@@ -313,6 +317,7 @@ fn main() -> ExitCode {
             service,
             rest,
         } => run_gui_command(RunCliArgs {
+            admission_probe,
             manifest,
             expected_package_hash,
             payload_root,
@@ -392,6 +397,7 @@ struct ActionAuthorityArgs {
     reason = "each bool is an independent CLI flag mirrored 1:1 from Cmd::Run; grouping them would just move the same four toggles into a sub-struct destructured back apart at the one call site"
 )]
 struct RunCliArgs {
+    admission_probe: bool,
     manifest: PathBuf,
     expected_package_hash: Option<String>,
     payload_root: PathBuf,
@@ -459,8 +465,32 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
-    if let Some(app_id) = opts.app_id.as_deref() {
+    if !args.admission_probe
+        && let Some(app_id) = opts.app_id.as_deref()
+    {
         enter_app_scope(app_id);
+    }
+    if args.admission_probe {
+        return match launcher::run::probe_native_admission(
+            &args.manifest,
+            &args.payload_root,
+            &opts,
+        ) {
+            Ok(evidence) => match serde_json::to_string(&evidence) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tilo-launcher: {error}");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(error) => {
+                eprintln!("tilo-launcher: native admission refused: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {
@@ -933,6 +963,7 @@ fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(env)
         .with_target(false)
         .try_init();

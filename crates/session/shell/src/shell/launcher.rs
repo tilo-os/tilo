@@ -3308,6 +3308,70 @@ pub(crate) fn launch_resolved_in_workspace(
     .map(|_| ())
 }
 
+/// Observe the exact application's native admission with ordinary kernel
+/// launch custody, without creating a window or issuing a launch notification.
+#[cfg(target_os = "linux")]
+pub(crate) fn probe_native_in_workspace(
+    app: &InstalledApp,
+    workspace: &Workspace,
+) -> Result<::launcher::run::NativeAdmissionObservation, String> {
+    let installed = package_store::find_installed(&app.package_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("native admission package is absent")?;
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return Err("native admission selected package changed".into());
+    }
+    let executable = selected_execution_program().map_err(|error| error.to_string())?;
+    let socket = wayland_socket().ok_or("native admission display is unavailable")?;
+    let capabilities = stage_launch_capabilities(&app.package_id, &workspace.capabilities);
+    let identity = crate::identity_registry::selected_identity_path(&workspace.room.to_string())
+        .map_err(|error| error.to_string())?;
+    let mut launch = build_launch_command(
+        app,
+        &executable,
+        &socket,
+        workspace.room,
+        capabilities.as_ref().map(tempfile::NamedTempFile::path),
+        identity.as_deref(),
+        crate::compositor::render_node::resolved(),
+        None,
+    );
+    // The signed root is mandatory even for packages that declare no creation resource kinds.
+    if !launch
+        .args
+        .iter()
+        .any(|argument| argument == "--expected-package-hash")
+    {
+        launch.args.extend([
+            "--expected-package-hash".into(),
+            installed.package_id_hex.clone(),
+        ]);
+    }
+    let mut command = Command::new(&launch.program);
+    command.args(&launch.args);
+    apply_launch_env(&mut command, &launch.env);
+    let custody = launch
+        .service_identity
+        .ok_or("native admission launch identity is absent")?;
+    let room = workspace.room.to_string();
+    ::launcher::run::observe_registered_probe(
+        command,
+        ::launcher::run::NativeAdmissionScope {
+            package_id: &app.package_id,
+            package_root: &installed.package_id_hex,
+            workspace_id: &room,
+        },
+        |pid| {
+            register_trusted_window_launch(pid, custody, None);
+            register_launched_process(pid, &app.package_id, Some(&room), true);
+            attest_trusted_service_launch_for_pid(pid, &app.package_id, &room)
+                .ok_or_else(|| "native admission process custody could not be retained".into())
+                .map(drop)
+        },
+        unregister_launched_process,
+    )
+}
+
 /// [`launch_uri_in_workspace`] taking the room and capabilities directly
 /// rather than a borrowed [`Workspace`], so a caller reading them out of a
 /// lock guard can drop it before the launch's file I/O and process spawn

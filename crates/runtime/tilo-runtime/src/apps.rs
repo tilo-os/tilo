@@ -222,6 +222,34 @@ impl Apps {
 }
 
 impl LauncherServices for Apps {
+    fn observes_native_admission(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+    fn native_admission(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Result<serde_json::Value, String> {
+        if workspace.room.to_string() != self.room {
+            return Err("native admission workspace is not served by this runtime".into());
+        }
+        let installed = self.launchable(app)?;
+        #[cfg(target_os = "linux")]
+        {
+            let sockets = Sockets {
+                collab: self.root.join(COLLAB_SOCKET),
+                identity: self.root.join(IDENTITY_SOCKET),
+                blobs: self.root.join(BLOB_SOCKET),
+            };
+            serde_json::to_value(linux::admission(self, &installed, &sockets)?)
+                .map_err(|error| error.to_string())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = installed;
+            Err("native admission is unsupported on this host".into())
+        }
+    }
     fn applications(&self) -> Vec<LaunchableApplication> {
         let mut apps = self.installed();
         apps.retain(|app| app.has_gui);

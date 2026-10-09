@@ -625,6 +625,39 @@ fn launch_host_application(
 }
 
 impl LauncherServices for NativeLauncher {
+    fn observes_native_admission(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+    fn native_admission(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Result<serde_json::Value, String> {
+        if app.starts_with(HOST_APPLICATION_PREFIX)
+            || self
+                .1
+                .as_ref()
+                .is_some_and(|network| network.governor_opens_apps(workspace.room))
+        {
+            return Err("native admission must be observed on this workspace's native host".into());
+        }
+        let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
+        let installed = tilo_installed_apps::read(&catalog)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|candidate| candidate.package_id == app)
+            .ok_or("native admission package is absent")?;
+        #[cfg(target_os = "linux")]
+        return serde_json::to_value(super::launcher::probe_native_in_workspace(
+            &installed, workspace,
+        )?)
+        .map_err(|error| error.to_string());
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (installed, workspace);
+            Err("native admission is unsupported on this host".into())
+        }
+    }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }

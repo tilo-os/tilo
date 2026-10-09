@@ -22,7 +22,7 @@ const LAUNCH_RUNTIME_DIR: &str = "run";
 /// A Unix socket path longer than this cannot be connected (`sun_path`).
 const MAX_SOCKET_PATH: usize = 107;
 
-pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
+fn launch_command(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Command, String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let wayland = wayland_socket()?;
     let runtime_dir = service_directory(&apps.root, sockets)
@@ -61,6 +61,11 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             command.env_remove(name);
         }
     }
+    Ok(command)
+}
+
+pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
+    let mut command = launch_command(apps, app, sockets)?;
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
     let registration = launcher::registration_gate::install(&mut command).map_err(|error| {
@@ -68,12 +73,45 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
     })?;
     let child = command
         .spawn()
-        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
+        .map_err(|error| format!("could not start the native launcher: {error}"))?;
     Ok(Launch {
         pid: child.id(),
         child,
         registration: Some(registration),
     })
+}
+
+pub(super) fn admission(
+    apps: &Apps,
+    app: &InstalledApp,
+    sockets: &Sockets,
+) -> Result<launcher::run::NativeAdmissionObservation, String> {
+    let installed = package_store::find_installed(&app.package_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("native admission package is absent")?;
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return Err("native admission selected package changed".into());
+    }
+    let mut command = launch_command(apps, app, sockets)?;
+    command
+        .arg("--expected-package-hash")
+        .arg(&installed.package_id_hex);
+    launcher::run::observe_registered_probe(
+        command,
+        launcher::run::NativeAdmissionScope {
+            package_id: &app.package_id,
+            package_root: &installed.package_id_hex,
+            workspace_id: &apps.room,
+        },
+        |pid| {
+            if apps.launched.record(pid, &app.package_id, &apps.room) {
+                Ok(())
+            } else {
+                Err("native admission process custody could not be retained".into())
+            }
+        },
+        |pid| apps.launched.forget(pid),
+    )
 }
 
 /// The host session's Wayland socket, which the launcher binds into the

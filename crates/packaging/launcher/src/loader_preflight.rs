@@ -513,6 +513,88 @@ impl LoaderView {
         Ok(())
     }
 
+    /// Observe the complete ELF closure exclusively inside the declared mounts.
+    /// Unlike ordinary launch's conservative preflight, unknown bytes, host
+    /// fallback, `DT_RPATH` overrides and an exceeded bound refuse evidence.
+    ///
+    /// # Errors
+    /// Returns the object/library whose complete SDK closure was unobservable.
+    pub fn check_closed(&self, entry: &Path) -> Result<(), String> {
+        let mut queue = VecDeque::from([entry.to_path_buf()]);
+        let mut seen = HashSet::from([entry.to_path_buf()]);
+        let dirs: Vec<_> = self.library_path.iter().map(PathBuf::as_path).collect();
+        while let Some(object) = queue.pop_front() {
+            if !self.is_mounted(&object) {
+                return Err(format!(
+                    "native admission cannot observe {} outside the selected SDK",
+                    object.display()
+                ));
+            }
+            let host = self
+                .host_path(&object)
+                .ok_or_else(|| format!("native admission cannot resolve {}", object.display()))?;
+            let canonical = std::fs::canonicalize(&host).map_err(|error| error.to_string())?;
+            if !self.mounts.iter().any(|(_, root)| {
+                std::fs::canonicalize(root).is_ok_and(|root| canonical.starts_with(root))
+            }) {
+                return Err(format!(
+                    "native admission object escapes its selected mounts: {}",
+                    object.display()
+                ));
+            }
+            let mut header = [0_u8; 20];
+            File::open(&host)
+                .and_then(|file| file.read_exact_at(&mut header, 0))
+                .map_err(|error| error.to_string())?;
+            let expected_machine = match std::env::consts::ARCH {
+                "x86_64" => 62,
+                "aarch64" => 183,
+                other => {
+                    return Err(format!(
+                        "native admission does not support architecture {other}"
+                    ));
+                }
+            };
+            if le_u16(&header, 18) != Some(expected_machine) {
+                return Err(format!(
+                    "native admission ELF architecture differs from this host: {}",
+                    object.display()
+                ));
+            }
+            let dynamic = read_dynamic_section(&host)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("native admission cannot parse ELF {}", object.display()))?;
+            if !dynamic.rpath.is_empty() {
+                return Err(format!(
+                    "native admission cannot prove ELF search overrides in {}",
+                    object.display()
+                ));
+            }
+            for soname in &dynamic.needed {
+                if soname.is_empty() || soname.contains(['/', '\\']) || soname.starts_with('.') {
+                    return Err(format!(
+                        "native admission refuses noncanonical dependency {soname:?}"
+                    ));
+                }
+                let Lookup::Shipped(found) = self.lookup(soname, &dirs) else {
+                    return Err(format!(
+                        "native admission cannot resolve {soname} in the selected SDK for {}",
+                        object.display()
+                    ));
+                };
+                if seen.insert(found.clone()) {
+                    if seen.len() > MAX_OBJECTS {
+                        return Err(
+                            "native admission ELF dependency closure exceeds its bound".into()
+                        );
+                    }
+                    queue.push_back(found);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn lookup(&self, soname: &str, dirs: &[&Path]) -> Lookup {
         let mut searched = Vec::new();
         for dir in dirs {

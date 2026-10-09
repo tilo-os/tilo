@@ -373,6 +373,21 @@ pub struct AuthenticatedApplicationLaunch {
 }
 
 pub trait LauncherServices: Send + Sync {
+    /// Whether this host can observe real signed native admission without opening a window.
+    fn observes_native_admission(&self) -> bool {
+        false
+    }
+    /// Observe native admission through the ordinary registered launcher child.
+    /// # Errors
+    /// Refuses unsupported hosts, changed signed packages, SDKs or required services.
+    fn native_admission(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (app, workspace);
+        Err("native admission observation is unsupported on this host".into())
+    }
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// Launches `app` into `workspace`.
     ///

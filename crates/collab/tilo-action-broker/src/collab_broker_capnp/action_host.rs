@@ -14,11 +14,12 @@ use collab_types::caps::Actor;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
-    ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
-    application_provider, pending, workspace_provider, workspace_provider_room,
+    APPLICATION_ADMISSION_ACTION, APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION,
+    APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal, CataloguePage,
+    CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer, Confirmation,
+    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
+    Reservation, RowVisibility, application_provider, pending, workspace_provider,
+    workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -261,6 +262,33 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         params: Vec::new(),
         view: None,
     }
+}
+
+fn app_admission_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
+    let mut descriptor = app_open_descriptor(app);
+    descriptor.address.action = APPLICATION_ADMISSION_ACTION.into();
+    descriptor.action_label = format!("Check {} native admission", app.display_name);
+    descriptor.description = Some("Observe the exact signed package, SDK and authenticated service admission without opening a window".into());
+    descriptor.kind = tilo_actions::OperationKind::Effect;
+    descriptor
+        .contract
+        .tags
+        .push(tilo_actions::PROGRAMMATIC_TAG.into());
+    descriptor.contract.retry = tilo_actions::RetryPolicy::Idempotent;
+    descriptor.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
+    descriptor.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({
+            "type": "object", "required": ["native_host_blake3", "admission"],
+            "properties": {
+                "native_host_blake3": {"type": "string"},
+                "admission": {"type": "object", "required": ["package_id", "package_root", "workspace_id", "launcher_blake3", "runtime", "connected_services"],
+                    "properties": {"package_id": {"type": "string"}, "package_root": {"type": "string"},
+                        "workspace_id": {"type": "string"}, "launcher_blake3": {"type": "string"},
+                        "runtime": {"type": "object"}, "connected_services": {"type": "array", "items": {"type": "string"}}}}
+            }
+        }),
+    };
+    descriptor
 }
 
 fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
@@ -703,6 +731,34 @@ impl CapnpBrokerState {
                 );
             }
             if caller.room().is_some() {
+                if let Some(launcher) = self
+                    .services
+                    .launcher
+                    .as_ref()
+                    .filter(|host| host.observes_native_admission())
+                {
+                    rows.extend(
+                        launcher
+                            .applications()
+                            .into_iter()
+                            .filter(|app| {
+                                !app.unconfined
+                                    && workspace.decide_at(
+                                        &policy,
+                                        &ResourceRef::App(app.package_id.clone()),
+                                        Verb::Write,
+                                        now,
+                                    ) == CapDecision::Allow
+                            })
+                            .map(|app| {
+                                action_row(
+                                    workspace_provider(&room),
+                                    &app.package_id,
+                                    app_admission_descriptor(&app),
+                                )
+                            }),
+                    );
+                }
                 rows.extend(
                     self.services
                         .launcher
@@ -1422,7 +1478,7 @@ impl CapnpBrokerState {
     }
 
     fn invoke_eager(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
@@ -1685,7 +1741,7 @@ impl CapnpBrokerState {
     }
 
     fn start_for(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
@@ -1770,7 +1826,7 @@ impl CapnpBrokerState {
     }
 
     fn start_workspace_action(
-        &self,
+        self: &Arc<Self>,
         caller: &Caller,
         actor: &BrokerActor,
         room: &str,
@@ -1786,6 +1842,14 @@ impl CapnpBrokerState {
         else {
             return Err(ActionHostError::UnknownAction);
         };
+        if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            && address.action == APPLICATION_ADMISSION_ACTION
+        {
+            if caller.room().is_none() || argument.is_some() {
+                return Err(ActionHostError::UnknownAction);
+            }
+            return self.start_native_admission(caller, actor, &workspace, &policy, now, app_id);
+        }
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_OPEN_ACTION
         {
@@ -2400,6 +2464,100 @@ impl CapnpBrokerState {
         Ok(id)
     }
 
+    fn start_native_admission(
+        self: &Arc<Self>,
+        caller: &Caller,
+        actor: &BrokerActor,
+        workspace: &Workspace,
+        policy: &Actor,
+        now: u64,
+        app: &str,
+    ) -> Result<u64, ActionHostError> {
+        let launcher = self
+            .services
+            .launcher
+            .as_ref()
+            .filter(|host| host.observes_native_admission())
+            .filter(|host| {
+                host.applications()
+                    .iter()
+                    .any(|candidate| candidate.package_id == app && !candidate.unconfined)
+            })
+            .ok_or(ActionHostError::UnknownAction)?;
+        if workspace.decide_at(policy, &ResourceRef::App(app.into()), Verb::Write, now)
+            != CapDecision::Allow
+        {
+            return Err(ActionHostError::UnknownAction);
+        }
+        let runtime = super::launchable::delivery_runtime()
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let owner = InvocationOwner::Local {
+            actor: actor.id.clone(),
+        };
+        self.record_completion(
+            id,
+            owner.clone(),
+            tilo_actions::InvocationUpdate::Accepted { invocation },
+        );
+        let state = Arc::clone(self);
+        let launcher = Arc::clone(launcher);
+        let caller = caller.clone();
+        let app = app.to_string();
+        let workspace = workspace.clone();
+        runtime.spawn_blocking(move || {
+            let allowed = || {
+                state
+                    .workspaces_for(&caller)
+                    .into_iter()
+                    .any(|(current, policy, now)| {
+                        current.room == workspace.room
+                            && current.decide_at(
+                                &policy,
+                                &ResourceRef::App(app.clone()),
+                                Verb::Write,
+                                now,
+                            ) == CapDecision::Allow
+                    })
+            };
+            let result = if allowed() {
+                launcher.native_admission(&app, &workspace)
+            } else {
+                Err("native admission authority retired before observation".into())
+            };
+            let result = result.and_then(|value| {
+                if allowed() {
+                    Ok(value)
+                } else {
+                    Err("native admission authority retired during observation".into())
+                }
+            });
+            let update = match result {
+                Ok(value) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(value),
+                        resources: Vec::new(),
+                    },
+                },
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "native_admission_refused".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            };
+            state.record_completion(id, owner, update);
+        });
+        Ok(id)
+    }
+
     /// Close `app_id`'s windows in `workspace` and record the terminal
     /// outcome as an invocation.
     ///
@@ -2876,3 +3034,6 @@ mod argument_size_tests {
         assert!(reason.contains("split"), "{reason}");
     }
 }
+
+#[cfg(test)]
+mod native_admission_tests;

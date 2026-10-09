@@ -25,3 +25,6 @@ mod support;
 
 #[path = "managed.rs"]
 mod managed;
+
+#[path = "native_admission.rs"]
+mod native_admission;

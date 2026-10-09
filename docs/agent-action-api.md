@@ -77,6 +77,22 @@ file descriptors. A closed/replaced window or changed process lifetime refuses
 acceptance. Existing unrelated app workers are reported separately, never required
 to use the newly installed package and never closed by the runner.
 
+### Observing native application admission
+
+Supported native hosts expose a programmatic `native-admission` action on the
+installed application's resource. Enumerate with `actions list --programmatic`,
+then invoke the returned provider and action ID without arguments. The background
+action uses the ordinary workspace Write capability and launcher registration;
+unsupported hosts and non-GUI entrypoints refuse explicitly.
+
+The result contains `native_host_blake3` and `admission`. These identify the running
+host and launcher executable inodes, the exact signed package root, workspace,
+fully verified selected SDK manifest and authenticated required service names.
+The probe does not start the application payload or create its data directories.
+It proves the observed package's native admission at that time; it does not prove
+sandbox execution, compatibility with another boot image or a completed update.
+Image lifecycle consumers must hold their update lock and revalidate exact inputs.
+
 ### Unlocking the owner's session remotely
 
 Use the owner's existing unconfined login and the owner socket. Discover the

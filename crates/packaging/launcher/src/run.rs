@@ -28,6 +28,12 @@ use crate::services::{
     to_service_binds,
 };
 
+mod admission;
+pub use admission::{
+    NativeAdmission, NativeAdmissionObservation, NativeAdmissionScope, observe_registered_probe,
+    probe_native_admission,
+};
+
 struct SeccompFds {
     clone3_compat: OwnedFd,
     baseline: OwnedFd,
@@ -927,6 +933,18 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
     }
 }
 
+fn load_launch_identity(
+    path: &Path,
+    store: Option<&Path>,
+) -> Result<runtime_identity::SigningIdentity, RunError> {
+    if store.is_some_and(|store| path.parent() == Some(store)) {
+        runtime_identity::load_for_launch(path)
+    } else {
+        runtime_identity::load_from_path(path.to_path_buf())
+    }
+    .map_err(|error| RunError::IdentityBroker(error.to_string()))
+}
+
 fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
@@ -935,12 +953,7 @@ fn start_identity_broker(
     // in the form provisioning leaves it; one that is not fails the launch
     // and names the step that secures it. An explicit debug record outside
     // the store loads as written.
-    let identity = if store.is_some_and(|store| path.parent() == Some(store)) {
-        runtime_identity::load_for_launch(path)
-    } else {
-        runtime_identity::load_from_path(path.to_path_buf())
-    }
-    .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    let identity = load_launch_identity(path, store)?;
     let (host, app) =
         UnixStream::pair().map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let control = host
