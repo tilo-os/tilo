@@ -1654,7 +1654,7 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             PeerSyncRequest::IssueInviteFor { name, .. } => {
                 Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
             }
-            PeerSyncRequest::IssueInvite => {
+            PeerSyncRequest::IssueInvite | PeerSyncRequest::IssueInvitation(_) => {
                 Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
             }
             PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
@@ -2032,6 +2032,179 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     the_loading_indication_stands_until_the_window_place_speaks_for_itself();
     a_window_that_paints_before_the_card_is_due_settles_the_open_too();
     escape_still_dismisses_the_card();
+}
+
+/// The invitation actions run on the frame pump through the same peer-sync
+/// bridge as the invite card, and answer their caller rather than the card.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its shared bridge visible"
+)]
+fn invitation_actions_return_their_network_output_to_the_caller() {
+    use crate::shell::search::InvocationDisposition;
+    use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+    fn begin(
+        chrome: &crate::shell::chrome_state::Chrome,
+        id: &str,
+        args: &serde_json::Value,
+    ) -> crate::shell::search::PendingInvocation {
+        let mut registry = crate::shell::search::SearchRegistry::new();
+        registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::actions::ActionsProvider::new(),
+        ));
+        let mut doc = AutoCommit::new();
+        let resource = ResourceRef::new("actions", id);
+        let catalog = ActionCatalog::build_exact(
+            &registry,
+            &resource,
+            crate::shell::chrome_state::SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let disposition = catalog
+            .select(&resource)
+            .unwrap_or_else(|| panic!("{id} is published"))
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                chrome,
+                args.as_object().unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{id} is admitted: {error:?}"));
+        let InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("{id} waits for the network instead of inventing a result");
+        };
+        ticket
+    }
+
+    fn output(receipt: crate::shell::search::ActionReceipt) -> Option<serde_json::Value> {
+        match receipt.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    let (mut h, chrome) = host_with_chrome();
+    {
+        let state = chrome.borrow();
+        state
+            .tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    }
+    chrome.borrow_mut().peer_sync_enabled = true;
+    let pending_id = [0x42; 32];
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = std::rc::Rc::clone(&seen);
+    h.set_peer_sync_bridge(std::rc::Rc::new(move |req| {
+        recorded.borrow_mut().push(req.clone());
+        match req {
+            PeerSyncRequest::IssueInvitation(_) => Ok(PeerSyncResponse::Message("tok".into())),
+            PeerSyncRequest::ListPendingInvitations => {
+                Ok(PeerSyncResponse::PendingInvitations(vec![
+                    PendingInvitationSummary {
+                        id: pending_id,
+                        name: "Bob".into(),
+                        role: crate::network::invite::InviteRole::Viewer,
+                        expiry_unix_seconds: 1_900_000_000,
+                    },
+                ]))
+            }
+            PeerSyncRequest::CancelInvitation(id) if id == pending_id => {
+                Ok(PeerSyncResponse::Message("canceled".into()))
+            }
+            _ => Err("not here".into()),
+        }
+    }));
+
+    // Phase `issue_returns_the_minted_token`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.issue",
+            &serde_json::json!({
+                "role": "viewer",
+                "expires_in_seconds": 600,
+                "invitee_name": "Bob",
+                "confirm": true,
+            }),
+        );
+        assert!(ticket().unwrap().is_none(), "nothing ran before the pump");
+        h.pump_peer_sync();
+        let receipt = ticket().unwrap().expect("the pump completed the request");
+        assert_eq!(output(receipt), Some(serde_json::json!({"invite": "tok"})));
+        assert!(
+            seen.borrow()
+                .contains(&PeerSyncRequest::IssueInvitation(InvitationTerms {
+                    role: crate::network::invite::InviteRole::Viewer,
+                    expires_in_seconds: 600,
+                    invitee_name: Some("Bob".into()),
+                    recipient_user_public_key: None,
+                }))
+        );
+        assert!(
+            h.peer_sync_snapshot().invite_token.is_none(),
+            "a token minted for a caller is not put on this screen"
+        );
+    }
+
+    // Phase `list_returns_the_pending_invitations`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.list",
+            &serde_json::json!({"confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert_eq!(
+            output(ticket().unwrap().unwrap()),
+            Some(serde_json::json!({"invitations": [{
+                "invite_id": hex::encode(pending_id),
+                "name": "Bob",
+                "role": "viewer",
+                "expires_at": 1_900_000_000_u64,
+            }]}))
+        );
+    }
+
+    // Phase `cancel_of_an_unknown_invitation_is_refused`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.cancel",
+            &serde_json::json!({"invite_id": "07".repeat(32), "confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert!(matches!(
+            ticket(),
+            Err(crate::shell::search::action_api::ActionError::Refused(error))
+                if error == "invitation is no longer pending"
+        ));
+        assert!(
+            !seen
+                .borrow()
+                .contains(&PeerSyncRequest::CancelInvitation([7; 32])),
+            "an id this workspace does not hold never reaches the network"
+        );
+    }
+
+    // Phase `cancel_of_a_pending_invitation_succeeds`.
+    {
+        let ticket = begin(
+            &chrome,
+            "invitation.cancel",
+            &serde_json::json!({"invite_id": hex::encode(pending_id), "confirm": true}),
+        );
+        h.pump_peer_sync();
+        assert_eq!(
+            output(ticket().unwrap().unwrap()),
+            Some(serde_json::json!({"canceled": true}))
+        );
+    }
 }
 
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {

@@ -7183,6 +7183,9 @@ fn install_session_peer_sync(
                         role,
                     )
                     .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                PeerSyncRequest::IssueInvitation(terms) => bridge_net
+                    .issue_invitation(active, &terms)
+                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
                 PeerSyncRequest::AcceptInvite(token) => {
                     bridge_net.accept_peer_invitation(active, &token)
                 }
