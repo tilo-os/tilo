@@ -1085,3 +1085,60 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         crate::component_lifecycle::close_components(&mut tile);
     }
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn native_idle_model_wake_adopts_requested_component_before_draining() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 91);
+    let first = component.callback_binding();
+    let retained_reopener = component.reopener();
+    let wanted = request_another_record(&component);
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    edit_bound_record(&mut app, &first);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.wake_scope
+        .as_mut()
+        .unwrap()
+        .bind(move |event| {
+            tx.send(event).unwrap();
+        })
+        .unwrap();
+    app.wake_scope.as_ref().unwrap().handle().wake();
+    assert!(app.accept_wake(&rx.recv().unwrap()));
+    app.service_native_idle_model();
+    let shown = app.root_widget.callback_binding().unwrap();
+    assert_eq!(
+        shown.checkout.id, wanted,
+        "idle must adopt the checked replacement before syncing its owner"
+    );
+    assert!(
+        !first.lifetime.is_active(),
+        "old callback custody must retire"
+    );
+    assert_saved_body(&host, &first, "edited");
+    assert_eq!(body(&shown.records, &shown.checkout), "initialized");
+    let retained_id = crate::record::RecordId::minted();
+    let (retained, target) = retained_reopener
+        .prepare(runner_probe_definition(), retained_id.clone())
+        .expect("retirement preserves the authorized same-store preparation capability");
+    assert_eq!(retained.record().id, retained_id);
+    assert!(matches!(target, LaunchTarget::New));
+    drop(retained);
+    // A Reopener deliberately retains same-store capability; stale callback
+    // admission is its closed scoped wake, not permission to prepare a record.
+    app.update_native_model();
+    app.sync_model(false);
+    for _ in rx.try_iter() {}
+    first.lifetime.wake();
+    assert!(
+        matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "the outgoing callback must not wake the current owner"
+    );
+    assert!(!app.service_native_idle_model().changed);
+    assert_eq!(
+        app.root_widget.callback_binding().unwrap().checkout.id,
+        wanted
+    );
+    app.close_components();
+}
