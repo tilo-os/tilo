@@ -165,7 +165,9 @@ fn ids_and_parameter_names_are_public_names() {
         .unwrap();
     assert_eq!(rename.params()[0].name, "title");
     assert!(tree.actions.iter().all(|spec| spec.id != "rename"));
-    let arguments = Shelf::RENAME.arguments(&shelf::Rename { name: "x".into() });
+    let arguments = Shelf::RENAME
+        .arguments(&shelf::Rename { name: "x".into() })
+        .unwrap();
     assert_eq!(arguments["title"], "x");
     assert_eq!(<shelf::Rename as Params>::ACTION.id, "retitle");
 }

@@ -167,10 +167,10 @@ impl PaneCx {
             .iter()
             .map(|param| param.name.to_string())
             .collect();
-        ui::tilo_actions::ActionBinding::new(row, spec, move |input| {
-            let mut args = effect.arguments(input);
+        ui::tilo_actions::ActionBinding::fallible(row, spec, move |input| {
+            let mut args = effect.arguments(input)?;
             args.retain(|name, _| asked.contains(name));
-            args
+            Ok(args)
         })
         .ok()
     }

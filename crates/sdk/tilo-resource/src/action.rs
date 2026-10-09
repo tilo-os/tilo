@@ -371,7 +371,7 @@ impl<R, A: Serialize> ActionRef<R, A> {
     /// # Errors
     /// Returns why the input does not serialize, or does not have the shape
     /// the declared names ask for.
-    pub fn try_arguments(
+    pub fn arguments(
         &self,
         input: &A,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
@@ -395,20 +395,13 @@ impl<R, A: Serialize> ActionRef<R, A> {
         }
     }
 
-    /// [`Self::try_arguments`] for a control binding: an input that does
-    /// not bind gives no arguments, which the binding's validation against
-    /// the published spec then refuses.
-    pub fn arguments(&self, input: &A) -> serde_json::Map<String, serde_json::Value> {
-        self.try_arguments(input).unwrap_or_default()
-    }
-
     /// Fully apply the input: an invocation with nothing left to supply.
     /// A verb's parameter struct converts from its parameters in order: one
     /// value, or a tuple of several. An input that does not bind makes an
     /// invocation that refuses with why ([`Invoke::refusal`]), never one
     /// with empty arguments.
     pub fn with(&self, input: impl Into<A>) -> Invoke<R> {
-        let (arguments, refusal) = match self.try_arguments(&input.into()) {
+        let (arguments, refusal) = match self.arguments(&input.into()) {
             Ok(arguments) => (arguments, None),
             Err(refusal) => (serde_json::Map::new(), Some(refusal)),
         };
@@ -456,7 +449,12 @@ pub struct Mapped<R, A, F> {
 /// control's value becomes that action's arguments.
 pub trait Binds<R, I>: Send + Sync + 'static {
     fn action_id(&self) -> &'static str;
-    fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value>;
+
+    /// The arguments `input` binds to.
+    ///
+    /// # Errors
+    /// Returns why `input` does not bind; the control invokes nothing.
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String>;
 }
 
 /// A control binds an action whose input its value converts to: a text
@@ -465,7 +463,7 @@ impl<R: 'static, A: Serialize + 'static, I: Into<A>> Binds<R, I> for ActionRef<R
     fn action_id(&self) -> &'static str {
         self.id
     }
-    fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value> {
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         ActionRef::arguments(self, &input.into())
     }
 }
@@ -480,7 +478,7 @@ where
     fn action_id(&self) -> &'static str {
         self.action.id
     }
-    fn arguments(&self, input: I) -> serde_json::Map<String, serde_json::Value> {
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         self.action.arguments(&(self.map)(input).into())
     }
 }

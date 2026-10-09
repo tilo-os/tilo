@@ -158,7 +158,7 @@ impl<R: Resource> Actions<R> {
         let key = self.key(action.action_id());
         let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
         let published = self.published.borrow();
-        ActionBinding::new(&published, &spec, move |input| action.arguments(input))
+        ActionBinding::fallible(&published, &spec, move |input| action.arguments(input))
             .map_err(|error| (key, error.to_string()))
     }
 
@@ -287,7 +287,7 @@ impl<R: Resource> Actions<R> {
         let id = effect.action_id();
         let resource = self.exporting::<E>(id)?;
         let spec = resource.actions.first()?.clone();
-        ActionBinding::new(&resource, &spec, move |input| effect.arguments(input))
+        ActionBinding::fallible(&resource, &spec, move |input| effect.arguments(input))
             .map_err(|error| tracing::warn!(%error, effect = id, "control not bound"))
             .ok()
     }
