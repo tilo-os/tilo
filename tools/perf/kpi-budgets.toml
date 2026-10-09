@@ -267,3 +267,80 @@ unit = "count"
 max = 0.0
 min_delta = 1.0
 source = "KPI document: Workspace switch, dropped frames at 144 Hz"
+
+# The installed desktop (TIL-589): Dev / VM acceptance's nightly run on the newest
+# published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
+# (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
+# these groups (boot, idle, memory, app, render) themselves, not Perf / scheduled.
+# The ceilings are the KPI document's targets, which are hardware figures: a
+# software-rendered guest reports against them and is never quoted as one. The
+# checks that fail the acceptance run hold run.py's own budgets. Most of these are
+# one sample per night, so min_delta is the change below which run-to-run noise in a
+# shared runner's guest is not called a regression.
+
+[kpi."boot.to_greeter_s"]
+unit = "s"
+max = 20.0
+min_delta = 1.0
+source = "os/tests/boot_performance_gate.sh budget under KVM (KPI document target: 10 s on the reference laptop)"
+
+[kpi."idle.shell_cpu_pct"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+source = "KPI document: Idle wakeups and idle power; run.py idle_shell_cpu_pct"
+
+[kpi."idle.frames"]
+unit = "count"
+max = 2.0
+min_delta = 2.0
+source = "KPI document: 0 frames while still (the clock repaints once a minute); run.py idle_frames"
+
+[kpi."idle.wakeups_per_s.shell"]
+unit = "per_s"
+max = 1.0
+min_delta = 5.0
+source = "KPI document: compositor at most 1 wakeup/s while still (context switches of its loop thread)"
+
+[kpi."idle.ram_mib"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI document: RAM at the idle desktop, at most 1.0 GiB system (guest MemTotal - MemAvailable)"
+
+[kpi."memory.shell_anon_mib"]
+unit = "MiB"
+max = 250.0
+min_delta = 32.0
+source = "KPI document: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
+
+[kpi."memory.session_mib"]
+unit = "MiB"
+max = 2500.0
+min_delta = 64.0
+source = "run.py session_memory_mb: the compositor's and four open apps' cgroups"
+
+[kpi."app.open.warm_ms.file-explorer"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."app.open.warm_ms.notes"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."app.open.warm_ms.settings"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI document: App open, warm (request to first frame, sandbox included)"
+
+[kpi."render.frame_cpu_ms"]
+unit = "ms"
+p95 = 16.7
+p99 = 33.4
+min_delta = 2.0
+source = "run.py work_ms_p95 / work_ms_p99: compositor CPU per painted frame during interactions"
