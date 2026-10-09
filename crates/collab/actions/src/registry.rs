@@ -11,12 +11,16 @@ use serde::de::DeserializeOwned;
 use crate::action::{Action, ActionError, EncodedAction};
 
 type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
+type ContentReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Maps a stable `type_id` to the decoder that reconstructs its action
 /// from a payload — cheap to share behind an `Arc`/`&` at dispatch time.
 #[derive(Default)]
 pub struct ActionRegistry {
     decoders: HashMap<String, Decoder>,
+    /// Where the large parts of a recorded action are read from by hash
+    /// ([`crate::content`]): the content store of the device replaying.
+    content: Option<ContentReader>,
 }
 
 impl ActionRegistry {
@@ -66,6 +70,34 @@ impl ActionRegistry {
             .get(&encoded.type_id)
             .ok_or_else(|| ActionError::UnknownType(encoded.type_id.clone()))?;
         decoder(&encoded.payload)
+    }
+
+    /// Read the large parts of recorded actions from `read` (the device's
+    /// content store), so a change whose action names content replays.
+    /// Without one, the thread's reader ([`crate::keep_content_in`]) is used.
+    pub fn set_content(&mut self, read: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static) {
+        self.content = Some(Box::new(read));
+    }
+
+    /// The recorded action `recorded` as it ran, its content parts read
+    /// from this registry's content reader.
+    ///
+    /// # Errors
+    /// [`MissingContent`](crate::MissingContent) for content not here yet
+    /// (inside `Ok`), or a payload that is not JSON.
+    pub fn resolve(
+        &self,
+        recorded: &EncodedAction,
+    ) -> Result<Result<EncodedAction, crate::MissingContent>, ActionError> {
+        if recorded.content_parts().is_empty() {
+            return Ok(Ok(recorded.clone()));
+        }
+        let here = crate::content::read_here;
+        let read: &dyn Fn(&str) -> Option<Vec<u8>> = match &self.content {
+            Some(read) => read.as_ref(),
+            None => &here,
+        };
+        recorded.resolve_content(read)
     }
 
     /// Whether a decoder is registered for `type_id`.
