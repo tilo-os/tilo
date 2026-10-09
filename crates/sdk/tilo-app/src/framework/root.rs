@@ -1265,27 +1265,23 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         #[cfg(not(target_family = "wasm"))]
-        if let Some(request) = op.unscoped()
-            && request.type_id == tilo_actions::remote::APPLICATION_ACTIVATE_TYPE
-        {
-            self.activation_requested.set(true);
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput {
+        if let Some(request) = op.unscoped() {
+            let output = match request.type_id {
+                tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
+                    self.activation_requested.set(true);
+                    Some(tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({"activation_requested": true})),
                         resources: Vec::new(),
-                    },
-                ),
-            ));
-        }
-        #[cfg(not(target_family = "wasm"))]
-        if let Some(request) = op.unscoped()
-            && request.type_id == RENDER_TYPE
-        {
-            let output = self.render(request.payload, doc)?;
-            return Ok(Some(
-                ui_core::host_operation::ResourceOperationStart::Completed(output),
-            ));
+                    })
+                }
+                RENDER_TYPE => Some(self.render(request.payload, doc)?),
+                _ => None,
+            };
+            if let Some(output) = output {
+                return Ok(Some(
+                    ui_core::host_operation::ResourceOperationStart::Completed(output),
+                ));
+            }
         }
         if R::READABLE
             && let Some(request) = op.unscoped()
