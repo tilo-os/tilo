@@ -35,6 +35,55 @@ pub struct Surfaces {
     pub overlay: f64,
 }
 
+impl Surfaces {
+    /// Every rung's lightness, the desktop's first.
+    fn lightnesses(self) -> [f64; 6] {
+        let Self {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        } = self;
+        [base, content, sidebar, inspector, raised, overlay]
+    }
+
+    /// The ladder a palette is built from.
+    fn ladder(self) -> SurfaceLadder {
+        let [base, content, sidebar, inspector, raised, overlay] = self.lightnesses().map(narrow);
+        SurfaceLadder {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        }
+    }
+}
+
+impl From<SurfaceLadder> for Surfaces {
+    fn from(ladder: SurfaceLadder) -> Self {
+        let SurfaceLadder {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+        } = ladder;
+        Self {
+            base: f64::from(base),
+            content: f64::from(content),
+            sidebar: f64::from(sidebar),
+            inspector: f64::from(inspector),
+            raised: f64::from(raised),
+            overlay: f64::from(overlay),
+        }
+    }
+}
+
 /// OKLCH lightness of the three ink tiers, on the content surface.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq)]
 pub struct Ink {
@@ -141,14 +190,7 @@ impl Theme {
             high_contrast: palette.high_contrast,
             hue: palette.hue.map(f64::from),
             chroma: f64::from(palette.chroma),
-            surfaces: Surfaces {
-                base: f64::from(surfaces.base),
-                content: f64::from(surfaces.content),
-                sidebar: f64::from(surfaces.sidebar),
-                inspector: f64::from(surfaces.inspector),
-                raised: f64::from(surfaces.raised),
-                overlay: f64::from(surfaces.overlay),
-            },
+            surfaces: Surfaces::from(surfaces),
             ink: Ink {
                 primary: f64::from(ink.primary),
                 secondary: f64::from(ink.secondary),
@@ -187,14 +229,7 @@ impl Theme {
             high_contrast: self.high_contrast,
             hue: self.hue.map(narrow),
             chroma: narrow(self.chroma),
-            surfaces: SurfaceLadder {
-                base: narrow(self.surfaces.base),
-                content: narrow(self.surfaces.content),
-                sidebar: narrow(self.surfaces.sidebar),
-                inspector: narrow(self.surfaces.inspector),
-                raised: narrow(self.surfaces.raised),
-                overlay: narrow(self.surfaces.overlay),
-            },
+            surfaces: self.surfaces.ladder(),
             ink: InkLadder {
                 primary: narrow(self.ink.primary),
                 secondary: narrow(self.ink.secondary),
@@ -270,12 +305,6 @@ impl Theme {
     fn admitted(&self) -> Result<(), Refusal> {
         let numbers = [
             self.chroma,
-            self.surfaces.base,
-            self.surfaces.content,
-            self.surfaces.sidebar,
-            self.surfaces.inspector,
-            self.surfaces.raised,
-            self.surfaces.overlay,
             self.ink.primary,
             self.ink.secondary,
             self.ink.tertiary,
@@ -290,6 +319,7 @@ impl Theme {
         ];
         if numbers
             .into_iter()
+            .chain(self.surfaces.lightnesses())
             .chain(self.hue)
             .chain(self.tint)
             .any(|value| !value.is_finite())
@@ -360,13 +390,22 @@ impl Rung {
     /// The path of this rung's lightness in `theme`.
     #[must_use]
     pub fn path<R>(self, theme: &ThemePaths<R>) -> Path<R, f64> {
+        let SurfacesPaths {
+            base,
+            content,
+            sidebar,
+            inspector,
+            raised,
+            overlay,
+            ..
+        } = &theme.surfaces;
         match self {
-            Self::Base => theme.surfaces.base.clone(),
-            Self::Content => theme.surfaces.content.clone(),
-            Self::Sidebar => theme.surfaces.sidebar.clone(),
-            Self::Inspector => theme.surfaces.inspector.clone(),
-            Self::Raised => theme.surfaces.raised.clone(),
-            Self::Overlay => theme.surfaces.overlay.clone(),
+            Self::Base => base.clone(),
+            Self::Content => content.clone(),
+            Self::Sidebar => sidebar.clone(),
+            Self::Inspector => inspector.clone(),
+            Self::Raised => raised.clone(),
+            Self::Overlay => overlay.clone(),
             Self::Primary => theme.ink.primary.clone(),
             Self::Secondary => theme.ink.secondary.clone(),
             Self::Tertiary => theme.ink.tertiary.clone(),
