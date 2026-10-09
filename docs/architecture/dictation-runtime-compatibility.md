@@ -28,7 +28,7 @@ The adjacent JSON preserves exact sources, executable and raw receipt hashes.
 | Existing Wasmi interpreter | No JIT; the earlier public French run uses one thread but finishes in 46.055 s | Retain as interpreter evidence; interactive performance unqualified |
 | Existing native Whisper | Production-confined benchmark receipts observe two total native threads; the bridge bounds compute threads to 1–2 and uses CPU code without JIT | Existing compatible fallback; recognition quality and physical latency remain separate limitations |
 | Native Whistle archive/DSO | The earlier guard observes 12 tasks before audio; no supported public pre-initialization thread setter is exposed | Reject direct embedding; CLI `--threads 2` fits the budget but lacks the resident private speech-worker interface |
-| Wasmtime 49.0.2 | Pinned Unix implementation publishes RW pages as RX; supported precompiled modules | First source-only compiled-engine qualification proposal; not yet executed |
+| Wasmtime 49.0.2 | Actual pinned module recognizes and streams after production confinement; source-built runtime publishes RX without RWX | [Default-off AOT qualification passes](dictation-whistle-aot-review.md); production activation remains unqualified |
 | WABT wasm2c 1.0.42 | Supported Wasm-to-C output, including SIMD, compiled as ordinary native code | Alternative AOT proposal; actual module translation and performance untested |
 
 No policy change is proposed. The repository's browser-specific JIT entitlements
