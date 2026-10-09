@@ -99,3 +99,11 @@ rooms before deciding whether explicit new initialization is appropriate.
 The relay room ID is a routing key, not a Files namespace UUID. A successful
 probe identifies a recovery source; actual namespace recovery must still use
 the existing authenticated Files join path and corresponding authority.
+
+Current tooling keeps this registry at `<identity-root>/peers/home-peers.json`.
+An older host may still have `<identity-root>/home-peers.json`. To inspect that
+existing record without creating or migrating trust, pass
+`--registry /path/to/existing/home-peers.json` explicitly. The selected record
+must still match this person's verified certificate, exact enrolled device
+and service, and saved room. The command neither copies the legacy record nor
+changes which registry other services use.
