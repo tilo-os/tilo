@@ -966,8 +966,8 @@ impl ChannelKeyProvider {
                 return change;
             }
             tokio::select! {
-                changed = changes.changed() => {
-                    if changed.is_err() {
+                outcome = changes.changed() => {
+                    if outcome.is_err() {
                         // The service was dropped: whatever replaces it
                         // answers differently.
                         return change.wrapping_add(1);
@@ -1412,7 +1412,7 @@ mod tests {
         let wait = |after: u64| {
             let keys = keys.clone();
             let waiting = runtime.spawn(async move { keys.channel_changed(channel, after).await });
-            runtime.block_on(tokio::time::sleep(Duration::from_millis(20)));
+            runtime.block_on(async { tokio::time::sleep(Duration::from_millis(20)).await });
             assert!(!waiting.is_finished(), "nothing changed since {after}");
             waiting
         };
@@ -1428,7 +1428,7 @@ mod tests {
         let before = laptop.channel_change(channel);
         let waiting = wait(before);
         pump(8);
-        runtime.block_on(tokio::time::sleep(Duration::from_millis(20)));
+        runtime.block_on(async { tokio::time::sleep(Duration::from_millis(20)).await });
         assert!(!waiting.is_finished(), "not admitted, nothing changed");
 
         policy.allowed.lock().unwrap().insert(public(2));
