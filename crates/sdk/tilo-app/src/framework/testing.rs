@@ -1612,18 +1612,45 @@ fn split_command_line(
 /// What `A` publishes and how its view binds to it, as `tilo-app surface`
 /// commits it and `tilo-app check` compares it: the resource's
 /// [`Surface`](tilo_resource::Surface) and those of the person's records its
-/// views open, and every control its view, built headless on an empty
-/// record, binds to something the resource does not publish.
+/// views open, every control its view, built headless on an empty record,
+/// binds to something the resource does not publish, the ids of its effects
+/// and named views, and the ids the framework keeps for its own actions
+/// ([`reserved_action_ids`](super::reserved_action_ids)).
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
     let collecting = collect_unbound();
-    let built = TestApp::<A>::new().map(drop);
+    let mut built = TestApp::<A>::new();
+    // What the view publishes besides the resource's verbs: its effects and
+    // the resource's named views, whose ids must not be the framework's.
+    let (effects, views) = match &mut built {
+        Ok(app) => {
+            let effects = app
+                .harness()
+                .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                    root.effects
+                        .specs()
+                        .into_iter()
+                        .map(|spec| spec.id)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let views = <A::Resource as Resource>::views(&app.state())
+                .into_iter()
+                .map(|view| view.id)
+                .collect::<Vec<_>>();
+            (effects, views)
+        }
+        Err(_) => (Vec::new(), Vec::new()),
+    };
     let (unbound, opened) = collecting.finish();
     let mut resources = vec![<A::Resource as Resource>::surface()];
     resources.extend(opened);
     serde_json::json!({
         "resources": resources,
         "unbound": unbound,
+        "effects": effects,
+        "views": views,
+        "reserved": super::reserved_action_ids(),
         "view": built.err().map(|error| error.to_string()),
     })
 }

@@ -71,7 +71,7 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// Edits the views bound to their local state.
     bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
-    effects: Effects<R>,
+    pub(super) effects: Effects<R>,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
     /// What is shown instead of the view while the record does not read as
@@ -176,6 +176,35 @@ fn offer_item_open<R: Resource>(resource: &mut tilo_actions::Resource) {
     for child in &mut resource.children {
         offer_item_open::<R>(child);
     }
+}
+
+/// The ids of the actions the framework publishes on every app's resource
+/// beside the app's own: the generic `apply`, `group` and `field-edit`, the
+/// views `open` and `read`, history, and the presentation operations. An app
+/// verb, effect or view under one of these ids shadows the framework's or is
+/// shadowed by it, so `tilo-app check` refuses it.
+#[must_use]
+pub fn reserved_action_ids() -> Vec<String> {
+    let mut ids: Vec<String> = [
+        tilo_resource::APPLY,
+        tilo_resource::GROUP,
+        tilo_resource::FIELD_EDIT,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    ids.push(open_spec().id);
+    ids.push(read_spec().id);
+    ids.extend(super::history::specs().into_iter().map(|spec| spec.id));
+    ids.extend(
+        with_native_presentations(tilo_actions::Resource::new("", "", ""))
+            .actions
+            .into_iter()
+            .map(|spec| spec.id),
+    );
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// The operation type of the framework's `read` view.
@@ -2289,6 +2318,36 @@ impl<R: Resource> AppWidget for Unopened<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ids the framework keeps are the ones it publishes on every
+    /// app: the generic actions, `open`, `read`, history and presentation.
+    #[test]
+    fn the_reserved_ids_are_what_the_framework_publishes() {
+        let reserved = reserved_action_ids();
+        for id in [
+            "apply",
+            "group",
+            "field-edit",
+            "open",
+            "read",
+            "undo",
+            "redo",
+            "restore",
+            "checkpoint",
+            "history",
+            "diff",
+            "render",
+        ] {
+            assert!(
+                reserved.iter().any(|kept| kept == id),
+                "{id} in {reserved:?}"
+            );
+        }
+        assert!(
+            !reserved.iter().any(|kept| kept == "rename"),
+            "an app's own verb name is not kept"
+        );
+    }
 
     #[test]
     fn a_search_entry_naming_an_action_is_a_hit_that_invokes_it() {

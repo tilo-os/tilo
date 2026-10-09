@@ -39,6 +39,13 @@ pub struct SurfaceReport {
     pub unbound: Vec<String>,
     /// Why the view could not be built headless, if it could not.
     pub view: Option<String>,
+    /// The ids of the effects the view publishes.
+    pub effects: Vec<String>,
+    /// The ids of the resource's named views.
+    pub views: Vec<String>,
+    /// The ids the framework publishes its own actions under, as the app's
+    /// framework reports them.
+    pub reserved: Vec<String>,
 }
 
 /// Whether the app at `app_dir` runs through the framework, whose binary
@@ -71,17 +78,19 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
         .iter()
         .map(normalized)
         .collect();
-    let unbound = report
-        .get("unbound")
-        .and_then(Value::as_array)
-        .map(|unbound| {
-            unbound
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
+    let strings = |key: &str| -> Vec<String> {
+        report
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let unbound = strings("unbound");
     let view = report
         .get("view")
         .and_then(Value::as_str)
@@ -90,6 +99,9 @@ pub fn parse_report(output: &str) -> Result<SurfaceReport> {
         resources,
         unbound,
         view,
+        effects: strings("effects"),
+        views: strings("views"),
+        reserved: strings("reserved"),
     })
 }
 
@@ -364,6 +376,19 @@ pub fn findings(
         out.findings
             .push(finding(Level::Error, "binding", unbound.clone()));
     }
+    for (what, id) in own_action_ids(report) {
+        if report.reserved.contains(&id) {
+            out.findings.push(finding(
+                Level::Error,
+                "reserved-id",
+                format!(
+                    "{what} `{id}` has the id of an action the framework publishes on every app; \
+                     rename it (the framework's ids: {})",
+                    report.reserved.join(", ")
+                ),
+            ));
+        }
+    }
     match committed {
         None => out.findings.push(finding(
             missing,
@@ -428,6 +453,22 @@ pub fn findings(
         }
     }
     out
+}
+
+/// Every id the app publishes an action or view under itself: its
+/// resources' verbs, its effects and its named views, each with what it is.
+fn own_action_ids(report: &SurfaceReport) -> Vec<(&'static str, String)> {
+    let verbs = report.resources.iter().flat_map(|resource| {
+        resource
+            .get("verbs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|verb| ("verb", text(verb, "id").to_owned()))
+    });
+    let effects = report.effects.iter().map(|id| ("effect", id.clone()));
+    let views = report.views.iter().map(|id| ("view", id.clone()));
+    verbs.chain(effects).chain(views).collect()
 }
 
 /// Write the surface of the app containing `start` to its [`FILE`], from
@@ -520,6 +561,9 @@ mod tests {
             resources: resources.iter().map(normalized).collect(),
             unbound: Vec::new(),
             view: None,
+            effects: Vec::new(),
+            views: Vec::new(),
+            reserved: Vec::new(),
         }
     }
 
@@ -596,11 +640,39 @@ mod tests {
 
     #[test]
     fn the_report_is_read_from_what_the_binary_printed() {
-        let printed = "starting\n{\"resources\": [{\"kind\": \"notes.book\", \"verbs\": [], \"fields\": []}], \"unbound\": [\"x\"], \"view\": null}\n";
+        let printed = "starting\n{\"resources\": [{\"kind\": \"notes.book\", \"verbs\": [], \"fields\": []}], \"unbound\": [\"x\"], \"effects\": [\"zoom-in\"], \"views\": [\"reader\"], \"reserved\": [\"open\", \"undo\"], \"view\": null}\n";
         let parsed = parse_report(printed).unwrap();
         assert_eq!(parsed.resources.len(), 1);
         assert_eq!(parsed.unbound, ["x"]);
+        assert_eq!(parsed.effects, ["zoom-in"]);
+        assert_eq!(parsed.views, ["reader"]);
+        assert_eq!(parsed.reserved, ["open", "undo"]);
         assert!(parsed.view.is_none());
+    }
+
+    /// A verb, effect or view under an id the framework publishes its own
+    /// action under is refused, whichever it is; other ids pass.
+    #[test]
+    fn an_action_with_a_framework_id_is_refused() {
+        let mut now = report(&[resource(1, "String", &["rename", "undo"])]);
+        now.effects = vec!["zoom-in".into(), "open".into()];
+        now.views = vec!["history".into(), "reader".into()];
+        now.reserved = ["open", "undo", "redo", "history", "field-edit"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let found = findings("so.tilo.notes", &now, None, None, Level::Warning);
+        let refused: Vec<&str> = found
+            .findings
+            .iter()
+            .filter(|finding| finding.rule == "reserved-id")
+            .map(|finding| finding.message.as_str())
+            .collect();
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert!(refused[0].starts_with("verb `undo`"));
+        assert!(refused[1].starts_with("effect `open`"));
+        assert!(refused[2].starts_with("view `history`"));
+        assert!(!found.passed());
     }
 
     #[test]
