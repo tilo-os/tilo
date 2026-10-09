@@ -14,62 +14,75 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::Role;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
 use std::collections::BTreeMap;
-pub type RoomGovernance = (
-    Option<String>,
-    BTreeMap<String, Vec<u8>>,
-    BTreeMap<String, String>,
-    BTreeMap<String, Vec<u8>>,
-    Option<Vec<u8>>,
-    BTreeMap<String, Vec<Vec<u8>>>,
-    media::MediaGovernanceValue,
-);
+/// Every governed value a room document records, exactly as stored.
+///
+/// Capability and identity rows are the raw blobs the document holds, not their
+/// decoded form: equality is the byte-exact comparison
+/// [`governance_unchanged`] needs, so a non-governor cannot slip a changed but
+/// undecodable (or re-encoded) row past it. Decoded views of the same document
+/// state live on its cache ([`crate::cached_document::CachedDocument::policy`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoomGovernance {
+    /// The structural owner's person key (`owner`).
+    pub owner: Option<String>,
+    /// `capabilities.*`: JSON `CapOverride` blobs keyed by capability id.
+    pub capabilities: BTreeMap<String, Vec<u8>>,
+    /// `peers.*`: self-asserted display names keyed by device key.
+    pub peers: BTreeMap<String, String>,
+    /// `peer_identities_v1.*`: JSON `GovernedIdentity` blobs keyed by device key.
+    pub identities: BTreeMap<String, Vec<u8>>,
+    /// The governed checkpoint coverage bytes.
+    pub coverage: Option<Vec<u8>>,
+    /// `invitation_receipts_v1.*`: every redemption receipt, keyed by invite id.
+    pub invitation_receipts: BTreeMap<String, Vec<Vec<u8>>>,
+    /// The governed media policy, by value.
+    pub media: media::MediaGovernanceValue,
+}
+impl RoomGovernance {
+    fn absent() -> Self {
+        Self {
+            owner: None,
+            capabilities: BTreeMap::new(),
+            peers: BTreeMap::new(),
+            identities: BTreeMap::new(),
+            coverage: None,
+            invitation_receipts: BTreeMap::new(),
+            media: media::MediaGovernanceValue::Absent,
+        }
+    }
+}
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
     let Some(doc) = doc else {
-        return (
-            None,
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            None,
-            std::collections::BTreeMap::new(),
-            media::MediaGovernanceValue::Absent,
-        );
+        return RoomGovernance::absent();
     };
-    let mut owner = None;
-    let mut caps = BTreeMap::new();
-    let mut peers = BTreeMap::new();
-    let mut identities = BTreeMap::new();
+    let mut governance = RoomGovernance::absent();
     // The legacy public output is unqualified owned data. The same borrowed
     // traversal serves bounded destinations that pay for each output copy.
     let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
         match entry {
-            read::GovernanceEntry::Owner(value) => owner = Some(value.to_owned()),
+            read::GovernanceEntry::Owner(value) => governance.owner = Some(value.to_owned()),
             read::GovernanceEntry::Capability { key, bytes } => {
-                caps.insert(key.to_owned(), bytes.to_vec());
+                governance
+                    .capabilities
+                    .insert(key.to_owned(), bytes.to_vec());
             }
             read::GovernanceEntry::Peer { key, name } => {
-                peers.insert(key.to_owned(), name.to_owned());
+                governance.peers.insert(key.to_owned(), name.to_owned());
             }
             read::GovernanceEntry::Identity { key, bytes } => {
-                identities.insert(key.to_owned(), bytes.to_vec());
+                governance.identities.insert(key.to_owned(), bytes.to_vec());
             }
         }
         Ok::<(), std::convert::Infallible>(())
     });
     // LegacyRead has no resource refusals and the visitor is infallible.
     debug_assert!(result.is_ok());
-    let invitation_receipts = invitation_receipts(doc).unwrap_or_default();
-    (
-        owner,
-        caps,
-        peers,
-        identities,
-        crate::coverage::governed_bytes(doc),
-        invitation_receipts,
-        media::governed_value(Some(doc)),
-    )
+    governance.coverage = crate::coverage::governed_bytes(doc);
+    governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();
+    governance.media = media::governed_value(Some(doc));
+    governance
 }
 
 pub(crate) fn invitation_receipts(
@@ -230,30 +243,116 @@ pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) 
         Verb::Read | Verb::Invite => Role::Viewer,
     })
 }
+/// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
+const EFFECT_RECEIPTS: &str = "effect_receipts_v1";
+#[cfg(test)]
+thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// Decode one stored effect receipt. An unreadable receipt carries no evidence:
+/// it is treated as absent everywhere, as it always has been.
+fn decode_receipt(bytes: &[u8]) -> Option<serde_json::Value> {
+    #[cfg(test)]
+    RECEIPT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
+    serde_json::from_slice(bytes).ok()
+}
+
+/// Every effect receipt `doc` stores, borrowed, with no decoding.
+fn visit_receipt_bytes<E>(
+    doc: &AutoCommit,
+    mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    let Some((_, obj)) = doc.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
+        return Ok(());
+    };
+    for key in doc.keys(&obj) {
+        if let Some((Value::Scalar(value), _)) = doc.get(&obj, &key).ok().flatten()
+            && let ScalarValue::Bytes(bytes) = value.as_ref()
+        {
+            visit(&key, bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `new` carries different evidence than `prior` for one invocation.
+/// Equal bytes are the same receipt and are never decoded; only a differing
+/// encoding is compared by value, so re-encoding the same JSON is no rewrite.
+fn receipt_rewritten(prior: &[u8], new: &[u8]) -> bool {
+    prior != new
+        && match (decode_receipt(prior), decode_receipt(new)) {
+            (Some(prior), Some(new)) => prior != new,
+            // Unreadable on either side: no evidence to rewrite, as before.
+            _ => false,
+        }
+}
+
 /// Effect receipts are immutable by value; omission cannot erase old evidence.
+///
+/// Compares the stored bytes of each receipt `before` holds against the same
+/// key in `after`; a receipt is decoded only when its bytes changed.
 pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     let Some(before) = before else {
         return true;
     };
-    let after = receipt_values(after);
-    receipt_values(before)
-        .iter()
-        .all(|(key, value)| after.get(key).is_none_or(|new| new == value))
+    let Some((_, after_obj)) = after.get(ROOT, EFFECT_RECEIPTS).ok().flatten() else {
+        return true;
+    };
+    visit_receipt_bytes(before, |key, prior| {
+        let rewritten = matches!(
+            after.get(&after_obj, key).ok().flatten(),
+            Some((Value::Scalar(value), _))
+                if matches!(value.as_ref(), ScalarValue::Bytes(new) if receipt_rewritten(prior, new))
+        );
+        if rewritten { Err(()) } else { Ok(()) }
+    })
+    .is_ok()
 }
 
+/// Record every effect receipt `doc` carries in `ledger`, the receipts this
+/// peer has admitted for the room's lifetime. A receipt the ledger already holds
+/// byte-for-byte costs one comparison; a new one is decoded once (an unreadable
+/// receipt is not evidence and is not recorded) and stored as received, never
+/// re-encoded. Ledger rows written in the older re-encoded form are compared
+/// by value and replaced by the received bytes, so they take the fast path next
+/// time.
+///
+/// # Errors
+///
+/// [`RoomRefusal::ReceiptImmutable`] when `doc` rewrites a receipt the ledger
+/// holds; `ledger` may then be partly updated and must be discarded.
+pub(crate) fn admit_receipts(
+    ledger: &mut BTreeMap<String, Vec<u8>>,
+    doc: &AutoCommit,
+) -> Result<(), RoomRefusal> {
+    visit_receipt_bytes(doc, |key, bytes| {
+        let Some(prior) = ledger.get(key) else {
+            if decode_receipt(bytes).is_some() {
+                ledger.insert(key.to_owned(), bytes.to_vec());
+            }
+            return Ok(());
+        };
+        if prior.as_slice() == bytes {
+            return Ok(());
+        }
+        let Some(value) = decode_receipt(bytes) else {
+            return Ok(());
+        };
+        if decode_receipt(prior).is_none_or(|prior| prior != value) {
+            return Err(RoomRefusal::ReceiptImmutable);
+        }
+        ledger.insert(key.to_owned(), bytes.to_vec());
+        Ok(())
+    })
+}
+
+/// Every readable effect receipt in `doc`, decoded.
 pub fn receipt_values(doc: &AutoCommit) -> BTreeMap<String, serde_json::Value> {
-    let Some((_, obj)) = doc.get(ROOT, "effect_receipts_v1").ok().flatten() else {
-        return BTreeMap::new();
-    };
-    doc.keys(&obj)
-        .filter_map(|key| {
-            let (Value::Scalar(value), _) = doc.get(&obj, &key).ok().flatten()? else {
-                return None;
-            };
-            let ScalarValue::Bytes(bytes) = value.as_ref() else {
-                return None;
-            };
-            Some((key, serde_json::from_slice(bytes).ok()?))
-        })
-        .collect()
+    let mut values = BTreeMap::new();
+    let _ = visit_receipt_bytes(doc, |key, bytes| {
+        if let Some(value) = decode_receipt(bytes) {
+            values.insert(key.to_owned(), value);
+        }
+        Ok::<(), std::convert::Infallible>(())
+    });
+    values
 }
