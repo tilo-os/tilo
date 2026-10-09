@@ -346,6 +346,22 @@ Verify the received catalog locally without a network using
 Tests and executables running on the builder use its catalog directly.
 Applications do not download fonts at runtime.
 
+For optimized application iteration, use the existing `thin-app` profile:
+
+```sh
+cargo run --locked --profile thin-app -p ebook
+```
+
+This also builds standalone apps: no `thin` feature or dynamic SDK is required.
+It keeps optimization level 3, omits whole-program LTO, and compiles `tilo-ui`
+with sixteen codegen units. `cargo run --release -p ebook` uses the shipping
+profile's fat LTO and one codegen unit; every app edit repeats that final
+whole-program optimization even when the toolkit is fresh. Use `--release`
+for shipping-profile acceptance and measurements. Keep the same worktree and
+profile between edits so Cargo can reuse their outputs. The first `thin-app`
+build needs its own artifacts; it is not a warm edit measurement. The profile
+remains non-incremental and eligible for sccache.
+
 For measured Rust edit feedback on the remote builder, run one scoped command:
 
 ```sh
@@ -1613,14 +1629,19 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
-  it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
-  `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
-  or on the image. The host package omits this file.
+- **No `/etc/tilo/desktop.toml`.** The host package omits it, so the compositor
+  uses its defaults unless `~/.config/tilo-desktop/desktop.toml` exists.
 
-`/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
-no such unit here, so the permission UI will talk about a path that is not
-mounted.
+`/var/workspace` is the image's `fs.service` mount. The Fedora host payload
+instead packages the existing daemon/admin tool and the user service
+`tilo-files-workspace.service`, using `~/.local/state/tilo/files/mount` on the
+standard XDG profile. It starts only for saved, signed and Files-authorized
+primary state; package installation never substitutes an empty namespace for
+missing recovery data. The host shell exports that root only through the
+launcher's existing capability filter. See [host Files preparation and
+recovery](os/docs/peer-sync.md#fedora-primary-files-service-and-explicit-first-run).
+The Settings Storage pane's host socket wiring is still pending; its image
+socket does not address this user service.
 
 Alongside Tilo packages, the shell scans `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories

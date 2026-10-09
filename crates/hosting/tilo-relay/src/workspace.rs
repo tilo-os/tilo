@@ -671,15 +671,15 @@ impl WorkspaceRuntime {
                     "delta workspace or authenticated author mismatch",
                 )));
             }
-            crate::coedit::CoeditPayload::decode(delta)
+            crate::coedit::retention_metadata(delta)
         } else {
             None
         };
         match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
                 self.store.retain_checkpoint(channel, &raw)?;
             }
-            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Delta)) => {
                 self.store.retain_delta(channel, seq, &raw)?;
             }
             None => {}
@@ -700,7 +700,7 @@ impl WorkspaceRuntime {
         // (hello / SyncReq / rejected checkpoint). Peer relays always receive
         // it so they can federate; retention and offline queues are unchanged.
         let checkpoint_channel = match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(*channel),
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
         };
         let mut delivered = 0usize;

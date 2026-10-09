@@ -419,10 +419,35 @@ impl NativeWorkspaceOwner {
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         now: SystemTime,
     ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_with_current(room, |_| Ok(request), now)
+    }
+
+    /// Prepare a signed local document mutation from the current committed
+    /// room and admit it in the same owner turn. This keeps its sequence and
+    /// document basis current when other publications race the caller.
+    ///
+    /// # Errors
+    /// The room is fenced, preparation fails, or exact admission and durable
+    /// publication refuse the prepared write.
+    pub fn commit_document_with_current(
+        &self,
+        room: RoomId,
+        prepare: impl FnOnce(
+            &crate::NativeCommittedView,
+        )
+            -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String>,
+        now: SystemTime,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let request = prepare(&candidate)?;
+        if RoomId::parse(&request.room) != Some(room) {
+            return Err("prepared native document room differs from selected room".into());
+        }
         let outgoing = publication::prepare(&request)?;
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
         let CommitOperation::Document {
             app,
             record,
@@ -431,8 +456,6 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native owner commit family".into());
         };
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let device = candidate.device().device_public_key;
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
