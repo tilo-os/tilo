@@ -93,17 +93,16 @@ pub(super) fn phase(target: &Mounted) -> serde_json::Value {
 }
 
 pub(super) fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, expected: &str) {
-    // An authenticated update can advance this author's replay floor after
-    // this edit is signed. Require a fresh signature and exact owner receipt.
-    for attempt in 0..3 {
-        let request = prepare_edit(device, owner, expected);
-        match owner.commit_document(request, SystemTime::now()) {
-            Ok(_) => return,
-            Err(error)
-                if error == "native local document signed sequence is stale" && attempt < 2 => {}
-            Err(error) => panic!("native mounted edit requires an exact owner receipt: {error}"),
-        }
-    }
+    let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    owner
+        .commit_document_with_current(
+            room,
+            |view| prepare_edit_from_view(device, view, room, expected),
+            SystemTime::now(),
+        )
+        .unwrap_or_else(|error| {
+            panic!("native mounted edit requires an exact owner receipt: {error}")
+        });
 }
 
 fn prepare_edit(
@@ -111,39 +110,47 @@ fn prepare_edit(
     owner: &NativeWorkspaceOwner,
     expected: &str,
 ) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
-    let now = SystemTime::now();
-    let message = owner
+    owner
         .with_current(room, |view| {
-            let mut document =
-                automerge::AutoCommit::load(&view.peer().document(APP, cold_code::RECORD).unwrap())
-                    .unwrap();
-            document.set_actor(automerge::ActorId::from(
-                device.identity.device_cert.device_public_key.to_vec(),
-            ));
-            let before = document.get_heads();
-            code_editor::actions::text_edit_action(FILE.into(), BODY, expected)
-                .apply(&mut document)
-                .unwrap();
-            view.peer().clone().publish_incremental(
-                APP,
-                cold_code::RECORD,
-                document.save_after(&before),
-                &device.identity.device_signing_key,
-                now,
-            )
+            prepare_edit_from_view(device, view, room, expected)
         })
+        .unwrap()
+}
+
+fn prepare_edit_from_view(
+    device: &Device,
+    view: &tilo_joined_room::NativeCommittedView,
+    room: RoomId,
+    expected: &str,
+) -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String> {
+    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    let mut document =
+        automerge::AutoCommit::load(&view.peer().document(APP, cold_code::RECORD).unwrap())
+            .unwrap();
+    document.set_actor(automerge::ActorId::from(
+        device.identity.device_cert.device_public_key.to_vec(),
+    ));
+    let before = document.get_heads();
+    code_editor::actions::text_edit_action(FILE.into(), BODY, expected)
+        .apply(&mut document)
         .unwrap();
+    let message = view.peer().clone().publish_incremental(
+        APP,
+        cold_code::RECORD,
+        document.save_after(&before),
+        &device.identity.device_signing_key,
+        SystemTime::now(),
+    )?;
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
-        panic!("native edit must be signed app data")
+        return Err("native edit must be signed app data".into());
     };
-    OwnerCommitRequest {
+    Ok(OwnerCommitRequest {
         room: room.to_string(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: cold_code::RECORD.into(),
             envelope,
         },
-    }
+    })
 }
