@@ -23,6 +23,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
@@ -61,7 +62,16 @@ pub struct WorkspaceTreeReplica {
     /// Advanced each time a peer is first seen taking part in a room, so the
     /// roster can tell that nobody new arrived without locking the replica.
     participants_epoch: Arc<AtomicU64>,
+    /// The heads a peer's request named that this replica asked a room back
+    /// for, and when (see [`PULL_BACK_REPEAT`]).
+    pulled_back: std::collections::HashMap<RoomId, (Vec<automerge::ChangeHash>, Instant)>,
 }
+
+/// How long a replica waits before asking a room back again for the same
+/// heads it lacked. Changes this machine refuses stay unknown here however
+/// often they are offered; two peers that each refuse the other's would
+/// otherwise ask each other back forever. New heads are asked for at once.
+const PULL_BACK_REPEAT: Duration = Duration::from_secs(300);
 
 impl WorkspaceTreeReplica {
     pub fn new(id: u64, tree: WorkspaceTreeHandle) -> Self {
@@ -72,7 +82,21 @@ impl WorkspaceTreeReplica {
             origin: PeerOrigin::hub(id),
             participants: std::collections::HashMap::new(),
             participants_epoch: Arc::default(),
+            pulled_back: std::collections::HashMap::new(),
         }
+    }
+
+    /// Whether `room` may be asked back now for the `heads` a peer named,
+    /// noting that it is.
+    fn pull_back_due(&mut self, room: RoomId, heads: &[automerge::ChangeHash]) -> bool {
+        let now = Instant::now();
+        if self.pulled_back.get(&room).is_some_and(|(asked, at)| {
+            asked.as_slice() == heads && now.saturating_duration_since(*at) < PULL_BACK_REPEAT
+        }) {
+            return false;
+        }
+        self.pulled_back.insert(room, (heads.to_vec(), now));
+        true
     }
 
     /// Record that `from` has taken part in `room`'s document; a no-op for an
@@ -109,10 +133,15 @@ impl WorkspaceTreeReplica {
     /// room's current heads — asked room by room so an answer can't merge
     /// several rooms into one undifferentiated document.
     pub fn request_sync(&self) {
+        let rooms = self.tree.read().rooms();
+        self.request_sync_of(&rooms);
+    }
+
+    /// [`Self::request_sync`] for `rooms` alone.
+    fn request_sync_of(&self, rooms: &[RoomId]) {
         let mut tree = self.tree.write();
-        let rooms = tree.rooms();
         let mut msgs = Vec::with_capacity(rooms.len());
-        for room in rooms {
+        for &room in rooms {
             if tree.requires_native_owner(room) {
                 tracing::debug!(
                     target: "shell::network::replica",
@@ -201,6 +230,7 @@ impl WorkspaceTreeReplica {
                     serde_json::from_slice(since).unwrap_or_default();
                 let mut tree = self.tree.write();
                 let exported = tree.export_room_changes_since(room_id, &since_heads);
+                let behind = exported.is_some() && tree.room_lacks_any(room_id, &since_heads);
                 drop(tree);
                 // `None` = not in that room. No reply — a peer learns nothing about a room it named, not even that it's unknown here.
                 let Some(changes) = exported else {
@@ -209,6 +239,14 @@ impl WorkspaceTreeReplica {
                 // Recorded after "not in that room" (so asking about an absent room
                 // doesn't count) and before "nothing to send" (an up-to-date guest still counts as a participant).
                 self.note_participant(room_id, sender);
+                // The asker holds changes this machine does not: a push of
+                // them never arrived here. Ask back rather than wait for this
+                // machine's own next pull, which an idle desktop makes only
+                // every few minutes; the asker's pull after its own activity
+                // is what repairs a push its peers missed.
+                if behind && self.pull_back_due(room_id, &since_heads) {
+                    self.request_sync_of(&[room_id]);
+                }
                 if changes.is_empty() {
                     return;
                 }
