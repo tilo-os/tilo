@@ -9006,6 +9006,29 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_focus_trap_enumerates_history_once() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.focus_trap_active = true;
+        visits.set(0);
+        frame.update_focus_trap(None);
+        assert!(!frame.focus_trap_active);
+        assert_eq!(
+            visits.get(),
+            1,
+            "trap closure reuses the same History snapshot"
+        );
+    }
     use automerge::transaction::Transactable;
 
     /// A widget that asks for frames as configured, over its children.

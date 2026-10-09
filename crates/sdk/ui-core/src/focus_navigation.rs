@@ -247,15 +247,16 @@ mod trap_tests {
         let hidden = tree
             .new_with_children(taffy::Style::default(), &[hidden_trap])
             .unwrap();
+        let later_trap = tree.new_leaf(taffy::Style::default()).unwrap();
         let root = tree
-            .new_with_children(taffy::Style::default(), &[hidden, outer])
+            .new_with_children(taffy::Style::default(), &[hidden, outer, later_trap])
             .unwrap();
         let visited = std::cell::RefCell::new(Vec::new());
         let (order, trapped) = mapped_order(root, &tree, |node| {
             visited.borrow_mut().push(node);
             (
-                node == first || node == second,
-                node == outer || node == inner || node == hidden_trap,
+                node == first || node == second || node == later_trap,
+                node == outer || node == inner || node == hidden_trap || node == later_trap,
                 node == hidden,
             )
         });

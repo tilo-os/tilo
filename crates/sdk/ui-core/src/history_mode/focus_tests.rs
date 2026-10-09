@@ -14,7 +14,7 @@ impl FocusHistoryRoot {
     pub(crate) fn new(rows: usize, state: &crate::State) -> (Self, Rc<Cell<usize>>) {
         let mut live = Column::new();
         for row in 0..rows {
-            live = live.push(Box::new(Button::new(format!("row-{row}"), "Row")));
+            live = live.push(Box::new(Button::new(&format!("row-{row}"), "Row")));
         }
         let visits = Rc::new(Cell::new(0));
         let history =
