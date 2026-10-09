@@ -81,6 +81,8 @@ jobs:
             diagnostic=arch-version-drift
           elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
             diagnostic=rpm-version-drift
+          elif ! python3 -m unittest discover -s tools/tests -p test_rpm_broker.py; then
+            diagnostic=rpm-broker-contract
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
           elif ! dist/ci/run-payload-contract-tests.sh; then
@@ -164,7 +166,6 @@ jobs:
       - name: Fetch the env-runtime environment image
         run: bash dist/ci/fetch-package-env-runtime.sh
       - name: Build and install-test unsigned candidate userspaces
-        if: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
         env:
           # The compiler cache never enters pull-request code here, and a
           # payload that can be published never compiles through the
@@ -176,39 +177,6 @@ jobs:
           # The larger runner supports six native compiler processes.
           TILO_CARGO_JOBS: "6"
           TILO_LANE_TARGETS: ${{ matrix.targets }}
-          TILO_RPM_SIGNING_ENABLED: "0"
-        shell: bash
-        run: |
-          while IFS='|' read -r distro image revision; do
-            [[ -n $distro ]] || continue
-            echo "::group::$distro / ${{ matrix.arch }}"
-            if ! dist/ci/run-package-job.sh \
-                "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
-              echo "::endgroup::"
-              exit 1
-            fi
-            echo "::endgroup::"
-          done <<<"$TILO_LANE_TARGETS"
-      - name: Build, install-test and sign protected desktop release userspaces
-        if: startsWith(github.ref, 'refs/tags/desktop-v')
-        env:
-          # The compiler cache never enters pull-request code here, and a
-          # payload that can be published never compiles through the
-          # shared cache: every CI job and agent sandbox can write any object
-          # in it. Scheduled and dispatched main runs publish the OS desktop
-          # payload, desktop-v tags the release; only a dispatch of another
-          # branch keeps the cache.
-          TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') && '1' || '0' }}
-          # The larger runner supports six native compiler processes.
-          TILO_CARGO_JOBS: "6"
-          TILO_LANE_TARGETS: ${{ matrix.targets }}
-          # Only the exact-main-qualified tag step receives the RPM key.
-          # Repository tag protection is required before provisioning it.
-          TILO_RPM_SIGNING_ENABLED: "1"
-          TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
-          TILO_RPM_SIGNING_KEY_B64: ${{ secrets.TILO_RPM_SIGNING_KEY_B64 }}
-          TILO_RPM_SIGNING_KEY_ID: ${{ secrets.TILO_RPM_SIGNING_KEY_ID }}
-          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
           while IFS='|' read -r distro image revision; do
@@ -254,13 +222,46 @@ jobs:
           path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
 
+  sign-rpm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: [validate, package]
+    # Verification is architecture-independent; no native build or private key.
+    runs-on: runner
+    enable-openid-connect: true
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: fedora-44-${{ matrix.arch }}
+          path: signed-fedora
+      - name: Acquire and verify isolated-broker signatures for the exact tested RPMs
+        env:
+          TILO_RPM_ARCH: ${{ matrix.arch }}
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
+        run: |
+          dist/rpm/sign-rpms.sh signed-fedora
+          if [[ "$TILO_RPM_ARCH" == amd64 ]]; then
+            dist/rpm/make-repo-file.sh "$(<dist/VERSION)" signed-fedora/tilo-fedora-44.repo
+            (cd signed-fedora && sha256sum tilo-fedora-44.repo > tilo-fedora-44.repo.sha256)
+          fi
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: signed-fedora-44-${{ matrix.arch }}
+          path: signed-fedora/*
+          if-no-files-found: error
+
   # The amd64 Fedora RPMs this run built, installed on stock Fedora in a KVM
   # VM and logged into through a display manager, with apps opened.
   host-session-e2e:
-    needs: package
+    if: ${{ !cancelled() && needs.package.result == 'success' && (!startsWith(github.ref, 'refs/tags/desktop-v') || needs.sign-rpm.result == 'success') }}
+    needs: [package, sign-rpm]
     uses: ./.forgejo/workflows/host-session-e2e.yml
     with:
-      rpm-artifact: fedora-44-amd64
+      rpm-artifact: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && 'signed-fedora-44-amd64' || 'fedora-44-amd64' }}
 
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
@@ -357,7 +358,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     # Publication must retain the native session result for these exact RPMs.
     # The reviewed Desktop catalog additionally requires the complete journey.
-    needs: [validate, package, host-session-e2e]
+    needs: [validate, package, sign-rpm, host-session-e2e]
     runs-on: runner
     timeout-minutes: 60
     steps:
@@ -365,6 +366,16 @@ jobs:
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
+      - name: Retain only broker-qualified Fedora release copies
+        env:
+          RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}
+        run: |
+          for arch in ${RELEASE_ARCHES//,/ }; do
+            test -s "release/signed-fedora-44-$arch/tilo-rpm-signing-receipt-$arch.json"
+            # Signed copies include every original non-RPM lane artifact.
+            # The broker client already verified identical immutable RPM bytes.
+            rm -rf -- "release/fedora-44-$arch"
+          done
       - name: Flatten per-target artifact directories
         run: |
           find release -mindepth 2 -type f -print0 | while IFS= read -r -d '' artifact; do
