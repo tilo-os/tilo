@@ -22,13 +22,10 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -36,71 +33,26 @@ use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::launcher;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::WorkspaceTree;
-use ui::theme::Theme;
-use ui::widget::Widget;
+
+use crate::support::host::{Layout, dispatch_in, lay_out};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-struct Layout {
-    taffy: TaffyTree<()>,
-    child_node: NodeId,
-}
-
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    Layout {
-        taffy,
-        child_node: child,
-    }
+    lay_out(host, W, H)
 }
 
 /// Kept across events: the palette's input is CRDT-backed, so a fresh doc
 /// per keystroke would lose every character but the last.
 struct Session {
     doc: automerge::AutoCommit,
-    root: automerge::ObjId,
 }
 
 impl Session {
     fn new() -> Self {
         Self {
             doc: automerge::AutoCommit::new(),
-            root: automerge::ROOT,
         }
     }
 
@@ -111,21 +63,13 @@ impl Session {
         modifiers: ModifiersState,
         event: &WindowEvent,
     ) {
-        let modifiers = Modifiers::from(modifiers);
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        host.handle_event(
+        dispatch_in(
+            &mut self.doc,
+            host,
+            &layout.taffy,
+            layout.child_node,
+            Modifiers::from(modifiers),
             event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &self.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: layout.child_node,
-                taffy: &layout.taffy,
-            },
         );
     }
 
@@ -136,7 +80,7 @@ impl Session {
         modifiers: ModifiersState,
         key: &Key,
     ) {
-        let event = key_press_event(key);
+        let event = ui::synthetic_input::key_input(key, ElementState::Pressed);
         self.dispatch(host, layout, modifiers, &event);
     }
 
@@ -150,19 +94,6 @@ impl Session {
             );
         }
     }
-}
-
-/// as `e2e_shell_flows.rs::escape_event` does.
-fn key_press_event(key: &Key) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        key.clone(),
-        if let Key::Character(s) = key {
-            Some(s.clone())
-        } else {
-            None
-        },
-        ElementState::Pressed,
-    ))
 }
 
 /// Write a registry + manifest pair so `launcher::installed_apps()`
