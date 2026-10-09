@@ -120,6 +120,29 @@ class NativeEnvelope(unittest.TestCase):
         env = lambda text: re.search(r"(?ms)^env:\n(.*?)(?=^jobs:)", text).group(1).rstrip()
         self.assertEqual(env(production), env(diagnostic))
 
+    def test_release_experiment_preserves_build_browser_and_artifact_provenance(self):
+        production = (ROOT / ".forgejo/workflows/app-sdk.yml").read_text()
+        diagnostic = (ROOT / ".forgejo/workflows/web-size-native-envelope.yml").read_text()
+        original = steps(job(production, "web-size"))
+        bundle = steps(job(diagnostic, "bundle"))
+        browser = steps(job(diagnostic, "browser"))
+        combined = {**bundle, **browser}
+        self.assertIn("  workflow_dispatch:\n", diagnostic)
+        self.assertNotRegex(diagnostic, r"(?m)^  (push|pull_request):")
+        self.assertNotIn("Merge onto main", combined)
+        for name, body in original.items():
+            if name != "Merge onto main":
+                self.assertEqual(combined[name], body, name)
+        self.assertIn("runs-on: runner-large-arm64", job(diagnostic, "bundle"))
+        self.assertIn("--memory-swap=${{ needs.builder.outputs.memory }}g --cpus=24", job(diagnostic, "bundle"))
+        self.assertIn("needs: [builder, bundle]", job(diagnostic, "browser"))
+        self.assertIn("runs-on: runner\n", job(diagnostic, "browser"))
+        self.assertNotIn("container:\n      options:", job(diagnostic, "browser"))
+        self.assertIn("EXPECTED_ARCH: aarch64", bundle["Verify native release build runner architecture"])
+        self.assertIn("Qualify enforced native envelope after release packaging", bundle)
+        env = lambda text: re.search(r"(?ms)^env:\n(.*?)(?=^jobs:)", text).group(1).rstrip()
+        self.assertEqual(env(production), env(diagnostic))
+
 
 if __name__ == "__main__":
     unittest.main()
