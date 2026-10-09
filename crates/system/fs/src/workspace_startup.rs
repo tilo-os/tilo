@@ -79,10 +79,120 @@ pub(super) fn inspect(cache: &Path) -> Result<WorkspaceStatus> {
     })
 }
 
+/// Reuse a validated, signed authority even when root custody is outside the
+/// daemon. A missing authority still requires the existing explicit signer;
+/// no empty policy or replacement authority is synthesized during recovery.
+pub(super) fn owner_authority(
+    cache: &Path,
+    workspace: uuid::Uuid,
+    person: [u8; 32],
+    principals: Vec<collab_types::Principal>,
+    bootstrap: Option<(Vec<collab_types::CapOverride>, &ed25519_dalek::SigningKey)>,
+) -> Result<Option<std::sync::Arc<fs::workspace_authority::WorkspaceAuthority>>> {
+    use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+    let path = cache.join("workspace-authority.bin");
+    if !regular_file(&path)? && bootstrap.is_none() {
+        return Ok(None);
+    }
+    let authority = std::sync::Arc::new(WorkspaceAuthority::open(
+        path, workspace, person, person, principals,
+    )?);
+    if authority.current().is_none() {
+        let (capabilities, signer) = bootstrap.context("saved Files authority is unavailable")?;
+        authority.apply(WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            1,
+            capabilities,
+            false,
+            signer,
+        )?)?;
+    }
+    Ok(Some(authority))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use fs::workspace_authority::PersistedContentPeer;
+
+    #[test]
+    fn saved_signed_authority_resumes_without_a_raw_root_key() {
+        use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        let dir = tempfile::tempdir().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let person = root.verifying_key().to_bytes();
+        let workspace = ticket(2).workspace_id();
+        let envelope =
+            WorkspaceAuthorityEnvelope::sign(workspace, 7, Vec::new(), false, &root).unwrap();
+        let existing = WorkspaceAuthority::open(
+            dir.path().join("workspace-authority.bin"),
+            workspace,
+            person,
+            person,
+            Vec::new(),
+        )
+        .unwrap();
+        existing.apply(envelope.clone()).unwrap();
+        drop(existing);
+        let resumed = owner_authority(dir.path(), workspace, person, Vec::new(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.current(), Some(envelope));
+        assert!(!dir.path().join("user-identity").exists());
+        assert!(
+            owner_authority(
+                dir.path(),
+                ticket(3).workspace_id(),
+                person,
+                Vec::new(),
+                None
+            )
+            .is_err()
+        );
+        let other = ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+            .verifying_key()
+            .to_bytes();
+        assert!(owner_authority(dir.path(), workspace, other, Vec::new(), None).is_err());
+    }
+
+    #[test]
+    fn missing_or_invalid_authority_cannot_be_replaced_without_a_signer() {
+        let dir = tempfile::tempdir().unwrap();
+        let person = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+            .verifying_key()
+            .to_bytes();
+        assert!(
+            owner_authority(
+                dir.path(),
+                ticket(2).workspace_id(),
+                person,
+                Vec::new(),
+                None
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(!dir.path().join("workspace-authority.bin").exists());
+        std::fs::write(
+            dir.path().join("workspace-authority.bin"),
+            b"invalid saved authority",
+        )
+        .unwrap();
+        assert!(
+            owner_authority(
+                dir.path(),
+                ticket(2).workspace_id(),
+                person,
+                Vec::new(),
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("workspace-authority.bin")).unwrap(),
+            b"invalid saved authority"
+        );
+    }
 
     fn ticket(topic: u8) -> Ticket {
         Ticket {
