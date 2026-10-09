@@ -200,10 +200,11 @@ source = "KPI document: MCP tool call <= local invoke + 2 ms"
 # This lane has no panel, so they are reported, never enforced; the relative
 # rule catches regressions of the compositor's own work. A dropped-frame count
 # whose baseline is zero has no ratio, so one frame either way is not a change.
-# Each needs three stored runs before it is compared: on identical code the
-# dropped-frame p99 has ranged from 0 to 4 and the pointer p99 from 7 to 13 ms
-# between nights (TIL-700), as other jobs on the shared host slow the debug
-# build's frame loop, so one night is not a baseline.
+# Timing KPIs need three stored runs before comparison: pointer p99 has ranged
+# from 7 to 13 ms between nights on identical code (TIL-700). Dropped frames
+# keep the one-run comparison: with a three-run minimum, elevated `new` runs
+# enter the baseline and can hide sustained growth from zero. Its two-run
+# regression rule still distinguishes a single noisy night.
 
 [kpi."latency.input_to_frame.pointer"]
 unit = "ms"
@@ -228,7 +229,7 @@ source = "KPI document: Workspace switch, total (compositor side, headless)"
 unit = "count"
 max = 0.0
 min_delta = 1.0
-baseline_min_runs = 3
+baseline_min_runs = 1
 source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
 
 # Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, TIL-614): a
