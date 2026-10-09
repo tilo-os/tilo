@@ -475,21 +475,18 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     assert!(logs.contains(GATE_REFUSAL), "{logs}");
     assert!(logs.contains("Some(Comment)"), "{logs}");
 
-    {
-        let replica = net.replica.lock().expect("replica");
-        let mut tree = replica.tree.write();
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.room == room)
-            .expect("workspace");
-        workspace.grant_capability(collab_types::CapOverride::membership(
+    let tree = net.replica.lock().expect("replica").tree.clone();
+    tree.write()
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room == room)
+        .expect("workspace")
+        .grant_capability(collab_types::CapOverride::membership(
             collab_types::Subject::person(person),
             room.to_string(),
             collab_types::Verb::Comment,
         ));
-    }
     net.dispatch_neighbour_msg(ws, peer, None, false, document());
     let logs = captured.take();
     assert!(!logs.contains(GATE_REFUSAL), "{logs}");
