@@ -109,6 +109,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
+    // So do the confined workers agents and room actions run apps in.
+    #[cfg(feature = "agents")]
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
     run().map(|()| std::process::ExitCode::SUCCESS)
 }
 
