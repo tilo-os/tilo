@@ -340,9 +340,23 @@ pub trait Fields: Model {
     fn write_fields(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ModelError>;
 
     /// The items of each [`Collection`](crate::Collection) field, so actions
-    /// on an item can be offered on the item (see [`crate::items`]).
-    /// `#[derive(Model)]` lists them; the default has none.
+    /// on an item can be offered on the item (see [`crate::items`]), at most
+    /// [`ITEM_PAGE`](crate::items::ITEM_PAGE) of each. `#[derive(Model)]`
+    /// lists them; the default has none.
     fn item_collections(&self) -> Vec<crate::items::ItemCollection> {
+        Vec::new()
+    }
+
+    /// The label the item `id` of the collection field `field` is offered
+    /// under, or `None` when there is no such item.
+    fn item_label(&self, field: &str, id: &crate::Id) -> Option<String> {
+        let _ = (field, id);
+        None
+    }
+
+    /// Every item of the collection fields whose type has a
+    /// `#[model(label)]`, with its text: what search indexes by default.
+    fn item_search(&self) -> Vec<crate::items::ItemText> {
         Vec::new()
     }
 

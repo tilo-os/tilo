@@ -11,8 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    ActionCx, ActionKind, Availability, Collection, Derived, Id, JsonSchema, Model, Outbox, Params,
-    Refusal, Replica, Resource, resource,
+    ActionCx, ActionKind, Availability, Collection, Derived, Id, Invoke, JsonSchema, Model, Outbox,
+    Params, Refusal, Replica, Resource, resource,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -358,4 +358,62 @@ fn an_input_that_does_not_bind_refuses_where_it_is_submitted() {
             .is_err()
     );
     assert_eq!(shelf.state().unwrap().name, "New shelf");
+}
+
+#[test]
+fn item_resources_resolve_lazily_as_the_tree_publishes_them() {
+    let mut shelf = Replica::<Shelf>::new();
+    for title in ["Tea", "Coffee", "Cocoa"] {
+        shelf
+            .apply(Shelf::ADD.with((title.to_owned(), None)))
+            .unwrap();
+    }
+    let state = shelf.state().unwrap();
+    let eager = Shelf::children(&state);
+    for child in &eager {
+        let lazy = Shelf::child(&state, child.id.as_str()).unwrap();
+        assert_eq!(
+            tilo_resource::items::fingerprint(&lazy),
+            tilo_resource::items::fingerprint(child)
+        );
+    }
+    assert!(Shelf::child(&state, "test.shelf/cards/gone").is_none());
+    // Published again, the tree is the same.
+    let again = Shelf::children(&state);
+    assert_eq!(
+        eager
+            .iter()
+            .map(tilo_resource::items::fingerprint)
+            .collect::<Vec<_>>(),
+        again
+            .iter()
+            .map(tilo_resource::items::fingerprint)
+            .collect::<Vec<_>>()
+    );
+    // A renamed item is published under its new label.
+    let id = state.cards.ids().next().unwrap().clone();
+    shelf
+        .apply(Invoke::edit(&Shelf::paths().cards.item(&id).title.set("Green tea".into())).unwrap())
+        .unwrap();
+    let state = shelf.state().unwrap();
+    let renamed = Shelf::child(&state, &format!("test.shelf/cards/{id}")).unwrap();
+    assert_eq!(renamed.label, "Green tea");
+}
+
+#[test]
+fn each_labelled_item_is_its_own_search_entry() {
+    let mut shelf = Replica::<Shelf>::new();
+    shelf
+        .apply(Shelf::ADD.with(("Tea".to_owned(), None)))
+        .unwrap();
+    let state = shelf.state().unwrap();
+    let entries = Shelf::search(&state);
+    // The welcome card is not there: no seed was applied.
+    assert_eq!(entries.len(), 1);
+    let id = state.cards.ids().next().unwrap();
+    assert_eq!(entries[0].title, "Tea");
+    assert_eq!(
+        entries[0].anchor.as_deref(),
+        Some(format!("test.shelf/cards/{id}").as_str())
+    );
 }

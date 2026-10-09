@@ -382,6 +382,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut readonly_fields = Vec::new();
     let mut get_arms = Vec::new();
     let mut collection_names = Vec::new();
+    let mut item_label_arms = Vec::new();
+    let mut item_searches = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
     for field in &fields.named {
         let ident = field
@@ -469,11 +471,30 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
         if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
             collection_names.push(field_name.clone());
+            item_label_arms.push(quote!(#field_name => self
+                .#ident
+                .get(id)
+                .map(|item| #krate::__private::item_label(id, item)),));
+            item_searches.push(quote! {
+                for (id, item) in self.#ident.iter() {
+                    if let ::core::option::Option::Some(label) = #krate::Model::label(item) {
+                        let mut text = ::std::vec::Vec::new();
+                        #krate::Model::collect_text(item, &mut text);
+                        found.push(#krate::items::ItemText {
+                            field: #field_name,
+                            id: ::core::clone::Clone::clone(id),
+                            label,
+                            text: text.join("\n"),
+                        });
+                    }
+                }
+            });
             collections.push(quote!(#krate::items::ItemCollection {
                 field: #field_name,
                 items: self
                     .#ident
                     .iter()
+                    .take(#krate::items::ITEM_PAGE)
                     .map(|(id, item)| {
                         (::core::clone::Clone::clone(id), #krate::__private::item_label(id, item))
                     })
@@ -487,6 +508,23 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         quote! {
             fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
                 ::std::vec![#(#collections),*]
+            }
+
+            fn item_label(
+                &self,
+                field: &str,
+                id: &#krate::Id,
+            ) -> ::core::option::Option<::std::string::String> {
+                match field {
+                    #(#item_label_arms)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn item_search(&self) -> ::std::vec::Vec<#krate::items::ItemText> {
+                let mut found = ::std::vec::Vec::new();
+                #(#item_searches)*
+                found
             }
         }
     };

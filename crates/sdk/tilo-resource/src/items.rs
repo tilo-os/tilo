@@ -85,12 +85,27 @@
 //! # fn main() {}
 //! ```
 
+use std::any::TypeId;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ExecutionLocus};
 
 use crate::collection::Id;
 use crate::resource::{ActionDecl, Resource};
+
+/// One labelled item of a collection, as search indexes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemText {
+    /// The collection field's Rust name.
+    pub field: &'static str,
+    pub id: Id,
+    /// Its `#[model(label)]`.
+    pub label: String,
+    /// All of its text.
+    pub text: String,
+}
 
 /// The items of one collection field, as `#[derive(Model)]` lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,18 +140,150 @@ pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
     Some((field, Id::from_raw(item)))
 }
 
-fn targets(action: &ItemAction, collections: &[ItemCollection], field: &str) -> bool {
+fn targets(action: &ItemAction, fields: &[&str], field: &str) -> bool {
     if let Some(named) = action.collection {
         return named == field;
     }
-    if collections
-        .iter()
-        .any(|collection| collection.field == action.param)
-    {
+    if fields.contains(&action.param) {
         action.param == field
     } else {
-        collections.len() == 1
+        fields.len() == 1
     }
+}
+
+/// How many items of one collection a published tree carries; the rest are
+/// resolved one by one when addressed ([`item_child`]).
+pub const ITEM_PAGE: usize = 256;
+
+type Cached = HashMap<Id, (String, u64, tilo_actions::Resource)>;
+
+thread_local! {
+    /// Item resources built before, by resource type and collection, then
+    /// item: rebuilt only when the item's label or the app's code changed.
+    static BUILT: RefCell<HashMap<(TypeId, String), Cached>> = RefCell::new(HashMap::new());
+}
+
+/// The item resource for `id` in `field`, labelled `label`, offering the
+/// item actions `scoped`: from the cache when it was built for the same
+/// label and code, else built and kept.
+fn item_resource<R: Resource>(
+    scoped: &[(&ItemAction, &ActionDecl<R>)],
+    field: &str,
+    id: &Id,
+    label: &str,
+) -> tilo_actions::Resource {
+    let epoch = crate::resource::type_epoch();
+    let key = (TypeId::of::<R>(), field.to_owned());
+    let cached = BUILT.with(|built| {
+        built
+            .borrow()
+            .get(&key)
+            .and_then(|items| items.get(id))
+            .filter(|(cached_label, cached_epoch, _)| {
+                cached_label == label && *cached_epoch == epoch
+            })
+            .map(|(_, _, resource)| resource.clone())
+    });
+    if let Some(resource) = cached {
+        debug_assert_eq!(
+            fingerprint(&resource),
+            fingerprint(&build_item(scoped, field, id, label)),
+            "a cached item resource differs from a fresh one"
+        );
+        return resource;
+    }
+    let resource = build_item(scoped, field, id, label);
+    BUILT.with(|built| {
+        built
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .insert(id.clone(), (label.to_owned(), epoch, resource.clone()));
+    });
+    resource
+}
+
+fn build_item<R: Resource>(
+    scoped: &[(&ItemAction, &ActionDecl<R>)],
+    field: &str,
+    id: &Id,
+    label: &str,
+) -> tilo_actions::Resource {
+    let mut child = tilo_actions::Resource::new(
+        item_resource_id::<R>(field, id),
+        format!("{}.{field}", R::KIND),
+        label,
+    );
+    for (action, decl) in scoped {
+        child = child.with_action(item_spec(decl, action.param, id));
+    }
+    child
+}
+
+/// What a published resource is, as text: its identity, its actions with
+/// their parameters and contract, and its children, for telling two
+/// publications of the same thing apart.
+#[must_use]
+pub fn fingerprint(resource: &tilo_actions::Resource) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!(
+        "{}|{}|{}",
+        resource.id.as_str(),
+        resource.kind,
+        resource.label
+    );
+    for spec in &resource.actions {
+        let _ = write!(
+            out,
+            "|{}:{}:{:?}:{}",
+            spec.id, spec.label, spec.kind, spec.contract.reversible
+        );
+        for param in spec.params() {
+            let _ = write!(out, ",{}:{:?}:{}", param.name, param.ty, param.required);
+        }
+    }
+    for child in &resource.children {
+        let _ = write!(out, "[{}]", fingerprint(child));
+    }
+    out
+}
+
+/// The item resources of the collections `fields` of `R` that `actions`
+/// act on: what a publication would carry for item `resource_id`, built on
+/// its own. `label_of(field, id)` names an item, or says it is not there.
+pub fn item_child<R: Resource>(
+    resource_id: &str,
+    fields: &[&str],
+    actions: &[ItemAction],
+    label_of: impl FnOnce(&str, &Id) -> Option<String>,
+) -> Option<tilo_actions::Resource> {
+    let (field, id) = item_of_resource::<R>(resource_id)?;
+    let field = *fields.iter().find(|candidate| **candidate == field)?;
+    let declarations = R::declarations();
+    let scoped = scoped::<R>(&declarations, actions, fields, field);
+    if scoped.is_empty() {
+        return None;
+    }
+    let label = label_of(field, &id)?;
+    Some(item_resource(&scoped, field, &id, &label))
+}
+
+fn scoped<'d, 'a, R: Resource>(
+    declarations: &'d [ActionDecl<R>],
+    actions: &'a [ItemAction],
+    fields: &[&str],
+    field: &str,
+) -> Vec<(&'a ItemAction, &'d ActionDecl<R>)> {
+    actions
+        .iter()
+        .filter(|action| targets(action, fields, field))
+        .filter_map(|action| {
+            declarations
+                .iter()
+                .find(|decl| decl.id == action.action)
+                .map(|decl| (action, decl))
+        })
+        .collect()
 }
 
 /// Whether an item action with item parameter `param` (and the collection
@@ -193,33 +340,31 @@ pub fn item_children<R: Resource>(
     actions: &[ItemAction],
 ) -> Vec<tilo_actions::Resource> {
     let declarations = R::declarations();
+    let fields: Vec<&str> = collections
+        .iter()
+        .map(|collection| collection.field)
+        .collect();
     let mut children = Vec::new();
     for collection in collections {
-        let scoped: Vec<(&ItemAction, &ActionDecl<R>)> = actions
-            .iter()
-            .filter(|action| targets(action, collections, collection.field))
-            .filter_map(|action| {
-                declarations
-                    .iter()
-                    .find(|decl| decl.id == action.action)
-                    .map(|decl| (action, decl))
-            })
-            .collect();
+        let scoped = scoped::<R>(&declarations, actions, &fields, collection.field);
         if scoped.is_empty() {
             continue;
         }
-        let kind = format!("{}.{}", R::KIND, collection.field);
         for (id, label) in &collection.items {
-            let mut child = tilo_actions::Resource::new(
-                item_resource_id::<R>(collection.field, id),
-                &kind,
-                label,
-            );
-            for (action, decl) in &scoped {
-                child = child.with_action(item_spec(decl, action.param, id));
-            }
-            children.push(child);
+            children.push(item_resource(&scoped, collection.field, id, label));
         }
+        // Forget items that are gone.
+        BUILT.with(|built| {
+            if let Some(items) = built
+                .borrow_mut()
+                .get_mut(&(TypeId::of::<R>(), collection.field.to_owned()))
+                && items.len() > collection.items.len().saturating_mul(2).max(ITEM_PAGE)
+            {
+                let present: std::collections::HashSet<&Id> =
+                    collection.items.iter().map(|(id, _)| id).collect();
+                items.retain(|id, _| present.contains(id));
+            }
+        });
     }
     children
 }

@@ -746,7 +746,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
 
     // Generated hooks.
     let search = options.search.as_ref().map_or_else(
-        || quote!(#krate::__private::default_search(#label, state)),
+        || quote!(#krate::__private::default_search::<Self>(#label, state)),
         |path| quote!(#path(state)),
     );
     let scopes = options.scopes.as_ref().map_or_else(
@@ -764,6 +764,32 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let derived_child = options.children.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                if let ::core::option::Option::Some(found) = #path(state)
+                    .iter()
+                    .map(#krate::Derived::<Self>::publish)
+                    .find(|child| child.id.as_str() == id)
+                {
+                    return ::core::option::Option::Some(found);
+                }
+            }
+        },
+    );
+    let item_child = if item_actions.is_empty() {
+        quote!(::core::option::Option::None)
+    } else {
+        quote! {
+            #krate::items::item_child::<Self>(
+                id,
+                <Self>::__COLLECTIONS,
+                &[#(#item_actions),*],
+                |field, item| <Self as #krate::Fields>::item_label(state, field, item),
+            )
+        }
+    };
     let children = if item_actions.is_empty() {
         derived
     } else {
@@ -1038,6 +1064,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
                 let _ = state;
                 #children
+            }
+
+            fn child(
+                state: &Self,
+                id: &str,
+            ) -> ::core::option::Option<#krate::__private::Resource> {
+                let _ = (state, id);
+                #derived_child
+                #item_child
             }
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {

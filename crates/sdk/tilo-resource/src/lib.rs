@@ -189,8 +189,22 @@ pub mod __private {
         schema
     }
 
-    /// The default search entry of a record: all of its text, in one entry.
-    pub fn default_search<T: crate::Model>(label: &str, record: &T) -> Vec<crate::SearchEntry> {
+    /// The default search entries of a record: one per labelled item,
+    /// anchored at its item resource, or else all of its text in one entry.
+    pub fn default_search<R: crate::Resource + crate::Fields>(
+        label: &str,
+        record: &R,
+    ) -> Vec<crate::SearchEntry> {
+        let items = crate::Fields::item_search(record);
+        if !items.is_empty() {
+            return items
+                .into_iter()
+                .map(|item| {
+                    crate::SearchEntry::new(item.label, item.text)
+                        .anchored(crate::items::item_resource_id::<R>(item.field, &item.id))
+                })
+                .collect();
+        }
         let mut text = Vec::new();
         record.collect_text(&mut text);
         if text.is_empty() {

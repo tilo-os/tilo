@@ -1089,6 +1089,14 @@ pub fn reset_type_schemas() {
     }
 }
 
+/// Which generation of app code built what is cached from the resource
+/// types: it changes when [`reset_type_schemas`] forgets them.
+pub(crate) fn type_epoch() -> u64 {
+    SCHEMAS.get().map_or(0, |cache| {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).epoch
+    })
+}
+
 /// `build`'s schema for `R`, retained for this generation of app code.
 fn per_type<R: Resource>(
     schema: TypeSchema,
