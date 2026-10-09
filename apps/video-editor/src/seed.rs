@@ -4,7 +4,7 @@
 use ui::tilo_resource::{Doc, Fields};
 use uuid::Uuid;
 
-use crate::media::{self, Hydration};
+use crate::media;
 use crate::model::{
     Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
 };
@@ -197,7 +197,6 @@ pub fn sample_project() -> Project {
             // Sample media lives under the workspace media prefix; the
             // bundled sample-media/ dir hydrates these for --shots.
             path: media::workspace_path(name),
-            hydration: Hydration::Projected,
             text: None,
         }
     };

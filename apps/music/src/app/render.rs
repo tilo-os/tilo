@@ -316,7 +316,7 @@ fn accessible_playlist(
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
         .with_hashed_key(format!("playlist:{}", playlist.id))
         .with_name(&playlist.name)
-        .with_description(format!("{} songs", playlist.track_ids.len()))
+        .with_description(format!("{} songs", playlist.len()))
         .with_position(position, total)
         .with_action_target(format!("music.open-playlist.{}", playlist.id))
         .with_children(vec![
@@ -336,7 +336,7 @@ fn accessible_playlist_track(
     position: usize,
 ) -> ui::a11y::AccessNode {
     use ui::a11y::{AccessNode, Role};
-    let total = playlist.track_ids.len();
+    let total = playlist.len();
     let resource = crate::actions::playlist_track_resource_id(&playlist.id, &track.id);
     let mut node = accessible_track(lib, track, position, total);
     let mut actions = vec![
@@ -1288,8 +1288,7 @@ impl Widget for MusicApp {
                 .map(|page| page.title.clone())
                 .or_else(|| {
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .find(|playlist| playlist.id == *id)
                         .map(|playlist| playlist.name.clone())
                 })
@@ -1401,16 +1400,11 @@ impl Widget for MusicApp {
                 );
             }
             View::Playlist(id) => {
-                if let Some(playlist) = self
-                    .lib
-                    .playlists
-                    .iter()
-                    .find(|playlist| playlist.id == *id)
-                {
+                if let Some(playlist) = self.lib.playlists().find(|playlist| playlist.id == *id) {
                     list_items.extend(
                         playlist
-                            .track_ids
-                            .iter()
+                            .tracks
+                            .values()
                             .filter_map(|track| self.lib.track(track))
                             .take(ACCESSIBLE_PAGE_LIMIT)
                             .enumerate()
@@ -1451,8 +1445,7 @@ impl Widget for MusicApp {
                 let total = self.lib.playlists.len();
                 list_items.extend(
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .take(ACCESSIBLE_PAGE_LIMIT)
                         .enumerate()
                         .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
@@ -1464,8 +1457,7 @@ impl Widget for MusicApp {
                 let total = self.lib.playlists.len() + albums.len().min(6) + tracks.len();
                 list_items.extend(
                     self.lib
-                        .playlists
-                        .iter()
+                        .playlists()
                         .enumerate()
                         .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
                 );
@@ -1677,7 +1669,7 @@ impl Widget for MusicApp {
                     }
                     Action::Nav(View::Artist(id.to_string()))
                 } else if let Some(id) = target.strip_prefix("music.open-playlist.") {
-                    let known_local = self.lib.playlists.iter().any(|playlist| playlist.id == id);
+                    let known_local = self.lib.playlists().any(|playlist| playlist.id == id);
                     let known_live = self.live_bundle.as_ref().is_some_and(|(_, bundle)| {
                         bundle.playlists.iter().any(|playlist| playlist.id == id)
                     });
@@ -1722,11 +1714,11 @@ impl Widget for MusicApp {
                     else {
                         return false;
                     };
-                    let Some(from) = self
-                        .lib
-                        .playlist(&playlist)
-                        .and_then(|playlist| playlist.track_ids.iter().position(|id| id == &track))
-                    else {
+                    let Some(from) = self.lib.playlist(&playlist).and_then(|playlist| {
+                        playlist
+                            .tracks
+                            .position(&ui::tilo_resource::Id::from_raw(track.as_str()))
+                    }) else {
                         return false;
                     };
                     let to = from.saturating_add_signed(delta);
@@ -2148,7 +2140,7 @@ impl MusicApp {
                 let Some(current_playlist) = self.lib.playlist(&playlist) else {
                     return Err("playlist is no longer in the library".into());
                 };
-                if !current_playlist.track_ids.iter().any(|id| id == &track) {
+                if !current_playlist.contains(&track) {
                     return Err("playlist membership is no longer present".into());
                 }
                 self.on_nav(View::Playlist(playlist.clone()));
@@ -4677,7 +4669,7 @@ impl MusicApp {
             let p = self.lib.playlist(id);
             let name = p.map(|p| p.name.clone()).unwrap_or_default();
             let desc = p.map(|p| p.description.clone()).unwrap_or_default();
-            let ids = p.map(|p| p.track_ids.clone()).unwrap_or_default();
+            let ids = p.map(crate::model::Playlist::track_ids).unwrap_or_default();
             (name, desc, ids)
         };
         let rows = self.gather_tracks(&ids);
@@ -5775,12 +5767,11 @@ impl MusicApp {
 
     fn gather_playlists(&self) -> Vec<PlaylistDisp> {
         self.lib
-            .playlists
-            .iter()
+            .playlists()
             .map(|p| PlaylistDisp {
                 id: p.id.clone(),
                 name: p.name.clone(),
-                count: p.track_ids.len(),
+                count: p.len(),
             })
             .collect()
     }

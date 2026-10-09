@@ -17,8 +17,19 @@ use crate::path::{EditOp, Segment, Settable};
 /// A stable identity for an item in a resource. Minted deterministically by
 /// [`ActionCx::id`](crate::ActionCx::id), so replaying an action on another
 /// replica mints the same id.
+///
+/// The default id is empty: an item that refers to no other yet.
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(transparent)]
 pub struct Id(String);

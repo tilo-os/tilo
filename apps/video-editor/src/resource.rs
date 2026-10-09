@@ -9,6 +9,7 @@
 //! editing math the editor does, so an agent and a person make the same cut.
 
 use ui::framework::{ResourceApp, ViewCx};
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Id, Invoke, Path, Refusal, resource};
 use ui::widget::Element;
 use uuid::Uuid;
@@ -113,7 +114,6 @@ impl Project {
             palette,
             // A title has no bytes: nothing to hydrate or fetch.
             path: String::new(),
-            hydration: crate::media::Hydration::Local,
             text: Some(TextSource::new(content)),
             ..MediaItem::default()
         });
@@ -625,6 +625,13 @@ pub fn reveal_effect(
     }
 }
 
+/// The editor's Fluent catalogs, source locale first: the sentences its
+/// history renders.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "video-editor-add-title").with_system_locale();
+
 /// The editor as a framework app: one surface, the whole window.
 pub struct VideoEditor;
 
@@ -648,6 +655,10 @@ impl ResourceApp for VideoEditor {
             Ok(())
         });
         cx.surface(crate::VideoEditorApp::new())
+    }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {

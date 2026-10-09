@@ -31,6 +31,12 @@ impl Notes {
             .map(drop)
             .ok_or_else(|| Refusal::new("no such note"))
     }
+
+    /// Remove every note.
+    #[action(destructive)]
+    pub fn clear(&mut self) {
+        self.notes = Collection::new();
+    }
 }
 
 struct NotesApp;
@@ -42,10 +48,13 @@ impl ResourceApp for NotesApp {
 
     fn view(cx: &mut ViewCx<Notes>) -> Element {
         let first = cx.read(|notes| notes.and_then(|notes| notes.notes.ids().next().cloned()));
-        Box::new(tilo_app::column![cx.button(
-            "remove",
-            Notes::REMOVE.with(first.unwrap_or_else(|| Id::from_raw("")))
-        )])
+        Box::new(tilo_app::column![
+            cx.button(
+                "remove",
+                Notes::REMOVE.with(first.unwrap_or_else(|| Id::from_raw("")))
+            ),
+            cx.button("clear", Notes::CLEAR.with(())),
+        ])
     }
 }
 
@@ -62,6 +71,26 @@ fn a_destructive_verb_confirmed_later_still_applies() {
     );
     // The person reads the prompt before confirming it.
     std::thread::sleep(std::time::Duration::from_millis(20));
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    assert!(
+        app.state().notes.is_empty(),
+        "the confirmed verb applied: {:?}",
+        app.harness().control_failures()
+    );
+}
+
+#[test]
+fn a_destructive_verb_without_arguments_asks_and_applies() {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    app.invoke(Notes::ADD.with("Eggs")).unwrap();
+    app.harness().click_named("clear").unwrap();
+    assert_eq!(
+        app.state().notes.len(),
+        2,
+        "nothing happens before confirming"
+    );
     app.harness().type_text("CONFIRM");
     app.harness().key("Enter");
     assert!(

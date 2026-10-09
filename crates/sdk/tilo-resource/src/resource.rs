@@ -986,6 +986,10 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
             },
         )
     } else if decl.params.is_empty() {
+        // Built when taken, so it reads the clock and mints its ids then; a
+        // destructive one is held for confirmation as the same verb of the
+        // same kind of record.
+        let domain = format!("{}#{}", R::KIND, decl.id);
         ActionSpec::deferred(
             decl.id,
             decl.label.clone(),
@@ -993,6 +997,21 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
             R::ACTION_TYPE,
             move || encoded(&tilo_actions::ActionArgs::none()),
         )
+        .with_continuation_identity(move |query| match query {
+            tilo_actions::ContinuationQuery::Draft => {
+                Some(tilo_actions::ContinuationEvidence::Draft {
+                    resolution_domain: tilo_actions::ContinuationKey::new(
+                        "verb",
+                        [domain.as_bytes()],
+                    ),
+                    handler: tilo_actions::ContinuationKey::new(
+                        "action-type",
+                        [R::ACTION_TYPE.as_bytes()],
+                    ),
+                })
+            }
+            tilo_actions::ContinuationQuery::Exact(_) => None,
+        })
     } else {
         ActionSpec::typed(
             decl.id,

@@ -1,65 +1,19 @@
-//! Video Player as a [`tilo_resource::Resource`]: shared playlists and
-//! timestamp annotations are the document; the player on this device is the
-//! surface over it, with its effects and the live rows of what it shows.
+//! Video Player as a resource: the shared library ([`Library`]: playlists,
+//! timestamp annotations, playback watched together) is the document; the
+//! player on this device is the surface over it, with its effects and the
+//! live rows of what it shows.
 
 use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::Element;
 
-use crate::actions::{self, VideoEffect, annotation_resource_id, playlist_resource_id};
+use crate::actions::{self, VideoEffect};
 use crate::app::PlayerApp;
-use crate::shared::{self, SharedAction, SharedLibrary};
-
-/// Collaborative library resource (playlists and timestamp annotations).
-pub struct VideoPlayer;
-
-impl Resource for VideoPlayer {
-    const KIND: &'static str = "video-player.application";
-    const LABEL: &'static str = "Video Player";
-    const ACTION_TYPE: &'static str = shared::ACTION_TYPE;
-
-    type State = SharedLibrary;
-    type Action = SharedAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        shared::register(registry);
-    }
-
-    fn read(doc: &Doc) -> Result<SharedLibrary, ModelError> {
-        Ok(shared::read(doc))
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        actions::declarations()
-    }
-
-    fn children(state: &SharedLibrary) -> Vec<tilo_actions::Resource> {
-        actions::document_children(state)
-    }
-
-    fn child(state: &SharedLibrary, id: &str) -> Option<tilo_actions::Resource> {
-        actions::document_child(state, id)
-    }
-
-    fn search(state: &SharedLibrary) -> Vec<SearchEntry> {
-        let playlists = state.playlists.iter().map(|playlist| {
-            SearchEntry::new(playlist.name.clone(), "Playlist")
-                .anchored(playlist_resource_id(&playlist.id))
-        });
-        let annotations = state.annotations.iter().map(|annotation| {
-            SearchEntry::new(
-                annotation.text.clone(),
-                format!("{} ms", annotation.time_ms),
-            )
-            .anchored(annotation_resource_id(&annotation.id))
-        });
-        playlists.chain(annotations).collect()
-    }
-}
+use crate::shared::{Library, library};
 
 /// The screenshot scenarios: the first run before a video is chosen, a
 /// video loading, failing to open (fixture copy, or the decoder's own error
@@ -83,11 +37,11 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "fullscreen",
 ];
 
-/// Framework app: the player widget is the surface over [`VideoPlayer`].
+/// Framework app: the player widget is the surface over the shared [`Library`].
 pub struct VideoPlayerShell;
 
 impl ResourceApp for VideoPlayerShell {
-    type Resource = VideoPlayer;
+    type Resource = Library;
     const ID: &'static str = "so.tilo.video-player";
     const TITLE: &'static str = "Video Player";
     const ICON: Option<&'static str> = Some("video-player");
@@ -98,7 +52,7 @@ impl ResourceApp for VideoPlayerShell {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
+    fn view(cx: &mut ViewCx<Library>) -> Element {
         cx.surface(PlayerApp::new(cx.mode()))
     }
 
@@ -108,45 +62,41 @@ impl ResourceApp for VideoPlayerShell {
 
     /// The shared library scenario's playlist and the review notes on the
     /// demo clip.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoPlayer>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if name != Some("shared") {
             return Vec::new();
         }
         let media_ref = crate::app::demo_media_ref();
-        [
-            SharedAction::CreatePlaylist {
-                id: "watch-later".into(),
-                name: "Watch later".into(),
-            },
-            SharedAction::CreateAnnotation {
-                id: "opening".into(),
+        vec![
+            Library::CREATE_PLAYLIST.with("Watch later"),
+            Library::ADD_ANNOTATION.with(library::AddAnnotation {
                 media_ref: media_ref.clone(),
                 time_ms: 8_000,
-                text: "Opening detail".into(),
-            },
-            SharedAction::CreateAnnotation {
-                id: "bookmark".into(),
+                text: Some("Opening detail".into()),
+            }),
+            Library::ADD_ANNOTATION.with(library::AddAnnotation {
                 media_ref,
                 time_ms: 45_000,
-                text: String::new(),
-            },
+                text: None,
+            }),
         ]
-        .iter()
-        .filter_map(|action| Invoke::apply(action).ok())
-        .collect()
     }
 
-    fn label(_state: &SharedLibrary) -> String {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+
+    fn label(_state: &Library) -> String {
         "Video Player".to_owned()
     }
 }
 
-impl ResourceSurface<VideoPlayer, VideoEffect> for PlayerApp {
-    fn present(&mut self, state: &Rc<SharedLibrary>) {
+impl ResourceSurface<Library, VideoEffect> for PlayerApp {
+    fn present(&mut self, state: &Rc<Library>) {
         self.present_library(state);
     }
 
-    fn attach(&mut self, cx: SurfaceCx<VideoPlayer>) {
+    fn attach(&mut self, cx: SurfaceCx<Library>) {
         self.attach_framework(&cx);
     }
 
@@ -155,11 +105,7 @@ impl ResourceSurface<VideoPlayer, VideoEffect> for PlayerApp {
         self.stage_capture(launched.as_deref(), scenario);
     }
 
-    fn effect(
-        &mut self,
-        effect: VideoEffect,
-        cx: &mut EffectCx<VideoPlayer, Self>,
-    ) -> EffectAnswer {
+    fn effect(&mut self, effect: VideoEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
 
@@ -169,7 +115,7 @@ impl ResourceSurface<VideoPlayer, VideoEffect> for PlayerApp {
 
     /// Edits bound to the playhead: bookmark the moment shown, add the open
     /// video to the shared Watch later playlist.
-    fn bound_declarations(&self) -> Vec<ActionDecl<VideoPlayer>> {
+    fn bound_declarations(&self) -> Vec<ActionDecl<Library>> {
         self.playhead_declarations()
     }
 
@@ -214,12 +160,12 @@ mod tests {
                 assert!(
                     state
                         .annotations
-                        .iter()
+                        .values()
                         .all(|note| note.media_ref == crate::app::demo_media_ref()),
                     "the notes belong to the clip the capture plays"
                 );
             } else {
-                assert_eq!(app.state(), SharedLibrary::default());
+                assert_eq!(app.state(), Library::default());
             }
         }
     }
@@ -290,22 +236,15 @@ mod tests {
     #[test]
     fn the_shared_library_changes_through_the_door_as_one_step_each() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.invoke(
-            Invoke::apply(&SharedAction::CreatePlaylist {
-                id: "trip".into(),
-                name: "Trip".into(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(app.state().playlists[0].name, "Trip");
+        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        assert_eq!(app.state().playlists.values().next().unwrap().name, "Trip");
         assert!(app.undo(), "creating a playlist is one undo step");
         assert!(app.state().playlists.is_empty());
 
         let surface_rows = app.agent_surface().to_string();
         for action in [
             "create-playlist",
-            "create-annotation",
+            "add-annotation",
             "open",
             "toggle-playback",
         ] {
@@ -340,19 +279,16 @@ mod tests {
 
         // Someone else pauses at two seconds: this player follows.
         let epoch_ms = tilo_clock::unix_now_ms();
-        app.merge_peer_edit(|doc| {
-            tilo_actions::Action::apply(
-                &SharedAction::SetTransport {
-                    media_ref: media_ref.clone(),
-                    playing: false,
-                    position_ms: 2_000,
-                    rate: 1.0,
-                    epoch_ms,
-                },
-                doc,
-            )
-            .unwrap();
-        });
+        let mut peer = ui::tilo_resource::Replica::<Library>::from_doc(app.peer_document());
+        peer.apply(Library::SET_TRANSPORT.with(library::SetTransport {
+            media_ref,
+            playing: false,
+            position_ms: 2_000,
+            rate: 1.0,
+            epoch_ms,
+        }))
+        .unwrap();
+        app.merge_peer(peer.doc_mut()).unwrap();
         app.settle();
         app.settle();
         let (playing, position) = surface(&mut app, |player| {
@@ -363,5 +299,144 @@ mod tests {
             position.abs_diff(2_000) <= media::DRIFT_SEEK_THRESHOLD_MS,
             "the peer's position is followed: {position}"
         );
+    }
+
+    /// An agent bookmarks the moment the player shows, adds the open video
+    /// to Watch later and edits the shared library, one call each.
+    #[test]
+    fn an_agent_works_the_shared_library_one_call_each() {
+        let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.effect(&VideoEffect::Open {
+            path: Some(sample.display().to_string()),
+        })
+        .expect("the video opens");
+        app.call("bookmark-current-time", serde_json::json!({}))
+            .unwrap();
+        app.call("add-this-video-to-watch-later", serde_json::json!({}))
+            .unwrap();
+        let state = app.state();
+        let (note, bookmark) = state.annotations.iter().next().unwrap();
+        assert!(bookmark.text.is_empty(), "a bookmark says nothing");
+        let watch_later = ui::tilo_resource::Id::from_raw(crate::shared::WATCH_LATER);
+        assert!(
+            state.playlists.contains(&watch_later),
+            "the Watch later playlist was made"
+        );
+        assert_eq!(state.items_of(&watch_later).count(), 1);
+        app.call(
+            "field-edit",
+            serde_json::json!({
+                "edit": Library::paths().annotations.item(note).text.replace("Check the colour")
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().annotations.get(note).unwrap().text,
+            "Check the colour"
+        );
+        let item = ui::tilo_resource::items::item_resource_id::<Library>("annotations", note);
+        app.call_confirmed_on(&item, "delete-annotation", serde_json::json!({}))
+            .unwrap();
+        assert!(app.state().annotations.is_empty());
+        assert!(app.undo(), "deleting is one step");
+        assert_eq!(app.state().annotations.len(), 1);
+    }
+
+    /// What an agent does in the shared library reads as the player's
+    /// sentences, in English and German.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        use ui::tilo_actions::{ActionInvoker, ActorKind};
+        use ui::tilo_resource::items::item_resource_id;
+
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        let agent = ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada");
+        let kind = <Library as ui::tilo_resource::Resource>::KIND;
+        let call = |app: &mut TestApp<VideoPlayerShell>, resource: &str, action: &str, args| {
+            app.call_by(agent.clone(), resource, action, args).unwrap();
+        };
+        call(
+            &mut app,
+            kind,
+            "create-playlist",
+            serde_json::json!({"name": "Trip"}),
+        );
+        let trip = app.state().playlists.ids().next().unwrap().clone();
+        let trip_item = item_resource_id::<Library>("playlists", &trip);
+        call(
+            &mut app,
+            &trip_item,
+            "add-to-playlist",
+            serde_json::json!({"media_ref": "clip-1", "title": "Harbour"}),
+        );
+        call(
+            &mut app,
+            kind,
+            "add-to-watch-later",
+            serde_json::json!({"media_ref": "clip-2", "title": "Lighthouse"}),
+        );
+        call(
+            &mut app,
+            kind,
+            "add-annotation",
+            serde_json::json!({"media_ref": "clip-1", "time_ms": 8000, "text": "Opening"}),
+        );
+        let note = app.state().annotations.ids().next().unwrap().clone();
+        let paths = Library::paths();
+        for edit in [
+            paths.playlists.item(&trip).name.replace("Holiday"),
+            paths.annotations.item(&note).text.replace("Opening shot"),
+            paths.annotations.item(&note).time_ms.set(9000),
+        ] {
+            call(
+                &mut app,
+                kind,
+                "field-edit",
+                serde_json::json!({ "edit": edit }),
+            );
+        }
+        app.call_confirmed_on(
+            &item_resource_id::<Library>("annotations", &note),
+            "delete-annotation",
+            serde_json::json!({}),
+        )
+        .unwrap();
+
+        let sentences = |locale: &str| -> Vec<String> {
+            let source = crate::i18n::LOCALES
+                .iter()
+                .find(|(candidate, _)| *candidate == locale)
+                .map(|(_, source)| *source)
+                .unwrap();
+            let catalogue = tilo_history::Catalogue::new(locale, &[source]);
+            let reader = tilo_history::Reader::new(locale).with_app(&catalogue);
+            app.versions()
+                .into_iter()
+                .filter_map(|version| version.context)
+                .filter(|entry| {
+                    entry
+                        .invoker
+                        .as_ref()
+                        .is_some_and(|invoker| invoker.actor == "agent:claude")
+                })
+                .map(|entry| reader.sentence(&entry))
+                .collect()
+        };
+        assert_eq!(
+            sentences("en-US"),
+            [
+                "Created the playlist Trip",
+                "Added Harbour to Trip",
+                "Added Lighthouse to Watch later",
+                "Added a note to a video",
+                "Renamed the playlist Trip",
+                "Edited the note Opening",
+                "Moved the note Opening shot",
+            ]
+        );
+        assert_eq!(sentences("de-DE")[0], "Wiedergabeliste Trip angelegt");
     }
 }

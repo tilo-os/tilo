@@ -1035,14 +1035,13 @@ mod tests {
         app.artist_pages.insert(id.into(), page);
         let mut doc = automerge::AutoCommit::new();
         let before = doc.get_heads();
-        let refused = tilo_actions::Action::apply(
-            &crate::actions::MusicAction::SetFollowedArtist {
-                artist: id.into(),
-                followed: false,
-            },
-            &mut doc,
-        )
-        .unwrap_err();
+        let mut library = ui::tilo_resource::Replica::<crate::model::Library>::new();
+        let refused = library
+            .apply(
+                ui::tilo_resource::Invoke::edit(&crate::model::Library::follow_artist(id, true))
+                    .unwrap(),
+            )
+            .unwrap_err();
         assert!(refused.to_string().contains("provider-authorized"));
         app.on_toggle_follow(id, &mut ui::widget::Edits::lend(&mut doc));
         let invocation = app

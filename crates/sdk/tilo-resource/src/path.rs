@@ -742,11 +742,14 @@ impl<R> Edit<R> {
                 },
             ) => {
                 let typed = insert.chars().count();
-                // Typing on after the previous insertion, within one word.
+                // Typing on after the previous insertion, within one word:
+                // a space ends the word it follows, so undo takes back
+                // `world` and leaves `hello `.
                 let typing = *delete == 0
                     && *next_delete == 0
+                    && !next_insert.is_empty()
                     && *next_at == at.saturating_add(typed)
-                    && !next_insert.chars().any(char::is_whitespace);
+                    && !insert.ends_with(char::is_whitespace);
                 // Deleting backwards from where the previous deletion was.
                 let erasing = insert.is_empty()
                     && next_insert.is_empty()

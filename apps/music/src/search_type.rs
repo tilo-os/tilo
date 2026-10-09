@@ -451,19 +451,16 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
                 .with_icon(kind_icon(ARTIST_TYPE_ID).name()),
         );
     }
-    for playlist in &lib.playlists {
+    for playlist in lib.playlists() {
         entries.push(
             SearchEntry::new(playlist.name.clone(), String::new())
                 .anchored(crate::actions::playlist_resource_id(&playlist.id))
                 .invoking(crate::actions::open_playlist_address(&playlist.id))
                 .grouped(kind_label(PLAYLIST_TYPE_ID))
-                .subtitled(playlist_subtitle(
-                    "Your library",
-                    playlist.track_ids.len() as u64,
-                ))
+                .subtitled(playlist_subtitle("Your library", playlist.len() as u64))
                 .with_icon(kind_icon(PLAYLIST_TYPE_ID).name()),
         );
-        for track_id in &playlist.track_ids {
+        for track_id in playlist.tracks.values() {
             let Some(track) = lib.track(track_id) else {
                 continue;
             };
@@ -493,7 +490,7 @@ mod tests {
 
     /// The library's search source, as the framework builds it.
     fn source(lib: &Library) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::Music>(library_entries(lib))
+        ui::framework::testing::search_source::<crate::model::Library>(library_entries(lib))
     }
 
     /// The library's hits for `query` as the deep links Music routes.
@@ -550,12 +547,12 @@ mod tests {
                     deep_link: SearchHit::artist_link(&artist.id),
                 });
             }
-            if let Some(id) = address.resource.strip_prefix("music.playlist:") {
-                let playlist = lib.playlist(id)?;
+            if let Some(id) = crate::actions::parse_playlist_resource_id(&address.resource) {
+                let playlist = lib.playlist(&id)?;
                 return Some(SearchHit {
                     type_id: PLAYLIST_TYPE_ID,
                     title: playlist.name.clone(),
-                    subtitle: playlist_subtitle("Your library", playlist.track_ids.len() as u64),
+                    subtitle: playlist_subtitle("Your library", playlist.len() as u64),
                     cover_url: playlist.cover.clone(),
                     thumbnail_seed: playlist.id.clone(),
                     deep_link: SearchHit::playlist_link(&playlist.id),
@@ -671,7 +668,7 @@ mod tests {
             );
 
             // A personal playlist findable by name routes to a playlist deep-link.
-            let pl = lib.playlists.first().unwrap().clone();
+            let pl = lib.playlists().next().unwrap().clone();
             let phits = library_hits(&lib, &pl.name);
             assert!(
                 phits.iter().any(|h| h.type_id == PLAYLIST_TYPE_ID
@@ -738,7 +735,7 @@ mod tests {
                     })
             }));
 
-            let pl = lib.playlists.first().unwrap().clone();
+            let pl = lib.playlists().next().unwrap().clone();
             assert!(registry.query_grouped(&pl.name).iter().any(|g| {
                 g.kind == "Playlists"
                     && g.results.iter().any(|r| {
@@ -982,8 +979,9 @@ mod tests {
         // Phase `provider_indexes_playlist_memberships_with_safe_canonical_open_actions`.
         {
             let lib = seed::sample_library();
-            let playlist = lib.playlists.first().expect("seed playlist");
-            let track_id = playlist.track_ids.first().expect("seed membership");
+            let playlist = lib.playlists().next().expect("seed playlist");
+            let track_ids = playlist.track_ids();
+            let track_id = track_ids.first().expect("seed membership");
             let track = lib.track(track_id).expect("seed track");
             let provider = source(&lib);
             let address = crate::actions::open_playlist_membership_address(&playlist.id, track_id);

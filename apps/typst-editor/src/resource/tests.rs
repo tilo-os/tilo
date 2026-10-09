@@ -218,7 +218,6 @@ fn a_files_source_is_a_field_every_edit_an_undoable_splice() {
 }
 
 #[test]
-#[ignore = "Edit::coalesces ends a word step before a space instead of after it"]
 fn typing_splices_the_open_file_and_undoes_a_word_at_a_time() {
     let (_dir, path) = typ_file("notes.typ", "");
     let mut app = TestApp::<TypstEditorShell>::launched(&[&path]).unwrap();

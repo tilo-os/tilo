@@ -1,15 +1,32 @@
 use super::*;
-use crate::actions::MusicAction;
-use ui::tilo_actions::Action;
-use ui::tilo_resource::Resource as _;
+use ui::tilo_resource::{Edit, Fields as _, Invoke, Replica};
 
 fn library() -> Library {
     let mut lib = crate::seed::sample_library();
-    lib.liked.clear();
-    lib.saved_albums.clear();
-    lib.followed_artists.clear();
+    lib.liked = Set::new();
+    lib.saved_albums = Set::new();
+    lib.followed_artists = Set::new();
     lib.recommendations = Preferences::default();
     lib
+}
+
+/// A replica of a document holding `lib`.
+fn replica(lib: &Library) -> Replica<Library> {
+    let mut doc = ui::tilo_resource::Doc::new();
+    lib.write_fields(&mut doc, &automerge::ROOT).unwrap();
+    doc.commit();
+    Replica::from_doc(doc)
+}
+
+fn apply(library: &mut Replica<Library>, edit: &Edit<Library>) -> Result<(), String> {
+    library
+        .apply(Invoke::edit(edit).unwrap())
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
+fn paths() -> <Preferences as Model>::Paths<Library> {
+    Library::paths().recommendations
 }
 
 #[test]
@@ -35,45 +52,28 @@ fn recommendations_use_explicit_inputs_and_never_play_counts() {
 
 #[test]
 fn recommendations_dismiss_restore_and_selective_artist_preferences_are_persistent() {
-    let mut doc = ui::tilo_resource::Doc::new();
     let lib = library();
-    crate::doc::seed(&mut doc, &lib);
+    let mut doc = replica(&lib);
     let track = lib.tracks.values().next().unwrap();
     let artist = track.artist_id.clone();
-    MusicAction::SetRecommendationArtist {
-        artist,
-        preferred: true,
-    }
-    .apply(&mut doc)
-    .unwrap();
-    let before = crate::doc::load_library(&doc);
+    apply(&mut doc, &paths().preferred_artists.insert(&artist)).unwrap();
+    let before = doc.state().unwrap();
     assert!(before.followed_artists.is_empty());
     assert!(
         suggestions(&before, before.tracks.len())
             .iter()
             .any(|s| s.track == track.id)
     );
-    MusicAction::SetRecommendationDismissed {
-        track: track.id.clone(),
-        dismissed: true,
-    }
-    .apply(&mut doc)
-    .unwrap();
-    let bytes = doc.save();
-    let mut loaded = ui::tilo_resource::Doc::load(&bytes).unwrap();
+    apply(&mut doc, &paths().dismissed.insert(&track.id)).unwrap();
+    let mut loaded = Replica::<Library>::load(&doc.save()).unwrap();
     assert!(
-        suggestions(&crate::doc::load_library(&loaded), 50)
+        suggestions(&loaded.state().unwrap(), 50)
             .iter()
             .all(|s| s.track != track.id)
     );
-    MusicAction::SetRecommendationDismissed {
-        track: track.id.clone(),
-        dismissed: false,
-    }
-    .apply(&mut loaded)
-    .unwrap();
+    apply(&mut loaded, &paths().dismissed.remove(&track.id)).unwrap();
     assert!(
-        suggestions(&crate::doc::load_library(&loaded), 50)
+        suggestions(&loaded.state().unwrap(), 50)
             .iter()
             .any(|s| s.track == track.id)
     );
@@ -81,50 +81,26 @@ fn recommendations_dismiss_restore_and_selective_artist_preferences_are_persiste
 
 #[test]
 fn recommendations_concurrent_feedback_merges_and_stale_positive_targets_fail() {
-    use automerge::transaction::Transactable as _;
-    use tilo_automerge::ApplyIncoming as _;
-    let mut base = ui::tilo_resource::Doc::new();
     let lib = library();
-    crate::doc::seed(&mut base, &lib);
-    // A pre-feature library has no recommendation keys at all.
-    for input in Input::ALL {
-        base.delete(
-            automerge::ROOT,
-            format!("recommendations/input/{}", input.key()),
-        )
-        .unwrap();
-    }
-    base.commit();
+    let mut base = replica(&lib);
     let mut peer = base.fork();
-    MusicAction::SetRecommendationInput {
-        input: Input::Likes,
-        enabled: false,
-    }
-    .apply(&mut base)
-    .unwrap();
+    apply(&mut base, &paths().likes.set(false)).unwrap();
     let track = lib.tracks.values().next().unwrap();
-    MusicAction::SetRecommendationDismissed {
-        track: track.id.clone(),
-        dismissed: true,
-    }
-    .apply(&mut peer)
-    .unwrap();
-    base.merge_incoming(&mut peer).unwrap();
-    let prefs = read(&base);
+    apply(&mut peer, &paths().dismissed.insert(&track.id)).unwrap();
+    base.sync_with(&mut peer).unwrap();
+    let prefs = base.state().unwrap().recommendations;
     assert!(!prefs.likes);
-    assert!(prefs.dismissed.contains(&track.id));
-    peer.merge_incoming(&mut base).unwrap();
-    assert_eq!(read(&peer), prefs);
-    let before = base.get_heads();
+    assert!(prefs.is_dismissed(&track.id));
+    assert_eq!(peer.state().unwrap().recommendations, prefs);
+    let before = base.heads();
     assert!(
-        MusicAction::SetRecommendationArtist {
-            artist: "unknown".into(),
-            preferred: true
-        }
-        .apply(&mut base)
+        apply(
+            &mut base,
+            &paths().preferred_artists.insert(&"unknown".to_owned())
+        )
         .is_err()
     );
-    assert_eq!(base.get_heads(), before);
+    assert_eq!(base.heads(), before);
 }
 
 #[test]
@@ -133,11 +109,21 @@ fn recommendations_resources_explain_and_offer_reversible_feedback() {
     lib.liked.insert("tk_g1".into());
     let pick = suggestions(&lib, 1).pop().unwrap();
     let id = format!("music.recommendation:{}", pick.track);
-    let resource = crate::Music::child(&lib, &id).unwrap();
+    let resource = resource_by_id(&lib, &id).unwrap();
     assert!(resource.label.contains(&pick.reason.label(&lib)));
-    let dismiss = resource.actions.iter().find(|a| a.id == "dismiss").unwrap();
-    assert!(dismiss.contract.reversible);
-    assert!(crate::Music::child(&lib, "music.recommendation-input:unknown").is_none());
+    for offered in ["open", "play"] {
+        assert!(
+            resource.actions.iter().any(|a| a.id == offered),
+            "{offered}"
+        );
+    }
+    let mut doc = replica(&lib);
+    apply(&mut doc, &paths().dismissed.insert(&pick.track)).unwrap();
+    let dismissed = doc.state().unwrap();
+    assert!(suggestion(&dismissed, &pick.track).is_none());
+    let row = resource_by_id(&dismissed, &id).expect("a dismissed song stays restorable");
+    assert!(row.actions.iter().any(|a| a.id == "play"));
+    assert!(resource_by_id(&lib, "music.recommendation-input:unknown").is_none());
 }
 
 #[test]
@@ -149,11 +135,15 @@ fn recommendations_seed_roundtrips_nondefault_feedback_and_disabled_inputs() {
         .preferred_artists
         .insert("ar_kavi".into());
     lib.recommendations.dismissed.insert("tk_g2".into());
-    let mut doc = ui::tilo_resource::Doc::new();
-    crate::doc::seed(&mut doc, &lib);
-    assert_eq!(
-        crate::doc::load_library(&doc).recommendations,
-        lib.recommendations
+    let doc = replica(&lib);
+    let loaded = Replica::<Library>::load(&doc.doc().clone().save()).unwrap();
+    assert_eq!(loaded.state().unwrap().recommendations, lib.recommendations);
+    assert!(
+        loaded
+            .state()
+            .unwrap()
+            .recommendations
+            .is_dismissed("tk_g2")
     );
 }
 
@@ -199,17 +189,28 @@ fn recommendations_each_signal_can_be_disabled_and_genres_name_their_provenance(
     assert!(suggestions(&lib, 50).is_empty());
 }
 
+/// The library never holds feedback about music it does not hold: songs
+/// and artists only ever join it, so feedback naming one that is not there
+/// is refused, and a suggestion row for it offers nothing to play.
 #[test]
-fn recommendations_stale_feedback_can_be_cleared_without_reimporting_music() {
-    let mut doc = ui::tilo_resource::Doc::new();
-    let mut lib = Library::default();
-    lib.recommendations.dismissed.insert("deleted".into());
-    lib.recommendations
-        .preferred_artists
-        .insert("deleted-artist".into());
-    crate::doc::seed(&mut doc, &lib);
+fn recommendations_feedback_names_only_music_of_the_library() {
+    let lib = Library::default();
+    let mut doc = replica(&lib);
+    for stale in [
+        paths().dismissed.insert(&"deleted".to_owned()),
+        paths()
+            .preferred_artists
+            .insert(&"deleted-artist".to_owned()),
+    ] {
+        assert!(apply(&mut doc, &stale).is_err());
+    }
+    let state = doc.state().unwrap();
+    assert!(state.recommendations.dismissed.is_empty());
+    assert!(state.recommendations.preferred_artists.is_empty());
+    let mut forgotten = Library::default();
+    forgotten.recommendations.dismissed.insert("deleted".into());
     assert_ne!(
-        crate::Music::child(&lib, "music.recommendation:deleted")
+        resource_by_id(&forgotten, "music.recommendation:deleted")
             .unwrap()
             .actions
             .iter()
@@ -219,20 +220,4 @@ fn recommendations_stale_feedback_can_be_cleared_without_reimporting_music() {
             .availability,
         ui::tilo_actions::Availability::Available
     );
-    MusicAction::SetRecommendationDismissed {
-        track: "deleted".into(),
-        dismissed: false,
-    }
-    .apply(&mut doc)
-    .unwrap();
-    MusicAction::SetRecommendationArtist {
-        artist: "deleted-artist".into(),
-        preferred: false,
-    }
-    .apply(&mut doc)
-    .unwrap();
-    let state = crate::doc::load_library(&doc);
-    assert!(state.recommendations.dismissed.is_empty());
-    assert!(state.recommendations.preferred_artists.is_empty());
-    assert!(state.tracks.is_empty());
 }

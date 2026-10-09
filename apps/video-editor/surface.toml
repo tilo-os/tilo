@@ -1,0 +1,1432 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "video-editor.project"
+label = "Project"
+version = 1
+
+[[resources.fields]]
+owner = "project"
+path = "name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "project"
+path = "fps"
+stored = "value"
+title = "Fps"
+type = "f64"
+
+[[resources.fields]]
+owner = "project"
+path = "width"
+stored = "value"
+title = "Width"
+type = "u32"
+
+[[resources.fields]]
+owner = "project"
+path = "height"
+stored = "value"
+title = "Height"
+type = "u32"
+
+[[resources.fields]]
+owner = "project"
+path = "format_explicit"
+stored = "value"
+title = "Whether the frame size and rate above were *chosen* — by a person, or"
+type = "bool"
+
+[[resources.fields]]
+owner = "project"
+path = "mark_in"
+stored = "value"
+title = "Timeline **in** mark, in absolute seconds: where a render of the"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "project"
+path = "mark_out"
+stored = "value"
+title = "Timeline **out** mark. `None` is the end of the timeline"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "project"
+path = "media"
+stored = "keyed"
+title = "Media"
+type = "Keyed<MediaItem>"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "MediaId"
+
+[[resources.fields]]
+label = true
+owner = "media-item"
+path = "media.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.kind"
+stored = "value"
+title = "Kind"
+type = "MediaKind"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.duration"
+stored = "value"
+title = "Duration"
+type = "f64"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.width"
+stored = "value"
+title = "Width"
+type = "u32"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.height"
+stored = "value"
+title = "Height"
+type = "u32"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.fps"
+stored = "value"
+title = "Fps"
+type = "f64"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.palette"
+stored = "value"
+title = "Palette slot (0..N) used to tint the bin thumbnail and timeline"
+type = "u8"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.path"
+stored = "value"
+title = "Workspace-relative path to the source bytes on the P2P FUSE"
+type = "String"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.text"
+stored = "record"
+title = "The title's text and styling, for a [`MediaKind::Text`] item. `None`"
+type = "Option<TextSource>"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.content"
+stored = "value"
+title = "Content"
+type = "String"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.size"
+stored = "value"
+title = "Cap height as a fraction of the frame height. 0.1 ≈ 108px at 1080p"
+type = "f64"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.color"
+stored = "value"
+title = "Straight (non-premultiplied) sRGB in 0..1, plus alpha"
+type = "[f64; 4]"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.align"
+stored = "value"
+title = "Align"
+type = "TextAlign"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.font"
+stored = "value"
+title = """Font family. Empty means "the system's default sans", which is what"""
+type = "String"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.bold"
+stored = "value"
+title = "Bold"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.italic"
+stored = "value"
+title = "Italic"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-source"
+path = "media.*.text.backdrop"
+stored = "value"
+title = "Opacity of a full-frame backing plate behind the text, 0 = none"
+type = "f64"
+
+[[resources.fields]]
+owner = "media-item"
+path = "media.*.has_audio"
+stored = "value"
+title = "Whether a *picture* source also carries a sound track"
+type = "bool"
+
+[[resources.fields]]
+owner = "project"
+path = "tracks"
+stored = "keyed"
+title = "Tracks"
+type = "Keyed<Track>"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "TrackId"
+
+[[resources.fields]]
+label = true
+owner = "track"
+path = "tracks.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.kind"
+stored = "value"
+title = "Kind"
+type = "TrackKind"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.index"
+stored = "value"
+title = "Index"
+type = "u32"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.muted"
+stored = "value"
+title = "Muted"
+type = "bool"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.locked"
+stored = "value"
+title = "Locked"
+type = "bool"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.solo"
+stored = "value"
+title = "Solo: while any track is soloed, only soloed tracks of that kind are"
+type = "bool"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.gain_db"
+stored = "value"
+title = "The lane's fader, in **decibels**, `0.0` being unity"
+type = "f64"
+
+[[resources.fields]]
+owner = "track"
+path = "tracks.*.pan"
+stored = "value"
+title = "Where the lane sits across the stereo field: `-1` hard left, `0`"
+type = "f64"
+
+[[resources.fields]]
+owner = "project"
+path = "clips"
+stored = "keyed"
+title = "Clips"
+type = "Keyed<Clip>"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "ClipId"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.track"
+stored = "value"
+title = "Track"
+type = "TrackId"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.media"
+stored = "value"
+title = "Media"
+type = "MediaId"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.start"
+stored = "value"
+title = "Timeline position of the clip's left edge, seconds"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.in_point"
+stored = "value"
+title = "Source in-point, seconds into the media"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.out_point"
+stored = "value"
+title = "Source out-point, seconds into the media"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.opacity"
+stored = "value"
+title = "Opacity"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.volume"
+stored = "value"
+title = "Volume"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.transition"
+stored = "value"
+title = "Transition"
+type = "Transition"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.palette"
+stored = "value"
+title = "Palette"
+type = "u8"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.filters"
+stored = "record"
+title = "Per-clip colour grade. Identity by default"
+type = "Filters"
+
+[[resources.fields]]
+owner = "filters"
+path = "clips.*.filters.brightness"
+stored = "value"
+title = "Brightness"
+type = "f64"
+
+[[resources.fields]]
+owner = "filters"
+path = "clips.*.filters.contrast"
+stored = "value"
+title = "Contrast"
+type = "f64"
+
+[[resources.fields]]
+owner = "filters"
+path = "clips.*.filters.saturation"
+stored = "value"
+title = "Saturation"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.curves"
+stored = "value"
+title = "Tone curves, applied straight after the three grade axes. The"
+type = "Curve"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.fade_in"
+stored = "value"
+title = "Fade-in length in seconds (audio ramp / video dip from black at the"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.fade_out"
+stored = "value"
+title = "Fade-out length in seconds at the tail. 0 = no fade"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.transition_duration"
+stored = "value"
+title = """Length of this clip's incoming transition, seconds. `0.0` means "use"""
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.effects"
+stored = "collection"
+title = "Ordered stack of image effects applied after the base grade. Empty by"
+type = "Ordered<ClipEffect>"
+
+[[resources.fields]]
+owner = "clip-effect"
+path = "clips.*.effects.*.id"
+readonly = true
+stored = "value"
+title = "Immutable instance identity. Unlike the kind, this distinguishes two"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "clip-effect"
+path = "clips.*.effects.*.kind"
+stored = "value"
+title = "Kind"
+type = "EffectKind"
+
+[[resources.fields]]
+owner = "clip-effect"
+path = "clips.*.effects.*.amount"
+stored = "value"
+title = "Amount"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.transform"
+stored = "record"
+title = "Where the picture lands in the frame: crop, scale, rotation,"
+type = "Transform"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.scale_x"
+stored = "value"
+title = "Horizontal scale about the anchor. 1.0 = the aspect-fit size"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.scale_y"
+stored = "value"
+title = "Vertical scale about the anchor"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.pos_x"
+stored = "value"
+title = "Offset in frame widths / heights. `(0, 0)` is centred; `(0.25, 0)`"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.pos_y"
+stored = "value"
+title = "Pos y"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.rotation"
+stored = "value"
+title = "Clockwise rotation in degrees about the anchor"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.anchor_x"
+stored = "value"
+title = "The point of the source that scale and rotation pivot around and"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.anchor_y"
+stored = "value"
+title = "Anchor y"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.crop_left"
+stored = "value"
+title = "Fraction of the source cut off each edge before it is placed"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.crop_right"
+stored = "value"
+title = "Crop right"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.crop_top"
+stored = "value"
+title = "Crop top"
+type = "f64"
+
+[[resources.fields]]
+owner = "transform"
+path = "clips.*.transform.crop_bottom"
+stored = "value"
+title = "Crop bottom"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.speed"
+stored = "record"
+title = "Playback rate and direction. Normal by default"
+type = "Speed"
+
+[[resources.fields]]
+owner = "speed"
+path = "clips.*.speed.rate"
+stored = "value"
+title = "Rate"
+type = "f64"
+
+[[resources.fields]]
+owner = "speed"
+path = "clips.*.speed.reverse"
+stored = "value"
+title = "Play the source window backwards. The clip still occupies the same"
+type = "bool"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.key"
+stored = "record"
+title = "Colour key. Disabled by default, so a clip that has never been keyed"
+type = "ChromaKey"
+
+[[resources.fields]]
+owner = "chroma-key"
+path = "clips.*.key.enabled"
+stored = "value"
+title = "Enabled"
+type = "bool"
+
+[[resources.fields]]
+owner = "chroma-key"
+path = "clips.*.key.color"
+stored = "value"
+title = "The colour to remove, in 0..1 RGB. Only its chroma is used; its"
+type = "[f64; 3]"
+
+[[resources.fields]]
+owner = "chroma-key"
+path = "clips.*.key.tolerance"
+stored = "value"
+title = "Chroma distance that is fully removed, 0..1. Nothing is keyed at 0"
+type = "f64"
+
+[[resources.fields]]
+owner = "chroma-key"
+path = "clips.*.key.softness"
+stored = "value"
+title = "Width of the soft edge past `tolerance`, in the same units. This is"
+type = "f64"
+
+[[resources.fields]]
+owner = "chroma-key"
+path = "clips.*.key.spill"
+stored = "value"
+title = "How much of the key colour is pulled back out of what survives,"
+type = "f64"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.mask"
+stored = "record"
+title = "Shape mask limiting where this layer contributes. [`MaskShape::None`]"
+type = "Mask"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.shape"
+stored = "value"
+title = "Shape"
+type = "MaskShape"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.x"
+stored = "value"
+title = "Centre, as an offset from the frame centre in frame widths/heights"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.y"
+stored = "value"
+title = "Y"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.w"
+stored = "value"
+title = "Full width and height, as fractions of the frame"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.h"
+stored = "value"
+title = "H"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.rotation"
+stored = "value"
+title = "Clockwise rotation of the shape, degrees"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.feather"
+stored = "value"
+title = "Softness of the edge, 0..1 of the shape's own half-extent"
+type = "f64"
+
+[[resources.fields]]
+owner = "mask"
+path = "clips.*.mask.invert"
+stored = "value"
+title = "Keep the outside instead of the inside — a hole rather than a window"
+type = "bool"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.anim"
+stored = "value"
+title = "Keyframe curves. A parameter with a curve here ignores its constant"
+type = "ClipAnimation"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.markers"
+stored = "keyed"
+title = "Markers pinned to this clip, in clip-local seconds"
+type = "Keyed<Marker>"
+
+[[resources.fields]]
+owner = "marker"
+path = "clips.*.markers.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "marker"
+path = "clips.*.markers.*.t"
+stored = "value"
+title = "Seconds. Absolute for a project marker, clip-local for a clip one"
+type = "f64"
+
+[[resources.fields]]
+label = true
+owner = "marker"
+path = "clips.*.markers.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "marker"
+path = "clips.*.markers.*.palette"
+stored = "value"
+title = "Palette slot, resolved to a real colour by the theme — the model"
+type = "u8"
+
+[[resources.fields]]
+owner = "marker"
+path = "clips.*.markers.*.note"
+stored = "value"
+title = "Optional free-text note"
+type = "String"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.link"
+stored = "value"
+title = "Which **link group** this clip belongs to, if any. Two clips carrying"
+type = "Option<Uuid>"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.sound_split"
+stored = "value"
+title = "True when this picture clip's own sound has been split off onto an"
+type = "bool"
+
+[[resources.fields]]
+owner = "clip"
+path = "clips.*.link_follows"
+stored = "value"
+title = "Whether edits made to one member of this clip's group reach the others"
+type = "bool"
+
+[[resources.fields]]
+owner = "project"
+path = "markers"
+stored = "keyed"
+title = "Timeline markers, in absolute seconds, kept sorted by time"
+type = "Keyed<Marker>"
+
+[[resources.fields]]
+owner = "marker"
+path = "markers.*.id"
+readonly = true
+stored = "value"
+title = "Id"
+type = "Uuid"
+
+[[resources.fields]]
+owner = "marker"
+path = "markers.*.t"
+stored = "value"
+title = "Seconds. Absolute for a project marker, clip-local for a clip one"
+type = "f64"
+
+[[resources.fields]]
+label = true
+owner = "marker"
+path = "markers.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "marker"
+path = "markers.*.palette"
+stored = "value"
+title = "Palette slot, resolved to a real colour by the theme — the model"
+type = "u8"
+
+[[resources.fields]]
+owner = "marker"
+path = "markers.*.note"
+stored = "value"
+title = "Optional free-text note"
+type = "String"
+
+[[resources.verbs]]
+description = "Set the frame size."
+id = "set-frame-size"
+kind = "undoable"
+label = "Set the frame size"
+
+[[resources.verbs.params]]
+name = "width"
+required = true
+
+[resources.verbs.params.schema]
+description = "Frame width in pixels; clamped to 16..8192 and rounded even"
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "height"
+required = true
+
+[resources.verbs.params.schema]
+description = "Frame height in pixels; clamped to 16..8192 and rounded even"
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Set the frame rate."
+id = "set-frame-rate"
+kind = "undoable"
+label = "Set the frame rate"
+
+[[resources.verbs.params]]
+name = "fps"
+required = true
+
+[resources.verbs.params.schema]
+description = "Frames per second; clamped to 1..240"
+type = "number"
+
+[[resources.verbs]]
+description = "Set the render range."
+id = "set-render-range"
+kind = "undoable"
+label = "Set the render range"
+
+[[resources.verbs.params]]
+name = "start"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds where a render begins"
+type = "number"
+
+[[resources.verbs.params]]
+name = "end"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds where it ends; later than the start"
+type = "number"
+
+[[resources.verbs]]
+description = "Mark where a render begins."
+id = "mark-in"
+kind = "undoable"
+label = "Mark where a render begins"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline"
+type = "number"
+
+[[resources.verbs]]
+description = "Mark where a render ends."
+id = "mark-out"
+kind = "undoable"
+label = "Mark where a render ends"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline"
+type = "number"
+
+[[resources.verbs]]
+description = "Clear the in and out marks."
+id = "clear-marks"
+kind = "undoable"
+label = "Clear the in and out marks"
+params = []
+
+[[resources.verbs]]
+description = "Add a title."
+id = "add-title"
+kind = "undoable"
+label = "Add a title"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "The words the title shows; empty reads as “Title”"
+type = "string"
+
+[[resources.verbs]]
+description = "Add a timeline marker."
+id = "add-marker"
+kind = "undoable"
+label = "Add a timeline marker"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds from the start"
+type = "number"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Marker name; empty reads as “Marker”"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove a timeline marker."
+destructive = true
+id = "remove-marker"
+kind = "undoable"
+label = "Remove a timeline marker"
+
+[[resources.verbs.params]]
+name = "marker"
+required = true
+
+[resources.verbs.params.schema]
+description = "Marker"
+type = "string"
+
+[[resources.verbs]]
+description = "Add an empty track."
+id = "add-track"
+kind = "undoable"
+label = "Add an empty track"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+description = "Video or audio"
+enum = [
+    "Video",
+    "Audio",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Put a track's gain and pan back to unity and centre."
+id = "reset-mix"
+kind = "undoable"
+label = "Put a track's gain and pan back to unity and centre"
+
+[[resources.verbs.params]]
+name = "track"
+required = true
+
+[resources.verbs.params.schema]
+description = "Track"
+type = "string"
+
+[[resources.verbs]]
+description = "Bring every lane named down by the same amount, keeping the balance."
+id = "trim-lanes"
+kind = "undoable"
+label = "Bring every lane named down by the same amount, keeping the balance"
+
+[[resources.verbs.params]]
+name = "tracks"
+required = true
+
+[resources.verbs.params.schema]
+description = "The tracks to bring down"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "db"
+required = true
+
+[resources.verbs.params.schema]
+description = "Decibels to bring each down by"
+type = "number"
+
+[[resources.verbs.params]]
+name = "headroom"
+required = true
+
+[resources.verbs.params.schema]
+description = "Decibels to leave below full scale besides; 0 lands the measured peak exactly at full scale"
+type = "number"
+
+[[resources.verbs]]
+description = "Delete a track and its clips."
+destructive = true
+id = "delete-track"
+kind = "undoable"
+label = "Delete a track and its clips"
+
+[[resources.verbs.params]]
+name = "track"
+required = true
+
+[resources.verbs.params.schema]
+description = "Track"
+type = "string"
+
+[[resources.verbs]]
+description = "Place a source on a track."
+id = "place-clip"
+kind = "undoable"
+label = "Place a source on a track"
+
+[[resources.verbs.params]]
+name = "media"
+required = true
+
+[resources.verbs.params.schema]
+description = "Media"
+type = "string"
+
+[[resources.verbs.params]]
+name = "track"
+required = true
+
+[resources.verbs.params.schema]
+description = "The track to place it on"
+type = "string"
+
+[[resources.verbs.params]]
+name = "start"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds from the start"
+type = "number"
+
+[[resources.verbs]]
+description = "Delete a source and every clip of it."
+destructive = true
+id = "delete-media"
+kind = "undoable"
+label = "Delete a source and every clip of it"
+
+[[resources.verbs.params]]
+name = "media"
+required = true
+
+[resources.verbs.params.schema]
+description = "Media"
+type = "string"
+
+[[resources.verbs]]
+description = "Use a source's frame size and rate for the project."
+id = "use-as-project-format"
+kind = "undoable"
+label = "Use a source's frame size and rate for the project"
+
+[[resources.verbs.params]]
+name = "media"
+required = true
+
+[resources.verbs.params.schema]
+description = "Media"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete a clip and the clips linked to it."
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete a clip and the clips linked to it"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete a clip and close the gap it leaves."
+destructive = true
+id = "ripple-delete"
+kind = "undoable"
+label = "Delete a clip and close the gap it leaves"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Cut a clip and its linked clips in two."
+id = "split-clip"
+kind = "undoable"
+label = "Cut a clip and its linked clips in two"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline where it is cut"
+type = "number"
+
+[[resources.verbs]]
+description = "Move a clip's start, and its linked clips', to a time."
+id = "trim-in-clip"
+kind = "undoable"
+label = "Move a clip's start, and its linked clips', to a time"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline the clip starts at"
+type = "number"
+
+[[resources.verbs]]
+description = "Move a clip's end, and its linked clips', to a time."
+id = "trim-out-clip"
+kind = "undoable"
+label = "Move a clip's end, and its linked clips', to a time"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline the clip ends at"
+type = "number"
+
+[[resources.verbs]]
+description = "Set a clip's playback speed."
+id = "set-speed"
+kind = "undoable"
+label = "Set a clip's playback speed"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "rate"
+required = true
+
+[resources.verbs.params.schema]
+description = "Playback rate: 1 is normal, 0.5 half speed, 2 double"
+type = "number"
+
+[[resources.verbs]]
+description = "Play a clip backwards, or forwards again."
+id = "toggle-reverse"
+kind = "undoable"
+label = "Play a clip backwards, or forwards again"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Play a clip at normal speed."
+id = "reset-speed"
+kind = "undoable"
+label = "Play a clip at normal speed"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Set one of a clip's animatable values where it plays at a time."
+id = "set-param"
+kind = "undoable"
+label = "Set one of a clip's animatable values where it plays at a time"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "param"
+required = true
+
+[resources.verbs.params.schema]
+description = "What to set"
+examples = [
+    "opacity",
+    "volume",
+    "brightness",
+    "contrast",
+    "saturation",
+    "scale_x",
+    "scale_y",
+    "pos_x",
+    "pos_y",
+    "rotation",
+    "key_tolerance",
+    "key_softness",
+    "key_spill",
+    "mask_x",
+    "mask_y",
+    "mask_w",
+    "mask_h",
+    "mask_rotation",
+    "mask_feather",
+    "curve_mix",
+    "effect:<effect id>",
+]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+description = "Seconds on the timeline; a keyframed value is keyed there"
+type = "number"
+
+[[resources.verbs.params]]
+name = "value"
+required = true
+
+[resources.verbs.params.schema]
+description = "The value"
+type = "number"
+
+[[resources.verbs]]
+description = "Add an effect to a clip."
+id = "add-effect"
+kind = "undoable"
+label = "Add an effect to a clip"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "effect"
+required = true
+
+[resources.verbs.params.schema]
+description = "The effect"
+enum = [
+    "Grayscale",
+    "Sepia",
+    "Invert",
+    "Warm",
+    "Cool",
+    "Vignette",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Remove an effect from a clip."
+destructive = true
+id = "remove-effect"
+kind = "undoable"
+label = "Remove an effect from a clip"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "effect"
+required = true
+
+[resources.verbs.params.schema]
+description = "The effect's id"
+type = "string"
+
+[[resources.verbs]]
+description = "Move an effect up or down a clip's stack."
+id = "move-effect"
+kind = "undoable"
+label = "Move an effect up or down a clip's stack"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "effect"
+required = true
+
+[resources.verbs.params.schema]
+description = "The effect's id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "up"
+required = true
+
+[resources.verbs.params.schema]
+description = "Towards the top of the stack"
+type = "boolean"
+
+[[resources.verbs]]
+description = "Set how strongly one of a clip's effects applies."
+id = "set-effect-amount"
+kind = "undoable"
+label = "Set how strongly one of a clip's effects applies"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "effect"
+required = true
+
+[resources.verbs.params.schema]
+description = "The effect's id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "amount"
+required = true
+
+[resources.verbs.params.schema]
+description = "Strength from 0 to 1"
+type = "number"
+
+[[resources.verbs]]
+description = "Remove every effect from a clip."
+destructive = true
+id = "clear-effects"
+kind = "undoable"
+label = "Remove every effect from a clip"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Stop a clip's linked clips following its edits."
+id = "unlink"
+kind = "undoable"
+label = "Stop a clip's linked clips following its edits"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Split a clip's sound off onto an audio clip linked to it."
+id = "link-audio"
+kind = "undoable"
+label = "Split a clip's sound off onto an audio clip linked to it"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs]]
+description = "Link a clip with another, so they move, trim and re-time together."
+id = "link-with"
+kind = "undoable"
+label = "Link a clip with another, so they move, trim and re-time together"
+
+[[resources.verbs.params]]
+name = "clip"
+required = true
+
+[resources.verbs.params.schema]
+description = "Clip"
+type = "string"
+
+[[resources.verbs.params]]
+name = "other"
+required = true
+
+[resources.verbs.params.schema]
+description = "The clip to link it with"
+type = "string"

@@ -365,9 +365,15 @@ fn consecutive_edits_of_one_path_are_one_gesture() {
         &action(snippet.title.splice(0, 0, "a")),
         &action(snippet.title.splice(1, 0, "b")),
     ));
-    assert!(!Library::coalesces(
+    // A space ends the word it follows: it belongs to that step, and the
+    // next word is a step of its own.
+    assert!(Library::coalesces(
         &action(snippet.title.splice(0, 0, "a")),
         &action(snippet.title.splice(1, 0, " ")),
+    ));
+    assert!(!Library::coalesces(
+        &action(snippet.title.splice(0, 0, "a ")),
+        &action(snippet.title.splice(2, 0, "b")),
     ));
     assert!(Library::coalesces(
         &action(snippet.favorite.set(true)),

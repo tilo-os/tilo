@@ -6,7 +6,7 @@
 //! to time, trim handles live on sub-pixel edges, the playhead crosses
 //! every lane. That density is far cleaner to express as direct drawing +
 //! geometric hit-tests than as a Taffy tree. The structural state still
-//! lives in the CRDT (see [`crate::doc`]) so the edit is collaborative and
+//! lives in the CRDT (see [`crate::model::Project`]) so the edit is collaborative and
 //! undoable; only ephemeral *view* state (playhead, zoom, selection) is
 //! held in widget fields, matching the toolkit's per-peer-view convention.
 
@@ -4436,7 +4436,6 @@ impl VideoEditorApp {
             fps: self.project.fps,
             palette,
             path: String::new(),
-            hydration: crate::media::Hydration::Local,
             text: Some(TextSource::default()),
             ..Default::default()
         };
@@ -5174,7 +5173,6 @@ impl VideoEditorApp {
             // The kept copy's name in the cache location; no decoder here
             // reads it yet, so the preview draws the clip from its metadata.
             path: format!("{}/{token}", crate::media::KEPT_PREFIX),
-            hydration: crate::media::Hydration::Projected,
             text: None,
             has_audio: probed.has_audio,
         };
@@ -5486,7 +5484,6 @@ impl VideoEditorApp {
             fps: probed.fps,
             palette,
             path: stored,
-            hydration: resolved.hydration,
             // An imported file is decoded, never generated: only a title
             // carries text.
             text: None,

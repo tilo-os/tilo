@@ -252,7 +252,6 @@ mod tests {
             fps: 30.0,
             palette,
             path: crate::media::workspace_path("m.mp4"),
-            hydration: crate::media::Hydration::Projected,
             ..Default::default()
         });
         id
@@ -335,7 +334,6 @@ mod tests {
             fps: 30.0,
             palette: 2,
             path: crate::media::workspace_path("sq.mp4"),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let t = track(&mut p, 1);
@@ -520,7 +518,6 @@ mod tests {
                     fps: 30.0,
                     palette: pal,
                     path: crate::media::workspace_path("m.mp4"),
-                    hydration: crate::media::Hydration::Projected,
                     ..Default::default()
                 });
             }
@@ -573,7 +570,6 @@ mod tests {
                 fps: 30.0,
                 palette: 1,
                 path: crate::media::workspace_path("logo.png"),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let t = track(&mut p, 1);
@@ -623,7 +619,6 @@ mod tests {
             palette: 4,
             // A title has no bytes: nothing to hydrate, nothing to decode.
             path: String::new(),
-            hydration: crate::media::Hydration::Local,
             text: Some(text),
             ..Default::default()
         });
@@ -923,7 +918,6 @@ mod tests {
                 fps: 30.0,
                 palette: 2,
                 path: crate::media::workspace_path("sq.mp4"),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let v1 = track(&mut p, 1);
@@ -1540,7 +1534,6 @@ mod tests {
                 fps: f64::from(generated_clip::FPS),
                 palette: 0,
                 path: path.to_string_lossy().into_owned(),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1656,7 +1649,6 @@ mod tests {
                 height: generated_clip::HEIGHT,
                 fps: f64::from(generated_clip::FPS),
                 path: path.to_string_lossy().into_owned(),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1772,7 +1764,6 @@ mod tests {
                 height: 1080,
                 fps: 30.0,
                 path: path.to_string_lossy().into_owned(),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1855,7 +1846,6 @@ mod tests {
                 fps: f64::from(generated_clip::FPS),
                 palette: 0,
                 path: path.to_string_lossy().into_owned(),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let tid = Uuid::new_v4();
@@ -1962,7 +1952,6 @@ mod tests {
                 fps: f64::from(generated_clip::FPS),
                 palette: 0,
                 path: path.to_string_lossy().into_owned(),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             let mut track = |index: u32| {
@@ -2103,7 +2092,6 @@ mod tests {
                 fps: 30.0,
                 palette: 2,
                 path: crate::media::workspace_path("s.mp4"),
-                hydration: crate::media::Hydration::Local,
                 ..Default::default()
             });
             id

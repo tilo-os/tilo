@@ -30,7 +30,7 @@ pub struct Replica<R: Resource> {
     doc: Doc,
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
-    author: Option<Vec<u8>>,
+    author: Option<String>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -95,7 +95,7 @@ impl<R: Resource> Replica<R> {
     /// collaborator.
     #[must_use]
     pub fn as_author(mut self, author: &str) -> Self {
-        self.author = Some(author.as_bytes().to_vec());
+        self.author = Some(author.to_owned());
         self
     }
 
@@ -123,16 +123,19 @@ impl<R: Resource> Replica<R> {
     /// # Errors
     /// Returns the door's refusal: unknown, unavailable, invalid arguments,
     /// confirmation required, or the action's own refusal.
-    pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, DoorError> {
-        self.invoke(invoke, false)
+    pub fn apply(&mut self, invoke: impl Into<Invoke<R>>) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke.into(), false)
     }
 
     /// [`Self::apply`] after the person confirmed it.
     ///
     /// # Errors
     /// As [`Self::apply`], without asking for confirmation.
-    pub fn apply_confirmed(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, DoorError> {
-        self.invoke(invoke, true)
+    pub fn apply_confirmed(
+        &mut self,
+        invoke: impl Into<Invoke<R>>,
+    ) -> Result<&ActionEnvelope, DoorError> {
+        self.invoke(invoke.into(), true)
     }
 
     /// Apply one typed action value, the path a custom surface takes once
@@ -158,15 +161,24 @@ impl<R: Resource> Replica<R> {
         let address = ActionAddress::new(tree.id.as_str(), id);
         // Without an author, the replica's own actor: every replica is a
         // device of its own.
-        let actor = self
-            .author
-            .clone()
-            .unwrap_or_else(|| self.doc.get_actor().to_bytes().to_vec());
+        let actor = self.author.as_ref().map_or_else(
+            || self.doc.get_actor().to_bytes().to_vec(),
+            |author| author.as_bytes().to_vec(),
+        );
+        // An author is also the invoker a verb reads (`ActionCx::author`), as
+        // the host pins the signed-in person.
+        let ambient = self.author.as_ref().map(|author| {
+            tilo_actions::ActionContext::default()
+                .with_invoker(tilo_actions::ActionInvoker::actor(author.clone()))
+        });
         let mut transport = LocalTransport::new();
         let (doc, registry) = (&mut self.doc, &self.registry);
         let dispatched = resource::with_origin_clock(self.now_ms, || {
             let resources = std::slice::from_ref(&tree);
-            let provenance = InvocationProvenance::caller(&actor);
+            let provenance = match &ambient {
+                Some(ambient) => InvocationProvenance::caller(&actor).within(ambient),
+                None => InvocationProvenance::caller(&actor),
+            };
             if confirmed {
                 door::invoke_json_confirmed(
                     doc,
