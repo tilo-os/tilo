@@ -384,7 +384,8 @@ impl SlideData {
     kind = "slides.deck",
     label = "Deck",
     initialize = Deck::starter,
-    search = crate::search::entries
+    search = crate::search::entries,
+    answer = Deck::outline
 )]
 impl Deck {
     /// Add slide
@@ -392,7 +393,7 @@ impl Deck {
     /// A new slide after `after` (last when none), its title and body text
     /// boxes holding `title` and `body` when given. A `title` layout makes a
     /// cover slide.
-    #[action]
+    #[action(answers)]
     pub fn add_slide(
         &mut self,
         cx: &mut ActionCx,
@@ -464,7 +465,7 @@ impl Deck {
     /// Move slide
     ///
     /// Put the slide at `position`, counting from 0 for the first slide.
-    #[action(item = slides)]
+    #[action(item = slides, answers)]
     pub fn move_slide(
         &mut self,
         slide: &Id,
@@ -484,7 +485,7 @@ impl Deck {
     /// Replace the words of the slide's title (its first text box) and/or
     /// body (its second) as plain text, a paragraph per line, keeping their
     /// place and style.
-    #[action(item = slides)]
+    #[action(item = slides, answers)]
     pub fn set_text(
         &mut self,
         slide: &Id,
@@ -534,7 +535,7 @@ impl Deck {
     ///
     /// A text box, shape, line or picture on the slide, above everything on
     /// it, styled as its kind is unless `element` names a style.
-    #[action(item = slides)]
+    #[action(item = slides, answers)]
     pub fn add_element(
         &mut self,
         cx: &mut ActionCx,
@@ -560,44 +561,32 @@ impl Deck {
     }
 
     /// Delete element
-    #[action(item = slides, destructive)]
-    pub fn delete_element(
-        &mut self,
-        slide: &Id,
-        #[param("The element")] element: Id,
-    ) -> Result<(), Refusal> {
+    #[action(item = slides.elements, destructive)]
+    pub fn delete_element(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         target
             .elements
-            .remove(&element)
+            .remove(element)
             .map(drop)
             .ok_or_else(|| Refusal::new("no such element"))
     }
 
     /// Bring to front
-    #[action(item = slides)]
-    pub fn bring_to_front(
-        &mut self,
-        slide: &Id,
-        #[param("The element")] element: Id,
-    ) -> Result<(), Refusal> {
+    #[action(item = slides.elements)]
+    pub fn bring_to_front(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
         let top = target.elements.len();
-        if !target.elements.move_to(&element, top) {
+        if !target.elements.move_to(element, top) {
             return Err(Refusal::new("no such element"));
         }
         Ok(())
     }
 
     /// Send to back
-    #[action(item = slides)]
-    pub fn send_to_back(
-        &mut self,
-        slide: &Id,
-        #[param("The element")] element: Id,
-    ) -> Result<(), Refusal> {
+    #[action(item = slides.elements)]
+    pub fn send_to_back(&mut self, slide: &Id, element: &Id) -> Result<(), Refusal> {
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
-        if !target.elements.move_to(&element, 0) {
+        if !target.elements.move_to(element, 0) {
             return Err(Refusal::new("no such element"));
         }
         Ok(())
@@ -641,6 +630,17 @@ impl Deck {
 }
 
 impl Deck {
+    /// What an edit of the deck answers its caller: the deck's outline,
+    /// titled and with its handles, so an agent sees what it changed
+    /// without reading the deck again.
+    fn outline(
+        doc: &tilo_resource::Doc,
+        _action: &str,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        crate::outline::of_document(doc).map(|outline| serde_json::json!({ "outline": outline }))
+    }
+
     /// The deck every new record begins with, under fixed ids: the genesis
     /// is the same change on every device, so two people creating the
     /// room's deck before they sync converge on one first slide.

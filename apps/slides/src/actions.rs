@@ -48,6 +48,16 @@ pub fn slide_resource_id(slide: &str) -> String {
     items::item_resource_id::<Deck>("slides", &Id::from(slide))
 }
 
+/// The resource an element is published as: its item, within its slide.
+#[must_use]
+pub fn element_resource_id(slide: &str, element: &str) -> String {
+    items::nested_resource_id::<Deck>(
+        &[("slides", Id::from(slide))],
+        "elements",
+        &Id::from(element),
+    )
+}
+
 /// The paths of slide `slide`.
 #[must_use]
 pub fn slide_paths(slide: &str) -> <deck::Slide as ui::tilo_resource::Model>::Paths<Deck> {

@@ -68,11 +68,14 @@ fn the_deck_publishes_its_verbs_on_the_deck_and_on_each_slide() {
     let slides = deck(&app).slides;
     for slide in &slides {
         let item = actions::slide_resource_id(&slide.id);
+        for element in &slide.elements {
+            let item = actions::element_resource_id(&slide.id, &element.id);
+            for action in ["delete-element", "bring-to-front", "send-to-back"] {
+                assert!(row(&item, action).is_some(), "`{action}` is on {item}");
+            }
+        }
         for action in [
             "add-element",
-            "delete-element",
-            "bring-to-front",
-            "send-to-back",
             "move-slide",
             "duplicate-slide",
             "delete-slide",
@@ -265,8 +268,8 @@ fn delete_element_is_destructive_and_needs_confirmation() {
     let mut app = seeded();
     let slide = deck(&app).slides[1].clone();
     let target = slide.elements[0].id.clone();
-    let args = json!({ "element": target });
-    let item = actions::slide_resource_id(&slide.id);
+    let args = json!({});
+    let item = actions::element_resource_id(&slide.id, &target);
     assert!(matches!(
         app.call_on(&item, "delete-element", args.clone()),
         Err(DoorError::ConfirmationRequired)
@@ -434,9 +437,9 @@ fn an_agents_changes_read_as_sentences() {
     );
     call(
         &mut app,
-        &item,
+        &actions::element_resource_id(&slide, &title),
         "bring-to-front",
-        json!({ "element": title }),
+        json!({}),
     );
     call(
         &mut app,
@@ -476,7 +479,6 @@ fn an_agents_changes_read_as_sentences() {
 /// The deck's verbs answer their caller with the outline of the deck they
 /// left, so an agent sees what it changed without reading the deck again.
 #[test]
-#[ignore = "a verb cannot answer its caller yet: GAPS 2026-10-09 07:30 wp → core, `answer`"]
 fn deck_edits_answer_with_the_outline() {
     let mut app = seeded();
     for (resource, action, args) in [
@@ -499,7 +501,9 @@ fn deck_edits_answer_with_the_outline() {
         let answer = app.call_on(&resource, action, args).unwrap();
         let outline = crate::outline::of_deck(&deck(&app));
         assert_eq!(
-            answer.as_ref().and_then(Value::as_str),
+            answer
+                .as_ref()
+                .and_then(|answer| answer["outline"].as_str()),
             Some(outline.as_str()),
             "`{action}` answers with the outline"
         );

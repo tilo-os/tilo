@@ -2526,7 +2526,7 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "The element"
+description = "Element"
 type = "string"
 
 [[resources.verbs]]
@@ -2548,7 +2548,7 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "The element"
+description = "Element"
 type = "string"
 
 [[resources.verbs]]
@@ -2570,7 +2570,7 @@ name = "element"
 required = true
 
 [resources.verbs.params.schema]
-description = "The element"
+description = "Element"
 type = "string"
 
 [[resources.verbs]]

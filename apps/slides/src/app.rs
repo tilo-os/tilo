@@ -2614,8 +2614,7 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider,
-        dyn ui::resources::PublishesResources
+        dyn ui::widget::AudiencePresentationProvider
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -3226,26 +3225,6 @@ impl Widget for SlidesApp {
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
-    }
-}
-
-impl ui::resources::PublishesResources for SlidesApp {
-    /// The deck's edits answer their caller with the deck's outline, so an
-    /// agent sees what it changed without reading the deck again. The deck
-    /// itself is published by its resource; the editor publishes nothing
-    /// beside it.
-    fn document_action_result(
-        &self,
-        doc: &AutoCommit,
-        address: &tilo_actions::ActionAddress,
-        _changes: &[automerge::Patch],
-    ) -> Option<serde_json::Value> {
-        address
-            .resource
-            .as_str()
-            .starts_with("slides.")
-            .then(|| crate::outline::of_document(doc).map(serde_json::Value::String))
-            .flatten()
     }
 }
 

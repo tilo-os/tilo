@@ -367,6 +367,19 @@ mod tests {
             .filter_map(|row| row["resource"].as_str())
             .filter(|resource| resource.starts_with("slides.deck/slides/"))
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(items.len(), slides, "each slide is an item: {surface}");
+        let (elements, own): (Vec<&&str>, Vec<&&str>) = items
+            .iter()
+            .partition(|resource| resource.contains("/elements/"));
+        assert_eq!(own.len(), slides, "each slide is an item: {surface}");
+        let shown: usize = crate::deck::mirror(&app.state())
+            .slides
+            .iter()
+            .map(|slide| slide.elements.len())
+            .sum();
+        assert_eq!(
+            elements.len(),
+            shown,
+            "each element is an item of its slide"
+        );
     }
 }
