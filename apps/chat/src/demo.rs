@@ -522,8 +522,16 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
     for edit in edits(chat) {
         edit.apply_local(doc)?;
     }
-    doc.commit();
+    commit_genesis(doc);
     Ok(())
+}
+
+/// Commit what a brand-new chat starts with, named as its genesis.
+fn commit_genesis(doc: &mut AutoCommit) {
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+    );
 }
 
 /// `doc` with the record's genesis, when it holds no chat yet.
@@ -531,7 +539,7 @@ fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     use automerge::ReadDoc as _;
     if doc.get(automerge::ROOT, "workspaces")?.is_none() {
         <Chat as ui::tilo_resource::Resource>::initialize(doc)?;
-        doc.commit();
+        commit_genesis(doc);
     }
     Ok(())
 }

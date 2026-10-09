@@ -900,6 +900,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             &crate::effects::WordProcessorEffect::InsertTableHere {
                 rows: None,
                 columns: None,
+                at: None,
             },
         );
 
@@ -953,6 +954,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             &state.doc,
             &crate::effects::WordProcessorEffect::Align {
                 align: "center".into(),
+                at: None,
             },
         );
         assert_eq!(

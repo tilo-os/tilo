@@ -304,3 +304,107 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
         "the new row answers with the ids that fill it"
     );
 }
+
+/// The document's blocks as (kind, text, align), in order.
+fn blocks(app: &TestApp<WordProcessorApp>) -> Vec<(String, String, Option<String>)> {
+    app.read_document(|doc| {
+        let containers = word_processor::model::open(doc).unwrap();
+        let order = tilo_doc::model::region_blocks_in_order(
+            doc,
+            &containers,
+            tilo_doc::model::Region::Body,
+        );
+        tilo_doc::model::materialize_blocks(doc, &containers, &order)
+            .into_iter()
+            .map(|block| {
+                let align = match block.attrs.get("align") {
+                    Some(tilo_doc::AttrVal::Str(align)) => Some(align.clone()),
+                    _ => None,
+                };
+                (block.kind, block.text, align)
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("Launch plan");
+    app.harness().key("Enter");
+    app.harness().type_text("Book the venue for the offsite");
+    app.harness().relayout();
+
+    // The paragraphs are published by their first words, each naming its
+    // paragraph as an item of the document.
+    let resources = app.harness().resources();
+    let root = resources[0].id.as_str().to_owned();
+    let title = resources[0]
+        .children
+        .iter()
+        .find(|row| row.label == "Launch plan")
+        .expect("the title is published as a place");
+    assert_eq!(title.kind, "word-processor.document.paragraph");
+    let block = title
+        .id
+        .as_str()
+        .rsplit_once("/blocks/")
+        .map(|(_, block)| block.to_owned())
+        .unwrap();
+    let align = resources[0]
+        .actions
+        .iter()
+        .find(|action| action.id == "align")
+        .unwrap();
+    assert!(
+        align
+            .params()
+            .iter()
+            .any(tilo_actions::ActionParam::is_place),
+        "align is told where by a place"
+    );
+
+    let agent = tilo_actions::ActionInvoker::actor("scribe")
+        .with_participant(tilo_actions::ParticipantId::new("scribe-1").unwrap());
+    app.call_by(
+        agent.clone(),
+        &root,
+        "align",
+        serde_json::json!({"align": "center", "at": {"item": block}}),
+    )
+    .unwrap();
+    app.settle();
+    let after = blocks(&app);
+    assert_eq!(after[0].1, "Launch plan");
+    assert_eq!(after[0].2.as_deref(), Some("center"), "{after:?}");
+    assert_eq!(after[1].2, None, "only the named paragraph is aligned");
+
+    // It is left there: its next edit at its caret is beside the title,
+    // not at the end of the document where an agent starts.
+    app.call_by(agent, &root, "insert-table-here", serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    let after = blocks(&app);
+    assert_eq!(after[0].1, "Launch plan");
+    assert_ne!(
+        after[1].0, "paragraph",
+        "the table follows the title: {after:?}"
+    );
+    assert_eq!(
+        after.last().map(|block| block.1.as_str()),
+        Some("Book the venue for the offsite"),
+        "{after:?}"
+    );
+
+    // A place that is not in the document is refused, and nothing changes.
+    let before = blocks(&app);
+    assert!(
+        app.call(
+            "align",
+            serde_json::json!({"align": "right", "at": {"item": "no-such-paragraph"}}),
+        )
+        .is_err()
+    );
+    assert_eq!(blocks(&app), before);
+}

@@ -441,6 +441,7 @@ impl Document {
                     ),
             );
         }
+        objects.extend(Self::paragraph_places(state));
         for change in state.changes().iter().take(MAX_OBJECTS) {
             let label = match change.kind {
                 tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
@@ -461,6 +462,37 @@ impl Document {
             );
         }
         objects
+    }
+
+    /// The first paragraphs and headings, by their first words: the places
+    /// an edit is told to act at (`at: {"item": <paragraph>}`). Headings are
+    /// always read; a paragraph once it has been loaded.
+    fn paragraph_places(state: &tilo_document::RichTextState) -> Vec<Derived<Self>> {
+        let headings = state.featured("heading");
+        state
+            .body()
+            .ids(0..PLACED_PARAGRAPHS)
+            .filter_map(|id| {
+                state
+                    .block(id)
+                    .or_else(|| headings.iter().find(|heading| heading.id == id))
+            })
+            .filter(|block| matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item"))
+            .filter(|block| !block.text.trim().is_empty())
+            .map(|block| {
+                Derived::new(first_words(&block.text))
+                    .of_kind(if block.kind == "heading" {
+                        "heading"
+                    } else {
+                        "paragraph"
+                    })
+                    .identified(block.id.clone())
+                    .in_field("blocks")
+                    .with_effect(&crate::effects::WordProcessorEffect::SelectBlock {
+                        block: block.id.clone(),
+                    })
+            })
+            .collect()
     }
 
     /// Read the paragraphs a view shows, and only those.
@@ -875,6 +907,28 @@ pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: 
         },
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the reply is written");
+}
+
+/// How many of the document's first paragraphs are published as places an
+/// edit can be told to act at.
+pub const PLACED_PARAGRAPHS: usize = 128;
+
+/// The words a paragraph published as a place is labelled with.
+const LABEL_WORDS: usize = 8;
+
+/// `text`'s first words, as a paragraph published as a place is labelled.
+fn first_words(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut label = words
+        .iter()
+        .take(LABEL_WORDS)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if words.len() > LABEL_WORDS {
+        label.push('…');
+    }
+    label
 }
 
 #[cfg(test)]

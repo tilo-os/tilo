@@ -106,6 +106,45 @@ impl ParticipantView {
         Some(Self::at(ViewPoint::new(block, offset), RegionKind::Body))
     }
 
+    /// The view an edit told where to act (`at`) acts from: a paragraph
+    /// selected whole, a collapsed caret in it, or a range of it.
+    ///
+    /// # Errors
+    /// Returns why `place` is not in `doc`: its paragraph is gone, or an
+    /// offset lies past the paragraph's end.
+    pub fn at_place(doc: &AutoCommit, place: &ui::tilo_resource::Place) -> Result<Self, String> {
+        use ui::tilo_resource::Place;
+        let containers = crate::model::open(doc)?;
+        let block = place.item();
+        let region = [RegionKind::Body, RegionKind::Header, RegionKind::Footer]
+            .into_iter()
+            .find(|region| {
+                tilo_doc::model::region_blocks_in_order(doc, &containers, region.to_region())
+                    .iter()
+                    .any(|candidate| candidate == block)
+            })
+            .ok_or_else(|| format!("there is no paragraph {block} in the document"))?;
+        let chars = block_chars(doc, &containers, region, block);
+        let within = |offset: usize| {
+            if offset <= chars {
+                Ok(ViewPoint::new(block, offset))
+            } else {
+                Err(format!(
+                    "the paragraph is {chars} characters long; {offset} is past its end"
+                ))
+            }
+        };
+        let (anchor, caret) = match place {
+            Place::Item(_) => (Some(within(0)?), within(chars)?),
+            Place::Caret { at, .. } => (None, within(*at)?),
+            Place::Range { start, end, .. } => (Some(within(*start)?), within(*end)?),
+        };
+        Ok(Self {
+            anchor: anchor.filter(|anchor| *anchor != caret),
+            ..Self::at(caret, region)
+        })
+    }
+
     /// Rebuild the view a resource context was projected from. The context
     /// keeps the selection in document order, so the anchor is whichever end
     /// the caret is not on (the start when the caret is on neither). Find

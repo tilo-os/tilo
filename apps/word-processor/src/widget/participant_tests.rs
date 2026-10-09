@@ -90,10 +90,13 @@ fn two_participants_keep_independent_views_and_trees() {
                 .unwrap(),
             None => wp.local_edit_view(),
         };
-        crate::effects::WordProcessorEffect::ReplaceSelection { text: "x".into() }
-            .edit(&view, &state.doc, wp.model().content_store())
-            .unwrap()
-            .is_ok()
+        crate::effects::WordProcessorEffect::ReplaceSelection {
+            text: "x".into(),
+            at: None,
+        }
+        .edit(&view, &state.doc, wp.model().content_store())
+        .unwrap()
+        .is_ok()
     };
     assert!(replaces(Some(&agent)));
     assert!(!replaces(Some(&other)));
@@ -126,7 +129,10 @@ fn participant_edits_match_the_pure_projection_of_its_view() {
     let view = selecting(&ids[1], 1, 4);
     wp.set_participant_view(&agent, &view, &state.doc);
     let resolved = wp.participant_view_or_default(&agent, &state.doc).unwrap();
-    let effect = crate::effects::WordProcessorEffect::ReplaceSelection { text: "X".into() };
+    let effect = crate::effects::WordProcessorEffect::ReplaceSelection {
+        text: "X".into(),
+        at: None,
+    };
     let expected = crate::actions::editing::replace_selection(&view, &state.doc, "X").unwrap();
     let actual = effect
         .edit(&resolved, &state.doc, wp.model().content_store())
@@ -704,13 +710,20 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
         effect.edit(&view, &state.doc, &store).unwrap()
     };
     assert!(
-        edit(crate::effects::WordProcessorEffect::ReplaceSelection { text: "X".into() }).is_err(),
+        edit(crate::effects::WordProcessorEffect::ReplaceSelection {
+            text: "X".into(),
+            at: None,
+        })
+        .is_err(),
         "a collapsed participant has no selection to replace"
     );
     assert_eq!(
-        edit(crate::effects::WordProcessorEffect::TypeText { text: "X".into() })
-            .unwrap()
-            .0,
+        edit(crate::effects::WordProcessorEffect::TypeText {
+            text: "X".into(),
+            at: None,
+        })
+        .unwrap()
+        .0,
         [crate::actions::splice_text_action(
             RegionKind::Body,
             &ids[1],
@@ -731,6 +744,7 @@ fn a_participantless_invocation_builds_at_the_windows_own_view() {
     let (table, _) = crate::effects::WordProcessorEffect::InsertTableHere {
         rows: None,
         columns: None,
+        at: None,
     }
     .edit(&view, &state.doc, wp.model().content_store())
     .unwrap()

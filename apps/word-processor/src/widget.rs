@@ -1682,15 +1682,26 @@ impl WordProcessorWidget {
             None => return Some(Err("the document is not at hand".into())),
         };
         let participant = ui::invocation_scope::current_participant();
-        let view = match &participant {
-            Some(participant) => match self.participant_view_or_default(participant, &doc) {
-                Some(view) => view,
-                None => return Some(Err("the document has no body to place a caret in".into())),
-            },
-            None => self.local_edit_view(),
+        // Told where to act, it acts there; else at the invoker's caret.
+        let view = match (cx.place(), &participant) {
+            (Some(place), _) => {
+                match crate::actions::participant::ParticipantView::at_place(&doc, place) {
+                    Ok(view) => view,
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+            (None, Some(participant)) => {
+                match self.participant_view_or_default(participant, &doc) {
+                    Some(view) => view,
+                    None => {
+                        return Some(Err("the document has no body to place a caret in".into()));
+                    }
+                }
+            }
+            (None, None) => self.local_edit_view(),
         };
         let dispatch = cx.dispatcher();
-        if let WordProcessorEffect::CommentSelection { text } = effect {
+        if let WordProcessorEffect::CommentSelection { text, .. } = effect {
             return Some(
                 crate::actions::editing::comment_range(&view, &doc)
                     .map(|range| {
@@ -1897,11 +1908,7 @@ impl WordProcessorWidget {
         state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::RichTextAction,
     ) -> bool {
-        let done = self.try_perform_document(
-            state,
-            &crate::model::action(action),
-            tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer"),
-        );
+        let done = self.try_perform_document(state, &crate::model::action(action));
         #[cfg(test)]
         if done {
             self.last_dispatched = Some(action.clone());
@@ -1927,15 +1934,15 @@ impl WordProcessorWidget {
         operation: crate::model::DocumentAction,
         author: Option<&str>,
     ) -> bool {
-        let mut context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer");
-        if let Some(author) = author {
-            context = context.with_invoker(tilo_actions::ActionInvoker::actor(author));
-        }
+        // A staged collaborator's verb is theirs in history.
+        let _author = author.map(|author| {
+            ui::invocation_scope::InvokerScope::enter(tilo_actions::ActionInvoker::actor(author))
+        });
         let action = ui::tilo_resource::Stamped {
             operation,
             now_ms: ui::tilo_resource::origin_now_ms(),
         };
-        self.try_perform_document(state, &action, context)
+        self.try_perform_document(state, &action)
     }
 
     /// Submit one action of the document now. `false` when the host
@@ -1945,12 +1952,11 @@ impl WordProcessorWidget {
         &mut self,
         state: &mut ui::widget::Edits<'_>,
         action: &<crate::model::Document as ui::tilo_resource::Resource>::Action,
-        context: tilo_actions::ActionContext,
     ) -> bool {
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
-        match dispatch.apply_now_with(state, action, context) {
+        match dispatch.apply_now(state, action) {
             Ok(()) => true,
             Err(error) => {
                 if self.read_only() {
@@ -2759,14 +2765,11 @@ impl WordProcessorWidget {
         let Some(dispatch) = self.dispatch.clone() else {
             return Err("this view edits nothing".into());
         };
+        // Each edit is the participant's in history.
+        let _invoker = ui::invocation_scope::InvokerScope::enter(invoker.clone());
         for action in &envelopes {
             dispatch
-                .apply_now_with(
-                    state,
-                    &crate::model::action(action),
-                    tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer")
-                        .with_invoker(invoker.clone()),
-                )
+                .apply_now(state, &crate::model::action(action))
                 .map_err(|error| error.to_string())?;
         }
         self.set_participant_view(&participant, &view, state);

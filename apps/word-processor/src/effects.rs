@@ -4,7 +4,7 @@
 //! button, the palette, an agent and a script reach the same handler (the
 //! editor's `ResourceSurface::effect`).
 
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, Effect, Place};
 
 use crate::actions::editing::{
     self, DeleteDirection, EditResult, EditingError, InlineMark, ParagraphStyle, PasteContent,
@@ -136,6 +136,11 @@ pub enum WordProcessorEffect {
             "Text typed at the caret, replacing the selection (empty only erases a selection)"
         )]
         text: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// New paragraph.
     ///
@@ -164,6 +169,11 @@ pub enum WordProcessorEffect {
     ToggleMark {
         #[param("The inline mark to toggle", choices = TOGGLED_MARKS)]
         mark: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Set text format.
     ///
@@ -177,6 +187,11 @@ pub enum WordProcessorEffect {
         on: Option<bool>,
         #[param("font: sans|serif|mono; size: points 6-200; color/highlight: #rrggbb")]
         value: Option<String>,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Clear text format.
     ///
@@ -185,6 +200,11 @@ pub enum WordProcessorEffect {
     ClearFormat {
         #[param("The inline mark to remove", choices = FORMATS)]
         name: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Set paragraph style.
     ///
@@ -198,6 +218,11 @@ pub enum WordProcessorEffect {
         level: Option<i64>,
         #[param("Numbered (true) or bulleted (false) list")]
         ordered: Option<bool>,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Apply style.
     ///
@@ -207,6 +232,11 @@ pub enum WordProcessorEffect {
     ApplyNamedStyle {
         #[param("Named style id")]
         style: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Paste.
     ///
@@ -218,12 +248,22 @@ pub enum WordProcessorEffect {
         text: Option<String>,
         #[param("Markdown pasted with its formatting")]
         markdown: Option<String>,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Align paragraph.
     #[effect(edit, participant)]
     Align {
         #[param("How the caret paragraph lines up", choices = ["left", "center", "right", "justify"])]
         align: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Insert table here.
     ///
@@ -234,10 +274,21 @@ pub enum WordProcessorEffect {
         rows: Option<usize>,
         #[param("Columns (default 2)")]
         columns: Option<usize>,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Insert page break.
     #[effect(edit, participant)]
-    InsertPageBreak,
+    InsertPageBreak {
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
+    },
     /// Add or change hyperlink.
     ///
     /// Links your selected text.
@@ -253,6 +304,11 @@ pub enum WordProcessorEffect {
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
         text: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Comment on selection.
     ///
@@ -261,6 +317,11 @@ pub enum WordProcessorEffect {
     CommentSelection {
         #[param("The comment")]
         text: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Place image.
     ///
@@ -269,6 +330,11 @@ pub enum WordProcessorEffect {
     PlaceImage {
         #[param("The image's content hash")]
         content: String,
+        #[param(
+            "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
+            place = "blocks"
+        )]
+        at: Option<Place>,
     },
     /// Go to.
     ///
@@ -403,7 +469,7 @@ impl WordProcessorEffect {
             }
         };
         Some(match self {
-            Self::TypeText { text } => large().and_then(|()| within_limits(text)).and_then(|()| {
+            Self::TypeText { text, .. } => large().and_then(|()| within_limits(text)).and_then(|()| {
                 if text.is_empty() && view.selection(doc).is_none() {
                     return Err(EditingError::Invalid(
                         "text must be non-empty without a selection".into(),
@@ -439,7 +505,7 @@ impl WordProcessorEffect {
                 }
                 editing::delete(view, doc, direction, count)
             }),
-            Self::ToggleMark { mark } => match InlineMark::from_name(mark) {
+            Self::ToggleMark { mark, .. } => match InlineMark::from_name(mark) {
                 Some(mark) => editing::toggle_mark(view, doc, mark).and_then(|outcome| {
                     if outcome.0.is_empty() {
                         Err(EditingError::NeedsSelection)
@@ -449,14 +515,14 @@ impl WordProcessorEffect {
                 }),
                 None => Err(EditingError::Invalid("unknown mark".into())),
             },
-            Self::SetFormat { name, on, value } => {
+            Self::SetFormat { name, on, value, .. } => {
                 editing::set_format(view, doc, name, *on, value.as_deref())
             }
-            Self::ClearFormat { name } => editing::clear_format(view, doc, name),
+            Self::ClearFormat { name, .. } => editing::clear_format(view, doc, name),
             Self::SetParagraphStyle {
                 kind,
                 level,
-                ordered,
+                ordered, ..
             } => {
                 if !matches!(kind.as_str(), "paragraph" | "heading" | "list_item") {
                     Err(EditingError::Invalid(
@@ -476,7 +542,7 @@ impl WordProcessorEffect {
                     )
                 }
             }
-            Self::ApplyNamedStyle { style } => {
+            Self::ApplyNamedStyle { style, .. } => {
                 let safe = !style.is_empty()
                     && style.len() <= 128
                     && style
@@ -488,7 +554,7 @@ impl WordProcessorEffect {
                     Err(EditingError::Invalid("style is a style id".into()))
                 }
             }
-            Self::Paste { text, markdown } => large().and_then(|()| {
+            Self::Paste { text, markdown, .. } => large().and_then(|()| {
                 let pasted = match (text, markdown) {
                     (Some(text), None) => PasteContent::Text(text.clone()),
                     (None, Some(markdown)) => PasteContent::Markdown(markdown.clone()),
@@ -504,16 +570,16 @@ impl WordProcessorEffect {
                 }
                 editing::paste(view, doc, &pasted)
             }),
-            Self::Align { align } => editing::align(view, doc, align),
-            Self::InsertTableHere { rows, columns } => {
+            Self::Align { align, .. } => editing::align(view, doc, align),
+            Self::InsertTableHere { rows, columns, .. } => {
                 editing::insert_table_here(view, doc, rows.unwrap_or(2), columns.unwrap_or(2))
             }
-            Self::InsertPageBreak => editing::insert_page_break(view, doc),
+            Self::InsertPageBreak { .. } => editing::insert_page_break(view, doc),
             Self::SetHyperlink { target } => editing::set_hyperlink(view, doc, target),
-            Self::ReplaceSelection { text } => large()
+            Self::ReplaceSelection { text, .. } => large()
                 .and_then(|()| within_limits(text))
                 .and_then(|()| editing::replace_selection(view, doc, text)),
-            Self::PlaceImage { content: hash } => editing::place_image(view, doc, content, hash),
+            Self::PlaceImage { content: hash, .. } => editing::place_image(view, doc, content, hash),
             _ => return None,
         })
     }
