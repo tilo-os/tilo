@@ -716,3 +716,92 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
         })
         .await;
 }
+
+/// Wall time of one certified open + provider listing and of one certified
+/// open + eager invocation admission, at workspace histories of 0, 1,000
+/// and 10,000 effect receipts. Prints the numbers (`--nocapture`); the
+/// counting tests are the regression guard.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_open_list_and_invoke_cost() {
+    const LISTINGS: u32 = 100;
+    const INVOKES: u32 = 20;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for receipts in [0_u128, 1_000, 10_000] {
+                let env = Environment::new();
+                {
+                    let mut tree = env.membership.write();
+                    let workspace = &mut tree.workspaces[0];
+                    for n in 0..receipts {
+                        let mut context = tilo_actions::ActionContext::default();
+                        context.action_label = format!("Succeeded · Rename document {n}");
+                        workspace.effect_receipts.push(
+                            tilo_desktop_model::WorkspaceEffectReceipt {
+                                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
+                                    n | (1 << 100),
+                                )),
+                                actor: "person".into(),
+                                context,
+                                status: tilo_actions::EffectReceiptStatus::Succeeded,
+                                completed_at: 1,
+                            },
+                        );
+                    }
+                }
+                let rig = Rig::new(&env).await;
+                let row = directory_state("original-r1").borrow().row();
+                rig.worker
+                    .handle
+                    .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                    .await
+                    .unwrap();
+                let (caller, evidence) = local_host_evidence(&env);
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let mut listing = Duration::ZERO;
+                for round in 0..=LISTINGS {
+                    let caller = caller.clone().in_new_execution();
+                    let started = std::time::Instant::now();
+                    let host = facade
+                        .certified_local_action_host(&caller, &evidence)
+                        .unwrap();
+                    let page = local_host_answer(host.query(
+                        &caller,
+                        tilo_actions::remote::CatalogueQuery {
+                            max_results: 0,
+                            ..tilo_actions::remote::CatalogueQuery::default()
+                        },
+                    ))
+                    .await
+                    .unwrap();
+                    // The first round warms caches and is not counted.
+                    if round > 0 {
+                        listing += started.elapsed();
+                    }
+                    assert!(!page.revision.is_empty());
+                }
+                let mut invoking = Duration::ZERO;
+                for _ in 0..INVOKES {
+                    let caller = caller.clone().in_new_execution();
+                    let request = local_host_request(false);
+                    let started = std::time::Instant::now();
+                    let host = facade
+                        .certified_local_action_host(&caller, &evidence)
+                        .unwrap();
+                    let pending = host.invoke(&caller, request.clone());
+                    invoking += started.elapsed();
+                    let receipt = local_host_answer(pending).await.unwrap();
+                    assert_eq!(receipt.invocation, request.invocation);
+                    let _lease = local_host_lease(&rig, &caller, request.invocation).await;
+                }
+                eprintln!(
+                    "TIL-593 certified local host, {receipts} receipts: open+list {:?}/call, \
+                     open+invoke admission {:?}/call",
+                    listing / LISTINGS,
+                    invoking / INVOKES,
+                );
+                rig.stop().await;
+            }
+        })
+        .await;
+}
