@@ -41,7 +41,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/tool_intents.rs", "tool request is too large"),
     ("shell/tool_intents.rs", "unsupported tool protocol"),
     // Secret Service / Keychain item label, not shell UI copy.
-    ("shell/collab_mls_authority.rs", "Tilo MLS key"),
+    ("shell/mls_vault.rs", "Tilo MLS key"),
 ];
 
 #[test]
