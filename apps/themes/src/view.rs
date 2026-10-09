@@ -1,13 +1,15 @@
 //! The studio window: your themes in the sidebar, the presets as rendered
 //! previews, and an editor for one theme with its contrast findings live.
 //!
-//! Every value a control shows is read from the resource and every edit is
-//! a [`Studio`] action. Applying and exporting are effects on this machine
+//! Every control is bound to the role it shows, by its path in the
+//! [`Studio`]; switching polarity, resetting and deleting are the studio's
+//! verbs. Applying and exporting are effects on this machine
 //! ([`crate::apply`]) and refuse a theme that misses a contrast floor.
 
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
-use ui::tokens::Emphasis;
+use ui::tilo_actions::ActionBinding;
+use ui::tilo_resource::Path;
 use ui::widget::{ButtonRole, Field, Form, FormSection};
 
 use crate::preview::ThemePreview;
@@ -250,48 +252,67 @@ fn preset_card(ui: &Ui, preset: Preset) -> Element {
 
 // ---------------------------------------------------------------- editor
 
-/// A slider over `band` for one numeric role of the theme `id`.
-fn slider<A: ui::tilo_resource::Params + From<(Id, f64)>>(
-    cx: &ViewCx<Studio>,
-    id: &Id,
-    band: (f64, f64),
-    read: impl Fn(&Theme) -> f64 + 'static,
-    action: ui::tilo_resource::ActionRef<Studio, A>,
-) -> Slider {
+/// A slider over `band` bound to the numeric role at `path`.
+fn slider(cx: &ViewCx<Studio>, id: &Id, band: (f64, f64), path: Path<Studio, f64>) -> Slider {
     let (lo, hi) = band;
-    let span = (hi - lo).max(f64::EPSILON);
-    let key = id.clone();
-    let target = id.clone();
-    cx.control_with(
-        Slider::from_state,
-        move |studio: &Studio| {
-            studio
-                .themes
-                .get(&key)
-                .map_or(0.0, |theme| ((read(theme) - lo) / span).clamp(0.0, 1.0))
-        },
-        action.map(move |norm: f64| (target.clone(), lo + norm * span)),
-    )
-    .with_id(&format!("{}-{}", band_id(lo, hi), id.as_str()))
+    cx.control(|state| Slider::from_state(state).range(lo, hi), path)
+        .with_id(&format!("{}-{}", band_id(lo, hi), id.as_str()))
 }
 
 fn band_id(lo: f64, hi: f64) -> String {
     format!("slider-{lo}-{hi}")
 }
 
+/// The binding of a control with input `I` that sets the field at `path`
+/// to what `value` makes of the input: a slider over an optional hue, a
+/// choice between two values of a field.
+fn set_binding<T, I>(
+    cx: &ViewCx<Studio>,
+    path: Path<Studio, T>,
+    value: impl Fn(I) -> T + Send + Sync + 'static,
+) -> Option<ActionBinding<I>>
+where
+    T: ui::tilo_resource::Settable + 'static,
+    I: 'static,
+{
+    cx.actions()
+        .edit_binding(path.cast::<I>(), move |path, input| {
+            path.clone().cast::<T>().set(value(input))
+        })
+}
+
+fn bound<I, C: ActionControl<I>>(control: C, binding: Option<ActionBinding<I>>) -> C {
+    match binding {
+        Some(binding) => control.bind_action(binding),
+        None => control.unavailable(),
+    }
+}
+
+/// A slider over `band` for an optional hue at `path`: moving it gives the
+/// theme that hue.
+fn hue_slider(
+    cx: &ViewCx<Studio>,
+    id: &Id,
+    band: (f64, f64),
+    path: Path<Studio, Option<f64>>,
+    absent: f64,
+) -> Slider {
+    let (lo, hi) = band;
+    let read = path.clone();
+    let state =
+        cx.value(move |studio: &Studio| read.get(studio).copied().flatten().unwrap_or(absent));
+    bound(
+        Slider::from_state(&state).range(lo, hi),
+        set_binding(cx, path, Some),
+    )
+    .with_id(&format!("{}-{}", band_id(lo, hi), id.as_str()))
+}
+
 fn rung_slider(cx: &ViewCx<Studio>, id: &Id, rung: Rung) -> Slider {
-    let key = id.clone();
-    let target = id.clone();
-    cx.control_with(
-        Slider::from_state,
-        move |studio: &Studio| {
-            studio
-                .themes
-                .get(&key)
-                .map_or(0.0, |theme| f64::from(rung.of(&theme.palette.0)))
-        },
-        Studio::SET_LIGHTNESS
-            .map(move |lightness: f64| (target.clone(), rung.id().to_owned(), lightness)),
+    let theme = Studio::paths().themes.item(id);
+    cx.control(
+        |state| Slider::from_state(state).range(0.0, 1.0),
+        rung.path(&theme),
     )
     .with_id(&format!("lightness-{}", rung.id()))
 }
@@ -310,23 +331,50 @@ fn rung_label(rung: Rung) -> &'static str {
     }
 }
 
-fn choice<A: ui::tilo_resource::Params + From<(Id, bool)>>(
+/// A choice between two values of the field at `path`: the first option
+/// is `on`, the second `off`.
+fn choice<T>(
     cx: &ViewCx<Studio>,
-    id: &Id,
     options: [&'static str; 2],
-    read: impl Fn(&Theme) -> bool + 'static,
-    action: ui::tilo_resource::ActionRef<Studio, A>,
-) -> Dropdown {
+    path: Path<Studio, T>,
+    [on, off]: [T; 2],
+) -> Dropdown
+where
+    T: ui::tilo_resource::Settable + PartialEq + Clone + Send + Sync + 'static,
+{
+    let [first, second] = options;
+    let read = path.clone();
+    let shown = on.clone();
+    let state = cx.value(move |studio: &Studio| {
+        String::from(if read.get(studio) == Some(&shown) {
+            first
+        } else {
+            second
+        })
+    });
+    bound(
+        Dropdown::from_state(vec![first.to_owned(), second.to_owned()], &state),
+        set_binding(cx, path, move |picked: String| {
+            if picked == first {
+                on.clone()
+            } else {
+                off.clone()
+            }
+        }),
+    )
+}
+
+/// Dark or light: switching flips the ladder, so it is the studio's verb.
+fn polarity(cx: &ViewCx<Studio>, id: &Id) -> Dropdown {
     let key = id.clone();
     let target = id.clone();
-    let [first, second] = options;
     cx.control_with(
-        |state| Dropdown::from_state(vec![first.to_owned(), second.to_owned()], state),
+        |state| Dropdown::from_state(vec!["Dark".to_owned(), "Light".to_owned()], state),
         move |studio: &Studio| {
-            let on = studio.themes.get(&key).is_some_and(&read);
-            String::from(if on { first } else { second })
+            let dark = studio.themes.get(&key).is_some_and(|theme| theme.dark);
+            String::from(if dark { "Dark" } else { "Light" })
         },
-        action.map(move |picked: String| (target.clone(), picked == first)),
+        Studio::SWITCH_POLARITY.map(move |picked: String| (target.clone(), picked == "Dark")),
     )
 }
 
@@ -421,7 +469,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                     .role(ButtonRole::Plain)
                     .on_view(move || {
                         ui.dispatcher
-                            .invoke(Studio::RESET.with(Id::from_raw(raw.clone())));
+                            .submit(Studio::RESET.with(Id::from_raw(raw.clone())));
                     })
             };
             let delete = {
@@ -431,7 +479,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                     .role(ButtonRole::Destructive)
                     .on_view(move || {
                         ui.dispatcher
-                            .invoke(Studio::DELETE.with(Id::from_raw(raw.clone())));
+                            .submit(Studio::DELETE.with(Id::from_raw(raw.clone())));
                         ui.open(Page::Gallery);
                     })
             };
@@ -444,80 +492,29 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
         })
     };
 
-    let name = {
-        let key = id.clone();
-        let target = id.clone();
-        cx.input_with(
-            move |studio: &Studio| {
-                studio
-                    .themes
-                    .get(&key)
-                    .map(|theme| theme.name.clone())
-                    .unwrap_or_default()
-            },
-            Studio::RENAME.map(move |name: String| (target.clone(), name)),
-        )
-        .with_id("theme-name")
-    };
+    let theme = Studio::paths().themes.item(&id);
+    let name = cx.input(theme.name.clone()).with_id("theme-name");
 
     let mut ladder = FormSection::new("themes-ladder");
     for rung in Rung::SURFACES.into_iter().chain(Rung::INK) {
         ladder = ladder.field(Field::new(rung_label(rung), rung_slider(cx, &id, rung)));
     }
 
-    let face = {
-        let key = id.clone();
-        let target = id.clone();
-        cx.input_with(
-            move |studio: &Studio| {
-                studio
-                    .themes
-                    .get(&key)
-                    .map(|theme| theme.face.clone())
-                    .unwrap_or_default()
-            },
-            Studio::SET_FACE.map(move |face: String| (target.clone(), face)),
-        )
-        .with_id("theme-face")
-    };
+    let face = cx.input(theme.face.clone()).with_id("theme-face");
 
     let form = Form::new()
         .section(FormSection::new("themes-name").field(Field::new("themes-name-label", name)))
         .section(
             FormSection::new("themes-palette")
-                .field(
-                    Field::new(
-                        "themes-polarity",
-                        choice(
-                            cx,
-                            &id,
-                            ["Dark", "Light"],
-                            |theme| theme.palette.0.dark,
-                            Studio::SET_DARK,
-                        ),
-                    )
-                    .with_trailing_control(),
-                )
+                .field(Field::new("themes-polarity", polarity(cx, &id)).with_trailing_control())
                 .field(Field::new(
                     "themes-hue",
-                    slider(
-                        cx,
-                        &id,
-                        (0.0, 360.0),
-                        |theme| f64::from(theme.palette.0.hue.unwrap_or_default()),
-                        Studio::SET_HUE,
-                    ),
+                    hue_slider(cx, &id, (0.0, 360.0), theme.hue.clone(), 0.0),
                 ))
                 .field(
                     Field::new(
                         "themes-chroma",
-                        slider(
-                            cx,
-                            &id,
-                            (0.0, 0.010),
-                            |theme| f64::from(theme.palette.0.chroma),
-                            Studio::SET_CHROMA,
-                        ),
+                        slider(cx, &id, (0.0, 0.010), theme.chroma.clone()),
                     )
                     .with_help("themes-chroma-help"),
                 ),
@@ -530,26 +527,16 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         "themes-emphasis-kind",
                         choice(
                             cx,
-                            &id,
                             ["Tinted", "Inverted"],
-                            |theme| matches!(theme.emphasis.0, Emphasis::Tinted { .. }),
-                            Studio::SET_TINTED,
+                            theme.tint.clone(),
+                            [Some(150.0), None],
                         ),
                     )
                     .with_trailing_control(),
                 )
                 .field(Field::new(
                     "themes-tint",
-                    slider(
-                        cx,
-                        &id,
-                        (0.0, 360.0),
-                        |theme| match theme.emphasis.0 {
-                            Emphasis::Tinted { hue } => f64::from(hue),
-                            Emphasis::Inverted => 150.0,
-                        },
-                        Studio::SET_TINT_HUE,
-                    ),
+                    hue_slider(cx, &id, (0.0, 360.0), theme.tint.clone(), 150.0),
                 )),
         )
         .section(
@@ -557,46 +544,22 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 .content(Box::new(presence))
                 .field(Field::new(
                     "themes-presence-lightness",
-                    slider(
-                        cx,
-                        &id,
-                        (0.35, 0.90),
-                        |theme| f64::from(theme.presence.0.lightness),
-                        Studio::SET_PRESENCE_LIGHTNESS,
-                    ),
+                    slider(cx, &id, (0.35, 0.90), theme.presence.lightness.clone()),
                 ))
                 .field(Field::new(
                     "themes-presence-chroma",
-                    slider(
-                        cx,
-                        &id,
-                        (0.04, 0.20),
-                        |theme| f64::from(theme.presence.0.chroma),
-                        Studio::SET_PRESENCE_CHROMA,
-                    ),
+                    slider(cx, &id, (0.04, 0.20), theme.presence.chroma.clone()),
                 )),
         )
         .section(
             FormSection::new("themes-shape-density")
                 .field(Field::new(
                     "themes-radius",
-                    slider(
-                        cx,
-                        &id,
-                        (0.0, 28.0),
-                        |theme| f64::from(theme.window_radius),
-                        Studio::SET_WINDOW_RADIUS,
-                    ),
+                    slider(cx, &id, (0.0, 28.0), theme.window_radius.clone()),
                 ))
                 .field(Field::new(
                     "themes-density",
-                    slider(
-                        cx,
-                        &id,
-                        (0.75, 1.5),
-                        |theme| f64::from(theme.density),
-                        Studio::SET_DENSITY,
-                    ),
+                    slider(cx, &id, (0.75, 1.5), theme.density.clone()),
                 )),
         )
         .section(
@@ -604,23 +567,16 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 .field(Field::new("themes-face", face).with_help("themes-face-help"))
                 .field(Field::new(
                     "themes-size",
-                    slider(
-                        cx,
-                        &id,
-                        (12.0, 18.0),
-                        |theme| f64::from(theme.base_size),
-                        Studio::SET_BASE_SIZE,
-                    ),
+                    slider(cx, &id, (12.0, 18.0), theme.base_size.clone()),
                 ))
                 .field(
                     Field::new(
                         "themes-distinct-letters",
                         choice(
                             cx,
-                            &id,
                             ["Always", "With the typeface"],
-                            |theme| theme.distinct_letters.0 == Some(true),
-                            Studio::SET_DISTINCT_LETTERS,
+                            theme.distinct_letters.clone(),
+                            [Some(true), None],
                         ),
                     )
                     .with_help("themes-distinct-letters-help")
@@ -631,33 +587,15 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
             FormSection::new("themes-motion-material")
                 .field(Field::new(
                     "themes-motion",
-                    slider(
-                        cx,
-                        &id,
-                        (0.0, 2.0),
-                        |theme| f64::from(theme.motion),
-                        Studio::SET_MOTION,
-                    ),
+                    slider(cx, &id, (0.0, 2.0), theme.motion.clone()),
                 ))
                 .field(Field::new(
                     "themes-blur",
-                    slider(
-                        cx,
-                        &id,
-                        (0.0, 48.0),
-                        |theme| f64::from(theme.blur),
-                        Studio::SET_BLUR,
-                    ),
+                    slider(cx, &id, (0.0, 48.0), theme.blur.clone()),
                 ))
                 .field(Field::new(
                     "themes-tint-opacity",
-                    slider(
-                        cx,
-                        &id,
-                        (0.6, 1.0),
-                        |theme| f64::from(theme.tint_opacity),
-                        Studio::SET_TINT_OPACITY,
-                    ),
+                    slider(cx, &id, (0.6, 1.0), theme.tint_opacity),
                 )),
         );
 

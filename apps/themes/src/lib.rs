@@ -81,25 +81,25 @@ impl ResourceApp for App {
     /// `tinted` gives it a tinted emphasis and a rounder, roomier shape;
     /// `illegible` lifts its tertiary ink until it misses its floor.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Studio>> {
-        let theme = || Id::from_raw(SCENARIO_THEME);
+        let theme = Studio::paths().themes.item(&Id::from_raw(SCENARIO_THEME));
         let start = Studio::NEW_THEME.with((SCENARIO_THEME.to_owned(), "dark-graphite".to_owned()));
-        let rename = Studio::RENAME.with((theme(), String::from("Ember")));
-        match name {
-            Some("editor") => vec![start, rename],
+        let edits = match name {
+            Some("editor") => vec![theme.name.replace("Ember")],
             Some("tinted") => vec![
-                start,
-                rename,
-                Studio::SET_TINT_HUE.with((theme(), 40.0)),
-                Studio::SET_WINDOW_RADIUS.with((theme(), 22.0)),
-                Studio::SET_DENSITY.with((theme(), 1.2)),
+                theme.name.replace("Ember"),
+                theme.tint.set(Some(40.0)),
+                theme.window_radius.set(22.0),
+                theme.density.set(1.2),
             ],
             Some("illegible") => vec![
-                start,
-                rename,
-                Studio::SET_LIGHTNESS.with((theme(), String::from("tertiary"), 0.42)),
+                theme.name.replace("Ember"),
+                studio::Rung::Tertiary.path(&theme).set(0.42),
             ],
-            _ => Vec::new(),
-        }
+            _ => return Vec::new(),
+        };
+        std::iter::once(start)
+            .chain(edits.iter().filter_map(|edit| Invoke::edit(edit).ok()))
+            .collect()
     }
 }
 

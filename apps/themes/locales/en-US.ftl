@@ -48,3 +48,43 @@ themes-blur = Blur behind menus
 themes-tint-opacity = Menu opacity
 
 themes-reset = Reset
+
+## History
+
+themes-theme-name = Renamed { $item }
+themes-theme-high-contrast = { $new ->
+    [true] Made { $item } high contrast
+   *[false] Made { $item } standard contrast
+}
+themes-theme-hue = Set the neutral hue of { $item } to { $new }°
+themes-theme-chroma = Set the neutral chroma of { $item } to { $new }
+themes-surfaces-base = Set the desktop lightness of { $item } to { $new }
+themes-surfaces-content = Set the window lightness of { $item } to { $new }
+themes-surfaces-sidebar = Set the sidebar lightness of { $item } to { $new }
+themes-surfaces-inspector = Set the inspector lightness of { $item } to { $new }
+themes-surfaces-raised = Set the raised lightness of { $item } to { $new }
+themes-surfaces-overlay = Set the floating chrome lightness of { $item } to { $new }
+themes-ink-primary = Set the primary ink of { $item } to { $new }
+themes-ink-secondary = Set the secondary ink of { $item } to { $new }
+themes-ink-tertiary = Set the tertiary ink of { $item } to { $new }
+themes-theme-tint = Tinted { $item } with hue { $new }°
+themes-presence-lightness = Set the presence lightness of { $item } to { $new }
+themes-presence-chroma = Set the presence chroma of { $item } to { $new }
+themes-theme-window-radius = Set the window radius of { $item } to { $new } px
+themes-theme-density = Set the density of { $item } to { $new }
+themes-theme-face = Changed the typeface of { $item }
+themes-theme-base-size = Set the body size of { $item } to { $new } px
+themes-theme-distinct-letters = { $new ->
+    [true] { $item } always tells similar letters apart
+   *[other] { $item } leaves similar letters to the typeface
+}
+themes-theme-motion = Set the motion of { $item } to { $new }
+themes-theme-blur = Set the blur of { $item } to { $new } px
+themes-theme-tint-opacity = Set the tint opacity of { $item } to { $new }
+themes-new-theme = Started a theme from { $base }
+themes-reset = Reset { $item } to the graphite preset
+themes-delete = Deleted { $item }
+themes-switch-polarity = { $dark ->
+    [true] Made { $item } dark
+   *[false] Made { $item } light
+}

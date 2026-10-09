@@ -15706,6 +15706,7 @@ dependencies = [
  "runtime-dylib",
  "serde_json",
  "tilo-app",
+ "tilo-history",
  "uuid",
  "workspace-hack",
 ]

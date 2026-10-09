@@ -33,6 +33,9 @@ pub mod keys {
     pub const THEMES_FACE_HELP: LabelKey = LabelKey::new("themes-face-help");
     pub const THEMES_GALLERY: LabelKey = LabelKey::new("themes-gallery");
     pub const THEMES_HUE: LabelKey = LabelKey::new("themes-hue");
+    pub const THEMES_INK_PRIMARY: LabelKey = LabelKey::new("themes-ink-primary");
+    pub const THEMES_INK_SECONDARY: LabelKey = LabelKey::new("themes-ink-secondary");
+    pub const THEMES_INK_TERTIARY: LabelKey = LabelKey::new("themes-ink-tertiary");
     pub const THEMES_LADDER: LabelKey = LabelKey::new("themes-ladder");
     pub const THEMES_MISSING: LabelKey = LabelKey::new("themes-missing");
     pub const THEMES_MOTION: LabelKey = LabelKey::new("themes-motion");
@@ -40,6 +43,7 @@ pub mod keys {
     pub const THEMES_NAME: LabelKey = LabelKey::new("themes-name");
     pub const THEMES_NAME_LABEL: LabelKey = LabelKey::new("themes-name-label");
     pub const THEMES_NEW: LabelKey = LabelKey::new("themes-new");
+    pub const THEMES_NEW_THEME: LabelKey = LabelKey::new("themes-new-theme");
     pub const THEMES_PALETTE: LabelKey = LabelKey::new("themes-palette");
     pub const THEMES_POLARITY: LabelKey = LabelKey::new("themes-polarity");
     pub const THEMES_PRESENCE: LabelKey = LabelKey::new("themes-presence");
@@ -59,6 +63,27 @@ pub mod keys {
     pub const THEMES_RUNG_TERTIARY: LabelKey = LabelKey::new("themes-rung-tertiary");
     pub const THEMES_SHAPE_DENSITY: LabelKey = LabelKey::new("themes-shape-density");
     pub const THEMES_SIZE: LabelKey = LabelKey::new("themes-size");
+    pub const THEMES_SURFACES_BASE: LabelKey = LabelKey::new("themes-surfaces-base");
+    pub const THEMES_SURFACES_CONTENT: LabelKey = LabelKey::new("themes-surfaces-content");
+    pub const THEMES_SURFACES_INSPECTOR: LabelKey = LabelKey::new("themes-surfaces-inspector");
+    pub const THEMES_SURFACES_OVERLAY: LabelKey = LabelKey::new("themes-surfaces-overlay");
+    pub const THEMES_SURFACES_RAISED: LabelKey = LabelKey::new("themes-surfaces-raised");
+    pub const THEMES_SURFACES_SIDEBAR: LabelKey = LabelKey::new("themes-surfaces-sidebar");
+    pub const THEMES_SWITCH_POLARITY: LabelKey = LabelKey::new("themes-switch-polarity");
+    pub const THEMES_THEME_BASE_SIZE: LabelKey = LabelKey::new("themes-theme-base-size");
+    pub const THEMES_THEME_BLUR: LabelKey = LabelKey::new("themes-theme-blur");
+    pub const THEMES_THEME_CHROMA: LabelKey = LabelKey::new("themes-theme-chroma");
+    pub const THEMES_THEME_DENSITY: LabelKey = LabelKey::new("themes-theme-density");
+    pub const THEMES_THEME_DISTINCT_LETTERS: LabelKey =
+        LabelKey::new("themes-theme-distinct-letters");
+    pub const THEMES_THEME_FACE: LabelKey = LabelKey::new("themes-theme-face");
+    pub const THEMES_THEME_HIGH_CONTRAST: LabelKey = LabelKey::new("themes-theme-high-contrast");
+    pub const THEMES_THEME_HUE: LabelKey = LabelKey::new("themes-theme-hue");
+    pub const THEMES_THEME_MOTION: LabelKey = LabelKey::new("themes-theme-motion");
+    pub const THEMES_THEME_NAME: LabelKey = LabelKey::new("themes-theme-name");
+    pub const THEMES_THEME_TINT: LabelKey = LabelKey::new("themes-theme-tint");
+    pub const THEMES_THEME_TINT_OPACITY: LabelKey = LabelKey::new("themes-theme-tint-opacity");
+    pub const THEMES_THEME_WINDOW_RADIUS: LabelKey = LabelKey::new("themes-theme-window-radius");
     pub const THEMES_TINT: LabelKey = LabelKey::new("themes-tint");
     pub const THEMES_TINT_OPACITY: LabelKey = LabelKey::new("themes-tint-opacity");
     pub const THEMES_TYPE: LabelKey = LabelKey::new("themes-type");
