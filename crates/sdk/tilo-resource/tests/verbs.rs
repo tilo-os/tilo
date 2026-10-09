@@ -483,3 +483,45 @@ fn content_inputs_nested_derived_places_and_edit_effects() {
         .collect();
     assert_eq!(kinds, [ActionKind::Undoable, ActionKind::Read]);
 }
+
+/// A card's id, as the app names it.
+pub type CardKey = uuid::Uuid;
+
+/// Something with no schema of its own.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Opaque {
+    pub raw: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.cards")]
+pub enum CardEffect {
+    /// Show a card.
+    Show {
+        card: CardKey,
+        colour: Option<Colour>,
+        opaque: Opaque,
+    },
+}
+
+#[test]
+fn an_effect_parameter_publishes_what_its_type_is_written_as() {
+    use tilo_resource::Effect as _;
+    let spec = CardEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "show")
+        .unwrap();
+    let kinds: Vec<(String, tilo_actions::ParamType)> = spec
+        .params()
+        .iter()
+        .map(|param| (param.name.to_string(), param.ty))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("card".to_owned(), tilo_actions::ParamType::Text),
+            ("colour".to_owned(), tilo_actions::ParamType::Object),
+            ("opaque".to_owned(), tilo_actions::ParamType::Object),
+        ]
+    );
+}

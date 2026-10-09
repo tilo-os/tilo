@@ -234,6 +234,45 @@ pub mod __private {
         }
     }
 
+    /// The parameter type of a `T` that may or may not describe its JSON
+    /// form: `(&ParamOf::<T>::new()).param_type()` reads `T`'s schema when it
+    /// implements [`JsonSchema`](crate::JsonSchema) (whatever it is called:
+    /// an alias of `Uuid` is text), and is an object otherwise.
+    pub struct ParamOf<T: ?Sized>(std::marker::PhantomData<fn() -> T>);
+
+    impl<T: ?Sized> ParamOf<T> {
+        #[must_use]
+        pub const fn new() -> Self {
+            Self(std::marker::PhantomData)
+        }
+    }
+
+    impl<T: ?Sized> Default for ParamOf<T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    pub trait DescribedParam {
+        fn param_type(&self) -> ParamType;
+    }
+
+    impl<T: crate::JsonSchema + ?Sized> DescribedParam for ParamOf<T> {
+        fn param_type(&self) -> ParamType {
+            param_type_of(&T::json_schema())
+        }
+    }
+
+    pub trait UndescribedParam {
+        fn param_type(&self) -> ParamType;
+    }
+
+    impl<T: ?Sized> UndescribedParam for &ParamOf<T> {
+        fn param_type(&self) -> ParamType {
+            ParamType::Object
+        }
+    }
+
     /// The type of a parameter whose Rust type the macros cannot read
     /// (an app's own enum or struct): what its schema says it is written as.
     /// A unit enum is text, a struct an object; a value written in several

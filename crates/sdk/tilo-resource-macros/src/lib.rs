@@ -1103,7 +1103,16 @@ fn param_type(ty: &Type, schema: bool) -> (Tokens, bool) {
         }
         "bool" => (quote!(#pt::Boolean), false),
         "Vec" => (quote!(#pt::Array), false),
-        _ if !schema => (quote!(#pt::Object), false),
+        // An effect's field need not describe its JSON form: its schema when
+        // it does (an alias of a described type), an object when not.
+        _ if !schema => (
+            quote!({
+                #[allow(unused_imports, reason = "one of the two applies")]
+                use #krate::__private::{DescribedParam as _, UndescribedParam as _};
+                (&#krate::__private::ParamOf::<#ty>::new()).param_type()
+            }),
+            false,
+        ),
         _ => (
             quote!(#krate::__private::param_type_of(
                 &<#ty as #krate::JsonSchema>::json_schema()
