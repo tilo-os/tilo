@@ -1488,6 +1488,58 @@ def current_same_floating_presentation(response, previous):
     return current
 
 
+def wait_for_keyboard_float_presentation(socket, output, previous, primary, process):
+    """Diagnose raw native frames without changing the existing acceptance filter."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        response = call(socket, {"op": "foreign_frames"})
+        rows = foreign_frames(response)
+        children = [row for row in rows if row.get("app_id") == "so.tilo.chat"
+                    and row.get("floating_id")]
+        exact = [row for row in children if row.get("floating_id") == previous["floating_id"]]
+        current = exact[0] if len(exact) == 1 else children[0] if len(children) == 1 else None
+        primaries = [row for row in rows if row.get("app_id") == primary["app_id"]
+                     and row.get("floating_id") is None
+                     and row.get("surface_id") == native_surface_id(primary)]
+        sample = {"raw_chat_child_count": min(len(children), 64),
+                  "exact_logical_child_count": min(len(exact), 64),
+                  "raw_child_observable": current is not None,
+                  "same_logical_child": current is not None
+                      and current.get("floating_id") == previous["floating_id"],
+                  "same_native_child": current is not None
+                      and current.get("surface_id") == native_surface_id(previous),
+                  "child_native_identity_observable": current is not None
+                      and type(current.get("surface_id")) is int and current["surface_id"] > 0,
+                  "child_frame_observable": current is not None
+                      and type(current.get("frame_seq")) is int and current["frame_seq"] > 0,
+                  "exact_primary_count": min(len(primaries), 64),
+                  "primary_keyboard_focused": primaries[0].get("keyboard_focused")
+                      if len(primaries) == 1 and type(primaries[0].get("keyboard_focused")) is bool else None}
+        for field in ("presented", "pixels_ready", "capture_pending", "suspended", "transferring"):
+            sample["child_" + field] = current.get(field) \
+                if current is not None and type(current.get(field)) is bool else None
+        sample["native_observation_valid"] = sample["child_native_identity_observable"] \
+            and sample["child_frame_observable"] \
+            and all(type(sample["child_" + field]) is bool
+                    for field in ("presented", "pixels_ready", "capture_pending", "suspended", "transferring"))
+        comparable = sample["same_native_child"] and sample["child_frame_observable"]
+        sample["child_frame_fresh"] = current["frame_seq"] > previous["frame_seq"] if comparable else None
+        sample["child_frame_nonregressing"] = current["frame_seq"] >= previous["frame_seq"] if comparable else None
+        sample["child_error_present"] = current.get("last_error") is not None if current is not None else None
+        sample["ordinary_child_route"] = current.get("input_route") is None \
+            and current.get("input_source_surface_id") is None if current is not None else None
+        evidence["observation_count"] += 1
+        if evidence["initial"] is None:
+            evidence["initial"] = sample.copy()
+        evidence["last"] = sample
+        (output / "keyboard-float-native-observations.json").write_text(
+            json.dumps(evidence, indent=2) + "\n")
+        return fresh_floating_presentation(presented_floating_frame(response, "so.tilo.chat"), previous)
+
+    return wait_for("keyboard-activated Tide Float", observe, process)
+
+
 def current_detached_control_target(socket, previous, agent_name, draft, expected_editor):
     """Bind one fresh AT control extent to its exact current native child."""
     current = current_same_floating_presentation(
@@ -2345,14 +2397,7 @@ def native_float_return(socket, room, record, output, size, process):
     focus_agent_conversation_control(access, access["drag"], "Float")
     access = wait_for_conversation_control_focus(access, output, process, detached=False, control="drag")
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
-    keyboard_frame = wait_for(
-        "keyboard-activated Tide Float",
-        lambda: fresh_floating_presentation(
-            presented_floating_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat"),
-            frame,
-        ),
-        process,
-    )
+    keyboard_frame = wait_for_keyboard_float_presentation(socket, output, frame, primary, process)
     keyboard_access = wait_for(
         "keyboard-activated detached Tide editor",
         lambda: agent_conversation_accessibility("Tide", detached=True), process,
@@ -5812,6 +5857,76 @@ def wait_for_restored_agent_offers(socket, room, record, provider, process, expe
     return wait_for("re-admission's actual current Message and Queue offers", observe, process)
 
 
+def wait_for_restored_detached_editor(socket, expected, child, provider, process, output):
+    """Wait for mounted controls, never repair input or replace retained state."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = {"same_managed_process": False, "provider_counts_unchanged": False,
+                  "exact_child_presented": False, "ordinary_child_route": False,
+                  "accessibility_observable": False, "same_chat_route": False,
+                  "private_state_matches": False, "send_control_count": 0,
+                  "queue_control_count": 0, "known_stale_object": False}
+        evidence["observation_count"] += 1
+        try:
+            sample["same_managed_process"] = owned_agent_identity(process.pid) == expected["identity"]
+            sample["provider_counts_unchanged"] = provider.request_count() == 4 \
+                and provider.overflow_count() == 0
+            if not sample["same_managed_process"] or not sample["provider_counts_unchanged"]:
+                raise RuntimeError("detached restoration changed process custody or initiated model work")
+            rows = [row for row in foreign_frames(call(socket, {"op": "foreign_frames"}))
+                    if row.get("app_id") == child["app_id"] and row.get("floating_id") == child["floating_id"]]
+            if len(rows) != 1 or rows[0].get("surface_id") != native_surface_id(child):
+                raise RuntimeError("detached restoration lost its exact captured native child")
+            current_child = rows[0]
+            if any(type(current_child.get(field)) is not bool
+                   for field in ("presented", "suspended", "transferring")):
+                raise RuntimeError("detached restoration native presentation is unobservable")
+            sample["exact_child_presented"] = current_child["presented"] \
+                and not current_child["suspended"] and not current_child["transferring"]
+            sample["ordinary_child_route"] = current_child.get("input_route") is None \
+                and current_child.get("input_source_surface_id") is None
+            if not sample["exact_child_presented"] or not sample["ordinary_child_route"] \
+                    or current_child.get("last_error") is not None:
+                raise RuntimeError("detached restoration has no exact presented ordinary child route")
+            current = current_owned_conversation_accessibility(expected["access"])
+            if current is None:
+                return None
+            sample["accessibility_observable"] = True
+            sample["same_chat_route"] = current.get("detached") is True
+            if not sample["same_chat_route"]:
+                raise RuntimeError("detached restoration changed its owned Chat route")
+            observed = private_editor_observation(current, expected["draft"])
+            sample["private_state_matches"] = all(observed[field] == expected["observation"][field]
+                for field in ("draft_matches", "caret", "selection"))
+            if not sample["private_state_matches"]:
+                raise RuntimeError("detached restoration changed private editor content, caret or selection")
+            client = atspi.AtspiClient(atspi.atspi_address(), current["bus"])
+            names = decoded_accessible_names(accessible_subtree(
+                client, current["window"], atspi.APP_TREE_NODE_LIMIT))
+            sample["send_control_count"] = min(sum(name == "Send message" for name in names.values()), 64)
+            sample["queue_control_count"] = min(sum(name == "Queue task" for name in names.values()), 64)
+            if sample["send_control_count"] > 1 or sample["queue_control_count"] > 1:
+                raise RuntimeError("detached restoration has duplicate Message or Queue controls")
+            return (current, observed, set(names.values())) \
+                if sample["send_control_count"] == sample["queue_control_count"] == 1 else None
+        except atspi.GateError as error:
+            if not re.search(
+                    r" failed: Error: GDBus\.Error:org\.freedesktop\.DBus\.Error\.UnknownObject:",
+                    str(error)):
+                raise
+            sample["known_stale_object"] = True
+            return None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "restored-detached-control-observations.json").write_text(
+                json.dumps(evidence, indent=2) + "\n")
+
+    return wait_for("restored detached Tide editor", observe, process)
+
+
 def restored_return_observation(response, child, primary):
     """Observe exact native withdrawal; never infer unseen handoff state."""
     rows = foreign_frames(response)
@@ -5971,15 +6086,12 @@ def native_agent_membership_revocation(
     )
     if provider.request_count() != 4 or provider.overflow_count() != 0:
         raise RuntimeError("fresh idle Agent launch initiated an unauthorized model turn")
-    restored_access = wait_for(
-        "restored detached Tide editor",
-        lambda: agent_conversation_accessibility("Tide", detached=True), process,
-    )
-    restored = private_editor_observation(restored_access, draft)
+    restored_access, restored, restored_names = wait_for_restored_detached_editor(socket, {
+        "access": detached_access, "draft": draft, "observation": before,
+        "identity": replacement_identity}, frame, provider, process, output)
     for field in ("draft_matches", "caret", "selection"):
         if restored[field] != before[field]:
             raise RuntimeError("re-admission did not restore the exact private editor state")
-    restored_names = accessible_names(restored_access)
     if not {"Send message", "Queue task"}.issubset(restored_names):
         raise RuntimeError("re-admission did not restore mounted Message and Queue controls")
     before_restored_return = presented_primary_frame(

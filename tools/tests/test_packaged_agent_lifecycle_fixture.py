@@ -26,6 +26,104 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_detached_restoration_requires_both_current_controls_without_repair(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": True, "window": "/window"}
+        baseline = {"draft_matches": True, "caret": 3, "selection": [3, 7]}
+        expected = {"identity": "replacement", "access": owner, "draft": "PRIVATE-DRAFT", "observation": baseline}
+        child = {"app_id": "so.tilo.chat", "floating_id": "PRIVATE-CHILD", "surface_id": 9,
+                 "presented": True, "suspended": False, "transferring": False}
+        process = type("Process", (), {"pid": 7, "poll": lambda self: None})()
+        provider = type("Provider", (), {"request_count": lambda self: 4, "overflow_count": lambda self: 0})()
+        trees = [{"/send": "(<'Send message'>,)"}, {"/queue": "(<'Queue task'>,)"},
+                 {"/send": "(<'Send message'>,)", "/queue": "(<'Queue task'>,)"}]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "owned_agent_identity", return_value="replacement"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "private_editor_observation", return_value=baseline) as state, \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}) as calls, \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "accessible_subtree", side_effect=trees), \
+                patch.object(PROOF.time, "sleep"):
+            output = pathlib.Path(directory)
+            result = PROOF.wait_for_restored_detached_editor("socket", expected, child, provider, process, output)
+            self.assertEqual(result, (owner, baseline, {"Send message", "Queue task"}))
+            self.assertEqual(state.call_count, 3)
+            self.assertEqual(calls.call_args_list, [call("socket", {"op": "foreign_frames"})] * 3)
+            receipt = json.loads((output / "restored-detached-control-observations.json").read_text())
+            self.assertEqual(receipt["initial"]["queue_control_count"], 0)
+            self.assertEqual(receipt["last"]["queue_control_count"], 1)
+            self.assertNotIn("PRIVATE", json.dumps(receipt))
+        for route, observation, native, tree in (
+                ({**owner, "process": 8}, baseline, child, trees[-1]),
+                (owner, {**baseline, "draft_matches": False}, child, trees[-1]),
+                (owner, {**baseline, "caret": 4}, child, trees[-1]),
+                (owner, {**baseline, "selection": None}, child, trees[-1]),
+                (owner, baseline, {**child, "surface_id": 99}, trees[-1]),
+                (owner, baseline, {**child, "presented": None}, trees[-1]),
+                (owner, baseline, child, {"/bad": "bare malformed name"}),
+                (owner, baseline, child, {**trees[-1], "/extra": "(<'Queue task'>,)"})):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "owned_agent_identity", return_value="replacement"), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=route), \
+                    patch.object(PROOF, "private_editor_observation", return_value=observation), \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [native]}}), \
+                    patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                    patch.object(PROOF, "accessible_subtree", return_value=tree):
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_restored_detached_editor(
+                        "socket", expected, child, provider, process, pathlib.Path(directory))
+
+    def test_detached_restoration_persistent_missing_controls_keeps_original_deadline(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": True, "window": "/window"}
+        baseline = {"draft_matches": True, "caret": 3, "selection": [3, 7]}
+        expected = {"identity": "replacement", "access": owner, "draft": "PRIVATE", "observation": baseline}
+        child = {"app_id": "so.tilo.chat", "floating_id": "PRIVATE", "surface_id": 9,
+                 "presented": True, "suspended": False, "transferring": False}
+        process = type("Process", (), {"pid": 7, "poll": lambda self: None})()
+        provider = type("Provider", (), {"request_count": lambda self: 4, "overflow_count": lambda self: 0})()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "owned_agent_identity", return_value="replacement"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "private_editor_observation", return_value=baseline), \
+                patch.object(PROOF, "call", return_value={"answer": {"frames": [child]}}), \
+                patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
+                patch.object(PROOF, "accessible_subtree", return_value={}), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_restored_detached_editor(
+                    "socket", expected, child, provider, process, pathlib.Path(directory))
+
+    def test_keyboard_float_raw_diagnostic_does_not_accept_filtered_capture(self):
+        previous = {"app_id": "so.tilo.chat", "floating_id": "PRIVATE", "surface_id": 9, "frame_seq": 10}
+        primary = {"app_id": "so.tilo.chat", "floating_id": None, "surface_id": 7,
+                   "keyboard_focused": True}
+        pending = {**previous, "frame_seq": 11, "presented": True, "pixels_ready": False,
+                   "capture_pending": True, "suspended": False, "transferring": False}
+        fresh = {**pending, "surface_id": 12, "frame_seq": 1, "pixels_ready": True, "capture_pending": False}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "call", side_effect=[{"answer": {"frames": [pending, primary]}},
+                    {"answer": {"frames": [fresh, primary]}}]) as calls, \
+                patch.object(PROOF.time, "sleep"):
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_keyboard_float_presentation(
+                "socket", output, previous, primary, None), fresh)
+            receipt = json.loads((output / "keyboard-float-native-observations.json").read_text())
+            self.assertTrue(receipt["initial"]["child_capture_pending"])
+            self.assertFalse(receipt["initial"]["child_pixels_ready"])
+            self.assertFalse(receipt["last"]["same_native_child"])
+            self.assertIsNone(receipt["last"]["child_frame_fresh"])
+            self.assertNotIn("PRIVATE", json.dumps(receipt))
+            self.assertEqual(calls.call_args_list, [call("socket", {"op": "foreign_frames"})] * 2)
+        for invalid in ({**fresh, "floating_id": "foreign"}, {**fresh, "presented": None}, pending):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "call", return_value={"answer": {"frames": [invalid, primary]}}), \
+                    patch.object(PROOF.time, "sleep"), \
+                    patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+                with self.assertRaises(PROOF.ProofTimeout):
+                    PROOF.wait_for_keyboard_float_presentation(
+                        "socket", pathlib.Path(directory), previous, primary, None)
+
     def test_restored_return_checks_exact_semantic_name_before_one_action(self):
         access = {"bus": "owned", "control": "/return"}
         client = PROOF.atspi.AtspiClient("address", "owned")
@@ -2874,7 +2972,9 @@ class PresentedEditorTargetTests(unittest.TestCase):
             "undo_history_crossed_return",
         ):
             self.assertIn(required, source)
-        self.assertLess(source.index("pointer_drag_detach"), source.index("keyboard_float"))
+        self.assertLess(source.index('"pointer_drag_detach"'), source.index('"keyboard_float"'))
+        self.assertLess(source.index('"op": "drag"'),
+                        source.index("wait_for_keyboard_float_presentation("))
         self.assertLess(source.index("pre-detach undo history in the detached editor"),
                         source.index("detached edit retained for attached undo"))
         self.assertLess(source.index("detached edit retained for attached undo"),
