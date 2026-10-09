@@ -307,3 +307,19 @@ mod native_mount_selection_tests {
         assert_eq!(std::fs::read_dir(mountpoint.path()).unwrap().count(), 0);
     }
 }
+
+/// Deterministic incompressible bytes for content tests.
+#[cfg(test)]
+mod test_bytes {
+    pub(crate) fn pseudo(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect()
+    }
+}
