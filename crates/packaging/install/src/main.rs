@@ -180,9 +180,6 @@ enum Cmd {
         /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
-        /// Turn off the Landlock enforcement. Debug only.
-        #[arg(long, hide = true)]
-        no_landlock: bool,
         #[command(flatten)]
         trust: TrustFlags,
     },
@@ -1912,19 +1909,11 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
     Ok(())
 }
 
-// One CLI flag per bool, mirroring `Cmd::Run`'s own fields one-for-one;
-// grouping them into a struct would only move the list, not shorten it.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "each bool is an independent `tilo-install run` flag forwarded to the launcher; \
-              see the comment above"
-)]
 fn run(
     pkg_id: &str,
     no_services: bool,
     minimal_libs: bool,
     allow_missing_runtime: bool,
-    no_landlock: bool,
     trust: &TrustFlags,
 ) -> Result<(), Error> {
     let entry = find_installed(pkg_id)?;
@@ -2004,12 +1993,6 @@ fn run(
     }
     if allow_missing_runtime {
         cmd.arg("--allow-missing-runtime");
-    }
-    if no_landlock {
-        eprintln!(
-            "tilo-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
-        );
-        // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
     }
     // exec()-replace so this process's exit code IS the launcher's.
     let err = cmd.exec();
@@ -2494,14 +2477,12 @@ fn main() {
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             trust,
         } => run(
             &pkg_id,
             no_services,
             minimal_libs,
             allow_missing_runtime,
-            no_landlock,
             &trust,
         ),
         Cmd::Inspect { pkg_id } => inspect(&pkg_id),
