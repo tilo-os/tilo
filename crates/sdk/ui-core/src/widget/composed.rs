@@ -1,0 +1,126 @@
+//! The element tree a widget rebuilds from its own state at each layout.
+
+use std::collections::HashMap;
+
+use taffy::{NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::WindowEvent;
+
+use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+
+/// A widget's composition: the element tree it rebuilds at every layout and
+/// lays out as the only child of its own node, plus the box it was given.
+/// The owning widget forwards its tree methods here.
+#[derive(Default)]
+pub struct Composed {
+    rect: Rect,
+    element: Option<Element>,
+}
+
+impl Composed {
+    /// Lay out a freshly built `element`, replacing the previous
+    /// composition. Returns its node, the only child of the owner's.
+    pub fn build_layout(
+        &mut self,
+        element: Element,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.element
+            .insert(element)
+            .build_layout(taffy, theme, node_map)
+    }
+
+    /// Swap in `element` without laying it out.
+    pub fn replace(&mut self, element: Element) -> &mut (dyn Widget + 'static) {
+        self.element.insert(element).as_mut()
+    }
+
+    /// Drop the composition until the next layout builds a fresh one.
+    pub fn clear(&mut self) {
+        self.element = None;
+    }
+
+    /// Store the owner's box and place the composition inside it.
+    pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = layout_rect(taffy, node, origin);
+        if let Some(element) = &mut self.element
+            && let Ok(child) = taffy.child_at_index(node, 0)
+        {
+            element.apply_layout(taffy, child, self.rect.origin());
+        }
+    }
+
+    /// The owner's laid-out box.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The current composition, once built.
+    #[must_use]
+    pub fn element(&self) -> Option<&(dyn Widget + 'static)> {
+        self.element.as_deref()
+    }
+
+    /// The current composition, once built.
+    pub fn element_mut(&mut self) -> Option<&mut (dyn Widget + 'static)> {
+        self.element.as_deref_mut()
+    }
+
+    pub fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(element) = &mut self.element {
+            element.sync(state, path);
+        }
+    }
+
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(element) = &mut self.element {
+            element.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let Some(element) = &mut self.element
+            && let Ok(child) = ctx.taffy.child_at_index(ctx.node_id, 0)
+        {
+            element.handle_event(event, &mut ctx.reborrow(ctx.path, child));
+        }
+    }
+
+    #[must_use]
+    pub fn children(&self) -> Vec<&dyn Widget> {
+        self.element
+            .as_deref()
+            .map(|element| element as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.element
+            .as_deref_mut()
+            .map(|element| element as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    /// Whether the composition asked to be rebuilt.
+    pub fn take_structure_dirty(&mut self) -> bool {
+        self.element
+            .as_mut()
+            .is_some_and(|element| element.take_structure_dirty())
+    }
+}

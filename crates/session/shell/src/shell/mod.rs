@@ -38,7 +38,6 @@ pub mod collab_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
-pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]

@@ -53,6 +53,14 @@ entry; private drafts and captured context are not added to this index.
 `read-feedback-receipt` uses Chat's registered semantic reader over the canonical
 record at the SDK's stamped committed heads. The request binds to the published
 report resource and accepts no caller-selected heads, destination or source.
+`read-feedback-status` uses the same canonical basis and View permission to
+return that receipt-shaped identity plus the latest 128 attributed triage entries.
+Concurrent histories can exceed the per-writer limit; `earlierEntries` explicitly
+counts older entries omitted from this bounded status read. It preserves
+status changes, duplicate targets and typed task references without creating a
+task or granting access to one. The SDK supplies the actual source record stamp;
+a returning participant can read this history after reconnecting. As with the
+receipt projection, the returned JSON alone is not a durability witness.
 
 ## Host integration still required
 
@@ -122,7 +130,10 @@ service's existing host-person invocation policy. A browser's existing
 ClientLocal Chat action still submits through its certified participant and
 normal peer publication. The signed HTTPS fixture retries one reviewed payload,
 checks opted-in personal context redaction and current/stale source revisions,
-reads a retained receipt and confirms that an unpublished local-only report
+reads a retained receipt, resumes an approved mutation after disconnecting before
+publication, retries that same identity once, and reads its attributed triage
+through the public status action after restarting the host. It also confirms
+that an unpublished local-only report
 cannot return a receipt. Host-side document actions retain their existing peer
 publication limitation: publish/local cache completion alone is not a durable
 commit acknowledgment. A separate writer correction requires qualification.

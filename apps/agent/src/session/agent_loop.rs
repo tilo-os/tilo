@@ -49,8 +49,9 @@ pub(super) const MAX_LOOP_TURNS: usize = 30;
 /// After this many turns that only looked things up, every discovery answer
 /// also says how many turns are left and asks the model to act.
 const DISCOVERY_NUDGE: usize = 3;
-/// After an open, how long to wait for the opened application's operations
-/// to be published (its window starts and binds a new record).
+/// After an open, the most to wait for the opened application's operations
+/// to be published (its window starts and binds a new record). The wait
+/// ends on the catalogue that carries them, at once when they already are.
 const OPEN_SETTLE: Duration = Duration::from_secs(8);
 /// Most newly available operations an open lists.
 const MOST_NEWLY_OPENED: usize = 40;
@@ -61,8 +62,10 @@ const MAX_LOOP_TURN_TIME: Duration = Duration::from_secs(30);
 /// Bound Stop latency while the provider is silent without polling the host
 /// on every token. The broker remains the authority for the exact run/lease.
 const THINKING_CANCELLATION_POLL: Duration = Duration::from_millis(200);
-/// After a view operation, how long to wait for the broker to republish the
-/// catalogue the new view unlocks.
+/// After a view operation, the most the loop keeps listening for the
+/// catalogue the new view unlocks — and only while the model turn in flight
+/// has given it nothing else to do, so the listening never delays a step or
+/// a turn ([`Session::settle_view`]).
 const VIEW_SETTLE: Duration = Duration::from_millis(400);
 /// Most newly available operations one observation lists.
 const MOST_NEWLY_AVAILABLE: usize = 16;
@@ -154,7 +157,8 @@ pub(super) const STREAM_CHUNK_TARGET: usize = 120;
 /// for more. Before the text is complete a chunk ends only at a word
 /// boundary inside [`crate::live::next_chunk_len`]'s window and never takes
 /// the whole pending text (more may belong to its last word); once
-/// complete, the rest goes as the chunk rule says.
+/// complete, nothing is left to stream, so the whole rest is one step
+/// ([`crate::live::step_text_len`]).
 pub(super) fn streaming_chunk_len(
     pending: &str,
     target: usize,
@@ -165,11 +169,7 @@ pub(super) fn streaming_chunk_len(
         return None;
     }
     if done {
-        return Some(crate::live::next_chunk_len(
-            pending,
-            target,
-            chunks_left.max(1),
-        ));
+        return Some(crate::live::step_text_len(pending, chunks_left.max(1)));
     }
     let target = target.max(3);
     if chunks_left <= 1 || pending.len() <= target + target / 3 {
@@ -1373,15 +1373,13 @@ impl Session {
         };
         let before = availability(&catalogue);
         let before_revision = self.broker_revision;
-        // What the application an open starts already published, so the
+        // The windows the application an open starts already has, so the
         // new window's operations can be told apart.
         let opened = tools::opened_app(&offer).map(str::to_owned);
-        let opened_before: HashSet<String> = catalogue
-            .offers
-            .iter()
-            .filter(|o| opened.as_deref() == Some(o.app.as_str()))
-            .map(|o| o.address().resource.clone())
-            .collect();
+        let opened_before = opened
+            .as_deref()
+            .map(|app| self.app_windows(app))
+            .unwrap_or_default();
         let index = state.completed;
         self.set_executing(true);
         let result = if let Some((param, text, next)) = self.chunkable(&action, &arguments) {
@@ -1427,8 +1425,25 @@ impl Session {
                 let view = offer.descriptor.kind == tilo_actions::OperationKind::View;
                 let mut note = None;
                 if let Some(app) = &opened {
-                    let appeared = self.settle_opened(app, &opened_before, OPEN_SETTLE)?;
-                    note = Some(if appeared {
+                    let records = opened_records(
+                        outcome
+                            .as_ref()
+                            .and_then(|outcome| outcome.output.value.as_ref()),
+                        app,
+                    );
+                    let appeared =
+                        self.settle_opened(app, &opened_before, &records, OPEN_SETTLE)?;
+                    let new_window = self
+                        .app_windows(app)
+                        .iter()
+                        .any(|window| !opened_before.contains(window));
+                    note = Some(if appeared && !new_window {
+                        format!(
+                            "{app} is open in the window it already had; its operations were \
+                             already published (ask `{}` with application=\"{app}\" for them).",
+                            tools::LIST_OPERATIONS
+                        )
+                    } else if appeared {
                         format!(
                             "{app} is open in a new window. Use the ids under newly_available \
                              for it (ask `{}` with application=\"{app}\" for the rest).",
@@ -1442,7 +1457,7 @@ impl Session {
                         )
                     });
                 } else if view {
-                    self.settle_catalogue(before_revision, VIEW_SETTLE)?;
+                    self.settle_view(before_revision, VIEW_SETTLE)?;
                 }
                 let after = self.task_catalogue();
                 let most = if opened.is_some() {
@@ -1759,21 +1774,37 @@ impl Session {
         ))
     }
 
-    /// Wait up to `wait` for the broker to republish the catalogue after
-    /// `since` (the revision before a step).
-    fn settle_catalogue(&mut self, since: u64, wait: Duration) -> Result<()> {
-        if self.broker_revision != since {
-            return Ok(());
-        }
-        let deadline = ui::time::now() + wait;
+    /// Whether the model turn in flight has given the loop nothing to do
+    /// yet: no complete call waiting, no later call begun, the turn not
+    /// finished. Waiting then costs the task nothing.
+    fn turn_idle(&self) -> bool {
+        self.turn.as_ref().is_some_and(|turn| {
+            turn.ready.is_empty()
+                && turn.finished.is_none()
+                && !turn.metas.contains_key(&turn.completed)
+        })
+    }
+
+    /// After a view step, take up the catalogue republication it caused —
+    /// on the event, never on a timer. One the broker already delivered
+    /// (with or before the step's reply) is taken at once. Beyond that the
+    /// loop listens only while the model turn in flight has given it nothing
+    /// else to do ([`Self::turn_idle`]), at most `most`, so listening never
+    /// delays a step or the next turn. A view that changes no operation
+    /// publishes nothing, and nothing is waited for.
+    fn settle_view(&mut self, since: u64, most: Duration) -> Result<()> {
+        let deadline = ui::time::now() + most;
         let mut deferred = Vec::new();
-        while ui::time::now() < deadline {
+        loop {
             self.pump_turn();
+            self.absorb_catalogue_updates();
             let left = deadline.saturating_duration_since(ui::time::now());
-            match self.link.recv(left.min(Duration::from_millis(20)))? {
+            if self.broker_revision != since || !self.turn_idle() || left.is_zero() {
+                break;
+            }
+            match self.link.recv(left.min(Duration::from_millis(5)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
-                    break;
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -1783,21 +1814,47 @@ impl Session {
         Ok(())
     }
 
-    /// After an open of `app`, wait up to `wait` for the catalogue to carry
-    /// an operation of `app` on a resource not in `before` — the new
-    /// window's record. Whether it appeared.
+    /// The windows of `app` the task catalogue publishes operations for, as
+    /// `(broker peer, record)`: each window is its own connection serving
+    /// its own record, so a second window is told apart from the first even
+    /// when it publishes the same resource ids.
+    fn app_windows(&mut self, app: &str) -> HashSet<(u64, String)> {
+        let peers: HashSet<u64> = self
+            .task_catalogue()
+            .offers
+            .iter()
+            .filter(|offer| offer.app == app)
+            .filter_map(|offer| offer.broker_peer_id)
+            .collect();
+        self.broker_surfaces
+            .iter()
+            .filter(|surface| peers.contains(&surface.peer_id))
+            .map(|surface| (surface.peer_id, surface.record_id.clone()))
+            .collect()
+    }
+
+    /// After an open of `app`, wait up to `wait` for the opened window's
+    /// operations, ending on the catalogue that brings them: a window for
+    /// every record the open's result names (`records`), or else any window
+    /// of `app` not in `before`. Returns at once when they are already
+    /// published, as for an open that lands on a window already there.
+    /// Whether they are.
     fn settle_opened(
         &mut self,
         app: &str,
-        before: &HashSet<String>,
+        before: &HashSet<(u64, String)>,
+        records: &[String],
         wait: Duration,
     ) -> Result<bool> {
         let appeared = |session: &mut Self| {
-            session
-                .task_catalogue()
-                .offers
-                .iter()
-                .any(|o| o.app == app && !before.contains(&o.address().resource))
+            let windows = session.app_windows(app);
+            if records.is_empty() {
+                windows.iter().any(|window| !before.contains(window))
+            } else {
+                records
+                    .iter()
+                    .all(|record| windows.iter().any(|(_, published)| published == record))
+            }
         };
         let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
@@ -1880,6 +1937,24 @@ impl Session {
             }
         }
     }
+}
+
+/// The records of `app` an open's result names as the windows it opened:
+/// the desktop's command receipt lists them under `opened`, each with its
+/// `app_id` and `record_id` (`tilo_desktop_model::commands::OpenedWindow`).
+/// Empty when the result names none — an owner that does not report its
+/// windows, or an open that is not the desktop's.
+fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
+    value
+        .and_then(|value| value.get("opened"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|window| window.get("app_id").and_then(Value::as_str) == Some(app))
+        .filter_map(|window| window.get("record_id").and_then(Value::as_str))
+        .filter(|record| !record.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Which operations are published and available, by id.
@@ -2099,6 +2174,7 @@ mod tests {
     const PEER: u64 = 7;
     const CHAT_PEER: u64 = 8;
     const DESKTOP_PEER: u64 = 9;
+    const SECOND_PEER: u64 = 10;
     const DOC: &str = "word-processor.document";
 
     fn descriptor(
@@ -2169,6 +2245,28 @@ mod tests {
         report_answers: usize,
         /// [`Self::report_answers`] when each step arrived.
         report_answers_at_steps: Vec<usize>,
+        /// How the desktop's open of Writer behaves.
+        opens: Opens,
+        /// The record of a second Writer window (its own peer and record,
+        /// the same resource ids), once an open added one.
+        second_window: Option<&'static str>,
+        /// A republished catalogue reaches the agent this many link polls
+        /// after the step's result instead of with it.
+        republish_after_polls: usize,
+    }
+
+    /// How the desktop's open of Writer behaves in the fixture world.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum Opens {
+        /// A window per open; the result names none (an owner that does not
+        /// report its windows).
+        #[default]
+        Unreported,
+        /// A window per open; the receipt names it.
+        Reported,
+        /// An open of Writer while it is open lands on that window, and the
+        /// receipt names it.
+        OntoOpenWindow,
     }
 
     impl World {
@@ -2296,6 +2394,13 @@ mod tests {
                     }],
                 },
             ];
+            if let Some(record) = self.second_window {
+                surfaces.push(BrokerActionSurface {
+                    peer_id: SECOND_PEER,
+                    record_id: record.into(),
+                    ..surfaces[0].clone()
+                });
+            }
             if self.fresh {
                 if !self.writer_opened {
                     surfaces.remove(0);
@@ -2327,6 +2432,36 @@ mod tests {
                 });
             }
             surfaces
+        }
+
+        /// The desktop's open of Writer: its first window, a second one, or
+        /// — when opens land on it — the window already open. The committed
+        /// continuation; its receipt names the window when the world says so.
+        fn open_writer(&mut self) -> Value {
+            let record = if !self.writer_opened || self.opens == Opens::OntoOpenWindow {
+                "doc-1"
+            } else {
+                self.second_window = Some("doc-2");
+                "doc-2"
+            };
+            self.writer_opened = true;
+            let output = if self.opens == Opens::Unreported {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({"value": {
+                    "kind": "desktop.command",
+                    "command": "1:1",
+                    "generation": 1,
+                    "opened": [{
+                        "app_id": "so.tilo.word-processor",
+                        "record_id": record,
+                        "strip": "1",
+                        "group": "1",
+                        "tab": "1"
+                    }]
+                }})
+            };
+            serde_json::json!({ "succeeded": output })
         }
 
         /// Apply one step; the committed continuation, and whether the
@@ -2414,10 +2549,7 @@ mod tests {
                     self.posts.push(text("value"));
                     (serde_json::json!({"succeeded": {}}), false)
                 }
-                "open" => {
-                    self.writer_opened = true;
-                    (serde_json::json!({"succeeded": {}}), true)
-                }
+                "open" => (self.open_writer(), true),
                 "type-text" => {
                     if self.blocks.is_empty() {
                         self.blocks.push(("p1".into(), String::new()));
@@ -2438,6 +2570,8 @@ mod tests {
         events: Vec<CollabEvent>,
         /// Host answers not delivered yet, with when they are due.
         held: Vec<(ui::time::Instant, CollabEvent)>,
+        /// A catalogue still on its way, and the polls until it arrives.
+        late: Option<(usize, CollabEvent)>,
     }
 
     impl Broker {
@@ -2468,6 +2602,13 @@ mod tests {
                     .count();
             }
             self.events.extend(due.into_iter().map(|(_, event)| event));
+            if let Some((polls, event)) = self.late.take() {
+                if polls == 0 {
+                    self.events.push(event);
+                } else {
+                    self.late = Some((polls - 1, event));
+                }
+            }
             std::mem::take(&mut self.events)
         }
         fn send(&mut self, request: CollabRequest) -> Result<(), String> {
@@ -2503,11 +2644,15 @@ mod tests {
                         retry_step: false,
                     });
                     // Republished after the result, as a real host does: the
-                    // loop must wait for it after a view step.
+                    // loop must take it up after a view step.
                     if republish {
-                        self.events.push(CollabEvent::ActionCatalogue {
+                        let catalogue = CollabEvent::ActionCatalogue {
                             surfaces: self.world.borrow().surfaces(),
-                        });
+                        };
+                        match self.world.borrow().republish_after_polls {
+                            0 => self.events.push(catalogue),
+                            polls => self.late = Some((polls, catalogue)),
+                        }
                     }
                 }
                 CollabRequest::TaskRunCancellation { request_id, .. } => {
@@ -2597,6 +2742,7 @@ mod tests {
             sent: sent.clone(),
             events: Vec::new(),
             held: Vec::new(),
+            late: None,
         });
         let mut run = runtime_collab::TaskRunEnvelope {
             version: 1,
@@ -2852,6 +2998,266 @@ mod tests {
         );
     }
 
+    /// The last tool result the model was shown in `body`.
+    fn last_observation(body: &Value) -> Value {
+        let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_str()
+            .unwrap();
+        serde_json::from_str(content).unwrap()
+    }
+
+    /// A view that changes no operation publishes nothing, and the loop
+    /// does not wait for it: three reads cost no settle time at all (each
+    /// used to wait the full [`VIEW_SETTLE`]).
+    #[test]
+    fn view_steps_that_change_no_operation_do_not_wait() {
+        let world = World {
+            blocks: vec![("p1".into(), "Intro".into())],
+            ..World::default()
+        };
+        let mut f = fixture(
+            "read the document three times",
+            world,
+            vec![turn(
+                &[
+                    invoke("read-text", &serde_json::json!({})),
+                    invoke("read-text", &serde_json::json!({})),
+                    invoke("read-text", &serde_json::json!({})),
+                    finish("Read it.", true),
+                ],
+                64,
+            )],
+        );
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        let elapsed = began.elapsed();
+        assert_eq!(f.world.borrow().steps.len(), 3);
+        assert!(
+            elapsed < VIEW_SETTLE,
+            "three view steps took {elapsed:?}; none may wait for a republication"
+        );
+        assert!(matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded { .. }
+        ));
+    }
+
+    /// While the model is still streaming the rest of its turn, a view step
+    /// listens for its republication only until the model gives the loop
+    /// something to do: here the next call begins at once, so the step costs
+    /// nothing beyond the stream itself.
+    #[test]
+    fn a_view_step_stops_listening_when_the_model_moves_on() {
+        let world = World {
+            blocks: vec![("p1".into(), "Intro".into())],
+            ..World::default()
+        };
+        let events = turn(
+            &[
+                invoke("read-text", &serde_json::json!({})),
+                finish("Read it.", true),
+            ],
+            16,
+        );
+        let mut f = paced_fixture(
+            "read the document",
+            world,
+            vec![events],
+            Some(Duration::from_millis(2)),
+        );
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        let elapsed = began.elapsed();
+        assert_eq!(f.world.borrow().steps.len(), 1);
+        assert!(
+            elapsed < VIEW_SETTLE,
+            "the turn took {elapsed:?}; the read may not hold it for a republication"
+        );
+    }
+
+    /// A republication that reaches the agent after the view step's reply is
+    /// still taken up while the model has nothing for the loop to do, so
+    /// what the view unlocked is reported with the step.
+    #[test]
+    fn a_late_republication_is_taken_while_the_model_is_still_busy() {
+        let world = World {
+            blocks: vec![
+                ("p1".into(), "Intro".into()),
+                ("p2".into(), "Details".into()),
+            ],
+            republish_after_polls: 10,
+            ..World::default()
+        };
+        let mut f = paced_fixture(
+            "make the second paragraph bold",
+            world,
+            vec![
+                turn(
+                    &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
+                    128,
+                ),
+                turn(
+                    &[
+                        invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
+                        finish("Done.", true),
+                    ],
+                    128,
+                ),
+            ],
+            Some(Duration::from_millis(100)),
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(f.world.borrow().bold, ["p2"]);
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let observation = last_observation(&bodies[1]);
+        assert!(
+            observation["newly_available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().starts_with(&op("toggle-mark"))),
+            "{observation}"
+        );
+    }
+
+    /// The open writing `type-text` after it, for the open tests.
+    fn open_then_type(world: World) -> Fixture {
+        let open_writer = format!("broker:{DESKTOP_PEER}:desktop:app:so.tilo.word-processor#open");
+        fixture(
+            "type rain falls into the document",
+            world,
+            vec![
+                turn(
+                    &[(
+                        tools::INVOKE,
+                        serde_json::json!({"operation": open_writer, "parameters": {}}),
+                    )],
+                    64,
+                ),
+                turn(
+                    &[
+                        invoke("type-text", &serde_json::json!({"text": "Rain falls."})),
+                        finish("Typed it.", true),
+                    ],
+                    64,
+                ),
+            ],
+        )
+    }
+
+    /// An open whose receipt names a window that is already published — the
+    /// open landed on it — returns at once, instead of waiting the whole
+    /// [`OPEN_SETTLE`] for a resource id it has never seen.
+    #[test]
+    fn an_open_landing_on_a_published_window_returns_at_once() {
+        let mut f = open_then_type(World {
+            fresh: true,
+            writer_opened: true,
+            opens: Opens::OntoOpenWindow,
+            ..World::default()
+        });
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        let elapsed = began.elapsed();
+        assert!(
+            elapsed < OPEN_SETTLE / 4,
+            "the open of a published window took {elapsed:?}"
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let observation = last_observation(&bodies[1]);
+        assert_eq!(observation["result"], "succeeded");
+        assert!(
+            observation["note"]
+                .as_str()
+                .unwrap()
+                .contains("in the window it already had"),
+            "{observation}"
+        );
+        assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
+    }
+
+    /// A second window of an open application is its own peer and record,
+    /// even though it publishes the same resource ids as the first: the
+    /// open sees it on the catalogue that brings it, with no receipt.
+    #[test]
+    fn a_second_window_reusing_resource_ids_is_seen_as_opened() {
+        let mut f = open_then_type(World {
+            fresh: true,
+            writer_opened: true,
+            ..World::default()
+        });
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        let elapsed = began.elapsed();
+        assert_eq!(f.world.borrow().second_window, Some("doc-2"));
+        assert!(
+            elapsed < OPEN_SETTLE / 4,
+            "the second window's open took {elapsed:?}"
+        );
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let observation = last_observation(&bodies[1]);
+        assert!(
+            observation["note"]
+                .as_str()
+                .unwrap()
+                .contains("is open in a new window"),
+            "{observation}"
+        );
+        let second = format!("broker:{SECOND_PEER}:{DOC}#type-text");
+        assert!(
+            observation["newly_available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().starts_with(&second)),
+            "{observation}"
+        );
+    }
+
+    /// A fresh open whose receipt names the new window ends on the
+    /// catalogue that publishes it.
+    #[test]
+    fn a_fresh_open_ends_on_the_window_its_receipt_names() {
+        let mut f = open_then_type(World {
+            fresh: true,
+            opens: Opens::Reported,
+            ..World::default()
+        });
+        let began = ui::time::now();
+        f.session.run_task(&f.run).unwrap();
+        assert!(began.elapsed() < OPEN_SETTLE / 4, "{:?}", began.elapsed());
+        let bodies = f.script.bodies.lock().unwrap().clone();
+        let observation = last_observation(&bodies[1]);
+        assert!(
+            observation["note"]
+                .as_str()
+                .unwrap()
+                .contains("is open in a new window"),
+            "{observation}"
+        );
+        assert_eq!(f.world.borrow().blocks[0].1, "Rain falls.");
+    }
+
+    #[test]
+    fn opened_records_reads_the_desktop_receipt() {
+        let receipt = serde_json::json!({
+            "kind": "desktop.command",
+            "command": "1:1",
+            "generation": 3,
+            "opened": [
+                {"app_id": "so.tilo.notes", "record_id": "n-1"},
+                {"app_id": "so.tilo.word-processor", "record_id": "doc-9"},
+                {"app_id": "so.tilo.word-processor", "record_id": ""}
+            ]
+        });
+        assert_eq!(
+            opened_records(Some(&receipt), "so.tilo.word-processor"),
+            ["doc-9"]
+        );
+        assert!(opened_records(Some(&serde_json::json!({})), "so.tilo.notes").is_empty());
+        assert!(opened_records(None, "so.tilo.notes").is_empty());
+    }
+
     #[test]
     fn stop_during_the_first_silent_model_turn_does_not_wait_for_provider_output() {
         let mut f = paced_fixture(
@@ -3080,18 +3486,16 @@ mod tests {
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model turn");
         let world = f.world.borrow();
         assert_eq!(world.blocks.len(), 1);
-        assert_eq!(world.blocks[0].1, text, "chunks rejoin to exactly the text");
+        assert_eq!(world.blocks[0].1, text, "the paragraph lands exactly");
         let actions: Vec<&str> = world
             .steps
             .iter()
             .map(|(action, _)| action.as_str())
             .collect();
-        assert!(actions.len() >= 2, "{actions:?}");
-        assert_eq!(actions[0], "append-paragraph");
-        assert!(
-            actions[1..]
-                .iter()
-                .all(|action| *action == "continue-paragraph")
+        assert_eq!(
+            actions,
+            ["append-paragraph"],
+            "a complete paragraph is one durable step, not chunk round trips"
         );
         let sent = f.sent.borrow();
         assert_eq!(
@@ -3536,6 +3940,105 @@ mod tests {
             "the last chunk waits"
         );
         assert_eq!(streaming_chunk_len("tail", 32, 0, true), Some(4));
+        // Once the text is complete, its whole pending tail is one step,
+        // whatever the streaming chunk target.
+        let tail = "and most of its life, from sunlit reefs to the dark trenches. ".repeat(12);
+        assert_eq!(streaming_chunk_len(&tail, 32, 12, true), Some(tail.len()));
+        assert_eq!(
+            streaming_chunk_len(&tail, STREAM_CHUNK_TARGET, 12, true),
+            Some(tail.len())
+        );
+    }
+
+    /// `events` with call 0's argument deltas after the first `keep` merged
+    /// into one: the rest of its arguments arrives at once.
+    fn burst_after(events: Vec<TurnEvent>, keep: usize) -> Vec<TurnEvent> {
+        let mut out = Vec::new();
+        let mut seen = 0;
+        let mut merged: Option<Value> = None;
+        for event in events {
+            if let TurnEvent::Frame {
+                event: name,
+                output,
+            } = &event
+                && name == tilo_model_gateway::EVENT_TOOL_CALL_DELTA
+            {
+                let delta: Value = serde_json::from_str(output).unwrap();
+                if delta["index"] == 0 {
+                    seen += 1;
+                    if seen > keep {
+                        merged = Some(match merged.take() {
+                            Some(mut earlier) => {
+                                let joined = format!(
+                                    "{}{}",
+                                    earlier["delta"].as_str().unwrap(),
+                                    delta["delta"].as_str().unwrap()
+                                );
+                                earlier["delta"] = Value::String(joined);
+                                earlier
+                            }
+                            None => delta,
+                        });
+                        continue;
+                    }
+                }
+            }
+            if let Some(merged) = merged.take() {
+                out.push(TurnEvent::Frame {
+                    event: tilo_model_gateway::EVENT_TOOL_CALL_DELTA.into(),
+                    output: merged.to_string(),
+                });
+            }
+            out.push(event);
+        }
+        out
+    }
+
+    /// Once the streamed text is complete, everything not yet written lands
+    /// in one step — not in stream-sized chunks after the model is done.
+    #[test]
+    fn a_completed_stream_writes_its_whole_tail_in_one_step() {
+        let text = "The ocean covers more than seventy percent of our planet. ".repeat(12);
+        let call = invoke("type-text", &serde_json::json!({"text": text}));
+        let arguments = call.1.to_string();
+        let text_at = arguments.find("The ocean").unwrap();
+        // Stream the first ~120 bytes of text six at a time (enough for the
+        // small first chunk, too little for a second), then the rest at once.
+        let events = burst_after(
+            turn(&[call, finish("Written.", true)], 6),
+            (text_at + 120) / 6,
+        );
+        let call_complete = frame_position(&events, 0);
+        let mut f = paced_fixture(
+            "write about the ocean",
+            World::default(),
+            vec![events],
+            Some(Duration::from_millis(4)),
+        );
+        f.session.run_task(&f.run).unwrap();
+
+        let world = f.world.borrow();
+        assert_eq!(world.blocks[0].1, text);
+        let chunks: Vec<&str> = world
+            .steps
+            .iter()
+            .map(|(_, arguments)| arguments["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(chunks.len(), 2, "{chunks:?}");
+        assert!(
+            chunks[0].len() <= FIRST_CHUNK_TARGET + FIRST_CHUNK_TARGET / 3,
+            "the first chunk is small: {:?}",
+            chunks[0]
+        );
+        assert!(
+            world.steps_at[0] < call_complete,
+            "the first chunk committed while the text streamed"
+        );
+        assert_eq!(
+            chunks[1],
+            &text[chunks[0].len()..],
+            "the whole tail at once"
+        );
     }
 
     /// Two messages to the same running agent both run and both succeed —

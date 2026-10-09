@@ -43,9 +43,15 @@ macro_rules! settings_effects {
             const OPERATION: &'static str = OPERATION;
 
             fn declarations() -> Vec<EffectDecl> {
-                let mut declarations = Vec::new();
-                $(declarations.extend(<$ty as Effect>::declarations());)*
-                declarations
+                let build = || {
+                    let mut declarations = Vec::new();
+                    $(declarations.extend(<$ty as Effect>::declarations());)*
+                    declarations
+                };
+                #[cfg(test)]
+                return ui::framework::profiling::measure("settings.flattened_declarations", build);
+                #[cfg(not(test))]
+                build()
             }
 
             fn id(&self) -> &'static str {
@@ -60,6 +66,18 @@ macro_rules! settings_effects {
             fn bound(&self) -> tilo_actions::ActionSpec {
                 match self {
                     $(Self::$variant(effect) => effect.bound(),)*
+                }
+            }
+
+            fn bound_asking(&self, asking: &[&str]) -> tilo_actions::ActionSpec {
+                match self {
+                    $(Self::$variant(effect) => effect.bound_asking(asking),)*
+                }
+            }
+
+            fn bound_asking_params(&self, params: Vec<tilo_actions::ActionParam>) -> tilo_actions::ActionSpec {
+                match self {
+                    $(Self::$variant(effect) => effect.bound_asking_params(params),)*
                 }
             }
 
@@ -126,21 +144,45 @@ settings_effects! {
 /// entities outside any document that Settings shows — with the effects each
 /// offers bound to it.
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    let mut rows = pane_rows();
-    rows.extend(app.notifications().rows());
-    rows.extend(app.default_apps().rows());
-    rows.extend(app.input().rows());
-    rows.extend(app.printers().rows());
-    rows.extend(app.users().rows());
-    rows.extend(app.bluetooth().rows());
-    rows.extend(app.speakers().rows());
-    rows.extend(app.agent_models().rows());
-    rows.extend(app.device_mesh().rows());
-    rows.extend(app.audio().rows());
-    rows.extend(app.accounts().rows());
-    rows.extend(app.displays().rows());
-    rows.extend(app.network().rows());
-    rows.extend(app.disk_unlock().rows());
+    macro_rules! observed {
+        ($name:literal, $operation:expr) => {{
+            #[cfg(test)]
+            let result = ui::framework::profiling::measure($name, || $operation);
+            #[cfg(not(test))]
+            let result = $operation;
+            result
+        }};
+    }
+    let mut rows = observed!("settings.rows.panes", pane_rows());
+    rows.extend(observed!(
+        "settings.rows.notifications",
+        app.notifications().rows()
+    ));
+    rows.extend(observed!(
+        "settings.rows.default_apps",
+        app.default_apps().rows()
+    ));
+    rows.extend(observed!("settings.rows.input", app.input().rows()));
+    rows.extend(observed!("settings.rows.printers", app.printers().rows()));
+    rows.extend(observed!("settings.rows.users", app.users().rows()));
+    rows.extend(observed!("settings.rows.bluetooth", app.bluetooth().rows()));
+    rows.extend(observed!("settings.rows.speakers", app.speakers().rows()));
+    rows.extend(observed!(
+        "settings.rows.agent_models",
+        app.agent_models().rows()
+    ));
+    rows.extend(observed!(
+        "settings.rows.device_mesh",
+        app.device_mesh().rows()
+    ));
+    rows.extend(observed!("settings.rows.audio", app.audio().rows()));
+    rows.extend(observed!("settings.rows.accounts", app.accounts().rows()));
+    rows.extend(observed!("settings.rows.displays", app.displays().rows()));
+    rows.extend(observed!("settings.rows.network", app.network().rows()));
+    rows.extend(observed!(
+        "settings.rows.disk_unlock",
+        app.disk_unlock().rows()
+    ));
     rows
 }
 
@@ -235,6 +277,95 @@ mod tests {
     use super::*;
 
     struct Flattened(SettingsEffect);
+
+    #[test]
+    fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let (rows, phases) = app
+            .surface::<SettingsApp, _>(|app| ui::framework::profiling::observe(|| super::rows(app)))
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.id() == "settings.display-output:eDP-1")
+        );
+        assert!(
+            !phases
+                .iter()
+                .any(|phase| phase.phase == "settings.flattened_declarations"),
+            "actual mounted rows must bind only their own pane vocabulary"
+        );
+    }
+
+    #[test]
+    fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let rows = app
+            .surface::<SettingsApp, _>(|app| super::rows(app))
+            .unwrap();
+        let row = rows
+            .into_iter()
+            .find(|row| row.id() == "settings.display-output:eDP-1")
+            .expect("the actual connected output is published")
+            .into_resource();
+        let mut compared = 0;
+        for spec in row.actions.iter().filter(|spec| !spec.params().is_empty()) {
+            let mut args = serde_json::Map::new();
+            for param in spec.params() {
+                let value = param.choices.first().map_or_else(
+                    || match param.ty {
+                        tilo_actions::ParamType::Text => serde_json::json!("observed"),
+                        tilo_actions::ParamType::Integer => serde_json::json!(20),
+                        tilo_actions::ParamType::Number => serde_json::json!(0.5),
+                        tilo_actions::ParamType::Boolean => serde_json::json!(true),
+                        other => panic!("unexpected actual display parameter: {other:?}"),
+                    },
+                    |value| serde_json::json!(value),
+                );
+                args.insert(param.name.to_string(), value);
+            }
+            let published = spec.build_json(&args).unwrap();
+            let effect = SettingsEffect::from_payload(&published.payload).unwrap();
+            let reference = Flattened(effect.clone()).bound_asking_params(spec.params().to_vec());
+            let direct = effect.bound_asking_params(spec.params().to_vec());
+            let survey = |spec| {
+                tilo_actions::door::survey(&[tilo_actions::Resource::new(
+                    "comparison",
+                    "comparison",
+                    "comparison",
+                )
+                .with_action(spec)])
+            };
+            assert_eq!(survey(direct.clone()), survey(reference.clone()));
+            assert_eq!(
+                direct.permission_for_json(&args),
+                reference.permission_for_json(&args)
+            );
+            assert_eq!(
+                direct.confirmation_for_json(&args),
+                reference.confirmation_for_json(&args)
+            );
+            let actual = direct.build_json(&args).unwrap();
+            let expected = reference.build_json(&args).unwrap();
+            assert_eq!(actual.type_id, expected.type_id);
+            assert_eq!(actual.payload, expected.payload);
+            assert_eq!(actual.payload, published.payload);
+            let asking: Vec<_> = spec.params().iter().map(|param| &*param.name).collect();
+            assert_eq!(
+                survey(effect.bound_asking(&asking)),
+                survey(Flattened(effect).bound_asking(&asking))
+            );
+            args.insert("display".to_string(), serde_json::json!("foreign-output"));
+            assert!(
+                spec.build_json(&args).is_err(),
+                "the output identity is not caller controlled"
+            );
+            compared += 1;
+        }
+        assert!(
+            compared >= 7,
+            "the actual output's parameter actions are observed"
+        );
+    }
 
     impl Effect for Flattened {
         const OPERATION: &'static str = super::OPERATION;

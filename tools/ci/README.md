@@ -26,6 +26,7 @@ not listed here.
 |---|---|---|---|
 | `runner` | x86_64 | General jobs and native Rust builds: 4-5 CPUs, 10 GiB memory, 50 GiB disk, Docker | ubuntu-24.04 |
 | `runner-arm64` | aarch64 | `runner` on native ARM64 | ubuntu-24.04-arm |
+| `runner-native-portable` | x86_64/aarch64 | Host-independent native SDK and WASM qualification: at least 22 GiB memory, Docker | self-hosted on either native architecture |
 | `runner-quality` | x86_64 | Lint, change selection and result aggregation: 2 CPUs, 4 GiB memory | ubuntu-24.04 |
 | `runner-large` | x86_64 | Whole-collection compiles: 12 CPUs, 32 GiB memory, 100 GiB disk | a 16-core larger runner |
 | `runner-large-arm64` | aarch64 | `runner-large` on native ARM64 | a 16-core ARM64 larger runner |
@@ -67,6 +68,7 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` macos | the linux lane's commands with `--target macos`, on macOS with Xcode |
 | `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
+| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../DEVELOPMENT.md#performance-results) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
 only label and time a command; leave them out locally.
