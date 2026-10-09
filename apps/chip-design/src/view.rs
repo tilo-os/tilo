@@ -3,20 +3,19 @@
 use ui::framework::{Effected, LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::{EmbeddedCatalog, I18nManager};
 use ui::portal::{FileFilter, PickRequest};
-use ui::tilo_resource::{self, ActionRef, Effect, Invoke};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::{Column, Element, EmptyState, NavShell, Property, PropertyList, Scrollable, Text};
 
 use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport, report_id};
-use crate::resource::{ChipProject, ProjectState, import};
+use crate::resource::{Project as ChipProject, ProjectState, import};
 use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "chip-title",
-)
-.with_system_locale();
+/// The app's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "chip-title").with_system_locale();
 
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)
@@ -51,12 +50,24 @@ pub enum ChipEffect {
     },
 }
 
-const REMOVE_VERIFICATION: ActionRef<ChipProject, String> =
-    ActionRef::new("remove-verification", &["report"]);
-
-const REMOVE: ActionRef<ChipProject, String> = ActionRef::new("remove-report", &["report"]);
-
 pub struct ChipDesignShell;
+
+/// What a search hit or an agent's `open` names, as the selection the view
+/// shows: a report or receipt by its identity, an evidence item by its
+/// anchor, or the operator graph.
+fn opened_place(anchor: &str) -> String {
+    let place = anchor
+        .rsplit_once("/derived/")
+        .map_or(anchor, |(_, place)| place);
+    if place == "operator-graph" {
+        return crate::operator_graph::RESOURCE_ID.to_owned();
+    }
+    ["report:", "verification:", "flow:"]
+        .iter()
+        .find_map(|prefix| place.strip_prefix(prefix))
+        .unwrap_or(place)
+        .to_owned()
+}
 
 fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<String>>) -> Element {
     let invalid_file = crate::launch::invalid(&cx.launch());
@@ -109,7 +120,7 @@ impl ResourceApp for ChipDesignShell {
         let graph_selection = cx.local(crate::operator_graph_view::Selection::default());
         let notice = capture_notice(cx, &selected);
         let opened = selected.clone();
-        cx.on_open(move |anchor| opened.set(Some(anchor.to_owned())));
+        cx.on_open(move |anchor| opened.set(Some(opened_place(anchor))));
         let inspected = selected.clone();
         let graph_opened = selected.clone();
         let graph_inspected = graph_selection.clone();
@@ -174,7 +185,7 @@ impl ResourceApp for ChipDesignShell {
             cx.switch(&selected, move |cx, selected| {
                 let selected = selected.clone();
                 let graph_selection = graph_selection.clone();
-                let evidence = cx.value(Clone::clone);
+                let evidence = cx.value(ProjectState::of);
                 cx.switch(&evidence, move |cx, state| {
                     if selected.as_deref() == Some(crate::operator_graph::RESOURCE_ID) {
                         crate::operator_graph_view::body(
@@ -213,29 +224,21 @@ impl ResourceApp for ChipDesignShell {
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<ChipProject>> {
-        if name == Some("operator-graph") {
-            crate::operator_graph_view::scenario()
-        } else if name == Some("evidence-flow") {
-            let action: ActionRef<ChipProject, String> =
-                ActionRef::new("import-verification", &["json"]);
-            vec![action.with(include_str!("../fixtures/evidence-flow.json").to_owned())]
-        } else if name == Some("storage-report") {
-            let action: ActionRef<ChipProject, String> = ActionRef::new("import-report", &["json"]);
-            vec![action.with(include_str!("../fixtures/storage-report.json").to_owned())]
-        } else if name == Some("research-mapping") {
-            let action: ActionRef<ChipProject, String> =
-                ActionRef::new("import-verification", &["json"]);
-            vec![action.with(include_str!("../fixtures/research-mapping.json").to_owned())]
-        } else if name == Some("q4k-superblock") {
-            let action: ActionRef<ChipProject, String> =
-                ActionRef::new("import-verification", &["json"]);
-            vec![action.with(include_str!("../fixtures/q4k-superblock.json").to_owned())]
-        } else if name == Some("checkpoint-verification") {
-            let action: ActionRef<ChipProject, String> =
-                ActionRef::new("import-verification", &["json"]);
-            vec![action.with(include_str!("../fixtures/checkpoint-verification.json").to_owned())]
-        } else {
-            Vec::new()
+        let verification = |json: &str| vec![ChipProject::IMPORT_VERIFICATION.with(json)];
+        match name {
+            Some("operator-graph") => crate::operator_graph_view::scenario(),
+            Some("evidence-flow") => verification(include_str!("../fixtures/evidence-flow.json")),
+            Some("storage-report") => vec![
+                ChipProject::IMPORT_REPORT.with(include_str!("../fixtures/storage-report.json")),
+            ],
+            Some("research-mapping") => {
+                verification(include_str!("../fixtures/research-mapping.json"))
+            }
+            Some("q4k-superblock") => verification(include_str!("../fixtures/q4k-superblock.json")),
+            Some("checkpoint-verification") => {
+                verification(include_str!("../fixtures/checkpoint-verification.json"))
+            }
+            _ => Vec::new(),
         }
     }
 }
@@ -279,9 +282,10 @@ fn evidence_body(
             ))
             .push(Box::new(Text::new(&tr("chip-imported-evidence"))))
             .push(Box::new(report_properties(id, report)))
-            .push(Box::new(
-                cx.button(tr("chip-remove"), REMOVE.with(id.clone())),
-            ));
+            .push(Box::new(cx.button(
+                tr("chip-remove"),
+                ChipProject::REMOVE_REPORT.with(id.as_str()),
+            )));
     }
     for (id, record) in verifications {
         if selected.is_some_and(|selection| selection != id.as_str()) {
@@ -296,8 +300,8 @@ fn evidence_body(
             )));
             continue;
         }
-        body =
-            body.push(Box::new(
+        body = body
+            .push(Box::new(
                 Text::new(&record.receipt.evidence).with_role(TextRole::Heading),
             ))
             .push(Box::new(Text::new(&tr(
@@ -310,9 +314,10 @@ fn evidence_body(
                 },
             ))))
             .push(Box::new(verification_properties(id, record)))
-            .push(Box::new(
-                cx.button(tr("chip-remove"), REMOVE_VERIFICATION.with(id.clone())),
-            ));
+            .push(Box::new(cx.button(
+                tr("chip-remove"),
+                ChipProject::REMOVE_VERIFICATION.with(id.as_str()),
+            )));
     }
     Box::new(Scrollable::new_vertical().with_child(Box::new(body)))
 }

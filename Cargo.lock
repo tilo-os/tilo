@@ -1959,6 +1959,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-app",
+ "tilo-history",
  "workspace-hack",
 ]
 

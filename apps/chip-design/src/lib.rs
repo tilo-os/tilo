@@ -11,10 +11,8 @@ mod verification;
 mod view;
 
 pub use model::{Assumptions, AttentionCache, StorageReport};
-pub use operator_graph::{
-    OperatorAction, OperatorGraph, OperatorKind, OperatorNode, OperatorState,
-};
-pub use resource::{ChipProject, ProjectAction, ProjectState};
+pub use operator_graph::{Connection, OperatorKind, OperatorNode, OperatorState};
+pub use resource::{Project, ProjectState};
 pub use verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 pub use view::ChipDesignShell;
 

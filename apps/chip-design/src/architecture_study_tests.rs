@@ -1,4 +1,5 @@
 //! Public resource and retained-view checks of model-independent staged evidence.
+use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
@@ -84,7 +85,7 @@ fn public_import_inspect_and_read_preserve_reported_comparison_and_native_view()
         );
     }
     assert!(app.undo());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
 }
 
 #[test]
@@ -158,7 +159,7 @@ fn contradictory_stage_links_outputs_and_physical_claims_refuse_without_mutation
             app.call("import-verification", json!({"json":value.to_string()}))
                 .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 
@@ -246,7 +247,7 @@ fn public_memory_report_preserves_geometry_ports_and_native_properties() {
     }
     assert!(inspection.contains("quantizer.words"));
     assert!(app.undo());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
 }
 
 #[test]
@@ -289,7 +290,7 @@ fn invalid_memory_geometry_ports_and_inventory_refuse_atomically() {
             app.call("import-verification", json!({"json":value.to_string()}))
                 .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
     // A ROM may have asynchronous reads and no writes.
     let mut rom = original;

@@ -28,6 +28,7 @@ sha2.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 
