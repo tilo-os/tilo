@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Clearance, DEFAULT_ROOM, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
+    Clearance, DEFAULT_ROOM, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
     validate_inbound_op, validate_replayed_inbound_op,
 };
@@ -120,13 +120,13 @@ fn fixture_with(role: Role, valid_from: SystemTime, valid_until: SystemTime) -> 
     }
 }
 
-fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> SignedOp {
+fn build_op(f: &Fixture, kind: OpKind, timestamp: SystemTime, seq: u64) -> SignedOp {
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         f.artifact,
         f.author_pub,
         f.attestation_id,
-        op_class,
+        kind,
         timestamp,
         seq,
     );
@@ -147,7 +147,7 @@ fn build_x_op(
         artifact,
         author,
         attestation,
-        OpClass::Splice,
+        OpKind::Change,
         timestamp,
         1,
     );
@@ -205,7 +205,7 @@ fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError
 fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     // Case: happy path, all eight pass; the seq map is updated.
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_ok(), "expected Ok, got {r:?}");
     assert_eq!(
@@ -221,12 +221,12 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::INTERNAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert!(validate_inbound_op(&op, &mut f.state).is_ok());
 
     // Case: the replay slot bumps on success.
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(10), 42);
+    let op = build_op(&f, OpKind::Change, t(10), 42);
     assert!(validate_inbound_op(&op, &mut f.state).is_ok());
     assert_eq!(
         f.state.last_seq_per_author.get(&f.author_pub).copied(),
@@ -236,7 +236,7 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     // Case: the replay slot does not bump on failure (a tampered op that
     // fails step 3).
     let mut f = fixture();
-    let mut op = build_op(&f, OpClass::Splice, t(10), 5);
+    let mut op = build_op(&f, OpKind::Change, t(10), 5);
     op.signature = Signature::from_bytes([0xff; 64]);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_err());
@@ -252,7 +252,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
     let mut f = fixture();
     f.state.attestations.clear();
     f.state.authorised_signers.clear();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert!(
         validate_admitted_inbound_op(
             &op,
@@ -270,7 +270,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 
     // Case: still rejects forgery, role, time and replay.
     let f = fixture();
-    let valid = build_op(&f, OpClass::Splice, t(10), 7);
+    let valid = build_op(&f, OpKind::Change, t(10), 7);
     let skew = Duration::from_secs(5);
 
     let mut forged = valid.clone();
@@ -329,7 +329,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
     let g = presets();
     let mut f = fixture();
-    let old = build_op(&f, OpClass::Splice, t(10), 3);
+    let old = build_op(&f, OpKind::Change, t(10), 3);
     let skew = Duration::from_secs(300);
     let an_hour_later = t(10 + 3600);
     assert_eq!(
@@ -375,7 +375,7 @@ fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_fut
         Ok(()),
         "within the skew ahead",
     );
-    let future = build_op(&f, OpClass::Splice, t(10 + 3600), 4);
+    let future = build_op(&f, OpKind::Change, t(10 + 3600), 4);
     assert_eq!(
         validate_replayed_inbound_op(
             &future,
@@ -416,7 +416,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     // `owner_pub`, which no longer qualifies.
     let mut f = fixture();
     f.state.authorised_signers.clear();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("step2 issuer", validate_inbound_op(&op, &mut f.state)),
         ValidationError::UnauthorisedAttestation(f.owner_pub)
@@ -427,7 +427,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     let mut f = fixture();
     let ra = f.state.attestations.get_mut(&f.attestation_id).unwrap();
     ra.attestation.signature = Signature::from_bytes([0xff; 64]);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let e = rejection("step2 signature", validate_inbound_op(&op, &mut f.state));
     assert!(
         matches!(e, ValidationError::BadAttestationSignature(_)),
@@ -443,7 +443,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
         ("step3 payload", tamper_payload),
     ] {
         let mut f = fixture();
-        let mut op = build_op(&f, OpClass::Splice, t(10), 1);
+        let mut op = build_op(&f, OpKind::Change, t(10), 1);
         tamper(&mut op);
         let e = rejection(case, validate_inbound_op(&op, &mut f.state));
         assert!(
@@ -503,7 +503,7 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
     // Step 6: op after valid_until (attestation valid until t(100_000); op
     // at t(100_001)).
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(100_001), 1);
+    let op = build_op(&f, OpKind::Change, t(100_001), 1);
     assert_eq!(
         rejection("step6 after", validate_inbound_op(&op, &mut f.state)),
         ValidationError::OutsideValidityWindow
@@ -525,8 +525,8 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
 
     // Step 7: the same seq replayed is rejected.
     let mut f = fixture();
-    let op1 = build_op(&f, OpClass::Splice, t(10), 1);
-    let op2 = build_op(&f, OpClass::Splice, t(11), 1); // same seq as op1
+    let op1 = build_op(&f, OpKind::Change, t(10), 1);
+    let op2 = build_op(&f, OpKind::Change, t(11), 1); // same seq as op1
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
     assert_eq!(
         rejection("step7 same seq", validate_inbound_op(&op2, &mut f.state)),
@@ -538,8 +538,8 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
 
     // Step 7: a smaller seq is rejected.
     let mut f = fixture();
-    let op1 = build_op(&f, OpClass::Splice, t(10), 10);
-    let op2 = build_op(&f, OpClass::Splice, t(11), 5);
+    let op1 = build_op(&f, OpKind::Change, t(10), 10);
+    let op2 = build_op(&f, OpKind::Change, t(11), 5);
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
     let e = rejection("step7 smaller seq", validate_inbound_op(&op2, &mut f.state));
     assert!(
@@ -559,7 +559,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("no claim", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {
@@ -574,7 +574,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("too low", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {
@@ -591,7 +591,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("untrusted issuer", validate_inbound_op(&op, &mut f.state)),
         ValidationError::UntrustedClearanceIssuer { issuer: rogue_pub }
@@ -602,7 +602,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     // still enforce.
     let mut f = fixture();
     f.state.channel_min_clearance = Some(Clearance::RESTRICTED);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let e = rejection("channel floor", validate_inbound_op(&op, &mut f.state));
     assert!(
         matches!(
@@ -623,7 +623,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
         .artifact_classifications
         .insert(f.artifact, Clearance::RESTRICTED);
     grant_clearance(&mut f, Clearance::CONFIDENTIAL, true);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("effective max", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {

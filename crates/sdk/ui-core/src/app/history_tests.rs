@@ -444,7 +444,7 @@ fn routed_document(
             &route.cluster_id.to_string(),
             route.record.as_deref().unwrap_or(""),
         ),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         crate::time::SystemTime::UNIX_EPOCH,
         0,
     )

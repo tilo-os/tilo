@@ -673,7 +673,7 @@ fn projections(joined: &Enrolled) -> usize {
 /// signs it: with the process-wide unordered sequence, not `floor + 1`.
 fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     use collab_types::{
-        DocumentMutation, Ed25519PublicKey, OpClass, SignedOp, document_artifact_id,
+        DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
         document_attestation_id, next_unordered_document_sequence, sign_op,
     };
     let changes = joined
@@ -693,7 +693,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
         document_artifact_id(APP, ROOM, ""),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         document_attestation_id(APP, ROOM, ""),
-        OpClass::Splice,
+        OpKind::Change,
         joined.now,
         next_unordered_document_sequence(joined.now),
     )

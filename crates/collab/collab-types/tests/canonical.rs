@@ -22,7 +22,7 @@ use collab_types::channel::DocumentHandle;
 use collab_types::identity::{AvatarBytes, Identity};
 use collab_types::{
     Artifact, ArtifactId, ArtifactKind, Attestation, AttestationId, Channel, ChannelEvent,
-    ChannelId, ChannelSettingsDelta, Claim, Clearance, Ed25519PublicKey, MemberRef, OpClass, Role,
+    ChannelId, ChannelSettingsDelta, Claim, Clearance, Ed25519PublicKey, MemberRef, OpKind, Role,
     RoleAttestation, Signature, SignedOp, Space, SpaceId, canonical_bytes, generate_keypair,
     sign_event, sign_op, verify_event, verify_op,
 };
@@ -67,16 +67,8 @@ fn every_wire_type_round_trips_deterministically() {
     for r in [Role::Owner, Role::Editor, Role::Commenter, Role::Viewer] {
         assert_round_trips(&format!("role {r:?}"), &r);
     }
-    for op in [
-        OpClass::Splice,
-        OpClass::Move,
-        OpClass::EditMeta,
-        OpClass::Comment,
-        OpClass::Tombstone,
-        OpClass::Restore,
-        OpClass::Govern,
-    ] {
-        assert_round_trips(&format!("op class {op:?}"), &op);
+    for op in [OpKind::Change, OpKind::Compaction, OpKind::Redaction] {
+        assert_round_trips(&format!("op kind {op:?}"), &op);
     }
     for k in [
         ArtifactKind::Note,
@@ -168,7 +160,7 @@ fn every_wire_type_round_trips_deterministically() {
             ArtifactId::new(),
             fake_pk(3),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             t(100_000),
             42,
         ),
@@ -230,7 +222,7 @@ fn every_wire_type_round_trips_deterministically() {
         ArtifactId(uuid::Uuid::from_u128(0xdead_beef)),
         fake_pk(2),
         AttestationId(uuid::Uuid::from_u128(0xcafe_f00d)),
-        OpClass::Splice,
+        OpKind::Change,
         t(100),
         7,
     );
@@ -362,7 +354,7 @@ fn tampering_breaks_decode_or_signature() {
             ArtifactId::new(),
             pk,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             t(1),
             seq,
         );

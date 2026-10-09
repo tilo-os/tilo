@@ -26,7 +26,7 @@ use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, SignedOp};
+use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
 
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
@@ -177,7 +177,7 @@ fn signed_incremental(
         collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
         Ed25519PublicKey::from_bytes(identity.signing_public_key()),
         collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         seq,
     );
@@ -338,7 +338,7 @@ mod tests {
             collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
             author,
             collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );

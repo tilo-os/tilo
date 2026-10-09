@@ -21,7 +21,7 @@ use channel_crypto::{ChannelGroup, MemberKey};
 use collab_fixtures::{role_attestation, signed_op, signed_op_encrypted};
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
-    Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest, RedactedMarker, Role,
+    Ed25519PublicKey, EncryptionMetadata, OpId, OpKind, RedactRequest, RedactedMarker, Role,
     SignedOp, ValidationError, encode_compaction_payload, encode_redact_payload, generate_keypair,
     hash_op_prefix, hash_target_op, parse_compaction_payload, validate_inbound_op,
 };
@@ -95,7 +95,7 @@ fn redact(f: &Fixture, target: &SignedOp, author: Role, seq: u64) -> SignedOp {
         pk,
         f.artifact,
         att,
-        OpClass::Redact,
+        OpKind::Redaction,
         encode_redact_payload(&req).unwrap(),
         seq,
     )
@@ -162,7 +162,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"valid".to_vec(),
             1,
         );
@@ -179,7 +179,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             outsider_pk,
             f.artifact,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             b"forged".to_vec(),
             1,
         );
@@ -217,7 +217,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             artifact,
             threshold_pk,
             editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::now(),
             1,
             EncryptionMetadata::mls_application(alice.epoch(), channel),
@@ -244,7 +244,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"opaque MLS ciphertext".to_vec(),
             1,
             EncryptionMetadata::mls_application(7, ChannelId::new()),
@@ -305,7 +305,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"secret".to_vec(),
             1,
         );
@@ -370,7 +370,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"arrives later".to_vec(),
             100,
         );
@@ -396,7 +396,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
                 f.editor_pk,
                 f.artifact,
                 f.editor_att,
-                OpClass::Splice,
+                OpKind::Change,
                 format!("op-{seq}").into_bytes(),
                 seq,
             );
@@ -429,7 +429,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Compaction,
+            OpKind::Compaction,
             payload.clone(),
             10,
         );
@@ -442,7 +442,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.owner_pk,
             f.artifact,
             f.owner_att,
-            OpClass::Compaction,
+            OpKind::Compaction,
             payload,
             100,
         );

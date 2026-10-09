@@ -429,7 +429,7 @@ async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget(
                     collab_types::ArtifactId(uuid::Uuid::from_bytes([0x11; 16])),
                     collab_types::Ed25519PublicKey::from_bytes([7; 32]),
                     collab_types::AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     std::time::SystemTime::now(),
                     sequence,
                 )),

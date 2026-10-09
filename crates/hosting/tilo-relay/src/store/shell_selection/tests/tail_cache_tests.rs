@@ -2,6 +2,7 @@
 //! selection, and exactly the publication a full selection would choose.
 use super::*;
 use automerge::ReadDoc;
+use collab_types::CommitNamed as _;
 
 /// An owner with `routes` text records `r0..`, its first checkpoint, and the
 /// record `r0` as an editable branch at that checkpoint.
@@ -66,7 +67,7 @@ impl TailFixture {
         let heads = self.branch.get_heads();
         let (_, text) = self.branch.get(automerge::ROOT, "text").unwrap().unwrap();
         self.branch.splice_text(&text, 0, 0, "k").unwrap();
-        self.branch.commit();
+        self.branch.commit_edit("fixture", "fixture");
         let bytes = changes_since(&mut self.branch, &heads);
         let seq = self.next_seq;
         self.next_seq = self.next_seq.checked_add(1).unwrap();

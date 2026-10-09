@@ -15,7 +15,7 @@
 //! - [`space`] — `Space`, the social-formation container grouping channels.
 //! - [`channel`] — `Channel`, `MemberRef`, `ChannelRef`, `ArtifactRef`,
 //!   `Artifact`: the working-area primitive mapping members to roles.
-//! - [`role`] — `Role`, `OpClass`, `ArtifactKind` of the op envelope; who may
+//! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
 //!   make which change is decided by `tilo-action-policy` grants (step 5).
 //! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
 //!   over paths, file records, devices and network hosts.
@@ -81,6 +81,7 @@ pub mod redaction;
 pub mod role;
 pub mod space;
 pub mod task_budget;
+pub mod units;
 pub mod validator;
 
 /// The URI scheme that asks an app to open one of its own records
@@ -90,7 +91,7 @@ pub mod validator;
 pub const RECORD_URI_SCHEME: &str = "tilo-record";
 
 // Convenience re-exports so downstream callers can do
-// `use collab_types::{SignedOp, Role, OpClass, ArtifactKind, ...}`
+// `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
@@ -140,14 +141,17 @@ pub use ownership_transfer::{
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use person_room::{is_person_room, person_room, person_room_of};
-pub use receipt::{Receipt, ReceiptRefusal, ReceiptSurface, Record, check_claims, claim_node};
+pub use receipt::{
+    Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_claims,
+    claim_node, decide_op, record_node,
+};
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
     encode_redact_payload, hash_target_op, parse_redact_payload,
 };
-pub use role::{ArtifactKind, OpClass, Role};
+pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, DEFAULT_ROOM, ValidationError, document_node, op_node,
-    validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
+    ChannelState, DEFAULT_ROOM, ValidationError, document_node, validate_admitted_inbound_op,
+    validate_inbound_op, validate_replayed_inbound_op,
 };

@@ -2,9 +2,10 @@
 //! validate/apply path (`validate_inbound_op` +
 //! `ChannelState::apply_and_relay`), not a helper.
 //!
-//! Headline proof: a `commenter` may add a comment op but an edit op from
-//! the same actor is rejected **at validation** — not applied, not
-//! relayed. Plus finer grants: an `editor` held to comments inside one app
+//! Every change names its action ([`collab_types::ChangeClaim`]) and is
+//! decided against the app's surface. Headline proof: a `commenter` may
+//! comment but an edit from the same actor is rejected **at validation** —
+//! not applied, not relayed. Plus finer grants: an `editor` held to comments inside one app
 //! has its edit denied, and a grant to one person on one artifact extends a
 //! viewer's authority there only.
 
@@ -22,12 +23,91 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
 
+use std::sync::Arc;
+
+use collab_types::claim::ClaimedAction;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    DEFAULT_ROOM, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
-    ValidationError, generate_keypair, op_node, sign_event, sign_op, validate_inbound_op,
+    DEFAULT_ROOM, DocumentMutation, Ed25519PublicKey, OpKind, ReceiptSurface, Record, Role,
+    RoleAttestation, Signature, SignedOp, SurfaceSource, Surfaces, UnitPath, ValidationError,
+    generate_keypair, mutation_claims, record_unit, sign_event, sign_op, validate_inbound_op,
 };
-use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles};
+use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, Subject, TreePath, roles};
+use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall};
+
+const APP: &str = "notes";
+const KIND: &str = "note";
+
+/// The notes app's surface as a receiver reads it: `comment` sits under
+/// the comments it writes; every field offers edits.
+struct Notes;
+
+impl ReceiptSurface for Notes {
+    fn kind(&self) -> &str {
+        KIND
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        (action == "comment").then(|| (ActionKind::Undoable, Some(roles::COMMENTS_FIELD.into())))
+    }
+    fn editable(&self, _: &[PathStep]) -> bool {
+        true
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        vec![Vec::new()]
+    }
+}
+
+impl SurfaceSource for Notes {
+    fn surface(&self, _: &Record<'_>, _: Option<&str>) -> Option<Arc<dyn ReceiptSurface>> {
+        Some(Arc::new(Self))
+    }
+}
+
+/// What a change does: comment on the note, or edit its body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+    Comment,
+    Edit,
+}
+
+fn named(change: Change) -> Did {
+    match change {
+        Change::Comment => Did::Verb(VerbCall::new(ActionKey::new(APP, KIND, "comment"), [])),
+        Change::Edit => Did::Edit(FieldEdit {
+            ty: KIND.into(),
+            field: "body".into(),
+            path: vec![PathStep::Field("body".into())],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        }),
+    }
+}
+
+/// One change doing `change`, as the payload of a change op with its claim.
+fn change_payload(change: Change, seq: u64) -> (Vec<u8>, Vec<collab_types::ChangeClaim>) {
+    use automerge::transaction::{CommitOptions, Transactable};
+    let mut doc = automerge::AutoCommit::new();
+    doc.put(automerge::ROOT, "seq", seq).unwrap();
+    let context = ActionContext {
+        what: Some(named(change)),
+        ..ActionContext::for_resource("n1", KIND, "Note")
+    };
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
+    let claims = mutation_claims(&mutation, record_unit).unwrap();
+    (mutation.encode().unwrap(), claims)
+}
+
+/// The node a comment on `artifact` is decided at.
+fn comments_of(artifact: ArtifactId) -> TreePath {
+    TreePath::room(DEFAULT_ROOM)
+        .app(APP)
+        .kind(KIND)
+        .resource(artifact.0.to_string())
+        .field(roles::COMMENTS_FIELD)
+}
 
 fn not_granted(result: Result<(), ValidationError>) -> bool {
     result.is_err_and(|error| matches!(error, ValidationError::NotGranted(_)))
@@ -111,6 +191,8 @@ fn channel_with_author(
     let mut state = ChannelState::default();
     state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
+    state.artifact_apps.insert(artifact, APP.into());
+    state.surfaces = Surfaces::from_source(Arc::new(Notes));
     state.register_attestation(ra);
 
     (
@@ -128,17 +210,40 @@ fn build_op(
     author_pub: Ed25519PublicKey,
     author_sk: &SigningKey,
     attestation_id: AttestationId,
-    op_class: OpClass,
+    change: Change,
     seq: u64,
+) -> SignedOp {
+    let (payload, claims) = change_payload(change, seq);
+    let mut op = SignedOp::new_unsigned(
+        payload,
+        artifact,
+        author_pub,
+        attestation_id,
+        OpKind::Change,
+        t(10),
+        seq,
+    )
+    .with_claims(claims);
+    sign_op(&mut op, author_sk).unwrap();
+    op
+}
+
+/// A governance op of `kind` (a compaction or a redaction).
+fn governance_op(
+    artifact: ArtifactId,
+    author_pub: Ed25519PublicKey,
+    author_sk: &SigningKey,
+    attestation_id: AttestationId,
+    kind: OpKind,
 ) -> SignedOp {
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         artifact,
         author_pub,
         attestation_id,
-        op_class,
+        kind,
         t(10),
-        seq,
+        1,
     );
     sign_op(&mut op, author_sk).unwrap();
     op
@@ -154,7 +259,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
 
     // A comment op passes validation AND is applied (recorded to the op
     // log that fan-out relays from).
-    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "commenter's comment op must validate + apply"
@@ -172,7 +277,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
 
     // An EDIT op (EditMeta) from the SAME actor is rejected at
     // validation: the real validate path returns the role denial...
-    let edit = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
+    let edit = build_op(artifact, author_pub, &author_sk, att, Change::Edit, 2);
     assert!(
         not_granted(validate_inbound_op(&edit, &mut state.clone())),
         "commenter's edit must be rejected at validation"
@@ -195,7 +300,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         "rejected edit did NOT advance seq (nothing to relay)"
     );
     // A splice (text edit) is likewise rejected.
-    let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 2);
+    let splice = build_op(artifact, author_pub, &author_sk, att, Change::Edit, 3);
     assert!(not_granted(state.apply_and_relay(&splice)));
     assert_eq!(
         state.op_log.len(),
@@ -212,16 +317,15 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
 fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     // Phase: an editor held to comments inside one app.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
-    let splice_ok = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
+    let splice_ok = build_op(artifact, author_pub, &author_sk, att, Change::Edit, 1);
     assert!(
         state.clone().apply_and_relay(&splice_ok).is_ok(),
         "unrestricted editor may splice"
     );
 
-    state.artifact_apps.insert(artifact, "finance".to_string());
     let finance = TreePath::root()
         .push(tilo_action_policy::Level::Room, DEFAULT_ROOM)
-        .app("finance");
+        .app(APP);
     state.grants.push(grant(
         "finance",
         Subject::Role(Role::Editor),
@@ -237,7 +341,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
         Answer::Allow,
     ));
 
-    let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
+    let splice = build_op(artifact, author_pub, &author_sk, att, Change::Edit, 1);
     assert!(
         not_granted(validate_inbound_op(&splice, &mut state.clone())),
         "the app deny refuses the editor's splice"
@@ -245,7 +349,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     assert!(not_granted(state.apply_and_relay(&splice)));
     assert_eq!(state.op_log.len(), 0, "restricted splice was NOT applied");
 
-    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "comments inside the app are still allowed"
@@ -257,7 +361,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     let other = ArtifactId::new();
     state.artifacts.insert(other, ArtifactKind::Note);
 
-    let denied = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
+    let denied = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(
         not_granted(validate_inbound_op(&denied, &mut state.clone())),
         "viewer cannot comment by role alone"
@@ -266,27 +370,22 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     state.grants.push(grant(
         "share",
         Subject::Person(hex::encode(author_pub.0)),
-        op_node(
-            DEFAULT_ROOM,
-            None,
-            &artifact.0.to_string(),
-            OpClass::Comment,
-        ),
+        comments_of(artifact),
         Answer::Allow,
     ));
-    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "the grant allows comments on the shared artifact"
     );
     assert_eq!(state.op_log.len(), 1);
 
-    let elsewhere = build_op(other, author_pub, &author_sk, att, OpClass::Comment, 2);
+    let elsewhere = build_op(other, author_pub, &author_sk, att, Change::Comment, 2);
     assert!(
         not_granted(state.apply_and_relay(&elsewhere)),
         "the grant does not leak to other artifacts"
     );
-    let edit_shared = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
+    let edit_shared = build_op(artifact, author_pub, &author_sk, att, Change::Edit, 2);
     assert!(
         not_granted(state.apply_and_relay(&edit_shared)),
         "a comment grant does not grant edit"
@@ -311,7 +410,7 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
         Answer::Allow,
         Subject::Role(Role::Owner),
     ));
-    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, Change::Comment, 1);
     assert!(
         not_granted(state.apply_and_relay(&comment)),
         "the room-wide block is more specific than the root grant"
@@ -319,36 +418,29 @@ fn finer_grants_narrow_extend_and_block_on_the_real_path() {
     assert_eq!(state.op_log.len(), 0);
 }
 
-/// The role presets decide every op class as their table says.
+/// The role presets decide comments, edits and the governance ops as their
+/// table says.
 #[test]
-fn role_presets_decide_op_classes() {
-    let ops = [
-        OpClass::Splice,
-        OpClass::Move,
-        OpClass::EditMeta,
-        OpClass::Comment,
-        OpClass::Tombstone,
-        OpClass::Restore,
-        OpClass::Govern,
-        OpClass::Compaction,
-        OpClass::Redact,
-    ];
+fn role_presets_decide_each_kind_of_change() {
     for role in Role::ALL {
-        for op in ops {
+        for change in [Change::Comment, Change::Edit] {
             let (state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(role);
-            let signed = build_op(artifact, author_pub, &author_sk, att, op, 1);
+            let signed = build_op(artifact, author_pub, &author_sk, att, change, 1);
+            let allowed = !not_granted(validate_inbound_op(&signed, &mut state.clone()));
+            let expected = match role {
+                Role::Owner | Role::Editor => true,
+                Role::Commenter => change == Change::Comment,
+                Role::Viewer => false,
+            };
+            assert_eq!(allowed, expected, "{role:?} / {change:?}");
+        }
+        for kind in [OpKind::Compaction, OpKind::Redaction] {
+            let (state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(role);
+            let signed = governance_op(artifact, author_pub, &author_sk, att, kind);
             // A redaction then checks its payload; only the grant decision
             // matters here.
             let allowed = !not_granted(validate_inbound_op(&signed, &mut state.clone()));
-            let expected = match role {
-                Role::Owner => true,
-                Role::Editor => {
-                    !matches!(op, OpClass::Govern | OpClass::Compaction | OpClass::Redact)
-                }
-                Role::Commenter => op == OpClass::Comment,
-                Role::Viewer => false,
-            };
-            assert_eq!(allowed, expected, "{role:?} / {op:?}");
+            assert_eq!(allowed, role == Role::Owner, "{role:?} / {kind:?}");
         }
     }
 }

@@ -332,7 +332,7 @@ fn local_projection_historical_validation_rejects_unrelated_real_signed_history_
             }
             2 => *record_id = "wrong-record".into(),
             _ => {
-                envelope.op_class = OpClass::Redact;
+                envelope.kind = OpKind::Redaction;
                 collab_types::sign_op(envelope, &key).unwrap();
             }
         }

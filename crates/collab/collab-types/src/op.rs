@@ -21,7 +21,7 @@ use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ArtifactId, ChannelId};
 use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
-use crate::role::OpClass;
+use crate::role::OpKind;
 
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
@@ -632,9 +632,9 @@ pub struct SignedOp {
     pub attestation_id: AttestationId,
     /// The author's self-declared op class, cross-checked against the role
     /// table (validator check 5). A lying client doesn't gain capability —
-    /// `role_permits(attestation.role, artifact.kind, op_class)` must be
+    /// `role_permits(attestation.role, artifact.kind, kind)` must be
     /// true regardless of what the client claims.
-    pub op_class: OpClass,
+    pub kind: OpKind,
     /// Wall-clock time the op was created, checked to fall inside
     /// `[attestation.valid_from, attestation.valid_until]` (validator check
     /// 6). Clock skew tolerance is the validator's responsibility.
@@ -671,7 +671,7 @@ impl SignedOp {
         artifact: ArtifactId,
         author: Ed25519PublicKey,
         attestation_id: AttestationId,
-        op_class: OpClass,
+        kind: OpKind,
         timestamp: SystemTime,
         seq: u64,
     ) -> Self {
@@ -680,7 +680,7 @@ impl SignedOp {
             artifact,
             author,
             attestation_id,
-            op_class,
+            kind,
             timestamp,
             seq,
             encryption: None,
@@ -698,7 +698,7 @@ impl SignedOp {
         artifact: ArtifactId,
         author: Ed25519PublicKey,
         attestation_id: AttestationId,
-        op_class: OpClass,
+        kind: OpKind,
         timestamp: SystemTime,
         seq: u64,
         encryption: EncryptionMetadata,
@@ -708,7 +708,7 @@ impl SignedOp {
             artifact,
             author,
             attestation_id,
-            op_class,
+            kind,
             timestamp,
             seq,
             encryption: Some(encryption),
@@ -738,7 +738,7 @@ impl SignedOp {
             artifact: &'a ArtifactId,
             author: &'a Ed25519PublicKey,
             attestation_id: &'a AttestationId,
-            op_class: &'a OpClass,
+            kind: &'a OpKind,
             timestamp: &'a SystemTime,
             seq: u64,
             encryption: encryption_wire::View<'a>,
@@ -749,7 +749,7 @@ impl SignedOp {
             artifact: &self.artifact,
             author: &self.author,
             attestation_id: &self.attestation_id,
-            op_class: &self.op_class,
+            kind: &self.kind,
             timestamp: &self.timestamp,
             seq: self.seq,
             encryption: encryption_wire::View(&self.encryption),
@@ -798,7 +798,7 @@ mod tests {
             document_artifact_id("app", "room", "record"),
             Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             document_attestation_id("app", "room", "record"),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
             3,
         )
@@ -845,7 +845,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 0,
             );
@@ -862,7 +862,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 42,
                 EncryptionMetadata::mls_application(3, crate::channel::ChannelId::new()),
@@ -887,7 +887,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 0,
             );
@@ -906,7 +906,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 7,
             );
@@ -939,7 +939,7 @@ mod tests {
                 ArtifactId::new(),
                 pk,
                 AttestationId::new(),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 5,
                 EncryptionMetadata::content_key(2, channel, ContentRetention::Checkpoint),
@@ -1034,7 +1034,7 @@ mod tests {
                 document_artifact_id(app, workspace, record),
                 Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -1105,7 +1105,7 @@ mod tests {
                 document_artifact_id(app, workspace, record),
                 Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
-                OpClass::Splice,
+                OpKind::Change,
                 SystemTime::UNIX_EPOCH,
                 1,
                 EncryptionMetadata::mls_application(4, document_channel_id(app, workspace, record)),
@@ -1132,7 +1132,7 @@ mod tests {
                     document_artifact_id(app, workspace, record),
                     Ed25519PublicKey::from_bytes([8; 32]),
                     document_attestation_id(app, workspace, record),
-                    OpClass::Splice,
+                    OpKind::Change,
                     SystemTime::UNIX_EPOCH,
                     1,
                     EncryptionMetadata::mls_application(0, channel),

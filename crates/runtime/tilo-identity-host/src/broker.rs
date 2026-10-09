@@ -13,7 +13,6 @@ use std::time::Duration;
 #[cfg(test)]
 use collab_types::DocumentMutation;
 use collab_types::caps::Principal;
-use collab_types::validator::{op_kind, op_node};
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
@@ -432,10 +431,24 @@ fn sign_collaboration_op(
             .to_string();
     let decided = read_workspace(tree, bound_room, |workspace| {
         workspace.role_of(&principal_id)?;
-        let node = op_node(&workspace.policy.room, Some(app_id), record_id, op.op_class);
+        let record = collab_types::Record {
+            room: &workspace.policy.room,
+            app: app_id,
+            record: record_id,
+        };
+        let allows = |node: &tilo_action_policy::TreePath, kind| {
+            workspace.answer_at(&principal_id, node, kind, unix_now()) == Answer::Allow
+        };
         Some(
-            workspace.answer_at(&principal_id, &node, op_kind(op.op_class), unix_now())
-                == Answer::Allow,
+            collab_types::decide_op(
+                &op,
+                &record,
+                None,
+                None,
+                &collab_types::Surfaces::default(),
+                &allows,
+            )
+            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
         )
     });
     let allowed = match decided {
@@ -857,7 +870,7 @@ mod tests {
             document_artifact_id(app_id, &workspace_id, record_id),
             author,
             document_attestation_id(app_id, &workspace_id, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             1,
         );
@@ -887,7 +900,7 @@ mod tests {
             document_artifact_id(app_id, &workspace_id, record_id),
             author,
             document_attestation_id(app_id, &workspace_id, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             2,
             collab_types::EncryptionMetadata::mls_application(
@@ -956,23 +969,8 @@ mod tests {
         workspace.set_owner("someone-else");
         workspace.admit(profile.principal_id(), Role::Commenter);
         drop(tree_guard);
-        op.payload = DocumentMutation::Incremental(b"comment".to_vec())
-            .encode()
-            .expect("typed comment mutation");
-        op.op_class = collab_types::OpClass::Comment;
-        let comment = postcard::to_stdvec(&op).expect("comment envelope");
-        assert!(matches!(
-            sign_collaboration_op(
-                &tree,
-                &room,
-                app_id,
-                &workspace_id,
-                app_id,
-                record_id,
-                &comment,
-            ),
-            Response::Signature(_)
-        ));
+        // Without the app's surface a change is decided as an edit of the
+        // record, which a commenter is not granted.
         assert!(matches!(
             sign_collaboration_op(
                 &tree,
@@ -997,7 +995,7 @@ mod tests {
                 &workspace_id,
                 app_id,
                 record_id,
-                &comment,
+                &unsigned,
             ),
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
@@ -1093,7 +1091,7 @@ mod tests {
             document_artifact_id("so.tilo.notes", &workspace_id, record_id),
             Ed25519PublicKey::from_bytes(identity.signing_public_key()),
             document_attestation_id("so.tilo.notes", &workspace_id, record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             1,
         );

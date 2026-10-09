@@ -96,7 +96,7 @@ fn signed(
         collab_types::document_artifact_id(APP, ROOM, "one"),
         collab_types::Ed25519PublicKey::from_bytes(source),
         collab_types::document_attestation_id(APP, ROOM, "one"),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         now,
         seq,
     )

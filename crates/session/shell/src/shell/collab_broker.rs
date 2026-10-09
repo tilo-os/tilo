@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use collab_types::ArtifactId;
 #[cfg(test)]
 use collab_types::{
-    DocumentMutation, OpClass, ValidationError, document_artifact_id, document_attestation_id,
+    DocumentMutation, OpKind, ValidationError, document_artifact_id, document_attestation_id,
 };
 use ui::collaboration::CollabEvent;
 
@@ -1216,7 +1216,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
             );
@@ -1256,7 +1256,7 @@ mod tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 author,
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                OpClass::Splice,
+                OpKind::Change,
                 std::time::SystemTime::now(),
                 1,
                 collab_types::EncryptionMetadata::mls_application(9, expected_channel),

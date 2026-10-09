@@ -113,7 +113,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
     assert!(
         probe()
             .iter()
-            .all(|op| op.op_class == collab_types::OpClass::Splice),
+            .all(|op| op.kind == collab_types::OpKind::Change),
         "app document changes carry the one coarse class the collaboration docs describe"
     );
     assert!(app.collaboration.manager.is_connected());

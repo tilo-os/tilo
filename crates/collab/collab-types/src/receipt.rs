@@ -268,5 +268,145 @@ pub fn check_claims(
     Ok(Receipt::Admit)
 }
 
+/// Where a receiver finds the package surface of a record's app.
+pub trait SurfaceSource: Send + Sync {
+    /// The surface of `record`'s app for records of kind `kind` (the app's
+    /// own resource when `None`), or `None` while it is not here: the op is
+    /// held until it is.
+    fn surface(
+        &self,
+        record: &Record<'_>,
+        kind: Option<&str>,
+    ) -> Option<std::sync::Arc<dyn ReceiptSurface>>;
+}
+
+/// The surfaces a receiver decides claims with, or none: before a receiver
+/// has a surface source it decides a change by the record alone (an edit of
+/// the record), as it did before changes named their actions.
+#[derive(Clone, Default)]
+pub struct Surfaces(Option<std::sync::Arc<dyn SurfaceSource>>);
+
+impl Surfaces {
+    /// Decide claims with `source`.
+    #[must_use]
+    pub fn from_source(source: std::sync::Arc<dyn SurfaceSource>) -> Self {
+        Self(Some(source))
+    }
+
+    /// Whether claims are decided against app surfaces.
+    #[must_use]
+    pub fn enforced(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl std::fmt::Debug for Surfaces {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.enforced() {
+            "Surfaces(enforced)"
+        } else {
+            "Surfaces(record only)"
+        })
+    }
+}
+
+/// The node of a record, `room › app › record`, as a change is decided
+/// without its app's surface.
+#[must_use]
+pub fn record_node(record: &Record<'_>) -> TreePath {
+    TreePath::room(record.room)
+        .app(record.app)
+        .resource(record.record)
+}
+
+/// Decide a received op on `record`: a compaction or redaction as the
+/// room's governance action, a change by its claims ([`check_claims`])
+/// against the app surface `surfaces` finds, or, with no surface source, as
+/// an edit of the record.
+///
+/// # Errors
+/// The first [`ReceiptRefusal`].
+pub fn decide_op(
+    op: &crate::op::SignedOp,
+    record: &Record<'_>,
+    kind: Option<&str>,
+    held: Option<&automerge::Automerge>,
+    surfaces: &Surfaces,
+    allows: &dyn Fn(&TreePath, ActionKind) -> bool,
+) -> Result<Receipt, ReceiptRefusal> {
+    use tilo_action_policy::roles;
+    let governed = |action: &str| {
+        let node = roles::governance_action(record.room, action);
+        if allows(&node, roles::GOVERNANCE_KIND) {
+            Ok(Receipt::Admit)
+        } else {
+            Err(ReceiptRefusal::NotGranted {
+                node: node.to_string(),
+                kind: roles::GOVERNANCE_KIND,
+            })
+        }
+    };
+    match op.kind {
+        crate::role::OpKind::Compaction => governed(roles::governance::COMPACT),
+        crate::role::OpKind::Redaction => governed(roles::governance::REDACT),
+        crate::role::OpKind::Change => {
+            let Some(source) = &surfaces.0 else {
+                let node = record_node(record);
+                return if allows(&node, ActionKind::Undoable) {
+                    Ok(Receipt::Admit)
+                } else {
+                    Err(ReceiptRefusal::NotGranted {
+                        node: node.to_string(),
+                        kind: ActionKind::Undoable,
+                    })
+                };
+            };
+            let changes = cleartext_changes(op)?;
+            // The units each change writes, read from the record as this
+            // receiver holds it.
+            let written = match (&changes, held) {
+                (Some(changes), Some(held)) => Some(crate::units::units_by_change(held, changes)),
+                _ => None,
+            };
+            let units = |hash: &[u8; 32]| {
+                written
+                    .as_ref()
+                    .and_then(|written| written.get(hash).cloned())
+                    .unwrap_or_default()
+            };
+            let hashes: Option<Vec<[u8; 32]>> = changes
+                .as_ref()
+                .map(|changes| changes.iter().map(|change| change.hash().0).collect());
+            let surface = source.surface(record, kind);
+            check_claims(
+                &op.claims,
+                record,
+                hashes.as_deref(),
+                written.is_some().then_some(&units as WrittenUnits<'_>),
+                surface.as_deref(),
+                allows,
+            )
+        }
+    }
+}
+
+/// The hashes of the changes a cleartext op carries; `None` for a sealed
+/// op or one segment of a larger mutation, whose changes are checked once
+/// readable.
+fn cleartext_changes(
+    op: &crate::op::SignedOp,
+) -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
+    if op.encryption.is_some() {
+        return Ok(None);
+    }
+    match crate::op::DocumentMutation::decode(&op.payload) {
+        Ok(crate::op::DocumentMutation::Incremental(bytes)) => crate::claim::parse_changes(&bytes)
+            .map(Some)
+            .map_err(|_| ReceiptRefusal::Unclaimed),
+        // A snapshot is a checkpoint; segments are decided once whole.
+        Ok(crate::op::DocumentMutation::Snapshot(_)) | Err(_) => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests;

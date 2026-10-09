@@ -482,7 +482,7 @@ pub(super) fn unordered_document_message(
         collab_types::document_artifact_id(APP, &room, RECORD),
         author,
         collab_types::document_attestation_id(APP, &room, RECORD),
-        collab_types::OpClass::Splice,
+        collab_types::OpKind::Change,
         now,
         collab_types::next_unordered_document_sequence(now),
     )

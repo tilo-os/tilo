@@ -936,7 +936,7 @@ pub(crate) fn document_frames(
             artifact,
             collab_types::Ed25519PublicKey::from_bytes(author),
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             timestamp,
             now_ns.saturating_add(index as u64),
         );

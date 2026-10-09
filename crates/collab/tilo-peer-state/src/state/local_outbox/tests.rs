@@ -73,7 +73,7 @@ fn local_edit(
         collab_types::document_artifact_id("test.app", peer.room(), "tab:1"),
         author,
         collab_types::document_attestation_id("test.app", peer.room(), "tab:1"),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         seq,
     );

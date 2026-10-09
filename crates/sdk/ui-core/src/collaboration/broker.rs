@@ -5317,7 +5317,7 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
             metadata,
@@ -5327,7 +5327,7 @@ async fn try_send_frame(
             artifact,
             author,
             attestation,
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             now,
             seq,
         ),
@@ -8864,7 +8864,7 @@ mod tests {
             artifact,
             collab_types::Ed25519PublicKey::from_bytes([3; 32]),
             collab_types::AttestationId::new(),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             crate::time::SystemTime::UNIX_EPOCH,
             1,
             metadata,
@@ -11016,7 +11016,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 1,
             );
@@ -11252,7 +11252,7 @@ mod tests {
                 .sign_op(
                     b"last unique operation".to_vec(),
                     artifact,
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                 )
                 .expect("the final unique sequence remains valid");
             assert_eq!(final_op.seq, u64::MAX);
@@ -11261,7 +11261,7 @@ mod tests {
             let exhausted = identity.sign_op(
                 b"must not reuse zero".to_vec(),
                 artifact,
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
             );
             assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
             assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
@@ -11276,7 +11276,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 43,
             );
@@ -11328,7 +11328,7 @@ mod tests {
                     artifact,
                     collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                     collab_types::AttestationId::new(),
-                    collab_types::OpClass::Splice,
+                    collab_types::OpKind::Change,
                     crate::time::SystemTime::UNIX_EPOCH,
                     1,
                     metadata,
@@ -11349,7 +11349,7 @@ mod tests {
                 artifact,
                 collab_types::Ed25519PublicKey::from_bytes([9; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 2,
             );
@@ -11469,7 +11469,7 @@ mod tests {
                         artifact,
                         collab_types::Ed25519PublicKey::from_bytes([3; 32]),
                         collab_types::AttestationId::new(),
-                        collab_types::OpClass::Splice,
+                        collab_types::OpKind::Change,
                         crate::time::SystemTime::UNIX_EPOCH,
                         seq,
                         metadata,
@@ -11561,7 +11561,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 42,
             );
@@ -11765,7 +11765,7 @@ mod tests {
                 collab_types::ArtifactId::new(),
                 collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
                 collab_types::AttestationId::new(),
-                collab_types::OpClass::Splice,
+                collab_types::OpKind::Change,
                 crate::time::SystemTime::UNIX_EPOCH,
                 5,
             );

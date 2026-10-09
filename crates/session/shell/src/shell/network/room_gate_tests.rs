@@ -58,7 +58,7 @@ fn envelope() -> Box<collab_types::SignedOp> {
         collab_types::document_artifact_id("so.tilo.notes", ROOM, "notes"),
         collab_types::Ed25519PublicKey::from_bytes([2; 32]),
         collab_types::document_attestation_id("so.tilo.notes", ROOM, "notes"),
-        collab_types::OpClass::Comment,
+        collab_types::OpKind::Change,
         std::time::SystemTime::UNIX_EPOCH,
         1,
     ))

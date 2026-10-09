@@ -67,7 +67,7 @@ mod owner_commit_tests {
                 document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
                 Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
                 document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-                collab_types::OpClass::Splice, SystemTime::now(), 1);
+                collab_types::OpKind::Change, SystemTime::now(), 1);
             sign_op(&mut op, &device).unwrap();
             let mut request = client.send_request();
             request.get().set_op(&postcard::to_stdvec(&op).unwrap());
@@ -597,7 +597,7 @@ mod owner_commit_tests {
             document_artifact_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
             Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
             document_attestation_id(&f.route.app_id, &f.route.cluster_id, &f.route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1000,
         );

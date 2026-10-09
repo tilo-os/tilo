@@ -6380,19 +6380,28 @@ impl CapnpBrokerState {
         drop(broker_channels);
         // The change the op makes must be allowed outright: a signed op
         // carries no answer to a grant that would ask first.
-        let node = collab_types::validator::op_node(
-            &route.cluster_id,
-            Some(&route.app_id),
-            &route.record_id,
-            envelope.op_class,
-        );
-        let kind = collab_types::validator::op_kind(envelope.op_class);
+        let record = collab_types::Record {
+            room: &route.cluster_id,
+            app: &route.app_id,
+            record: &route.record_id,
+        };
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |authority| {
-                authority
-                    .decide(&node, kind, &tilo_desktop_model::context_at(now))
-                    .answer
-                    == Answer::Allow
+                let allows = |node: &tilo_action_policy::TreePath, kind| {
+                    authority
+                        .decide(node, kind, &tilo_desktop_model::context_at(now))
+                        .answer
+                        == Answer::Allow
+                };
+                collab_types::decide_op(
+                    envelope,
+                    &record,
+                    None,
+                    None,
+                    &collab_types::Surfaces::default(),
+                    &allows,
+                )
+                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
             })
             .map_err(capnp::Error::failed)?;
         if !allowed {
@@ -10464,13 +10473,13 @@ fn handle_signed_op_send_for_artifact(
                 ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == collab_types::OpClass::Compaction
+                if envelope.kind == collab_types::OpKind::Compaction
                     && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
             }
-            if envelope.op_class == collab_types::OpClass::Redact {
+            if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
@@ -15662,7 +15671,7 @@ pub mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
@@ -15697,7 +15706,7 @@ pub mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             2,
             collab_types::EncryptionMetadata::mls_application(7, expected_channel),
@@ -15844,7 +15853,7 @@ pub mod tests {
             document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
@@ -15931,7 +15940,7 @@ pub mod tests {
             document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
             author,
             document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
-            collab_types::OpClass::Splice,
+            collab_types::OpKind::Change,
             SystemTime::now(),
             1,
         );
