@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_resource::{Delta, Demand, Doc, ModelError, Reader, Resource};
+use tilo_resource::{Delta, Demand, Doc, ModelError, Place, Reader, Resource};
 
 /// A shared handle to the current state of one resource.
 ///
@@ -18,7 +18,35 @@ use tilo_resource::{Delta, Demand, Doc, ModelError, Reader, Resource};
 pub struct Live<R: Resource> {
     inner: Rc<RefCell<Reader<R>>>,
     changes: Rc<RefCell<Changes>>,
+    places: Rc<RefCell<Places<R>>>,
 }
+
+/// Where each participant's last action left them ([`Resource::lands`]):
+/// the framework's record of where an agent or a collaborator works, which
+/// presence draws and a surface reads instead of keeping its own copy.
+struct Places<R: Resource> {
+    /// Applied for a participant, not yet placed: placed once the state
+    /// holds what they did.
+    applied: Vec<(tilo_actions::ParticipantId, R::Action)>,
+    at: std::collections::HashMap<tilo_actions::ParticipantId, Place>,
+    /// The latest landings in order, numbered, for surfaces to follow.
+    log: std::collections::VecDeque<(u64, tilo_actions::ParticipantId, Place)>,
+    next: u64,
+}
+
+impl<R: Resource> Default for Places<R> {
+    fn default() -> Self {
+        Self {
+            applied: Vec::new(),
+            at: std::collections::HashMap::new(),
+            log: std::collections::VecDeque::new(),
+            next: 0,
+        }
+    }
+}
+
+/// How many landings a surface that missed some can still catch up on.
+const LANDINGS_KEPT: usize = 64;
 
 /// What changed since bound controls last followed the state: `None` when
 /// nothing did.
@@ -41,6 +69,7 @@ impl<R: Resource> Clone for Live<R> {
         Self {
             inner: Rc::clone(&self.inner),
             changes: Rc::clone(&self.changes),
+            places: Rc::clone(&self.places),
         }
     }
 }
@@ -50,7 +79,59 @@ impl<R: Resource> Live<R> {
         Self {
             inner: Rc::new(RefCell::new(reader)),
             changes: Rc::default(),
+            places: Rc::default(),
         }
+    }
+
+    /// Note that `action` was applied for `participant`; where it left them
+    /// is read once the state follows it ([`Self::place_landings`]).
+    pub(crate) fn note_applied(&self, participant: tilo_actions::ParticipantId, action: R::Action) {
+        self.places.borrow_mut().applied.push((participant, action));
+    }
+
+    /// Place every participant whose action the state now holds, where
+    /// [`Resource::lands`] says it left them.
+    pub(crate) fn place_landings(&self) {
+        let applied = std::mem::take(&mut self.places.borrow_mut().applied);
+        if applied.is_empty() {
+            return;
+        }
+        let state = self.get();
+        let mut places = self.places.borrow_mut();
+        for (participant, action) in applied {
+            let Some(place) = R::lands(&state, &action) else {
+                continue;
+            };
+            let number = places.next;
+            places.next = number.saturating_add(1);
+            places.at.insert(participant.clone(), place.clone());
+            places.log.push_back((number, participant, place));
+            if places.log.len() > LANDINGS_KEPT {
+                places.log.pop_front();
+            }
+        }
+    }
+
+    /// Where `participant`'s last action left them, as the resource places
+    /// it ([`Resource::lands`]): the paragraph an agent appended, the table
+    /// it inserted. `None` before they did anything that lands somewhere.
+    pub fn place_of(&self, participant: &tilo_actions::ParticipantId) -> Option<Place> {
+        self.places.borrow().at.get(participant).cloned()
+    }
+
+    /// The landings numbered `from` on, and the number to ask from next.
+    pub(crate) fn landings_since(
+        &self,
+        from: u64,
+    ) -> (Vec<(tilo_actions::ParticipantId, Place)>, u64) {
+        let places = self.places.borrow();
+        let landed = places
+            .log
+            .iter()
+            .filter(|(number, _, _)| *number >= from)
+            .map(|(_, participant, place)| (participant.clone(), place.clone()))
+            .collect();
+        (landed, places.next)
     }
 
     /// What changed since the last call, for the readers bound to the

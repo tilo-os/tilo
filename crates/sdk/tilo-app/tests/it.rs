@@ -39,6 +39,8 @@ pub mod item_actions;
 pub mod item_effects;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "landings.rs"]
+pub mod landings;
 #[path = "launch.rs"]
 pub mod launch;
 #[path = "lazy_rows.rs"]
