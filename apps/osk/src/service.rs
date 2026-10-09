@@ -128,7 +128,24 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
                 .to_owned()
         })?),
     };
-    let Some(im) = im else {
+    let im = match im.map(|im| {
+        im.connection_fd()
+            .and_then(FocusWait::new)
+            .map(|wait| (im, wait))
+    }) {
+        None => None,
+        Some(Ok(followed)) => Some(followed),
+        Some(Err(error)) if choice == InputMethodChoice::Require => {
+            return Err(format!(
+                "cannot wait on the input method connection: {error}"
+            ));
+        }
+        Some(Err(error)) => {
+            tracing::warn!("osk: cannot wait on the input method connection: {error}");
+            None
+        }
+    };
+    let Some((im, (waiter, nudge))) = im else {
         let mut injector = default_injector();
         tracing::info!("osk: text-injection backend = {}", injector.backend_name());
         let mut emulator = PreeditEmulator::new();
@@ -142,10 +159,6 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
         });
     };
     tracing::info!("osk: auto-show via input-method-v2");
-    let (waiter, nudge) = im
-        .connection_fd()
-        .and_then(FocusWait::new)
-        .map_err(|error| format!("cannot wait on the input method connection: {error}"))?;
     let im = Arc::new(Mutex::new(im));
     let (context_send, context_receive) = std::sync::mpsc::channel();
     let focus = FocusChanges(Some(follow_focus(
@@ -212,6 +225,8 @@ enum Woken {
 struct FocusWait {
     socket: OwnedFd,
     nudged: UnixStream,
+    /// The socket hung up and the reads after it have been allowed once.
+    hung_up: std::cell::Cell<bool>,
 }
 
 /// The UI thread's end of [`FocusWait`]'s nudge. Dropping it ends the focus
@@ -230,11 +245,21 @@ impl FocusWait {
         let (nudged, nudge) = UnixStream::pair()?;
         nudged.set_nonblocking(true)?;
         nudge.set_nonblocking(true)?;
-        Ok((Self { socket, nudged }, Nudge(nudge)))
+        Ok((
+            Self {
+                socket,
+                nudged,
+                hung_up: std::cell::Cell::new(false),
+            },
+            Nudge(nudge),
+        ))
     }
 
     /// Sleep until the socket is readable or the UI thread nudges.
     fn wait(&self) -> Woken {
+        if self.hung_up.get() {
+            return Woken::Closed;
+        }
         let mut fds = [
             libc::pollfd {
                 fd: self.socket.as_raw_fd(),
@@ -262,10 +287,14 @@ impl FocusWait {
         if nudged.revents != 0 && !self.drain_nudges() {
             return Woken::Closed;
         }
-        // A hung-up socket stays readable at end of file; waiting on it again
-        // would spin.
-        if socket.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        if socket.revents & libc::POLLNVAL != 0 {
             return Woken::Closed;
+        }
+        // A hung-up socket stays readable at end of file, so waiting on it
+        // again would spin: read what the compositor sent before hanging up
+        // (one last `Ready`), then stop.
+        if socket.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            self.hung_up.set(true);
         }
         Woken::Ready
     }
@@ -483,8 +512,14 @@ mod tests {
             .expect("the nudge collects the deactivation");
         assert_eq!(hidden.visibility_changed, Some(false));
 
-        // Phase `a_closed_compositor_ends_the_thread`.
+        // Phase `a_closed_compositor_ends_the_thread_after_its_last_words`.
+        queued.lock().expect("queued").push(ImEvent::Activate);
+        (&compositor).write_all(&[0]).expect("compositor writes");
         drop(compositor);
+        let last = changes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("what the compositor sent before hanging up is read");
+        assert_eq!(last.visibility_changed, Some(true));
         assert!(
             matches!(
                 changes.recv_timeout(Duration::from_secs(5)),
