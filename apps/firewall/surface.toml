@@ -1,0 +1,101 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "firewall.config"
+label = "Firewall"
+version = 1
+
+[[resources.fields]]
+owner = "firewall"
+path = "enabled"
+readonly = true
+stored = "value"
+title = "Running: started and stopped by verbs"
+type = "bool"
+
+[[resources.fields]]
+owner = "firewall"
+path = "panic_mode"
+readonly = true
+stored = "value"
+title = "Panic mode: entered and left by verbs"
+type = "bool"
+
+[[resources.fields]]
+owner = "firewall"
+path = "default_zone"
+stored = "value"
+title = "Active zone"
+type = "ZoneKind"
+
+[[resources.fields]]
+owner = "firewall"
+path = "zones"
+stored = "value"
+title = "The configured zones, by zone name"
+type = "BTreeMap<String, StoredZone>"
+
+[[resources.verbs]]
+description = "Start firewall."
+id = "start"
+kind = "undoable"
+label = "Start firewall"
+params = []
+
+[[resources.verbs]]
+description = "Stop firewall."
+id = "stop"
+kind = "undoable"
+label = "Stop firewall"
+params = []
+
+[[resources.verbs]]
+description = "Enter panic mode: drop all traffic in and out."
+id = "enter-panic-mode"
+kind = "undoable"
+label = "Enter panic mode: drop all traffic in and out"
+params = []
+
+[[resources.verbs]]
+description = "Exit panic mode."
+id = "exit-panic-mode"
+kind = "undoable"
+label = "Exit panic mode"
+params = []
+
+[[resources.verbs]]
+description = "Delete a rule from a zone."
+id = "delete-rule"
+kind = "undoable"
+label = "Delete a rule from a zone"
+
+[[resources.verbs.params]]
+name = "zone"
+required = true
+
+[resources.verbs.params.schema]
+description = "The zone's name, such as public"
+type = "string"
+
+[[resources.verbs.params]]
+name = "rule"
+required = true
+
+[resources.verbs.params.schema]
+description = "The rule's id"
+type = "string"
+
+[[resources.verbs]]
+description = "Take in the configuration firewalld reported on a device."
+id = "import"
+kind = "undoable"
+label = "Take in the configuration firewalld reported on a device"
+
+[[resources.verbs.params]]
+name = "config"
+required = true
+
+[resources.verbs.params.schema]
+description = "The configuration, as firewalld reported it"

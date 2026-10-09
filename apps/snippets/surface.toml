@@ -1,0 +1,210 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "snippets.library"
+label = "Snippets"
+version = 1
+
+[[resources.fields]]
+owner = "snippets"
+path = "snippets"
+stored = "collection"
+title = "Snippets"
+type = "Collection<Snippet>"
+
+[[resources.fields]]
+label = true
+owner = "snippet"
+path = "snippets.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.body"
+stored = "value"
+title = "Body"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.description"
+stored = "value"
+title = "What the snippet is for, shown above the body"
+type = "String"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.favorite"
+stored = "value"
+title = "Starred"
+type = "bool"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.folder"
+stored = "value"
+title = 'Folder: empty for none (only "All snippets" lists it). Written'
+type = "Atom"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.language"
+stored = "value"
+title = "Language"
+type = "Language"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.tags"
+stored = "value"
+title = "Tags"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "snippet"
+path = "snippets.*.uses"
+readonly = true
+stored = "value"
+title = """How often it was copied: drives "Most used" and the row's usage"""
+type = "Counter"
+
+[[resources.verbs]]
+description = "Create a snippet."
+id = "new-snippet"
+kind = "undoable"
+label = "Create a snippet"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+description = "Title"
+type = "string"
+
+[[resources.verbs.params]]
+name = "folder"
+required = false
+
+[resources.verbs.params.schema]
+description = "Folder to file it under; none for All snippets"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Duplicate a snippet."
+id = "duplicate"
+kind = "undoable"
+label = "Duplicate a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+description = "Snippet"
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+description = "Title of the copy; the original's when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Delete a snippet."
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+description = "Snippet"
+type = "string"
+
+[[resources.verbs]]
+description = "Record a use of a snippet."
+id = "record-use"
+kind = "undoable"
+label = "Record a use of a snippet"
+
+[[resources.verbs.params]]
+name = "snippet"
+required = true
+
+[resources.verbs.params.schema]
+description = "Snippet"
+type = "string"
+
+[[resources.verbs]]
+description = "Rename a folder."
+id = "rename-folder"
+kind = "undoable"
+label = "Rename a folder"
+
+[[resources.verbs.params]]
+name = "folder"
+required = true
+
+[resources.verbs.params.schema]
+description = "Folder"
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+description = "New name"
+type = "string"
+
+[[resources.verbs]]
+description = "Rename a tag."
+id = "rename-tag"
+kind = "undoable"
+label = "Rename a tag"
+
+[[resources.verbs.params]]
+name = "tag"
+required = true
+
+[resources.verbs.params.schema]
+description = "Tag"
+type = "string"
+
+[[resources.verbs.params]]
+name = "to"
+required = true
+
+[resources.verbs.params.schema]
+description = "New name"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove a tag from every snippet."
+id = "remove-tag"
+kind = "undoable"
+label = "Remove a tag from every snippet"
+
+[[resources.verbs.params]]
+name = "tag"
+required = true
+
+[resources.verbs.params.schema]
+description = "Tag"
+type = "string"

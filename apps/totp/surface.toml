@@ -1,0 +1,101 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "totp.vault"
+label = "Accounts"
+version = 1
+
+[[resources.fields]]
+owner = "totp"
+path = "accounts"
+stored = "collection"
+title = "Accounts"
+type = "Collection<StoredAccount>"
+
+[[resources.fields]]
+label = true
+owner = "stored-account"
+path = "accounts.*.issuer"
+stored = "value"
+title = "Issuer"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-account"
+path = "accounts.*.label"
+stored = "value"
+title = "Account name"
+type = "String"
+
+[[resources.fields]]
+owner = "stored-account"
+path = "accounts.*.algorithm"
+stored = "value"
+title = "Algorithm"
+type = "Algorithm"
+
+[[resources.fields]]
+owner = "stored-account"
+path = "accounts.*.digits"
+stored = "value"
+title = "Digits"
+type = "u8"
+
+[[resources.fields]]
+owner = "stored-account"
+path = "accounts.*.period"
+stored = "value"
+title = "Period in seconds"
+type = "u32"
+
+[[resources.fields]]
+owner = "stored-account"
+path = "accounts.*.color"
+stored = "value"
+title = "Colour"
+type = "u8"
+
+[[resources.verbs]]
+description = "Move an account one place up."
+id = "move-up"
+kind = "undoable"
+label = "Move an account one place up"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+description = "Account"
+type = "string"
+
+[[resources.verbs]]
+description = "Move an account one place down."
+id = "move-down"
+kind = "undoable"
+label = "Move an account one place down"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+description = "Account"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete an account and forget its secret on every device."
+destructive = true
+id = "delete"
+kind = "undoable"
+label = "Delete an account and forget its secret on every device"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+description = "Account"
+type = "string"

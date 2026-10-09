@@ -1,0 +1,348 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "shortcuts.workbench"
+label = "Shortcuts"
+version = 1
+
+[[resources.fields]]
+owner = "workbench"
+path = "drafts"
+stored = "collection"
+title = "Drafts"
+type = "Collection<Draft>"
+
+[[resources.fields]]
+label = true
+owner = "draft"
+path = "drafts.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.shortcut_id"
+stored = "value"
+title = "The id the shortcut is saved under"
+type = "String"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.inputs"
+stored = "collection"
+title = "The shortcut's inputs, keyed by name"
+type = "Collection<Json<Option<ActionParam>>>"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.steps"
+stored = "collection"
+title = "Every step at every depth, in program order; a step names the block"
+type = "Collection<StepNode>"
+
+[[resources.fields]]
+owner = "step-node"
+path = "drafts.*.steps.*.parent"
+stored = "value"
+title = "The item id of the step whose block holds this one; empty at the top"
+type = "Atom"
+
+[[resources.fields]]
+owner = "step-node"
+path = "drafts.*.steps.*.branch"
+stored = "value"
+title = "Which block of the parent: `then`, `else` or `each`; empty at the top"
+type = "Atom"
+
+[[resources.fields]]
+owner = "step-node"
+path = "drafts.*.steps.*.id"
+stored = "value"
+title = "The step's own id, which bindings to its output name"
+type = "Atom"
+
+[[resources.fields]]
+owner = "step-node"
+path = "drafts.*.steps.*.head"
+stored = "value"
+title = "What the step does, apart from its arguments and blocks"
+type = "Json<Option<Head>>"
+
+[[resources.fields]]
+owner = "step-node"
+path = "drafts.*.steps.*.args"
+stored = "value"
+title = "An action step's arguments, each bound on its own"
+type = "BTreeMap<String, Json<Option<Binding>>>"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.output"
+stored = "value"
+title = "What a finished run reports back"
+type = "Json<Option<Binding>>"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.triggers"
+stored = "value"
+title = "Carried unchanged from the saved shortcut, so editing its steps"
+type = "Json<Vec<TriggerSpec>>"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.consents"
+stored = "value"
+title = "Consents"
+type = "Json<Vec<UnattendedConsent>>"
+
+[[resources.fields]]
+owner = "draft"
+path = "drafts.*.replaces_saved"
+stored = "value"
+title = "Whether saving replaces a saved shortcut rather than creating one"
+type = "bool"
+
+[[resources.verbs]]
+description = "Start a new shortcut."
+id = "new-draft"
+kind = "undoable"
+label = "Start a new shortcut"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of the shortcut"
+type = "string"
+
+[[resources.verbs]]
+description = "Open a saved shortcut as a draft to change it."
+id = "open-shortcut"
+kind = "undoable"
+label = "Open a saved shortcut as a draft to change it"
+
+[[resources.verbs.params]]
+name = "shortcut"
+required = true
+
+[resources.verbs.params.schema]
+description = "The saved shortcut, as JSON"
+
+[[resources.verbs]]
+description = "Discard a draft. A saved shortcut it was editing stays as it was."
+id = "discard"
+kind = "undoable"
+label = "Discard a draft. A saved shortcut it was editing stays as it was"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs]]
+description = 'Add a step at the end of a block: `""` for the top level, or the branch of a step such as `2.then`, `2.else` or `3.each`.'
+id = "add-step"
+kind = "undoable"
+label = 'Add a step at the end of a block: `""` for the top level, or the'
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "block"
+required = true
+
+[resources.verbs.params.schema]
+description = "Block to add to: empty for the top level, or like 2.then"
+type = "string"
+
+[[resources.verbs.params]]
+name = "step"
+required = true
+
+[resources.verbs.params.schema]
+description = "The step, as JSON with a `step` kind"
+
+[[resources.verbs]]
+description = "Replace what a step does, keeping its id."
+id = "replace-step"
+kind = "undoable"
+label = "Replace what a step does, keeping its id"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "The step's position, like 0 or 2.then.1"
+type = "string"
+
+[[resources.verbs.params]]
+name = "step"
+required = true
+
+[resources.verbs.params.schema]
+description = "What the step does, as JSON with a `step` kind"
+
+[[resources.verbs]]
+description = "Bind one argument of an action step, or clear it."
+id = "bind-argument"
+kind = "undoable"
+label = "Bind one argument of an action step, or clear it"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "The step's position, like 0 or 2.then.1"
+type = "string"
+
+[[resources.verbs.params]]
+name = "param"
+required = true
+
+[resources.verbs.params.schema]
+description = "The parameter to bind"
+type = "string"
+
+[[resources.verbs.params]]
+name = "binding"
+required = true
+
+[resources.verbs.params.schema]
+description = "Where the value comes from, as binding JSON; empty clears it"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove a step, and everything inside it."
+id = "remove-step"
+kind = "undoable"
+label = "Remove a step, and everything inside it"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "The step's position, like 0 or 2.then.1"
+type = "string"
+
+[[resources.verbs]]
+description = "Move a step up or down within its block."
+id = "move-step"
+kind = "undoable"
+label = "Move a step up or down within its block"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "path"
+required = true
+
+[resources.verbs.params.schema]
+description = "The step's position, like 0 or 2.then.1"
+type = "string"
+
+[[resources.verbs.params]]
+name = "earlier"
+required = true
+
+[resources.verbs.params.schema]
+description = "True to move it earlier, false to move it later"
+type = "boolean"
+
+[[resources.verbs]]
+description = "Declare a value the shortcut is started with."
+id = "add-input"
+kind = "undoable"
+label = "Declare a value the shortcut is started with"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name of the input: letters, digits, - or _"
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+description = "text, number, integer, boolean, date-time or resource"
+type = "string"
+
+[[resources.verbs]]
+description = "Remove an input."
+id = "remove-input"
+kind = "undoable"
+label = "Remove an input"
+
+[[resources.verbs.params]]
+name = "draft"
+required = true
+
+[resources.verbs.params.schema]
+description = "Draft"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name"
+type = "string"
