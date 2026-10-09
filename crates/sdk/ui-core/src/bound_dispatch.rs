@@ -1448,7 +1448,15 @@ impl OrdinaryConfirmation {
             locus: spec.locus,
             kind: spec.kind,
             operation_type: spec.operation_type.clone(),
-            contract: spec.contract.clone(),
+            // What these arguments do decides the question (a field edit
+            // that removes an item asks; one that renames it does not).
+            contract: tilo_actions::ActionContract {
+                confirmation: match json {
+                    Some(json) => spec.confirmation_for_json(json),
+                    None => spec.confirmation_for_argument(argument),
+                },
+                ..spec.contract.clone()
+            },
             params: spec.params().to_vec(),
             input: control_input_surface(spec),
             continuation: match &intent {

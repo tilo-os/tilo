@@ -760,6 +760,10 @@ impl<R: Resource> Dispatcher<R> {
     /// `edits` lends, now, as [`Self::apply_now`] applies a typed action: for
     /// an editor that must see its own edit before the next keystroke.
     ///
+    /// One that needs confirming (a destructive verb, a removal) is not
+    /// applied now: it goes to the host's door, which asks first, and
+    /// applies once the person agreed, as [`Self::invoke`] does.
+    ///
     /// # Errors
     /// Returns why the submission does not build, or as [`Self::apply_now`].
     pub fn submit_now(
@@ -774,7 +778,26 @@ impl<R: Resource> Dispatcher<R> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
+        if asks(&action) {
+            return self.ask_first(invoke, &action);
+        }
         self.apply_now(edits, &action)
+    }
+
+    /// Hand an action that needs confirming to the host's door, which asks
+    /// before it applies: nothing applied now skips the person's consent.
+    fn ask_first(&self, invoke: Invoke<R>, action: &R::Action) -> Result<(), ActionError> {
+        if let Some(reason) = self.unreadable() {
+            return Err(ActionError::Refused(reason));
+        }
+        if !self.may_apply(action) {
+            return Err(ActionError::Refused(Self::not_allowed(&(self
+                .permission_of)(
+                action
+            ))));
+        }
+        self.invoke(invoke);
+        Ok(())
     }
 
     /// [`Self::submit_now`] of a group (`Invoke::group(edits)`): its members
@@ -805,6 +828,11 @@ impl<R: Resource> Dispatcher<R> {
                 refused
             ))));
         }
+        // A group holding a removal asks first, as the queued door does.
+        if group.actions.iter().any(asks) {
+            self.invoke(invoke.clone());
+            return Ok(());
+        }
         let mut context = ActionContext::for_resource(
             self.resource_id.as_ref(),
             R::KIND,
@@ -827,7 +855,9 @@ impl<R: Resource> Dispatcher<R> {
     /// recording what the action did.
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
-    /// joins its step.
+    /// joins its step. An action that needs confirming (a destructive verb,
+    /// a removal) is not applied now: it is submitted to the host's door,
+    /// which asks the person first ([`Self::apply`]).
     ///
     /// # Errors
     /// Returns [`ActionError::Refused`] for a participant who may only view,
@@ -865,6 +895,12 @@ impl<R: Resource> Dispatcher<R> {
                 .permission_of)(
                 action
             ))));
+        }
+        // Applying now never skips the person's consent: an action that
+        // needs confirming goes to the door, which asks first.
+        if asks(action) {
+            self.apply(action);
+            return Ok(());
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
@@ -1104,6 +1140,11 @@ impl Landed {
             .map(tilo_resource::Id::from_raw)
             .collect()
     }
+}
+
+/// Whether `action` needs the person's confirmation before it applies.
+fn asks<A: tilo_actions::Action>(action: &A) -> bool {
+    tilo_actions::Action::risk(action).requires_confirmation()
 }
 
 /// The submissions each effect queued that have not landed yet, and the
