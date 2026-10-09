@@ -87,7 +87,9 @@ def measured_cpu(stderr, successful):
     return receipt['user'] + receipt['system']
 
 
-def observe(command, cpus, executable_identity=None, max_threads=None, capture_lines=False):
+def observe(command, cpus, executable_identity=None, max_threads=None, capture_lines=False, on_line=None):
+    if on_line is not None and (not capture_lines or not callable(on_line)):
+        raise ValueError('live observation requires captured lines and a callable consumer')
     if max_threads is not None and (type(max_threads) is not int or max_threads < 1):
         raise ValueError('positive integer native thread limit required')
     def limits():
@@ -142,8 +144,11 @@ def observe(command, cpus, executable_identity=None, max_threads=None, capture_l
                                     break
                                 line, _, remaining = line_tail.partition(b'\n')
                                 line_tail = bytearray(remaining)
-                                stdout_events.append({'wall_seconds': time.monotonic()-start,
-                                                      'line': line.decode()})
+                                event = {'wall_seconds': time.monotonic()-start,
+                                         'line': line.decode()}
+                                stdout_events.append(event)
+                                if on_line is not None:
+                                    on_line(event)
                         if len(buffers[key.data]) > 1024 * 1024:
                             guarded = 'bounded_output'
                 if child.poll() is not None and not selector.get_map():

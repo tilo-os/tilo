@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--repeat-audio', type=int, choices=(1, 4, 11), default=1)
     parser.add_argument('--pad-to-session-limit', action='store_true',
                         help='Append silence to a complete public recording to exercise exactly 120 seconds')
+    parser.add_argument('--stream-replies', action='store_true',
+                        help='Forward actual bounded worker replies for concurrent synthetic app qualification')
     parser.add_argument('--automatic-language', action='store_true',
                         help='Exercise the default automatic language setting rather than the fixture language')
     args = parser.parse_args()
@@ -105,8 +107,11 @@ def main():
                     for line in (cg / 'memory.events').read_text().splitlines())
     before = events()
     identity = (root / 'image-worker').stat()
+    def forward(event):
+        if args.stream_replies and event['line'].startswith('WHISTLE_AOT_WORKER_REPLY '):
+            print(event['line'], flush=True)
     result = probe.observe(command, cpus, (identity.st_dev, identity.st_ino),
-                           max_threads=2, capture_lines=True)
+                           max_threads=2, capture_lines=True, on_line=forward)
     result.update(case=args.case, mode=args.mode, repeat_audio=args.repeat_audio,
                   fixture_language=language, requested_language=requested_language,
                   appended_silence_seconds=(len(raw) - unpadded_bytes) / 32000,

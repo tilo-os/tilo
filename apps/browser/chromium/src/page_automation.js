@@ -558,7 +558,11 @@ globalThis.__tiloPage ||= (() => {
   };
   addEventListener('blur', retireTextLease);
   addEventListener('focusout', retireTextLease, true);
-  addEventListener('input', retireTextLease, true);
+  addEventListener('input', event => {
+    const owned = committingTextLease;
+    if (!owned?.nativeEdit || !event.isTrusted || !composedContains(owned.element, event.target))
+      retireTextLease();
+  }, true);
   addEventListener('compositionstart', () => { composing = true; retireTextLease(); }, true);
   addEventListener('compositionend', () => { composing = false; }, true);
 
@@ -620,11 +624,11 @@ globalThis.__tiloPage ||= (() => {
         const raw = nativeTextEditor.textContent;
         if (raw.length > 262144)
           throw failure('text_input_large', 'This field is too large for deferred input');
-        return {field: true, native: true, editor: nativeTextEditor, root,
+        return {field: true, multiline: false, maxLength: element.maxLength, native: true, editor: nativeTextEditor, root,
           value: element.value, raw, anchor: selection.anchorNode, focus: selection.focusNode,
           start: selection.anchorOffset, end: selection.focusOffset};
       }
-      return {field: true, value: element.value, start: element.selectionStart,
+      return {field: true, multiline: element.localName === 'textarea', maxLength: element.maxLength, value: element.value, start: element.selectionStart,
         end: element.selectionEnd, direction: element.selectionDirection};
     }
     if (!element.isContentEditable || element.innerHTML.length > 262144)
@@ -633,11 +637,22 @@ globalThis.__tiloPage ||= (() => {
     if (!selection || selection.rangeCount !== 1 || !element.contains(selection.anchorNode) ||
         !element.contains(selection.focusNode))
       throw failure('not_editable', 'The focused editor has no local editable selection');
-    return {field: false, value: element.innerHTML, anchor: selection.anchorNode,
+    return {field: false, multiline: true, whitespace: getComputedStyle(element).whiteSpace, value: element.innerHTML, anchor: selection.anchorNode,
       focus: selection.focusNode, start: selection.anchorOffset, end: selection.focusOffset};
   }
   function validateNativeReplacement(lease, text) {
     const snapshot = lease.snapshot;
+    if ([...text].some(character => /\p{Cc}/u.test(character) &&
+        !(character === '\n' && snapshot.multiline === true)))
+      throw failure('rejected', 'The original field cannot accept those control characters');
+    if (!snapshot.field && text.includes('\n') &&
+        !['pre', 'pre-wrap', 'break-spaces'].includes(snapshot.whitespace) &&
+        (text.startsWith('\n') || text.endsWith('\n') ||
+         text.split('\n').some(line => line && (/^\s/u.test(line) || /\s$/u.test(line)))))
+      throw failure('rejected', 'This rich field cannot preserve literal whitespace at paragraph boundaries');
+    if (snapshot.field && !snapshot.native && lease.element.maxLength >= 0 &&
+        snapshot.value.length - (snapshot.end - snapshot.start) + text.length > lease.element.maxLength)
+      throw failure('rejected', 'The original field cannot accept that much text');
     if (!snapshot.native) return;
     const prefixLength = (node, offset) => {
       const range = document.createRange();
@@ -678,6 +693,58 @@ globalThis.__tiloPage ||= (() => {
       catch (_) { retireTextLease(); }
     }
   }, true);
+  function insertParagraphText(owned, text, expires) {
+    // TypingCommand::InsertText splits LF into block paragraphs. In an inline
+    // rich selection Chromium can add a third rendered LF and lose formatting.
+    // Native line breaks stay literal; collapsed formatting commands retain the
+    // original typing style and remain in the same native typing undo group.
+    const toggles = ['bold', 'italic', 'underline', 'strikeThrough', 'subscript', 'superscript'];
+    let formats = owned.snapshot.field ? [] : toggles.map(name =>
+      [name, document.queryCommandState(name)]);
+    const valueNames = ['fontName', 'fontSize', 'foreColor', 'hiliteColor'];
+    let values = owned.snapshot.field ? [] : valueNames.map(name =>
+      [name, document.queryCommandValue(name)]);
+    const check = () => {
+      if (owned.revoked || Date.now() >= expires)
+        throw failure('text_input_changed', 'The original paragraph edit was interrupted');
+      // Every native command can dispatch page input handlers. Recheck focus,
+      // secrecy, writable state and composition before issuing another command;
+      // never redirect the rest of a paragraph after a handler changes focus.
+      const current = textSnapshot(owned.element, owned.snapshot.native === true);
+      if (current.multiline !== owned.snapshot.multiline ||
+          current.whitespace !== owned.snapshot.whitespace ||
+          current.maxLength !== owned.snapshot.maxLength)
+        throw failure('text_input_changed', 'The original paragraph policy changed');
+    };
+    const edit = (name, value) => {
+      check();
+      owned.nativeEdit = true;
+      try {
+        if (!document.execCommand(name, false, value))
+          throw failure('rejected', 'The original field did not accept the paragraph');
+      } finally { owned.nativeEdit = false; }
+      check();
+    };
+    for (const [index, part] of text.split('\n').entries()) {
+      if (index) edit('insertLineBreak');
+      for (const [name, enabled] of formats) {
+        check();
+        if (document.queryCommandState(name) !== enabled) edit(name);
+      }
+      for (const [name, value] of values) {
+        check();
+        if (value && document.queryCommandValue(name) !== value) edit(name, value);
+      }
+      if (part) edit('insertText', part);
+      if (index === 0 && part && !owned.snapshot.field) {
+        // A mixed-format selection has indeterminate query state. Let native
+        // replacement choose its initial typing style, then carry that collapsed
+        // style across the remaining breaks rather than formatting the selection.
+        formats = toggles.map(name => [name, document.queryCommandState(name)]);
+        values = valueNames.map(name => [name, document.queryCommandValue(name)]);
+      }
+    }
+  }
   function guardedTextInput(command) {
     if (!Number.isFinite(command.expires_ms) || Date.now() >= command.expires_ms)
       throw failure('text_input_expired', 'The original text request expired');
@@ -695,7 +762,7 @@ globalThis.__tiloPage ||= (() => {
       });
       const options = {subtree: true, childList: true, characterData: true, attributes: true,
         attributeFilter: ['type', 'readonly', 'disabled', 'autocomplete', 'contenteditable',
-          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden', 'slot', 'name']};
+          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden', 'slot', 'name', 'maxlength']};
       // Observe every composed root: nested shadow hosts carry eligibility too.
       const roots = new Set([document]);
       if (snapshot.native) roots.add(snapshot.root);
@@ -706,7 +773,7 @@ globalThis.__tiloPage ||= (() => {
       }
       for (const root of roots) owned.observer.observe(root, options);
       owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
-      return {ok: true, message: 'Text input prepared', data: {lease}, history: nativeHistory()};
+      return {ok: true, message: 'Text input prepared', data: {lease, multiline: snapshot.multiline}, history: nativeHistory()};
     }
     if (!textLease || command.lease !== textLease.lease)
       throw failure('text_input_retired', 'This text-input lease is no longer active');
@@ -728,9 +795,9 @@ globalThis.__tiloPage ||= (() => {
       clearTimeout(owned.timer);
       owned.expires = performance.now() + 180000;
       owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
-      return {ok: true, message: 'Original text session started', data: {lease: owned.lease}, history: nativeHistory()};
+      return {ok: true, message: 'Original text session started', data: {lease: owned.lease, multiline: owned.snapshot.multiline}, history: nativeHistory()};
     }
-    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease}, history: nativeHistory()};
+    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease, multiline: owned.snapshot.multiline}, history: nativeHistory()};
     if (command.action === 'undo_text_input' || command.action === 'redo_text_input') {
       if (command.history_scope !== 'page')
         throw failure('rejected', 'Field-scoped native history is not available');
@@ -753,7 +820,8 @@ globalThis.__tiloPage ||= (() => {
       if (!owned.element.dispatchEvent(event) || Date.now() >= command.expires_ms || !sameTextSnapshot(owned))
         throw failure('text_input_changed', 'The page rejected or changed the original field');
       validateNativeReplacement(owned, command.text);
-      if (!document.execCommand('insertText', false, command.text))
+      if (command.text.includes('\n')) insertParagraphText(owned, command.text, command.expires_ms);
+      else if (!document.execCommand('insertText', false, command.text))
         throw failure('rejected', 'The original field did not accept the text');
       return {ok: true, message: 'Text input committed'};
     } finally { owned.observer.disconnect(); committingTextLease = null; nativeTextElement = null; nativeTextEditor = null; }

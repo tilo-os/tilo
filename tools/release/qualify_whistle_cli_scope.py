@@ -33,7 +33,11 @@ def admitted_scope():
     expected = {'memory.max': '1342177280', 'memory.high': '1207959552',
                 'memory.swap.max': '0', 'cpu.max': '200000 100000',
                 'cpu.weight': '20', 'pids.max': '64'}
-    if {key: (cg / key).read_text().strip() for key in expected} != expected:
+    try:
+        observed = {key: (cg / key).read_text().strip() for key in expected}
+    except OSError as error:
+        raise RuntimeError('unverified scope controls') from error
+    if observed != expected:
         raise RuntimeError('unverified scope controls')
     runtime = subprocess.check_output(
         ['systemctl', '--user', 'show', cg.name, '-p', 'RuntimeMaxUSec', '--value'],
