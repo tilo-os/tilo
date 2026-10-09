@@ -2288,22 +2288,20 @@ impl FrameBuilder {
             let rects =
                 ui::scene_parts::damage(old, old_parts.as_ref()?, compared, new_parts.as_ref()?)
                     .ok()?;
+            // `scene_parts::damage` admits only finite, non-negative bounds.
             for rect in rects {
-                regions.extend(self.part_damage_rect(rect)?);
+                regions.extend(self.part_damage_rect(rect));
             }
         }
         Some(regions)
     }
 
-    /// Native damage for a part's bounds, widened for antialiasing: `None`
-    /// when the bounds are unusable, `Some(None)` when no display shows them.
-    fn part_damage_rect(&self, rect: Rect) -> Option<Option<FineDamageRect>> {
+    /// Native damage for a part's finite bounds, widened for antialiasing;
+    /// `None` when no display shows them.
+    fn part_damage_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Bounds name geometry; antialiased edges reach a pixel beyond it.
         const ANTIALIAS: f64 = 2.0;
-        if !rect.is_finite() || rect.width() < 0.0 || rect.height() < 0.0 {
-            return None;
-        }
-        Some(self.native_damage_rect(Some(rect.inflate(ANTIALIAS, ANTIALIAS))))
+        self.native_damage_rect(Some(rect.inflate(ANTIALIAS, ANTIALIAS)))
     }
 
     /// Update only this producer's presenter capacity. Captures keep the default dense path.
