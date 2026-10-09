@@ -707,6 +707,7 @@ mod tests {
             folder: Some(folder.id),
             order: 0,
             kind: FeedKind::Rss,
+            certificate_pin: None,
         };
         app.invoke(apply(&FeedsAction::ImportSubscriptions {
             folders: vec![folder.clone()],
