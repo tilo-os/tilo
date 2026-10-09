@@ -21,7 +21,7 @@ fn encode(message: &NeighbourMsg, author: [u8; 32], index: usize) -> Source {
             workspace_id: tilo_relay::room_workspace_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
                 .unwrap(),
             author_device_public_key: author,
-            authored_at_ns: tilo_delivery_protocol::clock::now_ns(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
             delta: payload.encode().unwrap(),
             signature: [0; 64],
         })
@@ -70,7 +70,7 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
         .set_host_devices(workspace, &[cert.device_public_key])
         .unwrap();
     let update = directory
-        .sync_incremental(&key, tilo_delivery_protocol::clock::now_ns())
+        .sync_incremental(&key, tilo_clock::unix_now_ns())
         .unwrap();
     let mut host = cert.clone();
     host.capabilities = DeviceCapabilities::host();

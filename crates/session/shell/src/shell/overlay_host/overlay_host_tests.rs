@@ -498,6 +498,76 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
     history_open_distinguishes_files_links_and_semantic_ids();
     room_activity_preflight_failure_clears_placement_and_emits_one_notice();
 }
+
+/// Painting frames in which nothing changed does not refresh the passive
+/// Activity awareness (no tree write lock, no record reads), and a change to
+/// the workspace document refreshes it again.
+#[test]
+fn activity_refresh_skips_unchanged_frames() {
+    /// Counts the pane's refreshes: each asks once for the review snapshot.
+    #[derive(Default)]
+    struct CountingHost {
+        refreshes: std::cell::Cell<usize>,
+    }
+    impl tilo_desktop::activity::ActivityHost for CountingHost {
+        fn task_review_snapshot(
+            &self,
+            _room: &str,
+        ) -> Option<Result<Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
+            self.refreshes.set(self.refreshes.get().saturating_add(1));
+            None
+        }
+    }
+
+    let mut h = build_harness();
+    let host = std::rc::Rc::new(CountingHost::default());
+    h.host.room_activity_mut().set_host(host.clone());
+    assert!(
+        h.host.activity_window_rect().is_none(),
+        "the Activity window is closed: only the passive awareness refreshes"
+    );
+    paint(&mut h);
+    let settled = host.refreshes.get();
+    assert!(settled >= 1, "the first frame refreshes the awareness");
+
+    let started = Instant::now();
+    for _ in 0..10 {
+        paint(&mut h);
+    }
+    // Only the once-a-second fallback may refresh while nothing changes: at
+    // most once, plus once per further second the frames took to paint.
+    let fallbacks = started
+        .elapsed()
+        .as_millis()
+        .checked_div(ACTIVITY_AWARENESS_FALLBACK.as_millis())
+        .and_then(|seconds| usize::try_from(seconds).ok())
+        .expect("a fallback interval");
+    let idle = host.refreshes.get().saturating_sub(settled);
+    assert!(
+        idle <= fallbacks.saturating_add(1),
+        "{idle} refreshes over 10 unchanged frames painted in {:?}",
+        started.elapsed()
+    );
+
+    {
+        let state = h.chrome.borrow();
+        let mut tree = state.tree_mut();
+        let tree = &mut *tree;
+        if let Some(workspace) = tree.desktop.workspaces.first_mut() {
+            workspace.name = format!("{} · renamed", workspace.name);
+        }
+        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+    }
+    let before = host.refreshes.get();
+    paint(&mut h);
+    assert_eq!(
+        host.refreshes.get(),
+        before.saturating_add(1),
+        "a changed workspace document refreshes the awareness once"
+    );
+}
+
 use std::collections::HashMap as StdHashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;

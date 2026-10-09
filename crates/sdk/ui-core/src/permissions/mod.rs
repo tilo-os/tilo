@@ -224,7 +224,7 @@ impl PermissionContext {
             user,
             actor,
             caps,
-            now: unix_now(),
+            now: crate::time::try_unix_now(),
             policy_time: None,
             action_authority: None,
         }
@@ -287,7 +287,7 @@ impl PermissionContext {
     pub(crate) fn at_current_time(&self) -> Result<Self, String> {
         let now = match &self.policy_time {
             Some(sampler) => (sampler.0)()?,
-            None => unix_now().ok_or("execution time unavailable")?,
+            None => crate::time::try_unix_now().ok_or("execution time unavailable")?,
         };
         Ok(self.clone().at_unix_time(now))
     }
@@ -476,15 +476,6 @@ impl std::fmt::Debug for LivePermissions {
             .field(&*self.0.borrow())
             .finish()
     }
-}
-
-/// Seconds since the Unix epoch, or `None` if the clock is before the
-/// epoch (which would make every expiry comparison meaningless).
-fn unix_now() -> Option<u64> {
-    crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
 }
 
 mod action_authority;

@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, Cursor, ObjId, ObjType, ReadDoc, Value};
 use tilo_actions::ParticipantId;
-use ui::clock::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use crate::actions::RegionKind;
 use crate::actions::participant::{FindState, ParticipantView, ViewPoint};

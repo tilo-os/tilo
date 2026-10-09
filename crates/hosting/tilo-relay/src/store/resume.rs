@@ -32,11 +32,7 @@ const RETAINED_LOGS: usize = 4;
 fn new_log_id() -> [u8; 16] {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
-        });
+    let now = tilo_clock::unix_now_ns();
     let stamp = LAST
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
             Some(now.max(last.saturating_add(1)))

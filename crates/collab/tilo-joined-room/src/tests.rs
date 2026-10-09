@@ -783,6 +783,15 @@ fn commit_sealed(
     joined: &Enrolled,
     keys: &channel_crypto::ChannelContentKeys,
 ) -> collab_types::SignedOp {
+    commit_sealed_as(joined, keys, collab_types::ContentRetention::Delta)
+}
+
+/// Commit a write sealed under `keys` with the signed storage class `class`.
+fn commit_sealed_as(
+    joined: &Enrolled,
+    keys: &channel_crypto::ChannelContentKeys,
+    class: collab_types::ContentRetention,
+) -> collab_types::SignedOp {
     let OwnerCommitRequest {
         operation: CommitOperation::Document { mut envelope, .. },
         ..
@@ -791,11 +800,7 @@ fn commit_sealed(
         panic!("a document write")
     };
     let (metadata, sealed) = keys
-        .seal_content(
-            envelope.artifact,
-            collab_types::ContentRetention::Delta,
-            &envelope.payload,
-        )
+        .seal_content(envelope.artifact, class, &envelope.payload)
         .unwrap();
     envelope.payload = sealed;
     envelope.encryption = Some(metadata);
@@ -826,6 +831,73 @@ fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<
                 .collect())
         })
         .unwrap()
+}
+
+/// Native publication classifies through the one host classifier browser
+/// peers use, so a sealed checkpoint is a checkpoint to it there too. A
+/// member still never replaces the record's retained checkpoint under its own
+/// relay author: the sealed checkpoint leaves as a delta after it, while a
+/// cleartext snapshot stays a checkpoint the member never releases.
+#[test]
+fn native_sealed_checkpoint_is_classified_like_browser() {
+    use tilo_peer_state::transport::{Retention, retention};
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+        .try_into()
+        .expect("the committed sealed checkpoint is released");
+    let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+    let NeighbourMsg::AppDocument { envelope: sent, .. } = &message else {
+        panic!("a document write")
+    };
+    assert_eq!(**sent, envelope);
+
+    let (channel, class) = retention(&message, false).expect("sealed state is retained");
+    assert_eq!(class, Retention::Checkpoint, "the browser peer's class");
+    let (_, recorded, incremental) = crate::publication::metadata(&message).unwrap();
+    assert_eq!(recorded, channel, "the same host channel as a browser peer");
+    assert!(
+        incremental,
+        "a member's sealed checkpoint is published as a delta"
+    );
+    let published = joined
+        .owner
+        .with_outgoing(joined.room, joined.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| (entry.channel(), entry.retention()))
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert_eq!(published, [(channel, Retention::Delta)]);
+
+    let mut snapshot = message.clone();
+    let mut single_use = message;
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut snapshot {
+        envelope.encryption = None;
+        envelope.payload = collab_types::DocumentMutation::Snapshot(vec![1])
+            .encode()
+            .unwrap();
+    }
+    assert_eq!(
+        retention(&snapshot, false).map(|(_, class)| class),
+        Some(Retention::Checkpoint)
+    );
+    assert!(
+        !crate::publication::metadata(&snapshot).unwrap().2,
+        "a cleartext snapshot stays the governor's checkpoint"
+    );
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+            0,
+            collab_types::document_channel_id(APP, ROOM, ""),
+        ));
+    }
+    assert!(
+        crate::publication::metadata(&single_use).is_err(),
+        "a single-use MLS message has no retention class"
+    );
 }
 
 #[test]

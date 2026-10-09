@@ -333,7 +333,7 @@ impl Supervisor {
     }
 
     fn desired_shares(&self) -> Vec<HostShare> {
-        let now = tilo_clock_now();
+        let now = tilo_clock::unix_now();
         let mut desired = Grants::load(&self.config.paths.grants()).shares(Some(now));
         for share in &self.session_shares {
             if !desired.iter().any(|granted| granted.path == share.path) {
@@ -502,7 +502,7 @@ impl Supervisor {
                 let _ = self.virsh.set_memory_mib(target);
             }
         }
-        if let Some(actions) = self.life.activity(health.running, tilo_clock_now())
+        if let Some(actions) = self.life.activity(health.running, tilo_clock::unix_now())
             && let Err(error) = self.execute(&actions)
         {
             eprintln!("tilo-legacy: could not suspend: {error}");
@@ -641,10 +641,4 @@ fn compositor_display() -> Option<String> {
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .or_else(|| std::env::var("WAYLAND_DISPLAY").ok())
-}
-
-fn tilo_clock_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
 }

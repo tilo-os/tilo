@@ -15,5 +15,8 @@ workspace-hack = { version = "0.1" }
 libc.workspace = true
 xattr = "1.6.1"
 
+[dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+
 [lints]
 workspace = true

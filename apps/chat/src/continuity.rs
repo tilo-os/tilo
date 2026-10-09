@@ -264,7 +264,7 @@ mod tests {
             },
         )
         .unwrap();
-        let requests = app.native_voice.take_requests(ui::clock::Instant::now());
+        let requests = app.native_voice.take_requests(ui::time::Instant::now());
         let id = requests
             .iter()
             .rev()

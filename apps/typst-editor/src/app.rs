@@ -2220,10 +2220,7 @@ mod tests {
         std::env::temp_dir().join(format!(
             "typst_editor_{tag}_{}_{}",
             std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            ui::time::try_unix_now_ns().unwrap()
         ))
     }
 

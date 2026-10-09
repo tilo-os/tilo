@@ -31,12 +31,15 @@ pub enum QsLevel {
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
 /// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
-/// `connected` flags the active-radio dot.
+/// `connected` flags the active-radio dot. `security` is the scanned
+/// authentication mode, which decides whether a passphrase may be shared
+/// with the person's other devices without scanning again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
     pub signal: u8,
     pub secure: bool,
+    pub security: os_actions::WifiSecurity,
     pub connected: bool,
 }
 
