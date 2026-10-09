@@ -1456,6 +1456,7 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let args = QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,

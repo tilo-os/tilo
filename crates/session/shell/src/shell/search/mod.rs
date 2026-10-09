@@ -913,7 +913,6 @@ impl SearchRegistry {
             return None;
         }
         let ctx = SearchContext {
-            action_scope: args.action_scope,
             query_scope: Some(args.scope),
             action_scope: None,
             include_programmatic: false,

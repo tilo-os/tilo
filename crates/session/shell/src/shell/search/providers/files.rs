@@ -1614,6 +1614,7 @@ mod tests {
         let chrome = empty_chrome();
         let doc = automerge::AutoCommit::new();
         let args = QueryArgs {
+            action_scope: None,
             needle: "",
             scope: SearchScope::All,
             active_provider_id: None,

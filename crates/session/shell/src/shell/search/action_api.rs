@@ -181,6 +181,7 @@ impl ActionCatalog {
     ) -> Self {
         if args.action_scope.is_some_and(|scope| !scope.is_valid()) {
             return Self {
+                completion: super::QueryCompletion::invalid_input(),
                 results: Vec::new(),
                 visible: Vec::new(),
                 hierarchies: Vec::new(),
