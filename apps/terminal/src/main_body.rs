@@ -1,4 +1,5 @@
 use ui::ColorCompat;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use ui::{
     Theme,
@@ -2530,21 +2531,14 @@ impl Widget for TerminalWidget {
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
         // `Widget::build_layout` returns a bare `NodeId` across every
         // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
@@ -3697,6 +3691,12 @@ impl TerminalWidget {
         visible_rows: usize,
     ) {
         let grid_rect = self.grid_rect;
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx.reborrow();
         for (y, line_text) in self
             .grid
             .iter()
@@ -3709,49 +3709,75 @@ impl TerminalWidget {
             let Some(attrs) = self.grid_attrs.get(attrs_idx) else {
                 continue;
             };
+            // Each row on screen is a damage part: typing repaints its row.
+            // Glyphs may overhang their row by up to a row above and below,
+            // and the widget's width by up to two cells.
+            let band = Rect::new(
+                self.rect.x0 - 2.0 * self.char_w,
+                py - self.char_h,
+                self.rect.x1 + 2.0 * self.char_w,
+                py + 2.0 * self.char_h,
+            );
+            let key = ui::scene_parts::PartKey::new("terminal.row", y);
+            let bounds = vec![transform.transform_rect_bbox(band)];
+            ui::scene_parts::part(scene, key, bounds, |scene| {
+                let mut ctx = PaintCtx::new(scene, transform, text, theme);
+                self.draw_cell_row(&mut ctx, cell_style, line_text, attrs, py);
+            });
+        }
+    }
 
-            let mut current_run = String::new();
-            let mut current_attr: Option<Attr> = None;
-            let mut run_start_cell_idx = 0;
+    /// Paint one row of cells, run by run of shared attributes, with its top
+    /// at `py`.
+    fn draw_cell_row(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        cell_style: &TextStyle,
+        line_text: &str,
+        attrs: &[Attr],
+        py: f64,
+    ) {
+        let mut current_run = String::new();
+        let mut current_attr: Option<Attr> = None;
+        let mut run_start_cell_idx = 0;
 
-            let mut cell_idx = 0;
-            for c in line_text.chars() {
-                let c_w = c.width().unwrap_or(1);
-                if cell_idx >= self.width {
-                    break;
-                }
-                let attr = attrs.get(cell_idx).copied().unwrap_or_default();
-
-                if Some(attr) != current_attr {
-                    if !current_run.is_empty()
-                        && let Some(prev_attr) = current_attr
-                    {
-                        self.draw_run(
-                            ctx,
-                            cell_style,
-                            &current_run,
-                            prev_attr,
-                            Point::new(run_start_cell_idx as f64 * self.char_w, py),
-                        );
-                    }
-                    current_run.clear();
-                    current_attr = Some(attr);
-                    run_start_cell_idx = cell_idx;
-                }
-                current_run.push(c);
-                cell_idx += c_w;
+        let mut cell_idx = 0;
+        for c in line_text.chars() {
+            let c_w = c.width().unwrap_or(1);
+            if cell_idx >= self.width {
+                break;
             }
-            if !current_run.is_empty()
-                && let Some(prev_attr) = current_attr
-            {
-                self.draw_run(
-                    ctx,
-                    cell_style,
-                    &current_run,
-                    prev_attr,
-                    Point::new(run_start_cell_idx as f64 * self.char_w, py),
-                );
+            let attr = attrs.get(cell_idx).copied().unwrap_or_default();
+
+            if Some(attr) != current_attr {
+                if !current_run.is_empty()
+                    && let Some(prev_attr) = current_attr
+                {
+                    self.draw_run(
+                        ctx,
+                        cell_style,
+                        &current_run,
+                        prev_attr,
+                        Point::new(run_start_cell_idx as f64 * self.char_w, py),
+                    );
+                }
+                current_run.clear();
+                current_attr = Some(attr);
+                run_start_cell_idx = cell_idx;
             }
+            current_run.push(c);
+            cell_idx += c_w;
+        }
+        if !current_run.is_empty()
+            && let Some(prev_attr) = current_attr
+        {
+            self.draw_run(
+                ctx,
+                cell_style,
+                &current_run,
+                prev_attr,
+                Point::new(run_start_cell_idx as f64 * self.char_w, py),
+            );
         }
     }
 
@@ -3779,14 +3805,31 @@ impl TerminalWidget {
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
-        if self.modes.cursor_visible
+        let shown = self.modes.cursor_visible
             && !scrolled_back
             && cursor_abs >= start_y
-            && cursor_abs < start_y + visible_rows.max(1)
-        {
-            let cy_local = cursor_abs - start_y;
-            let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+            && cursor_abs < start_y + visible_rows.max(1);
+        let cy_local = cursor_abs.saturating_sub(start_y);
+        let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
+        let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+        // The cursor is a damage part of its own: moving it repaints the
+        // cell it left and the cell it entered. Its glyph may overhang the
+        // cell by up to a cell on every side.
+        let bounds = if shown {
+            vec![transform.transform_rect_bbox(Rect::new(
+                cx - self.char_w,
+                cy - self.char_h,
+                cx + 2.0 * self.char_w,
+                cy + 2.0 * self.char_h,
+            ))]
+        } else {
+            Vec::new()
+        };
+        let key = ui::scene_parts::PartKey::new("terminal.cursor", ());
+        ui::scene_parts::part(scene, key, bounds, |scene| {
+            if !shown {
+                return;
+            }
             // An unmistakable, theme-coloured "inverted cell" cursor.
             let cursor_rect = snap_to_device_pixels(
                 transform,
@@ -3813,7 +3856,7 @@ impl TerminalWidget {
                     cell_style,
                 );
             }
-        }
+        });
     }
 
     /// Paint one run of cells sharing `attr`, starting `at.x` into the grid

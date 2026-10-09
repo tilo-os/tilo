@@ -2412,18 +2412,14 @@ impl Widget for NotesApp {
             node
         });
 
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &[shell_node],
-        );
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[shell_node], node_map, self)
     }
 
     // `taffy.layout(...)` only errors for a `NodeId` from a different tree,

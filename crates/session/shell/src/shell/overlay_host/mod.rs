@@ -15,6 +15,7 @@ mod axis_navigation;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -190,6 +191,8 @@ mod qs_device_state_tests;
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not
 /// have to decode a caption or guess from the source cursor's colour.
+///
+/// Returns the bounds, in scene coordinates, of what it painted.
 fn draw_follow_tether(
     scene: &mut Scene,
     transform: Affine,
@@ -197,17 +200,21 @@ fn draw_follow_tether(
     to: Point,
     color: Color,
     width: f64,
-) {
+) -> Option<Rect> {
     let dx = to.x - from.x;
     let dy = to.y - from.y;
     let length = dx.hypot(dy);
     if length <= f64::EPSILON {
-        return;
+        return None;
     }
     let ux = dx / length;
     let uy = dy / length;
     let head = 7.0;
     let wing = 4.0;
+    // The head's wings reach `wing` across the line; strokes add their
+    // half width and a pixel of antialiasing.
+    let reach = wing + width + 1.0;
+    let bounds = transform.transform_rect_bbox(Rect::from_points(from, to).inflate(reach, reach));
     let base = Point::new(to.x - ux * head, to.y - uy * head);
     let left = Point::new(base.x - uy * wing, base.y + ux * wing);
     let right = Point::new(base.x + uy * wing, base.y - ux * wing);
@@ -233,6 +240,7 @@ fn draw_follow_tether(
         None,
         &vello::kurbo::Line::new(right, to),
     );
+    Some(bounds)
 }
 
 /// Which grant-composer control a click landed on.
@@ -943,9 +951,11 @@ pub struct ShellOverlayHost {
 
 /// Ordered shell scene recordings used by the compositor's retained-damage path.
 ///
-/// `TopBar` and Quick Settings have bounded visual footprints. The remaining recordings are
-/// deliberately opaque to damage selection: callers may use them only after exact encoded-scene
-/// equality proves they did not change.
+/// `TopBar` and Quick Settings have bounded visual footprints. The backdrop is deliberately
+/// opaque to damage selection: callers may use it only after exact encoded-scene equality proves
+/// it did not change. The workspace, its overlays and the sections above Quick Settings are
+/// opaque except inside their keyed parts ([`ui::scene_parts`]): outside every part
+/// they too must be proven equal.
 pub struct ShellSceneSections {
     pub backdrop: Scene,
     pub topbar: Scene,
@@ -966,6 +976,7 @@ pub struct ShellSceneSections {
 /// sections are composed in this order, so a floating surface's layer names
 /// which of them lie below it.
 mod backdrop_layer {
+
     pub const BACKDROP: u32 = 0;
     pub const WORKSPACE: u32 = 1;
     pub const WORKSPACE_OVERLAYS: u32 = 2;
@@ -988,6 +999,15 @@ impl ShellSceneSections {
             &self.above_quick_settings,
             backdrop_layer::ABOVE_QUICK_SETTINGS,
         );
+    }
+
+    /// Split the sections whose damage is proven by their parts
+    /// ([`ui::scene_parts`]) for the active recording. The sections
+    /// must stay where they are while anything is drawn into them.
+    pub fn track_damage_parts(&self) {
+        ui::scene_parts::track(&self.workspace);
+        ui::scene_parts::track(&self.workspace_overlays);
+        ui::scene_parts::track(&self.above_quick_settings);
     }
 
     /// The sections composed below a floating surface drawn into backdrop
@@ -1761,6 +1781,7 @@ impl ShellOverlayHost {
             quick_settings_bounds: None,
         });
         sections.register_backdrop_layers();
+        sections.track_damage_parts();
         let ShellSceneSections {
             backdrop,
             topbar,
@@ -18046,20 +18067,14 @@ impl Widget for ShellOverlayHost {
         // this same tree — but rather than assert that, fall back to the
         // content node alone: a host that (impossibly) can't wrap its
         // overlays still shows the desktop instead of dying.
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &children,
-            )
-            .unwrap_or(content_node);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     #[allow(
@@ -20873,7 +20888,22 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_follow_chip(scene, transform, text_renderer, theme);
+        use ui::scene_parts::{PartKey, part_drawn};
+        part_drawn(scene, PartKey::new("shell.follow-chip", ()), |scene| {
+            self.draw_follow_chip(scene, transform, text_renderer, theme);
+            // Everything is inside a layer clipped to the chip, which slides
+            // down 10 px as it opens.
+            let chip = self.follow_chip_rect;
+            if chip.is_zero_area() {
+                return Vec::new();
+            }
+            vec![transform.transform_rect_bbox(Rect::new(
+                chip.x0,
+                chip.y0 - 10.0,
+                chip.x1,
+                chip.y1,
+            ))]
+        });
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
@@ -20905,13 +20935,27 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
-            self.notification_stack.draw(
-                &ChromeNotifications::new(chrome),
-                scene,
-                transform,
-                text_renderer,
-                theme,
-            );
+            let stack = &mut self.notification_stack;
+            part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
+                stack.draw(
+                    &ChromeNotifications::new(chrome),
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                );
+                // `rect` is what the cards cover at rest. A card slides in
+                // from up to its own width to the right and casts the
+                // floating shadow.
+                let rest = stack.rect();
+                if rest.is_zero_area() {
+                    return Vec::new();
+                }
+                let shadow = &theme.tokens.elevation.floating;
+                let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
+                let travel = Rect::new(rest.x0, rest.y0, rest.x1 + rest.width(), rest.y1);
+                vec![transform.transform_rect_bbox(travel.inflate(reach, reach))]
+            });
         }
 
         // A visual alert is deliberately an edge treatment rather than a
@@ -24344,6 +24388,10 @@ impl ShellOverlayHost {
     /// the same [`ui::presence::draw_peer_cursors`] call an app makes for
     /// peers inside its own window. One call for the whole set, since
     /// names have to be arranged against each other.
+    ///
+    /// One damage part ([`ui::scene_parts`]) bounded by what it paints: a
+    /// peer's pointer moving repaints where it was and where it is, not the
+    /// desktop.
     fn draw_real_peers(
         &mut self,
         scene: &mut Scene,
@@ -24352,24 +24400,43 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let peers = self.workspace_peers(presence, theme.reduce_motion);
-        ui::presence::draw_peer_presence(scene, transform, self.rect, text_renderer, theme, &peers);
-        self.draw_follow_cursor_affordances(scene, transform, presence, theme.reduce_motion);
+        let key = ui::scene_parts::PartKey::new("shell.peer-presence", ());
+        ui::scene_parts::part_drawn(scene, key, |scene| {
+            let peers = self.workspace_peers(presence, theme.reduce_motion);
+            let mut painted = ui::presence::draw_peer_presence(
+                scene,
+                transform,
+                self.rect,
+                text_renderer,
+                theme,
+                &peers,
+            );
+            painted.extend(self.draw_follow_cursor_affordances(
+                scene,
+                transform,
+                presence,
+                theme.reduce_motion,
+            ));
+            painted
+        });
     }
 
     /// Rebuild the direct-manipulation targets over remote cursor anchors and
     /// paint a quiet orbital ring. The ring is an action signifier, not a
     /// label: click it to attach to the person already visible at that work.
+    ///
+    /// Returns the bounds, in scene coordinates, of what it painted.
     fn draw_follow_cursor_affordances(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         presence: &PresenceCtx,
         reduce_motion: bool,
-    ) {
+    ) -> Vec<Rect> {
         self.follow_cursor_targets.clear();
+        let mut painted = Vec::new();
         let Some(room_key) = self.active_workspace_presence_key() else {
-            return;
+            return painted;
         };
         let anchors = self.workspace_follow_anchors(presence, reduce_motion);
         for (follower, target) in presence.following_in(&room_key) {
@@ -24388,14 +24455,14 @@ impl ShellOverlayHost {
             // A thin, low-contrast tether connects the follower's live
             // cursor to the person they attached to. It is visible to every
             // room member without exposing anything beyond that relationship.
-            draw_follow_tether(
+            painted.extend(draw_follow_tether(
                 scene,
                 transform,
                 *from,
                 *to,
                 color.multiply_alpha(0.38),
                 1.0,
-            );
+            ));
         }
         if let (Some(local), Some(followed)) = (self.last_cursor, self.followed_peer.as_deref())
             && let Some((_, target, color)) =
@@ -24405,14 +24472,14 @@ impl ShellOverlayHost {
             // This stays meaningful even when the compact banner is out of
             // peripheral vision, while avoiding a modal or textual lock.
             let openness = self.follow_transition.value(Instant::now());
-            draw_follow_tether(
+            painted.extend(draw_follow_tether(
                 scene,
                 transform,
                 local,
                 *target,
                 color.multiply_alpha(0.22 + 0.3 * openness),
                 1.0 + f64::from(openness) * 0.8,
-            );
+            ));
         }
         for (id, point, color) in anchors {
             if !self.rect.contains(point) {
@@ -24425,6 +24492,9 @@ impl ShellOverlayHost {
                 point.y + 15.0,
             );
             self.follow_cursor_targets.push((id.clone(), rect));
+            // The ring (radius 13, stroke 2.5) and its satellite stay within
+            // the target; two more pixels hold their antialiased edges.
+            painted.push(transform.transform_rect_bbox(rect.inflate(2.0, 2.0)));
             let active = self.followed_peer.as_deref() == Some(id.as_str());
             let radius = if active { 13.0 } else { 11.0 };
             let ring = vello::kurbo::Circle::new(point, radius);
@@ -24444,6 +24514,7 @@ impl ShellOverlayHost {
             );
             scene.fill(Fill::NonZero, transform, color, None, &satellite);
         }
+        painted
     }
 
     /// Each followable peer's pointer as [`Self::workspace_peers`] paints it,

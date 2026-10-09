@@ -270,23 +270,21 @@ impl<R: Resource> Widget for Each<R> {
             .iter_mut()
             .map(|row| row.widget.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Grid,
-                align_content: Some(taffy::AlignContent::Start),
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(theme.gap_standard),
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Grid,
+            align_content: Some(taffy::AlignContent::Start),
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(theme.gap_standard),
             },
-            &self.nodes,
-        );
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

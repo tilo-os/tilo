@@ -252,6 +252,7 @@ pub mod resources;
 pub mod retained_present;
 pub mod richtext;
 pub mod scale;
+pub mod scene_parts;
 pub mod screen_reader;
 pub mod search;
 pub mod secret_paint;

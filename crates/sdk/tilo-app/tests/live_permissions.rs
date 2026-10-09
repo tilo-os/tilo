@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_app::widget::TaffyTreeExt;
 
 use tilo_app::framework::{Participant, resource_kind};
 use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
@@ -209,9 +210,7 @@ impl Widget for AccessProbe {
         _: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(tilo_app::taffy::Style::default(), node_map, self)
     }
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {

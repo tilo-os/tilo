@@ -26,6 +26,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
@@ -917,22 +918,15 @@ impl Widget for FileView {
         // the grid.
         // `new_leaf` only fails on tree-internal bookkeeping errors, never on
         // caller input; there is none to report here.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a freshly built style"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                align_self: Some(taffy::AlignSelf::Start),
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            align_self: Some(taffy::AlignSelf::Start),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1290,13 +1284,7 @@ impl FileView {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; the table's node was just built in this one.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "the table's node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 }
 

@@ -2775,6 +2775,28 @@ impl TileHost {
             transform,
             &shape,
         );
+        // Everything up to the matching pop is clipped to the tile, so the
+        // tile bounds whatever its content changes: a damage part.
+        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let bounds = vec![transform.transform_rect_bbox(self.rect)];
+        crate::scene_parts::part(scene, content, bounds, |scene| {
+            self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
+        });
+        scene.pop_layer();
+        self.draw_edge(scene, transform, theme, radius);
+    }
+
+    /// The tile's content inside its clip: the opening card, the app (or a
+    /// card in its place), and the card dissolving over an arrived app.
+    fn draw_clipped_content(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        shape: &RoundedRect,
+    ) {
         // An app asked for but not arrived gets the card in place of the
         // app, not behind it: its early buffer is the client's own size,
         // not the tab's, and painting it would show the window visibly
@@ -2854,7 +2876,7 @@ impl TileHost {
                         vello::peniko::BlendMode::default(),
                         1.0 - t,
                         transform,
-                        &shape,
+                        shape,
                     );
                     draw_opening_card(
                         scene,
@@ -2870,8 +2892,6 @@ impl TileHost {
                 }
             }
         }
-        scene.pop_layer();
-        self.draw_edge(scene, transform, theme, radius);
     }
 }
 
@@ -3251,9 +3271,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4483,9 +4501,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4539,9 +4555,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(

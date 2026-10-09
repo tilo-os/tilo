@@ -473,9 +473,73 @@ impl CapnpBrokerState {
                 .any(|root| root.peer_id == peer_id && root.app_id == app_id)
     }
 
-    /// Workspaces `caller` may act in, with the policy actor for each. A
-    /// caller confined to a room was admitted to it by its connection; any
-    /// other caller must be a member.
+    /// Whether `caller` may act in `workspace`. A caller confined to a room
+    /// was admitted to it by its connection; any other caller must be a
+    /// member.
+    fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
+        match caller.room() {
+            Some(confined) => confined == workspace.room.to_string(),
+            None => match caller.principal() {
+                CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
+                CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
+                // An application is always admitted into one room;
+                // unconfined, it is a member of none.
+                CallerPrincipal::App(_) => false,
+            },
+        }
+    }
+
+    /// One policy sample of `room` for `caller`: `decide` runs once on the
+    /// borrowed committed workspace with the caller's policy actor there, or
+    /// not at all (`None`) when `caller` may not act in `room`. Nothing is
+    /// copied; `decide` must not block or call host services.
+    fn decide_for<R>(
+        &self,
+        caller: &Caller,
+        room: &str,
+        decide: impl FnOnce(&Workspace, &Actor, u64) -> R,
+    ) -> Option<R> {
+        let membership = self.membership.as_ref()?;
+        // An unavailable clock offers nothing rather than deciding at an
+        // unknown time.
+        let now = self.policy_now_ns().ok()? / 1_000_000_000;
+        // The actor consults the certificate authority: asked before the
+        // workspace is borrowed, never under it.
+        let actor = self.caller_actor(caller, room);
+        membership
+            .decide_in_room(room, |workspace| {
+                let workspace =
+                    workspace.filter(|workspace| Self::may_act_in(caller, workspace, now))?;
+                Some(decide(workspace, &actor.policy_in(workspace, now), now))
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// The rooms `caller` may act in, decided on one borrowed sample.
+    fn rooms_for(&self, caller: &Caller) -> Vec<String> {
+        let (Some(membership), Ok(now)) = (
+            self.membership.as_ref(),
+            self.policy_now_ns().map(|now| now / 1_000_000_000),
+        ) else {
+            return Vec::new();
+        };
+        membership
+            .decide_in_tree(|tree| {
+                tree.workspaces
+                    .iter()
+                    .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                    .map(|workspace| workspace.room.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Owned copies of the workspaces `caller` may act in, with the policy
+    /// actor for each, all from one sample. Only for a pass that hands each
+    /// workspace to host services (which read the host's authority
+    /// themselves) and so cannot run under the borrow; only the caller's
+    /// own workspaces are copied.
     fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, Actor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
@@ -485,24 +549,17 @@ impl CapnpBrokerState {
         let Ok(now) = self.policy_now_ns().map(|now| now / 1_000_000_000) else {
             return Vec::new();
         };
-        let Ok(tree) = membership.snapshot() else {
+        let Ok(workspaces) = membership.decide_in_tree(|tree| {
+            tree.workspaces
+                .iter()
+                .filter(|workspace| Self::may_act_in(caller, workspace, now))
+                .cloned()
+                .collect::<Vec<_>>()
+        }) else {
             return Vec::new();
         };
-        tree.workspaces
+        workspaces
             .into_iter()
-            .filter(|workspace| {
-                let room = workspace.room.to_string();
-                match caller.room() {
-                    Some(confined) => confined == room,
-                    None => match caller.principal() {
-                        CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
-                        CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
-                        // An application is always admitted into one room;
-                        // unconfined, it is a member of none.
-                        CallerPrincipal::App(_) => false,
-                    },
-                }
-            })
             .map(|workspace| {
                 let policy = self
                     .caller_actor(caller, &workspace.room.to_string())
@@ -849,11 +906,7 @@ impl CapnpBrokerState {
     /// The directory root publishing `peer_id` in a workspace `caller` may
     /// act in, with the actor the caller is admitted as there.
     fn directory_root_for(&self, caller: &Caller, peer_id: u64) -> Option<ActionDirectoryRoot> {
-        let rooms = self
-            .workspaces_for(caller)
-            .into_iter()
-            .map(|(workspace, _, _)| workspace.room.to_string())
-            .collect::<Vec<_>>();
+        let rooms = self.rooms_for(caller);
         self.action_directory_roots()
             .into_iter()
             .find(|root| root.peer_id == peer_id && rooms.contains(&root.cluster_id))
@@ -951,11 +1004,7 @@ impl CapnpBrokerState {
                 reason: "a canonical route lookup must request only its provider".into(),
             });
         }
-        if !self
-            .workspaces_for(caller)
-            .iter()
-            .any(|(workspace, _, _)| workspace.room.to_string() == route.room)
-        {
+        if self.decide_for(caller, &route.room, |_, _, _| ()).is_none() {
             return Err(ActionHostError::NotPermitted);
         }
         let mut page = CataloguePage {
@@ -1237,34 +1286,36 @@ impl CapnpBrokerState {
         if caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
-        let (workspace, policy, now) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .ok_or(ActionHostError::UnknownAction)?;
-        if workspace.decide_at(&policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-            != CapDecision::Allow
-        {
-            return Err(refusal(
-                "the caller is not allowed to launch that application".into(),
-            ));
-        }
-        if let Some(action) = offered {
-            if !Self::allowed(
-                &workspace,
-                &policy,
-                now,
-                &app_id,
-                &action.resource,
-                &action.action,
-                action.contract.permission,
-            ) {
-                return Err(ActionHostError::UnknownAction);
-            }
-            if !confirmation_satisfied(&action, request.confirmation.as_ref()) {
-                return Err(ActionHostError::ConfirmationRequired);
-            }
-        }
+        // The launcher keeps the workspace past the read: only this room's
+        // workspace is copied, once every check on the same sample passed.
+        let workspace = self
+            .decide_for(caller, &room, |workspace, policy, now| {
+                if workspace.decide_at(policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
+                    != CapDecision::Allow
+                {
+                    return Err(refusal(
+                        "the caller is not allowed to launch that application".into(),
+                    ));
+                }
+                if let Some(action) = &offered {
+                    if !Self::allowed(
+                        workspace,
+                        policy,
+                        now,
+                        &app_id,
+                        &action.resource,
+                        &action.action,
+                        action.contract.permission,
+                    ) {
+                        return Err(ActionHostError::UnknownAction);
+                    }
+                    if !confirmation_satisfied(action, request.confirmation.as_ref()) {
+                        return Err(ActionHostError::ConfirmationRequired);
+                    }
+                }
+                Ok(workspace.clone())
+            })
+            .ok_or(ActionHostError::UnknownAction)??;
         Ok(LaunchDestination {
             workspace,
             app_id,
@@ -1811,21 +1862,18 @@ impl CapnpBrokerState {
             })
             .ok_or(ActionHostError::UnknownAction)?;
         let (offered, room) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .and_then(|(workspace, policy, now)| {
+            .decide_for(caller, &room, |workspace, policy, now| {
                 Self::allowed(
-                    &workspace,
-                    &policy,
+                    workspace,
+                    policy,
                     now,
                     &app_id,
                     &action.resource,
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some((action, room))
             })
+            .and_then(|allowed| allowed.then_some((action, room)))
             .ok_or(ActionHostError::UnknownAction)?;
         let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
@@ -1867,10 +1915,13 @@ impl CapnpBrokerState {
         argument: Option<&str>,
     ) -> Result<u64, ActionHostError> {
         let address = &request.target.address;
-        let Some((workspace, policy, now)) = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
+        // Workspace actions hand the workspace to host services (launcher,
+        // shortcut library), which cannot run under the borrow: copy only
+        // this one room's workspace.
+        let Some((workspace, policy, now)) =
+            self.decide_for(caller, room, |workspace, policy, now| {
+                (workspace.clone(), policy.clone(), now)
+            })
         else {
             return Err(ActionHostError::UnknownAction);
         };
@@ -2230,10 +2281,7 @@ impl CapnpBrokerState {
         }
         let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
         let others = self
-            .workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .map(|(workspace, _, _)| workspace.shortcuts)
+            .decide_for(caller, room, |workspace, _, _| workspace.shortcuts.clone())
             .unwrap_or_default();
         let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
         tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
@@ -2284,15 +2332,14 @@ impl CapnpBrokerState {
         room: &str,
         shortcut_id: &str,
     ) -> Option<tilo_automation::Shortcut> {
-        self.workspaces_for(caller)
-            .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == room)
-            .and_then(|(workspace, _, _)| {
-                workspace
-                    .shortcuts
-                    .into_iter()
-                    .find(|shortcut| shortcut.id == shortcut_id)
-            })
+        self.decide_for(caller, room, |workspace, _, _| {
+            workspace
+                .shortcuts
+                .iter()
+                .find(|shortcut| shortcut.id == shortcut_id)
+                .cloned()
+        })
+        .flatten()
     }
 
     /// Run `shortcut` as `caller` through this broker, reporting on a new

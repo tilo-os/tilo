@@ -132,24 +132,30 @@ impl CapnpBrokerState {
             return None;
         }
         let now = self.policy_now_ns().ok()? / 1_000_000_000;
-        let tree = self.membership.as_ref()?.snapshot().ok()?;
-        let mut standing = tree
-            .workspaces
-            .into_iter()
-            .find(|workspace| workspace.room.to_string() == room)?;
-        standing
-            .capabilities
-            .retain(|capability| capability.expiry != Expiry::AfterUse);
         let as_app = Actor::app(app_id).in_room(room.to_string());
-        if Self::allowed(
-            &standing,
-            &as_app,
-            now,
-            &row.app_id,
-            &descriptor.address.resource,
-            &descriptor.address.action,
-            descriptor.contract.permission,
-        ) {
+        // Standing grants only: a one-use grant is not consent to keep
+        // acting. The question needs this one room's workspace without
+        // those grants, so only it is copied, never the whole tree.
+        let standing_allows = self
+            .membership
+            .as_ref()?
+            .decide_in_room(room, |workspace| {
+                let mut standing = workspace?.clone();
+                standing
+                    .capabilities
+                    .retain(|capability| capability.expiry != Expiry::AfterUse);
+                Some(Self::allowed(
+                    &standing,
+                    &as_app,
+                    now,
+                    &row.app_id,
+                    &descriptor.address.resource,
+                    &descriptor.address.action,
+                    descriptor.contract.permission,
+                ))
+            })
+            .ok()??;
+        if standing_allows {
             return None;
         }
         let contract = &descriptor.contract;

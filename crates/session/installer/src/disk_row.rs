@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -129,19 +130,15 @@ impl Widget for DiskRow {
         // returns a bare `NodeId` across every implementor, so surfacing a
         // theoretical error here would mean threading a `Result` through the
         // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(ROW_HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(ROW_HEIGHT),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

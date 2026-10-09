@@ -3600,9 +3600,7 @@ impl Widget for MailApp {
             },
             ..Default::default()
         };
-        let node = taffy.parent_node(style, &children);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

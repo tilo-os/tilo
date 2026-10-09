@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use ui::tilo_resource::Effect as _;
+use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::history_panel::HistoryPanel;
@@ -9051,13 +9052,7 @@ impl Widget for FileExplorerWidget {
         };
         // `new_with_children` only fails when a child belongs to a
         // different tree; the shell was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "nav_node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[nav_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[nav_node], node_map, self)
     }
 
     fn apply_layout(

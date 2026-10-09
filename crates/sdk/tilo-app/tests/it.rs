@@ -43,6 +43,8 @@ pub mod participant;
 pub mod person_records;
 #[path = "private_windows.rs"]
 pub mod private_windows;
+#[path = "publication_per_keystroke.rs"]
+pub mod publication_per_keystroke;
 #[path = "reactivity.rs"]
 pub mod reactivity;
 #[path = "render_view.rs"]

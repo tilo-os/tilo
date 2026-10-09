@@ -172,6 +172,9 @@ taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 tilo-rt.workspace = true
 vello.workspace = true
+# `scene_parts` splits and compares encoded scene streams; widget tests also
+# pin paint contracts on draw tags without rendering pixels.
+vello_encoding.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
@@ -318,10 +321,6 @@ regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
-# Inspect Vello scene encodings (draw tags) in widget tests so we can pin
-# end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
-# fills_than_inactive_siblings`) without rendering pixels.
-vello_encoding.workspace = true
 # `widget::file_picker::tests` build a real on-disk tree to exercise the
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.

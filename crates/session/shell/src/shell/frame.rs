@@ -303,8 +303,48 @@ struct ProducedSections {
     quick_settings: Scene,
     above_quick_settings: Scene,
     quick_settings_bounds: Option<Rect>,
+    /// Parts of the workspace, its overlays and the sections above Quick
+    /// Settings, which bound damage inside them.
+    parts: OpaqueParts,
+    /// A filter following the pointer (the magnifier, the crosshair): every
+    /// frame it is on is dense.
     global_filter: bool,
+    /// The per-pixel tint over the whole desktop (night light, a colour
+    /// filter). Sparse frames are exact under it while it stays the same.
+    tint: Tint,
     revision: u64,
+}
+
+/// [`scene_parts`](ui::scene_parts) of the sections whose damage is bounded
+/// only inside their parts. `None` for a section drawn without a recording.
+#[derive(Clone, Default)]
+struct OpaqueParts {
+    workspace: Option<ui::scene_parts::SectionParts>,
+    workspace_overlays: Option<ui::scene_parts::SectionParts>,
+    above_quick_settings: Option<ui::scene_parts::SectionParts>,
+}
+
+impl OpaqueParts {
+    fn of(
+        recorded: &ui::scene_parts::Recorded,
+        sections: &crate::shell::overlay_host::ShellSceneSections,
+    ) -> Self {
+        Self {
+            workspace: recorded.of(&sections.workspace),
+            workspace_overlays: recorded.of(&sections.workspace_overlays),
+            above_quick_settings: recorded.of(&sections.above_quick_settings),
+        }
+    }
+}
+
+/// The tint drawn over the whole desktop: a pure per-pixel function of what
+/// is below it, so it changes nothing about which pixels a frame changes as
+/// long as it is itself the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Tint {
+    night_light: Option<Color>,
+    color_filter: DesktopColorFilter,
+    viewport: (f64, f64),
 }
 
 enum QuickSettingsDamage {
@@ -1940,6 +1980,7 @@ impl FrameBuilder {
         let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
+        let parts_recording = ui::scene_parts::Recording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1996,6 +2037,7 @@ impl FrameBuilder {
         }
         drop(retained_scope);
 
+        let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
         let foreign_images = foreign_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
@@ -2017,14 +2059,8 @@ impl FrameBuilder {
             .last_produced_sections
             .as_ref()
             .map(|last| last.revision);
-        let global_filter = self.watch_configured_theme
-            && (self.night_light
-                || !matches!(
-                    self.visual_accessibility.color_filter,
-                    DesktopColorFilter::None
-                )
-                || self.visual_accessibility.magnifier.is_on()
-                || self.visual_accessibility.cursor_crosshair);
+        let pointer_filter = self.pointer_filter();
+        let tint = self.tint();
         let strips = unbake.then(|| {
             plan.as_ref()
                 .map(|plan| plan.strips.clone())
@@ -2037,9 +2073,14 @@ impl FrameBuilder {
         // Section and foreign-image bounds are in canvas coordinates while
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
-        let damage_regions = (!global_filter && strips_kept && screen_space_damage)
+        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
             .then(|| {
-                self.damage_from_sections_with_images(&sections, global_filter, &foreign_images)
+                self.damage_from_sections_with_images(
+                    &sections,
+                    &parts,
+                    (pointer_filter, tint),
+                    &foreign_images,
+                )
             })
             .flatten();
         let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
@@ -2122,7 +2163,9 @@ impl FrameBuilder {
             quick_settings: sections.quick_settings,
             above_quick_settings: sections.above_quick_settings,
             quick_settings_bounds: sections.quick_settings_bounds,
-            global_filter,
+            parts,
+            global_filter: pointer_filter,
+            tint,
             revision,
         });
         let overview_patch = self.host.take_overview_fast_patch();
@@ -2167,10 +2210,16 @@ impl FrameBuilder {
         Some(regions)
     }
 
-    fn foreign_damage_regions(
+    /// Damage in the sections that are opaque outside their parts: the
+    /// workspace, its overlays and the sections above Quick Settings. Each is
+    /// unchanged, or changed only by foreign buffer replacements (their
+    /// buffers' damage), or changed only inside its parts (their old and new
+    /// bounds), or both; anything else is `None`.
+    fn opaque_damage_regions(
         &self,
         previous: &ProducedSections,
         current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
         images: &[super::foreign_damage::DrawnImage],
     ) -> Option<Vec<FineDamageRect>> {
         let old_scenes = [
@@ -2189,30 +2238,64 @@ impl FrameBuilder {
             &current.quick_settings,
             &current.above_quick_settings,
         ];
-        if !super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
-            || !super::foreign_damage::unique_uses(new_scenes, images)
-        {
-            return None;
-        }
-        let mut image_regions = Vec::new();
-        for (old, new) in [
-            (&previous.workspace, &current.workspace),
-            (&previous.workspace_overlays, &current.workspace_overlays),
+        // A replacement is repaired only where it was recorded, so it may be
+        // normalized away only while its image has no other use (a preview).
+        // Without normalization, a replaced image is a changed command like
+        // any other: inside a part it damages the part, outside it none.
+        let normalizable = super::foreign_damage::unique_uses(old_scenes, &previous.foreign_images)
+            && super::foreign_damage::unique_uses(new_scenes, images);
+        let mut regions = Vec::new();
+        for (old, old_parts, new, new_parts) in [
+            (
+                &previous.workspace,
+                &previous.parts.workspace,
+                &current.workspace,
+                &parts.workspace,
+            ),
+            (
+                &previous.workspace_overlays,
+                &previous.parts.workspace_overlays,
+                &current.workspace_overlays,
+                &parts.workspace_overlays,
+            ),
             (
                 &previous.above_quick_settings,
+                &previous.parts.above_quick_settings,
                 &current.above_quick_settings,
+                &parts.above_quick_settings,
             ),
         ] {
-            for bounds in super::foreign_damage::image_only_damage(
-                old,
-                new,
-                &previous.foreign_images,
-                images,
-            )? {
-                image_regions.push(self.native_damage_rect(Some(bounds))?);
+            if old.encoding_eq(new) {
+                continue;
+            }
+            let normalized = (normalizable && !images.is_empty())
+                .then(|| {
+                    super::foreign_damage::normalize_images(new, &previous.foreign_images, images)
+                })
+                .flatten();
+            let compared = match &normalized {
+                Some((scene, image_damage)) => {
+                    for &bounds in image_damage {
+                        regions.push(self.native_damage_rect(Some(bounds))?);
+                    }
+                    scene
+                }
+                None => new,
+            };
+            if old.encoding_eq(compared) {
+                continue;
+            }
+            let rects =
+                ui::scene_parts::damage(old, old_parts.as_ref()?, compared, new_parts.as_ref()?)
+                    .ok()?;
+            // `scene_parts::damage` admits only finite, non-negative bounds,
+            // which already cover antialiasing; a part no display shows
+            // needs no repair.
+            for rect in rects {
+                regions.extend(self.native_damage_rect(Some(rect)));
             }
         }
-        Some(image_regions)
+        Some(regions)
     }
 
     /// Update only this producer's presenter capacity. Captures keep the default dense path.
@@ -2221,6 +2304,28 @@ impl FrameBuilder {
         if self.retained_layer_width != width {
             self.retained_layer_width = width;
             self.last_produced_sections = None;
+        }
+    }
+
+    /// A filter following the pointer (the magnifier, the crosshair) moves
+    /// pixels or lines across the whole desktop: no frame under it is sparse.
+    fn pointer_filter(&self) -> bool {
+        self.watch_configured_theme
+            && (self.visual_accessibility.magnifier.is_on()
+                || self.visual_accessibility.cursor_crosshair)
+    }
+
+    /// The per-pixel tint the scene ends with (night light, a colour filter).
+    fn tint(&self) -> Tint {
+        if !self.watch_configured_theme {
+            return Tint::default();
+        }
+        Tint {
+            night_light: self
+                .night_light
+                .then(|| night_light_multiplier(self.night_light_temperature)),
+            color_filter: self.visual_accessibility.color_filter,
+            viewport: self.viewport,
         }
     }
 
@@ -2345,23 +2450,30 @@ impl FrameBuilder {
         current: &crate::shell::overlay_host::ShellSceneSections,
         current_global_filter: bool,
     ) -> Option<Vec<FineDamageRect>> {
-        self.damage_from_sections_with_images(current, current_global_filter, &[])
+        self.damage_from_sections_with_images(
+            current,
+            &OpaqueParts::default(),
+            (current_global_filter, self.tint()),
+            &[],
+        )
     }
 
+    /// `filters` is the pointer filter and the tint this frame ends with.
     fn damage_from_sections_with_images(
         &self,
         current: &crate::shell::overlay_host::ShellSceneSections,
-        current_global_filter: bool,
+        parts: &OpaqueParts,
+        (pointer_filter, tint): (bool, Tint),
         images: &[super::foreign_damage::DrawnImage],
     ) -> Option<Vec<FineDamageRect>> {
         let previous = self.last_produced_sections.as_ref()?;
-        if previous.global_filter || current_global_filter {
+        if previous.global_filter || pointer_filter || previous.tint != tint {
             return None;
         }
         if !previous.backdrop.encoding_eq(&current.backdrop) {
             return None;
         }
-        let image_regions = self.foreign_damage_regions(previous, current, images)?;
+        let image_regions = self.opaque_damage_regions(previous, current, parts, images)?;
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {

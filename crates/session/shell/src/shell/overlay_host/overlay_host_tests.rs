@@ -4,6 +4,7 @@ use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
 use automerge::{ReadDoc as _, ScalarValue};
+use ui::widget::TaffyTreeExt;
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -729,9 +730,7 @@ impl Widget for StubContent {
             },
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

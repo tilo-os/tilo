@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
@@ -110,9 +111,7 @@ impl Widget for Publisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(
@@ -194,9 +193,7 @@ impl Widget for CountingPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
     fn draw(

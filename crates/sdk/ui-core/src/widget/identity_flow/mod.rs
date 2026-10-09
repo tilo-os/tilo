@@ -2459,9 +2459,7 @@ impl Widget for IdentityFlow {
             // edge, half off-screen.
             None => Vec::new(),
         };
-        let node = taffy.parent_node(fill, &screen);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(fill, &screen, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
