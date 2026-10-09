@@ -15789,15 +15789,30 @@ mod tests {
                 )
                 .await
                 .expect("the app reports its result");
-            // The job settling wakes the parked loop by itself.
-            assert!(park_until_woken(
-                &mut fixture.event_loop,
-                &mut fixture.state,
-                &woken,
-                Duration::from_secs(10),
-            ));
-            fixture.pump(&mut conn);
-            let test_control::Response::Answer(settled) = socket_response(&mut reader) else {
+            // The job settling wakes the parked loop by itself. An earlier
+            // wake still queued (the index, a directory page) may end a park
+            // first; each pump then answers only once the job has settled.
+            let deadline = Instant::now()
+                .checked_add(tilo_test_env::hang_bound())
+                .expect("a representable deadline");
+            let settled = loop {
+                assert!(
+                    park_until_woken(
+                        &mut fixture.event_loop,
+                        &mut fixture.state,
+                        &woken,
+                        Duration::from_secs(10),
+                    ),
+                    "the settled job never woke the loop"
+                );
+                woken.set(false);
+                fixture.pump(&mut conn);
+                if let Some(answer) = socket_answer(&mut reader) {
+                    break answer;
+                }
+                assert!(Instant::now() < deadline, "the job read never settled");
+            };
+            let test_control::Response::Answer(settled) = settled else {
                 panic!("the settled job answers the read");
             };
             assert_eq!(settled["receipt"]["broker_invocation_id"], job);
