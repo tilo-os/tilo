@@ -17,6 +17,8 @@
 //!   [`BlobSink`] edges — see [`blobs`].
 //! - [`chunks`] — the payload objects (`<blob>.blob`, `<blob>.chunks`) that
 //!   complete a thin package, chunked and verified with bounded memory.
+//! - [`compressed`] — the zstd twins packages and payload objects travel
+//!   as, decompressed with a bound before they are verified (native only).
 //! - [`PackageMeta`] — the signed root, manifest and collection with every
 //!   hash link checked. See [`package`].
 //! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
@@ -46,6 +48,8 @@
 
 pub mod blobs;
 pub mod chunks;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compressed;
 pub mod continuity_schema;
 pub mod desktop;
 pub mod id;

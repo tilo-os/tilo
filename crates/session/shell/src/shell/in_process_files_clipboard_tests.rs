@@ -421,6 +421,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             });
             let (job, receipt) = self.wait(pending).unwrap();
             assert_eq!(receipt.invocation, invocation);
@@ -479,6 +480,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             }));
             let Message::Receipt(result) = self.wait(pending).unwrap() else {
                 panic!("the actual agent must receive its invocation receipt");
@@ -495,7 +497,7 @@ mod files_clipboard_tests {
                 .checked_add(std::time::Duration::from_secs(5))
                 .expect("bounded test deadline");
             loop {
-                let pending = agent.request(Message::Observe { invocation });
+                let pending = agent.request(Message::observe(invocation));
                 let Message::Update { state, .. } = self.wait(pending).unwrap() else {
                     panic!("the actual agent must observe its own invocation");
                 };

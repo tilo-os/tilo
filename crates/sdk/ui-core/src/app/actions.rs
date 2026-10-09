@@ -2066,6 +2066,7 @@ impl App {
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                wait_ms: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2713,6 +2714,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             };
             self.actions
                 .broker_requests
@@ -3548,6 +3550,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         };
         self.actions
             .broker_requests

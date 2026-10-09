@@ -1904,6 +1904,7 @@ impl MusicApp {
                         "repeat": self.pb.repeat.as_str(),
                         "requested_playing": self.pb.playing,
                         "confirmed_playing": self.audio.is_playing_real(),
+                        "control_pending": self.audio.is_control_pending(),
                         "resolving": self.active_resolve_request.is_some(),
                         "spotify_stage": self.audio.spotify_startup_stage(),
                         "rendered_buffers": self.audio.frames_rendered(),

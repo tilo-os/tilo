@@ -358,7 +358,10 @@ impl RoomActions {
                 }
                 answer.map(respond)
             }
-            RemoteActionMessage::Invoke(request) => {
+            RemoteActionMessage::Invoke(mut request) => {
+                // Answered at admission: a wait is ignored, as an older host
+                // would, and is no part of the remembered request.
+                request.wait_ms = None;
                 let invocation = request.invocation;
                 let receipt = |status| {
                     Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
@@ -374,7 +377,7 @@ impl RoomActions {
                 {
                     let mut ledger = self.ledger();
                     if let Some(entry) = ledger.entries.get(&invocation) {
-                        if entry.caller != *caller || entry.request != request {
+                        if entry.caller != *caller || !entry.request.same_invocation(&request) {
                             return Some(receipt(ReceiptStatus::Rejected {
                                 error: ActionHostError::InvocationConflict,
                             }));
@@ -401,7 +404,7 @@ impl RoomActions {
                 }
                 answer.map(RemoteActionMessage::Receipt)
             }
-            RemoteActionMessage::Observe { invocation } => {
+            RemoteActionMessage::Observe { invocation, .. } => {
                 let state = self
                     .ledger()
                     .owned(caller, &invocation)
@@ -474,7 +477,7 @@ impl HostActions {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
             RemoteActionMessage::Invoke(request) => request.target.provider == AGENTS_PROVIDER,
-            RemoteActionMessage::Observe { invocation }
+            RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => !self.rooms.owns(caller, invocation),
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)

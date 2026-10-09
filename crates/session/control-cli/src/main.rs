@@ -182,6 +182,8 @@ enum Command {
         json: bool,
         include_programmatic: bool,
         page: ListPage,
+        /// `--wait[=MS]`: answer once the listing is complete.
+        wait_ms: Option<u64>,
     },
     /// Invoke one enumerated action by its stable `(provider, id)`
     /// address — no synthetic input, no window, no scene.
@@ -197,6 +199,8 @@ enum Command {
     },
     ActionsStatus {
         invocation_id: u64,
+        /// `--wait[=MS]`: answer once the invocation has settled.
+        wait_ms: Option<u64>,
     },
     ActionsCancel {
         invocation_id: u64,
@@ -409,17 +413,19 @@ fn parse_read<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command
     Ok(Command::Read { app, item, json })
 }
 
-/// How long `read` waits for an open app's directory to list its `read`:
-/// the session answers a cold directory query on a later request.
-const READ_DISCOVERY_ATTEMPTS: u32 = 20;
-const READ_DISCOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long `read` waits for an open app's `read` to be listed: the listing
+/// settles as the desktop indexes it, and an app just opened publishes its
+/// actions as it starts. The desktop holds each listing request until the
+/// listing has settled or changed (`wait_ms`), so this is a deadline, never a
+/// pause.
+const READ_DISCOVERY_WAIT_MS: u64 = 10_000;
+/// The most listings `read` looks at. Each one is a changed listing the
+/// desktop waited for, so this bounds a misbehaving desktop, not a wait.
+const READ_DISCOVERY_LISTINGS: u32 = 64;
 /// How long `read` follows an admitted invocation to its answer: an app
 /// action is admitted first and answers on its job. The desktop holds the
-/// reply until then (`wait_ms`); a desktop that answers the admission at
-/// once is followed with `actions status` instead.
+/// reply until then (`wait_ms`).
 const READ_ANSWER_WAIT_MS: u64 = 20_000;
-const READ_ANSWER_ATTEMPTS: u32 = 100;
-const READ_ANSWER_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// The job of an admitted invocation that has not answered yet.
 fn unanswered_job(response: &serde_json::Value) -> Option<u64> {
@@ -449,18 +455,55 @@ fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
         .and_then(|row| row.get("id")?.as_str().map(str::to_string))
 }
 
-/// The request that reads `job`'s latest state and output.
-fn job_status_request(job: u64) -> String {
-    serde_json::json!({ "op": "actions_status", "invocation_id": job }).to_string()
+/// The request that reads `job`'s state and output once it has settled,
+/// waiting at most `wait_ms`.
+fn job_status_request(job: u64, wait_ms: u64) -> String {
+    serde_json::json!({ "op": "actions_status", "invocation_id": job, "wait_ms": wait_ms })
+        .to_string()
 }
 
-/// `read APP [ITEM]`: find the open app's `read` action, invoke it, and
-/// print the typed value it answers.
+/// The `read` listing request: settled within `wait_ms`, and with
+/// `after_revision`, a listing other than the one already seen.
+fn read_listing_request(wait_ms: u64, after_revision: Option<&str>) -> String {
+    let mut request = serde_json::json!({
+        "op": "actions_enumerate",
+        "query": "read",
+        "wait_ms": wait_ms,
+    });
+    if let (Some(revision), Some(fields)) = (after_revision, request.as_object_mut()) {
+        fields.insert("after_revision".into(), revision.into());
+    }
+    request.to_string()
+}
+
+/// Milliseconds of `budget` left since `started`.
+fn remaining_ms(budget: u64, started: std::time::Instant) -> u64 {
+    let spent = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    budget.saturating_sub(spent)
+}
+
+/// `read APP [ITEM]` over one connection: find the open app's `read` action,
+/// invoke it, and print the typed value it answers.
 fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) -> u8 {
-    let enumerate = serde_json::json!({ "op": "actions_enumerate", "query": "read" }).to_string();
+    run_read_with(&mut |request| round_trip(stream, request), app, item, json)
+}
+
+/// [`run_read`] over any request/answer transport. Nothing here pauses:
+/// every request asks the desktop to hold its answer (`wait_ms`) until there
+/// is one worth giving — a settled listing, a changed listing, the app's
+/// answer — so it usually takes two requests, one listing and one invocation.
+fn run_read_with(
+    round_trip: &mut dyn FnMut(&str) -> std::io::Result<serde_json::Value>,
+    app: &str,
+    item: Option<&str>,
+    json: bool,
+) -> u8 {
+    let started = std::time::Instant::now();
+    let mut seen: Option<String> = None;
     let mut id = None;
-    for attempt in 0..READ_DISCOVERY_ATTEMPTS {
-        let response = match round_trip(stream, &enumerate) {
+    for _ in 0..READ_DISCOVERY_LISTINGS {
+        let wait_ms = remaining_ms(READ_DISCOVERY_WAIT_MS, started);
+        let response = match round_trip(&read_listing_request(wait_ms, seen.as_deref())) {
             Ok(response) => response,
             Err(e) => {
                 eprintln!("tilo-control: socket round-trip: {e}");
@@ -474,18 +517,28 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
                     query: "read".into(),
                     json,
                     page: ListPage::default(),
+                    wait_ms: None,
                 },
                 &response,
             );
         }
-        id = response
-            .get("answer")
-            .and_then(|answer| read_action_id(answer, app));
+        let answer = response.get("answer");
+        id = answer.and_then(|answer| read_action_id(answer, app));
         if id.is_some() {
             break;
         }
-        if attempt.saturating_add(1) < READ_DISCOVERY_ATTEMPTS {
-            std::thread::sleep(READ_DISCOVERY_PAUSE);
+        // Ask again only a desktop that waits — it holds the next request
+        // until the listing changes — and only while time is left. One that
+        // answers without `settled` cannot be asked for "the next listing",
+        // and asking anyway would spin.
+        let revision = answer
+            .filter(|answer| answer.get("settled").is_some())
+            .and_then(|answer| answer.get("revision")?.as_str());
+        match revision {
+            Some(revision) if remaining_ms(READ_DISCOVERY_WAIT_MS, started) > 0 => {
+                seen = Some(revision.to_string());
+            }
+            _ => break,
         }
     }
     let Some(id) = id else {
@@ -508,20 +561,20 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         "wait_ms": READ_ANSWER_WAIT_MS,
     })
     .to_string();
-    let mut response = match round_trip(stream, &invoke) {
+    let answered = std::time::Instant::now();
+    let mut response = match round_trip(&invoke) {
         Ok(response) => response,
         Err(e) => {
             eprintln!("tilo-control: socket round-trip: {e}");
             return 2;
         }
     };
-    // The app answers on the job the session admitted it as.
-    for _ in 0..READ_ANSWER_ATTEMPTS {
-        let Some(job) = unanswered_job(&response) else {
-            break;
-        };
-        std::thread::sleep(READ_ANSWER_PAUSE);
-        response = match round_trip(stream, &job_status_request(job)) {
+    // A desktop that answered the admission at once (it predates `wait_ms`
+    // on invocations) is asked once more, by a job read that waits for
+    // the rest of the time.
+    let left = remaining_ms(READ_ANSWER_WAIT_MS, answered);
+    if let Some(job) = unanswered_job(&response).filter(|_| left > 0) {
+        response = match round_trip(&job_status_request(job, left)) {
             Ok(response) => response,
             Err(e) => {
                 eprintln!("tilo-control: socket round-trip: {e}");
@@ -814,6 +867,17 @@ fn parse_action_invocation<'a>(
 /// 30 s.
 const DEFAULT_INVOKE_WAIT_MS: u64 = 5_000;
 
+/// `--wait` (the default wait) or `--wait=MS`; `None` for any other word.
+fn wait_flag(word: &str) -> Option<Result<u64, ParseError>> {
+    if word == "--wait" {
+        return Some(Ok(DEFAULT_INVOKE_WAIT_MS));
+    }
+    let ms = word.strip_prefix("--wait=")?;
+    Some(ms.parse::<u64>().map_err(|_| {
+        ParseError::Usage(format!("--wait=MS: `{ms}` is not a number of milliseconds"))
+    }))
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -837,6 +901,7 @@ fn parse_actions_command<'a>(
             let mut json = false;
             let mut include_programmatic = false;
             let mut page = ListPage::default();
+            let mut wait_ms = None;
             let mut words: Vec<String> = Vec::new();
             while let Some(rest) = iter.next() {
                 if rest == "--json" {
@@ -863,6 +928,8 @@ fn parse_actions_command<'a>(
                             })?
                             .clone(),
                     );
+                } else if let Some(wait) = wait_flag(rest) {
+                    wait_ms = Some(wait?);
                 } else {
                     words.push(rest.clone());
                 }
@@ -872,6 +939,7 @@ fn parse_actions_command<'a>(
                 json,
                 include_programmatic,
                 page,
+                wait_ms,
             })
         }
         "invoke" => parse_action_invocation(iter),
@@ -882,13 +950,22 @@ fn parse_actions_command<'a>(
             let invocation_id = raw.parse::<u64>().map_err(|_| {
                 ParseError::Usage(format!("actions {verb}: `{raw}` is not an invocation id"))
             })?;
-            if iter.next().is_some() {
-                return Err(ParseError::Usage(format!(
-                    "actions {verb} accepts exactly one invocation id"
-                )));
+            let mut wait_ms = None;
+            for rest in iter.by_ref() {
+                match wait_flag(rest) {
+                    Some(wait) if verb == "status" => wait_ms = Some(wait?),
+                    _ => {
+                        return Err(ParseError::Usage(format!(
+                            "actions {verb} accepts exactly one invocation id"
+                        )));
+                    }
+                }
             }
             Ok(if verb == "status" {
-                Command::ActionsStatus { invocation_id }
+                Command::ActionsStatus {
+                    invocation_id,
+                    wait_ms,
+                }
             } else {
                 Command::ActionsCancel { invocation_id }
             })
@@ -1006,12 +1083,13 @@ fn action_arguments(
 
 /// `actions list`'s request. The table prints no contracts, so it asks for
 /// compact rows; `--json` prints what the desktop answers, so it asks for
-/// full ones.
+/// full ones. `--wait` asks the desktop to hold it until it is complete.
 fn actions_list_wire(
     query: &str,
     include_programmatic: bool,
     json: bool,
     page: &ListPage,
+    wait_ms: Option<u64>,
 ) -> serde_json::Value {
     let mut wire = serde_json::json!({ "op": "actions_enumerate", "query": query });
     if let Some(object) = wire.as_object_mut() {
@@ -1028,7 +1106,16 @@ fn actions_list_wire(
             object.insert("cursor".into(), cursor.clone().into());
         }
     }
+    with_wait(&mut wire, wait_ms);
     wire
+}
+
+/// Add `wait_ms` to a request when the caller asked to wait. A request
+/// without it keeps exactly the shape it always had.
+fn with_wait(value: &mut serde_json::Value, wait_ms: Option<u64>) {
+    if let (Some(wait_ms), Some(fields)) = (wait_ms, value.as_object_mut()) {
+        fields.insert("wait_ms".into(), wait_ms.into());
+    }
 }
 
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
@@ -1096,7 +1183,8 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             include_programmatic,
             json,
             page,
-        } => actions_list_wire(query, *include_programmatic, *json, page),
+            wait_ms,
+        } => actions_list_wire(query, *include_programmatic, *json, page, *wait_ms),
         Command::ActionsInvoke {
             provider,
             id,
@@ -1111,8 +1199,13 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             device.as_deref(),
             *wait_ms,
         ),
-        Command::ActionsStatus { invocation_id } => {
-            json!({ "op": "actions_status", "invocation_id": invocation_id })
+        Command::ActionsStatus {
+            invocation_id,
+            wait_ms,
+        } => {
+            let mut value = json!({ "op": "actions_status", "invocation_id": invocation_id });
+            with_wait(&mut value, *wait_ms);
+            value
         }
         Command::ActionsCancel { invocation_id } => {
             json!({ "op": "actions_cancel", "invocation_id": invocation_id })
@@ -1279,6 +1372,9 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         }
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
         Command::ActionsInvoke {
+            wait_ms: Some(_), ..
+        }
+        | Command::ActionsStatus {
             wait_ms: Some(_), ..
         } => return print_settled(response),
         Command::ActionsInvoke { .. }
@@ -1469,13 +1565,17 @@ fn print_usage() {
          \x20              [--limit ROWS] [--cursor NEXT]\n\
          \x20                               one page at a time (default 200 rows); a\n\
          \x20                               longer listing names its next page's cursor\n\
+         \x20              [--wait[=MS]]   answer once the listing is complete: no app\n\
+         \x20                               index or directory page still on its way\n
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
          \x20               [--wait[=MS]]   run one action by its address; answers the\n\
          \x20                               typed receipt. --wait answers once it has\n\
          \x20                               settled (default 5000 ms, at most 30000) and\n\
          \x20                               exits 1 if it failed. --device sends it to\n\
          \x20                               that enrolled device\n\
-         \x20 actions status INVOCATION_ID  latest state and output of a running action\n\
+         \x20 actions status INVOCATION_ID [--wait[=MS]]\n\
+         \x20                               latest state and output of a running action;\n\
+         \x20                               --wait answers once it has settled\n\
          \x20 actions cancel INVOCATION_ID  request cooperative cancellation\n\
          \x20 actions session               many requests over one connection: one wire\n\
          \x20                               request per stdin line (`raw` JSON), one\n\
@@ -1854,6 +1954,65 @@ mod tests {
         );
     }
 
+    /// Receipt ids parse for `status`, which, like `list`, takes
+    /// `--wait[=MS]`; without it neither waits.
+    #[test]
+    fn waits_parse_on_status_and_list() {
+        let status = |words: &[&str]| parse(words).unwrap().command;
+        assert_eq!(
+            status(&["actions", "status", "42"]),
+            Command::ActionsStatus {
+                invocation_id: 42,
+                wait_ms: None,
+            }
+        );
+        assert_eq!(
+            status(&["actions", "status", "42", "--wait=100"]),
+            Command::ActionsStatus {
+                invocation_id: 42,
+                wait_ms: Some(100),
+            }
+        );
+        assert_eq!(
+            status(&["actions", "status", "42", "--wait"]),
+            Command::ActionsStatus {
+                invocation_id: 42,
+                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
+            }
+        );
+        assert_eq!(
+            status(&["actions", "list", "read", "--wait=2000"]),
+            Command::ActionsList {
+                query: "read".into(),
+                json: false,
+                include_programmatic: false,
+                page: ListPage::default(),
+                wait_ms: Some(2000),
+            }
+        );
+        assert!(parse(&["actions", "cancel", "42", "--wait"]).is_err());
+        assert!(parse(&["actions", "status", "42", "--wait=soon"]).is_err());
+
+        // `--wait` travels as `wait_ms` on a job read and a listing.
+        assert_eq!(
+            wire(&Command::ActionsStatus {
+                invocation_id: 3,
+                wait_ms: Some(10),
+            }),
+            serde_json::json!({"op": "actions_status", "invocation_id": 3, "wait_ms": 10})
+        );
+        assert_eq!(
+            wire(&Command::ActionsList {
+                query: "read".into(),
+                json: true,
+                include_programmatic: false,
+                page: ListPage::default(),
+                wait_ms: Some(20),
+            }),
+            serde_json::json!({"op": "actions_enumerate", "query": "read", "wait_ms": 20})
+        );
+    }
+
     #[test]
     fn subcommands_and_modifier_flags_parse_into_their_values() {
         let dump = |pretty| Command::StateDump {
@@ -1933,11 +2092,7 @@ mod tests {
                     wait_ms: None,
                 },
             ),
-            // Receipt ids parse for both status and cancel.
-            (
-                &["actions", "status", "42"],
-                Command::ActionsStatus { invocation_id: 42 },
-            ),
+            // Receipt ids parse for cancel; status in `waits_parse_on_status_and_list`.
             (
                 &["actions", "cancel", "42"],
                 Command::ActionsCancel { invocation_id: 42 },
@@ -2066,6 +2221,138 @@ mod tests {
         assert_eq!(print_read_answer(&failed, true), 1);
     }
 
+    /// A scripted desktop: answers `replies` in order and records each
+    /// request it was sent.
+    fn scripted(
+        replies: Vec<serde_json::Value>,
+        sent: &mut Vec<serde_json::Value>,
+    ) -> impl FnMut(&str) -> std::io::Result<serde_json::Value> + '_ {
+        let mut replies = replies.into_iter();
+        move |request| {
+            sent.push(serde_json::from_str(request).expect("requests are JSON"));
+            replies
+                .next()
+                .ok_or_else(|| std::io::Error::other("the script has no more answers"))
+        }
+    }
+
+    fn read_listing(revision: &str, with_read: bool) -> serde_json::Value {
+        let actions = if with_read {
+            serde_json::json!([{
+                "provider": "app-actions", "id": "notes-read",
+                "application": "so.tilo.notes", "operation": "read",
+            }])
+        } else {
+            serde_json::json!([])
+        };
+        serde_json::json!({"answer": {
+            "actions": actions, "revision": revision, "complete": true, "settled": true,
+        }})
+    }
+
+    /// `read` asks the desktop to wait on both the listing and the app's
+    /// answer, so it takes one listing and one invocation: no pausing, no
+    /// polling.
+    #[test]
+    fn read_waits_in_two_requests_and_never_polls() {
+        let answered = serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 7,
+            "update": {"state": "succeeded", "output": {"value": {"pages": []}}}}}});
+        let mut sent = Vec::new();
+        let code = run_read_with(
+            &mut scripted(vec![read_listing("r1", true), answered], &mut sent),
+            "so.tilo.notes",
+            Some("page-1"),
+            true,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(sent.len(), 2, "one listing, one invocation: {sent:?}");
+        assert_eq!(sent[0]["op"], "actions_enumerate");
+        assert_eq!(sent[0]["wait_ms"], READ_DISCOVERY_WAIT_MS);
+        assert!(sent[0].get("after_revision").is_none());
+        assert_eq!(
+            sent[1],
+            serde_json::json!({
+                "op": "actions_invoke", "provider": "app-actions", "id": "notes-read",
+                "args": {"item": "page-1"}, "wait_ms": READ_ANSWER_WAIT_MS,
+            })
+        );
+
+        // An app still starting is not listed yet: the next listing is asked
+        // for past the one seen, so the desktop holds it until it changes.
+        let mut sent = Vec::new();
+        let code = run_read_with(
+            &mut scripted(
+                vec![
+                    read_listing("r1", false),
+                    read_listing("r2", true),
+                    serde_json::json!({"answer": {"receipt": {
+                        "update": {"state": "succeeded", "output": {"value": 1}}}}}),
+                ],
+                &mut sent,
+            ),
+            "so.tilo.notes",
+            None,
+            true,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[1]["after_revision"], "r1");
+
+        // A desktop that does not wait (no `settled`) is asked once: asking
+        // again would only spin.
+        let mut sent = Vec::new();
+        let code = run_read_with(
+            &mut scripted(
+                vec![serde_json::json!({"answer": {"actions": [], "revision": "r1"}})],
+                &mut sent,
+            ),
+            "so.tilo.notes",
+            None,
+            true,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(sent.len(), 1);
+
+        // A desktop that answered the admission is asked once more, by a
+        // job read that waits, never by a poll.
+        let mut sent = Vec::new();
+        let code = run_read_with(
+            &mut scripted(
+                vec![
+                    read_listing("r1", true),
+                    serde_json::json!({"answer": {"receipt": {
+                        "broker_invocation_id": 7, "update": {"state": "accepted"}}}}),
+                    serde_json::json!({"answer": {"receipt": {
+                        "broker_invocation_id": 7,
+                        "update": {"state": "succeeded", "output": {"value": 2}}}}}),
+                ],
+                &mut sent,
+            ),
+            "so.tilo.notes",
+            None,
+            true,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[2]["op"], "actions_status");
+        assert_eq!(sent[2]["invocation_id"], 7);
+        assert!(sent[2]["wait_ms"].as_u64().is_some_and(|wait| wait > 0));
+    }
+
+    /// `read` follows its job inside the desktop: the client holds no pause
+    /// of its own to tune.
+    #[test]
+    fn read_contains_no_sleep() {
+        let source = include_str!("main.rs");
+        let read = source
+            .split("fn run_read_with(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("run_read_with is defined here");
+        assert!(!read.contains("sleep"), "run_read_with must not sleep");
+    }
+
     /// An app's read is admitted first and answers on its job: `read`
     /// follows the job, and never prints a receipt as if it were content.
     #[test]
@@ -2075,10 +2362,10 @@ mod tests {
         assert_eq!(unanswered_job(&admitted), Some(7));
         assert_eq!(print_read_answer(&admitted, true), 1);
         let request: serde_json::Value =
-            serde_json::from_str(&job_status_request(7)).expect("json");
+            serde_json::from_str(&job_status_request(7, 500)).expect("json");
         assert_eq!(
             request,
-            serde_json::json!({"op": "actions_status", "invocation_id": 7})
+            serde_json::json!({"op": "actions_status", "invocation_id": 7, "wait_ms": 500})
         );
 
         let answered = serde_json::json!({"answer": {"receipt": {
@@ -2418,7 +2705,10 @@ mod tests {
         // Status and cancel preserve the broker id.
         for (command, operation) in [
             (
-                Command::ActionsStatus { invocation_id: 91 },
+                Command::ActionsStatus {
+                    invocation_id: 91,
+                    wait_ms: None,
+                },
                 "actions_status",
             ),
             (

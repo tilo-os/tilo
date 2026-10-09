@@ -122,7 +122,7 @@ change.
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
-`vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
+`vello_encoding` 0.9.0 from crates.io, verbatim, except for the files
 below and the publication identity in `Cargo.toml` (see "Published forks").
 Everything else in both trees — including `Cargo.lock`, the licenses and
 every other `.rs` file — is the unmodified crates.io release; diff either tree
@@ -320,6 +320,21 @@ reach the same frames through the source, which reads them back on demand.
 incremental save without applying them to a document, so a receiver reads
 each change's hash, message and dependencies (the signed claim of what each
 change is) before it decides to merge them.
+
+## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
+
+`Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
+opaque }))` makes an image's atlas write a small render pass instead of a
+`copy_texture_to_texture`: the fragment shader `textureLoad`s the source at
+`origin` and writes the atlas slot (viewport and scissor on the slot), forcing
+alpha to one when `opaque`. The source may therefore be any colour format the
+device samples as float — a Wayland client's `ARGB8888` buffer imports as
+`Bgra8Unorm`, which `copy_texture_to_texture` cannot copy into the
+`Rgba8Unorm` atlas — and an `X` format is drawn opaque, so the compositor
+draws a client's dma-buf straight from its import with this one copy. The
+atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
+precedence over an `override_image` texture for the same image.
+`Renderer::image_source_writes()` counts the writes and their bytes.
 
 ## zlink-macros
 

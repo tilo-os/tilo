@@ -1,7 +1,7 @@
-//! Driving a real `ShellOverlayHost` the way `App` does: build, compute and
-//! apply its layout against a fixed viewport, then route winit events
-//! through `handle_event`. Without the layout pass every hit rect is
-//! `Rect::ZERO` and no event lands anywhere.
+//! Driving a real `ShellOverlayHost` (or any one widget) the way `App`
+//! does: build, compute and apply its layout against a fixed viewport, then
+//! route winit events through `handle_event`. Without the layout pass every
+//! hit rect is `Rect::ZERO` and no event lands anywhere.
 
 use std::collections::HashMap;
 
@@ -14,8 +14,8 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-/// A laid-out host: the tree and the host's own node in it, which is what
-/// every `EventCtx` names.
+/// A laid-out widget: the tree and the widget's own node in it, which is
+/// what every `EventCtx` names.
 pub struct Layout {
     pub taffy: TaffyTree<()>,
     pub child_node: NodeId,
@@ -23,7 +23,7 @@ pub struct Layout {
 
 /// `build_layout -> compute_layout -> apply_layout` inside a `width` x
 /// `height` root, so every rect lands in screen-space coords.
-pub fn lay_out(host: &mut ShellOverlayHost, width: f32, height: f32) -> Layout {
+pub fn lay_out<W: Widget + ?Sized>(host: &mut W, width: f32, height: f32) -> Layout {
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -71,12 +71,12 @@ pub fn layout_host(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     (taffy, child_node)
 }
 
-/// Route one event through the host against `doc`; returns whether the
-/// host consumed it. Callers that type into CRDT-backed inputs keep `doc`
+/// Route one event through the widget against `doc`; returns whether it
+/// was consumed. Callers that type into CRDT-backed inputs keep `doc`
 /// across events, or every character but the last is lost.
-pub fn dispatch_in(
+pub fn dispatch_in<W: Widget + ?Sized>(
     doc: &mut automerge::AutoCommit,
-    host: &mut ShellOverlayHost,
+    host: &mut W,
     taffy: &TaffyTree<()>,
     node: NodeId,
     modifiers: Modifiers,
@@ -101,8 +101,8 @@ pub fn dispatch_in(
 }
 
 /// [`dispatch_in`] against a fresh document.
-pub fn dispatch(
-    host: &mut ShellOverlayHost,
+pub fn dispatch<W: Widget + ?Sized>(
+    host: &mut W,
     taffy: &TaffyTree<()>,
     node: NodeId,
     modifiers: Modifiers,

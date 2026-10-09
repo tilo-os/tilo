@@ -665,6 +665,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 // after the catalogue moved on; the host re-resolves the
                 // target itself.
                 revision: None,
+                wait_ms: None,
             },
             result: descriptor.contract.result.clone(),
         })
