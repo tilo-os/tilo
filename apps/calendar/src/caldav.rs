@@ -36,7 +36,8 @@ use chrono::NaiveDate;
 
 use crate::account::{CalDavConfig, RemoteCalendar};
 use crate::ics;
-use crate::model::{Event, Id, Model, Palette, Task};
+use crate::model::{Calendar, Event, Id, Palette, Task};
+use ui::tilo_resource::{Keyed, Set};
 
 #[cfg(any(feature = "live", test))]
 const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
@@ -133,18 +134,20 @@ pub fn build_put_request(
 ) -> PutRequest {
     let collection = collection_url_for(config, calendar);
     let url = format!("{}/{}.ics", collection.trim_end_matches('/'), event.id);
-    let model = Model {
-        projects: Vec::new(),
-        events: vec![event.clone()],
-        tasks: Vec::new(),
-        ..Model::default()
-    };
     PutRequest {
         url,
-        body: ics::export(&model),
+        body: event_body(event),
         if_match: None,
         if_none_match: true,
     }
+}
+
+/// The one-event `VCALENDAR` `event` is uploaded as.
+pub fn event_body(event: &Event) -> String {
+    ics::export(&Calendar {
+        events: vec![event.clone()].into(),
+        ..Calendar::default()
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -443,11 +446,11 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: None,
@@ -464,11 +467,11 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: None,
@@ -485,11 +488,11 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(30),
             calendar_id: None,
             project: None,
@@ -507,22 +510,22 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
         }],
     };
 
-    let model = Model {
-        projects: Vec::new(),
-        events,
-        tasks: Vec::new(),
-        ..Model::default()
+    let model = Calendar {
+        projects: Keyed::default(),
+        events: events.into(),
+        tasks: Keyed::default(),
+        ..Calendar::default()
     };
     ics::export(&model)
 }
@@ -1421,11 +1424,11 @@ mod tests {
                 recurrence_interval: 1,
                 recurrence_until: None,
                 recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: Set::default(),
+                occurrence_overrides: Keyed::default(),
                 timezone: "floating".into(),
                 organizer: None,
-                attendees: Vec::new(),
+                attendees: Keyed::default(),
                 reminder_min: None,
                 calendar_id: Some(cal.id.clone()),
                 project: None,
@@ -1491,11 +1494,11 @@ mod tests {
                 recurrence_interval: 1,
                 recurrence_until: None,
                 recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: Set::default(),
+                occurrence_overrides: Keyed::default(),
                 timezone: "floating".into(),
                 organizer: None,
-                attendees: Vec::new(),
+                attendees: Keyed::default(),
                 reminder_min: None,
                 calendar_id: Some(cal.id.clone()),
                 project: None,

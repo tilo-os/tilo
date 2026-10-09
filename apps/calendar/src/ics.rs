@@ -20,7 +20,10 @@ use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use pim_lines::{ContentLine, escape_text as escape, fold_into, unescape_text as unescape};
 use uuid::Uuid;
 
-use crate::model::{Attendee, Event, Id, InviteStatus, Model, Palette, Priority, Recurrence, Task};
+use crate::model::{
+    Attendee, Calendar, Event, Id, InviteStatus, Palette, Priority, Recurrence, Task,
+};
+use ui::tilo_resource::{Keyed, Set};
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
 const D_ONLY: &str = "%Y%m%d";
@@ -32,7 +35,7 @@ type ParsedEvent = (Event, Option<RecurrenceIdentity>, bool);
     clippy::too_many_lines,
     reason = "the serializer mirrors one compact RFC component stream and splitting would obscure ordering"
 )]
-pub fn export(model: &Model) -> String {
+pub fn export(model: &Calendar) -> String {
     let mut out = String::new();
     out.push_str("BEGIN:VCALENDAR\r\n");
     out.push_str("VERSION:2.0\r\n");
@@ -76,7 +79,7 @@ pub fn export(model: &Model) -> String {
             // RRULE is a structured value — written raw (no TEXT escaping).
             raw(&mut out, "RRULE", &rr);
         }
-        for date in &e.recurrence_exdates {
+        for date in e.recurrence_exdates.iter() {
             raw(
                 &mut out,
                 "EXDATE;VALUE=DATE",
@@ -190,11 +193,11 @@ pub fn export(model: &Model) -> String {
 /// Build one standards-based iTIP request for Mail to attach. The returned
 /// payload is data only: preparing it never sends mail or mutates RSVP state.
 pub fn invitation_request(event: &Event) -> String {
-    let model = Model {
-        events: vec![event.clone()],
-        tasks: Vec::new(),
-        projects: Vec::new(),
-        ..Model::default()
+    let model = Calendar {
+        events: vec![event.clone()].into(),
+        tasks: Keyed::default(),
+        projects: Keyed::default(),
+        ..Calendar::default()
     };
     export(&model).replacen(
         "CALSCALE:GREGORIAN\r\n",
@@ -443,11 +446,11 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                 recurrence_interval,
                 recurrence_until,
                 recurrence_count,
-                recurrence_exdates,
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: recurrence_exdates.into_iter().collect(),
+                occurrence_overrides: Keyed::default(),
                 timezone,
                 organizer,
-                attendees,
+                attendees: attendees.into(),
                 reminder_min: reminder,
                 calendar_id: None,
                 project: None,
@@ -664,19 +667,18 @@ pub fn suggested_filename(anchor: NaiveDate) -> String {
 }
 
 /// A small, self-contained `.ics` payload anchored near `today`, built by
-/// round-tripping a tiny [`Model`] through [`export`]. Backs the in-app
+/// round-tripping a tiny [`Calendar`] through [`export`]. Backs the in-app
 /// "Import .ics" action so the import path is reachable and demoable
 /// offline (no file dialog needed) — the parser is exercised end to end.
 pub fn sample_ics(today: NaiveDate) -> String {
-    use crate::model::Project;
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
         // Only ever called below with fixed, valid literals; midnight is a
         // safe fallback for any hour/minute pair that wouldn't be.
         date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
     };
     let d = |delta: i64| today + chrono::Duration::days(delta);
-    let model = Model {
-        projects: Vec::<Project>::new(),
+    let model = Calendar {
+        projects: Keyed::default(),
         events: vec![
             Event {
                 id: Uuid::new_v4(),
@@ -690,11 +692,11 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 recurrence_interval: 1,
                 recurrence_until: None,
                 recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: Set::default(),
+                occurrence_overrides: Keyed::default(),
                 timezone: "floating".into(),
                 organizer: None,
-                attendees: Vec::new(),
+                attendees: Keyed::default(),
                 reminder_min: Some(15),
                 calendar_id: None,
                 project: None,
@@ -711,16 +713,17 @@ pub fn sample_ics(today: NaiveDate) -> String {
                 recurrence_interval: 1,
                 recurrence_until: None,
                 recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: Set::default(),
+                occurrence_overrides: Keyed::default(),
                 timezone: "floating".into(),
                 organizer: None,
-                attendees: Vec::new(),
+                attendees: Keyed::default(),
                 reminder_min: None,
                 calendar_id: None,
                 project: None,
             },
-        ],
+        ]
+        .into(),
         tasks: vec![Task {
             id: Uuid::new_v4(),
             title: "Prep all-hands slides".into(),
@@ -729,8 +732,9 @@ pub fn sample_ics(today: NaiveDate) -> String {
             priority: Priority::High,
             project: None,
             parent: None,
-        }],
-        ..Model::default()
+        }]
+        .into(),
+        ..Calendar::default()
     };
     export(&model)
 }
@@ -779,9 +783,9 @@ mod tests {
         // Case `all_day_export_uses_exclusive_end_date_and_round_trips_the_visible_span`.
         {
             let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-            let model = Model {
-                projects: Vec::new(),
-                tasks: Vec::new(),
+            let model = Calendar {
+                projects: Keyed::default(),
+                tasks: Keyed::default(),
                 events: vec![Event {
                     id: Uuid::new_v4(),
                     title: "Conference".into(),
@@ -794,16 +798,17 @@ mod tests {
                     recurrence_interval: 1,
                     recurrence_until: None,
                     recurrence_count: None,
-                    recurrence_exdates: Vec::new(),
-                    occurrence_overrides: Vec::new(),
+                    recurrence_exdates: Set::default(),
+                    occurrence_overrides: Keyed::default(),
                     timezone: "floating".into(),
                     organizer: None,
-                    attendees: Vec::new(),
+                    attendees: Keyed::default(),
                     reminder_min: None,
                     calendar_id: None,
                     project: None,
-                }],
-                ..Model::default()
+                }]
+                .into(),
+                ..Calendar::default()
             };
             let calendar = export(&model);
             assert!(calendar.contains("DTSTART;VALUE=DATE:20260615"));
@@ -856,10 +861,9 @@ mod tests {
             event.recurrence_interval = 2;
             event.recurrence_until = NaiveDate::from_ymd_opt(2026, 12, 31);
             event.recurrence_count = Some(8);
-            event.recurrence_exdates.clear();
-            event
-                .recurrence_exdates
-                .push(NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date"));
+            event.recurrence_exdates = [NaiveDate::from_ymd_opt(2026, 6, 17).expect("valid date")]
+                .into_iter()
+                .collect();
             event.occurrence_overrides.clear();
             event
                 .occurrence_overrides
@@ -918,11 +922,11 @@ mod tests {
             );
             assert_eq!(edit.original_time, NaiveTime::from_hms_opt(9, 0, 0));
 
-            let exported = export(&Model {
-                events: first,
-                tasks: Vec::new(),
-                projects: Vec::new(),
-                ..Model::default()
+            let exported = export(&Calendar {
+                events: first.into(),
+                tasks: Keyed::default(),
+                projects: Keyed::default(),
+                ..Calendar::default()
             });
             assert!(exported.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261027T090000"));
             let (round_tripped, _) = parse(&exported);
@@ -976,7 +980,7 @@ mod tests {
                 email: "jane@example.com".into(),
                 status: InviteStatus::Accepted,
             };
-            event.attendees = vec![guest.clone()];
+            event.attendees = vec![guest.clone()].into();
             let exported = export(&model);
             assert!(
                 exported.contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")
@@ -1058,20 +1062,20 @@ mod tests {
                 recurrence_interval: 1,
                 recurrence_until: None,
                 recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
+                recurrence_exdates: Set::default(),
+                occurrence_overrides: Keyed::default(),
                 timezone: "floating".into(),
                 organizer: None,
-                attendees: Vec::new(),
+                attendees: Keyed::default(),
                 reminder_min: None,
                 calendar_id: None,
                 project: None,
             };
-            let ics = export(&Model {
-                events: vec![event],
-                tasks: Vec::new(),
-                projects: Vec::new(),
-                ..Model::default()
+            let ics = export(&Calendar {
+                events: vec![event].into(),
+                tasks: Keyed::default(),
+                projects: Keyed::default(),
+                ..Calendar::default()
             });
             assert!(
                 ics.split("\r\n").all(|line| line.len() <= 75),

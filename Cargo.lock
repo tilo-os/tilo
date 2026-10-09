@@ -1562,6 +1562,7 @@ dependencies = [
  "tilo-dav",
  "tilo-document",
  "tilo-files",
+ "tilo-history",
  "tilo-net",
  "tilo-rich-text",
  "tilo-vello",

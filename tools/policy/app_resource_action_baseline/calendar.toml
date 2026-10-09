@@ -1,19 +1,2 @@
-[ratchets.hand_resource_impl]
-"apps/calendar/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/calendar/src/resource.rs" = 3
-
 [ratchets.action_address_new]
-"apps/calendar/src/actions.rs" = 4
 "apps/calendar/src/app/tests.rs" = 3
-
-[ratchets.untyped_action_args]
-"apps/calendar/src/resource.rs" = 4
-"apps/calendar/src/tree.rs" = 26
-
-[ratchets.action_spec]
-"apps/calendar/src/tree.rs" = 9
-
-[ratchets.direct_automerge_write]
-"apps/calendar/src/doc.rs" = 84

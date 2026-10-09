@@ -7,7 +7,11 @@
 //!
 //! No rendering, no IO — just types, filters, and recurrence expansion.
 
+use std::collections::BTreeMap;
+
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
+use tilo_document::RichText;
+use ui::tilo_resource::{self, Identified, Keyed, Model, Refusal, Set};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -49,8 +53,9 @@ pub enum ListSel {
 }
 
 /// Task priority — Planify-style P1..P4 (P1 == most urgent).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Model)]
 pub enum Priority {
+    #[default]
     None,
     Low,
     Medium,
@@ -105,8 +110,21 @@ impl Priority {
 /// A small, theme-derived colour palette for calendars/projects/events.
 /// Every value resolves through [`Theme`] so the OS controls the look —
 /// the enum only encodes *which* semantic slot an item picked.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    Model,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Palette {
+    #[default]
     Indigo,
     Emerald,
     Amber,
@@ -178,8 +196,9 @@ impl Palette {
 
 /// Recurrence rule. A small closed set plus an RRULE bridge for `.ics`
 /// interop ([`Recurrence::to_rrule`] / [`Recurrence::from_rrule`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Model)]
 pub enum Recurrence {
+    #[default]
     None,
     Daily,
     Weekdays,
@@ -191,16 +210,39 @@ pub enum Recurrence {
 /// One invitation participant. The UUID is the durable resource identity;
 /// email is editable contact data and therefore must never be used as a CRDT
 /// map key.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Model)]
+#[model(check = Attendee::valid)]
 pub struct Attendee {
+    /// Its id
+    #[model(readonly)]
     pub id: Id,
+    /// Name
     pub name: String,
+    /// Email address
+    #[model(label)]
     pub email: String,
+    /// Whether they come
     pub status: InviteStatus,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+impl Attendee {
+    fn valid(&self) -> Result<(), Refusal> {
+        if crate::actions::email_address(&self.email).is_none() {
+            return Err(Refusal::new("an attendee needs a complete email address"));
+        }
+        Ok(())
+    }
+}
+
+impl Identified for Attendee {
+    fn id(&self) -> tilo_resource::Id {
+        key(self.id)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Model)]
 pub enum InviteStatus {
+    #[default]
     NeedsAction,
     Accepted,
     Tentative,
@@ -238,16 +280,47 @@ impl InviteStatus {
 
 /// An absolute edit to one generated recurrence instance. `original_date` is
 /// the stable occurrence identity even when this override moves the instance.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Default, Model)]
+#[model(check = OccurrenceOverride::valid)]
 pub struct OccurrenceOverride {
+    /// The date it was on
+    #[model(readonly)]
     pub original_date: NaiveDate,
     /// Time component when the RFC identity was DATE-TIME rather than DATE.
+    #[model(readonly)]
     pub original_time: Option<NaiveTime>,
+    /// Cancelled
     pub cancelled: bool,
+    /// Start
     pub start: Option<NaiveDateTime>,
+    /// End
     pub end: Option<NaiveDateTime>,
+    /// Title
     pub title: Option<String>,
+    /// Place
     pub location: Option<String>,
+}
+
+impl OccurrenceOverride {
+    /// The key this change is stored under: the occurrence it changes.
+    pub fn key_of(date: NaiveDate) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(date.format("%Y-%m-%d").to_string())
+    }
+
+    fn valid(&self) -> Result<(), Refusal> {
+        if let (Some(start), Some(end)) = (self.start, self.end)
+            && end < start
+        {
+            return Err(Refusal::new("an occurrence ends after it starts"));
+        }
+        Ok(())
+    }
+}
+
+impl Identified for OccurrenceOverride {
+    fn id(&self) -> tilo_resource::Id {
+        Self::key_of(self.original_date)
+    }
 }
 
 impl Recurrence {
@@ -316,23 +389,67 @@ impl Recurrence {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A task project: a named, coloured list tasks and events file under.
+#[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = Project::valid)]
 pub struct Project {
+    /// Its id
+    #[model(readonly)]
     pub id: Id,
+    /// Name
+    #[model(label)]
     pub name: String,
+    /// Colour
     pub color: Palette,
+    /// Where it lists among the projects
     pub order: u32,
 }
 
-#[derive(Clone, Debug)]
+impl Project {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.name.trim().is_empty() {
+            return Err(Refusal::new("a project needs a name"));
+        }
+        Ok(())
+    }
+}
+
+/// Projects list in the order they were arranged in.
+impl Identified for Project {
+    fn id(&self) -> tilo_resource::Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
+}
+
+/// The key an event, task, project or attendee is stored under: its id.
+pub fn key(id: Id) -> tilo_resource::Id {
+    tilo_resource::Id::from_raw(id.to_string())
+}
+
+/// An event: a time, maybe repeating, with who comes and where.
+#[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = Event::valid)]
 pub struct Event {
+    /// Its id
+    #[model(readonly)]
     pub id: Id,
+    /// Title
+    #[model(label)]
     pub title: String,
+    /// Start
     pub start: NaiveDateTime,
+    /// End
     pub end: NaiveDateTime,
+    /// All day
     pub all_day: bool,
+    /// Place
     pub location: String,
+    /// Colour
     pub color: Palette,
+    /// How it repeats
     pub recurrence: Recurrence,
     /// Positive recurrence interval. For example, weekly + 2 is every other
     /// week. Old documents default to 1.
@@ -342,16 +459,18 @@ pub struct Event {
     /// Maximum number of original occurrences, including the seed.
     pub recurrence_count: Option<u32>,
     /// Absolute original occurrence dates omitted from the series.
-    pub recurrence_exdates: Vec<NaiveDate>,
+    pub recurrence_exdates: Set<NaiveDate>,
     /// Per-occurrence absolute cancellation/reschedule/content edits.
-    pub occurrence_overrides: Vec<OccurrenceOverride>,
+    pub occurrence_overrides: Keyed<OccurrenceOverride>,
     /// IANA time-zone identifier, or `floating` for legacy/local wall time.
     pub timezone: String,
     /// Stable attendee id designating the organizer, when known.
     pub organizer: Option<Id>,
-    pub attendees: Vec<Attendee>,
+    /// Who is invited
+    pub attendees: Keyed<Attendee>,
     /// Minutes before start for a reminder, if any.
     pub reminder_min: Option<i64>,
+    /// The project it is filed under
     pub project: Option<Id>,
     /// Which remote calendar this event was synced from, if any. Local events
     /// (created in-app or imported) carry `None` and are always shown; a synced
@@ -359,6 +478,52 @@ pub struct Event {
     /// sidebar's per-calendar visibility toggle can hide/show it on the spot,
     /// without a re-sync. Persisted in the CRDT under the `cal` key.
     pub calendar_id: Option<String>,
+}
+
+/// Events list by when they start.
+impl Identified for Event {
+    fn id(&self) -> tilo_resource::Id {
+        key(self.id)
+    }
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.start.cmp(&other.start)
+    }
+}
+
+/// How many minutes before an event its reminder may ring.
+pub const REMINDERS: [i64; 3] = [10, 30, 60];
+
+impl Event {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.end < self.start {
+            return Err(Refusal::new("an event ends after it starts"));
+        }
+        if self
+            .reminder_min
+            .is_some_and(|minutes| !REMINDERS.contains(&minutes))
+        {
+            return Err(Refusal::new("a reminder rings 10, 30 or 60 minutes before"));
+        }
+        if self.recurrence_interval == 0 {
+            return Err(Refusal::new("an event repeats every 1 or more"));
+        }
+        if crate::actions::normalize_timezone(&self.timezone).as_deref()
+            != Some(self.timezone.as_str())
+        {
+            return Err(Refusal::new(
+                "an event's time zone is an IANA name or `floating`",
+            ));
+        }
+        if let Some(organizer) = self.organizer
+            && !self
+                .attendees
+                .iter()
+                .any(|attendee| attendee.id == organizer)
+        {
+            return Err(Refusal::new("the organizer is one of the attendees"));
+        }
+        Ok(())
+    }
 }
 
 /// Fallback label shown for an event whose title is still empty — a freshly
@@ -546,15 +711,42 @@ impl Event {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A task: something to do, maybe by a date, maybe beneath another.
+#[derive(Clone, Debug, Default, PartialEq, Model)]
+#[model(check = Task::valid)]
 pub struct Task {
+    /// Its id
+    #[model(readonly)]
     pub id: Id,
+    /// Title
+    #[model(label)]
     pub title: String,
+    /// Done
     pub done: bool,
+    /// When it is due
     pub due: Option<NaiveDate>,
+    /// Priority
     pub priority: Priority,
+    /// The project it is filed under
     pub project: Option<Id>,
+    /// The task it is a step of
+    #[model(readonly)]
     pub parent: Option<Id>,
+}
+
+impl Task {
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.parent == Some(self.id) {
+            return Err(Refusal::new("a task is not a step of itself"));
+        }
+        Ok(())
+    }
+}
+
+impl Identified for Task {
+    fn id(&self) -> tilo_resource::Id {
+        key(self.id)
+    }
 }
 
 impl Task {
@@ -571,27 +763,55 @@ impl Task {
     }
 }
 
-/// Aggregate model. Order within the vectors is the display order.
-#[derive(Clone, Debug, Default)]
-pub struct Model {
-    pub projects: Vec<Project>,
-    pub events: Vec<Event>,
-    pub tasks: Vec<Task>,
-    /// The plain text of each event's and task's notes that hold any, for
-    /// search.
-    pub notes: std::collections::BTreeMap<Id, String>,
-    /// Events on a remote calendar whose latest version still waits to be
-    /// uploaded to its server.
-    pub push_queue: Vec<Id>,
-    /// Deleted items whose server copy still waits to be deleted, with the
-    /// remote calendar it lives in.
-    pub delete_queue: Vec<(String, Id)>,
-    /// Where each queued item lives on its server: the calendar, the
-    /// resource's href and the version (`ETag`) last seen there.
-    pub bindings: std::collections::BTreeMap<Id, (String, String, Option<String>)>,
+/// What a `CalDAV` server last confirmed holding of one event or task: where
+/// it keeps it, its version there and what it holds. An event whose content
+/// differs from what its server holds still has to be uploaded; a copy
+/// whose event is gone still has to be deleted (see [`crate::outbox`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
+pub struct RemoteCopy {
+    /// The remote calendar it is in
+    pub calendar: String,
+    /// Where the server keeps it; empty for an item a sample server sent
+    pub href: String,
+    /// The version the server last confirmed (its `ETag`)
+    pub etag: Option<String>,
+    /// A fingerprint of the event the server holds; empty for a task, which
+    /// is never uploaded
+    pub holds: String,
+    /// Whether it is a task
+    pub task: bool,
 }
 
-impl Model {
+/// The calendar: its events, tasks and projects, their notes, and what the
+/// `CalDAV` servers of its remote calendars last confirmed.
+#[derive(Clone, Debug, Default, PartialEq, Model)]
+pub struct Calendar {
+    /// The task projects
+    pub projects: Keyed<Project>,
+    /// The events
+    pub events: Keyed<Event>,
+    /// The tasks
+    pub tasks: Keyed<Task>,
+    /// Each event's and task's notes, under its id
+    pub notes: BTreeMap<String, RichText>,
+    /// What each remote item's server last confirmed, under the item's id
+    #[model(readonly)]
+    pub remote: BTreeMap<String, RemoteCopy>,
+    /// Where each remote calendar's last pull ended (its sync token)
+    #[model(readonly)]
+    pub sync_tokens: BTreeMap<String, String>,
+}
+
+impl Calendar {
+    /// The text of the notes of the event or task `id`, a paragraph per
+    /// line; empty when it has none.
+    pub fn notes_text(&self, id: Id) -> String {
+        self.notes
+            .get(&id.to_string())
+            .map(RichText::text)
+            .unwrap_or_default()
+    }
+
     pub fn project(&self, id: Id) -> Option<&Project> {
         self.projects.iter().find(|p| p.id == id)
     }
@@ -680,16 +900,16 @@ impl Model {
 
 /// Build a populated demo model anchored on `today` so the seeded screenshot
 /// always lands inside the visible month with a spread of work.
-pub fn seed_demo(today: NaiveDate) -> Model {
+pub fn seed_demo(today: NaiveDate) -> Calendar {
     let pid_work = Uuid::new_v4();
     let pid_personal = Uuid::new_v4();
     let pid_health = Uuid::new_v4();
 
-    Model {
-        projects: seed_demo_projects(pid_work, pid_personal, pid_health),
-        events: seed_demo_events(today, pid_work, pid_personal, pid_health),
-        tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work),
-        ..Model::default()
+    Calendar {
+        projects: seed_demo_projects(pid_work, pid_personal, pid_health).into(),
+        events: seed_demo_events(today, pid_work, pid_personal, pid_health).into(),
+        tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work).into(),
+        ..Calendar::default()
     }
 }
 
@@ -765,11 +985,11 @@ fn seed_demo_events_early(
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -786,7 +1006,7 @@ fn seed_demo_events_early(
             recurrence_interval: 2,
             recurrence_until: Some(d(90)),
             recurrence_count: None,
-            recurrence_exdates: vec![d(28)],
+            recurrence_exdates: [d(28)].into_iter().collect(),
             occurrence_overrides: vec![OccurrenceOverride {
                 original_date: d(42),
                 original_time: None,
@@ -795,7 +1015,8 @@ fn seed_demo_events_early(
                 end: Some(seed_demo_at(d(43), 15, 0)),
                 title: Some("Design review (moved)".into()),
                 location: None,
-            }],
+            }]
+            .into(),
             timezone: "Europe/Berlin".into(),
             organizer: Some(design_organizer),
             attendees: vec![Attendee {
@@ -803,7 +1024,8 @@ fn seed_demo_events_early(
                 name: "Mina Patel".into(),
                 email: "mina@example.com".into(),
                 status: InviteStatus::Accepted,
-            }],
+            }]
+            .into(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -820,11 +1042,11 @@ fn seed_demo_events_early(
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_personal),
@@ -841,11 +1063,11 @@ fn seed_demo_events_early(
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(30),
             calendar_id: None,
             project: Some(pid_health),
@@ -862,11 +1084,11 @@ fn seed_demo_events_early(
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -894,11 +1116,11 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(60),
             calendar_id: None,
             project: Some(pid_personal),
@@ -915,11 +1137,11 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_work),
@@ -936,11 +1158,11 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_personal),
@@ -957,11 +1179,11 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -978,11 +1200,11 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: Some(60),
             calendar_id: None,
             project: Some(pid_personal),
@@ -1149,7 +1371,7 @@ mod tests {
             event.recurrence = Recurrence::Daily;
             event.recurrence_interval = 2;
             event.recurrence_count = Some(4);
-            event.recurrence_exdates.push(date(2026, 6, 3));
+            event.recurrence_exdates.insert(date(2026, 6, 3));
             event.occurrence_overrides.push(OccurrenceOverride {
                 original_date: date(2026, 6, 5),
                 original_time: None,
@@ -1306,11 +1528,11 @@ mod tests {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: Set::default(),
+            occurrence_overrides: Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: Keyed::default(),
             reminder_min: None,
             calendar_id: None,
             project: None,

@@ -18,7 +18,8 @@ fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Event and task dates and times are model values.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["chrono"] }
 # Shared multi-account store and encrypted secret vault. Settings owns writes;
 # credentials are sealed in the vault rather than the plaintext store.
 accounts = { path = "../../crates/system/accounts", features = ["person"] }
@@ -59,10 +60,11 @@ default = ["live"]
 live = ["tilo-dav/net", "dep:tilo-net"]
 
 [dev-dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["chrono", "test-support"] }
 tempfile.workspace = true
 mail = { path = "../mail" }
 test-http = { path = "../../crates/dev/test-http" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

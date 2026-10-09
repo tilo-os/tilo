@@ -6,8 +6,9 @@
 //! with priorities and subtasks, and rich-text **notes** on any event or
 //! task using the SDK rich-text editor.
 //!
-//! State lives in the Automerge CRDT (`doc`), interop is via iCalendar
-//! (`ics`), and [`CalendarShell`] is the app every host runs.
+//! The calendar is the [`Calendar`] record (`model`, its verbs in
+//! `resource`), interop is via iCalendar (`ics`), and [`CalendarShell`] is
+//! the app every host runs.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -37,7 +38,6 @@ pub mod app;
 pub mod caldav;
 pub mod date;
 pub mod display;
-pub mod doc;
 mod draw_util;
 mod event_popovers;
 pub mod ics;
@@ -50,15 +50,14 @@ mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
 mod topbar;
-mod tree;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
 pub use model::{
-    Attendee, Event, InviteStatus, Model, OccurrenceOverride, Priority, Project, Recurrence, Task,
-    View,
+    Attendee, Calendar, Event, InviteStatus, OccurrenceOverride, Priority, Project, Recurrence,
+    Task, View,
 };
-pub use resource::{Calendar, CalendarShell};
+pub use resource::CalendarShell;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

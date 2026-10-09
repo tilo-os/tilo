@@ -23,7 +23,7 @@ use ui::widget::{Interaction, ListRowFace, RowLeading, Scrollable};
 
 use crate::date;
 use crate::draw_util::text_in_band;
-use crate::model::{Event, Id, Model, Priority, Task};
+use crate::model::{Calendar, Event, Id, Priority, Task};
 
 const DAYS_SHOWN: i64 = 21;
 
@@ -325,7 +325,7 @@ fn heading_height(text: &mut TextRenderer, theme: &Theme) -> f64 {
 /// What the agenda lists: the model's events and top-level tasks from
 /// `anchor` onward, with hidden calendars and the calendar filter applied.
 pub(crate) struct AgendaSource<'a> {
-    pub(crate) model: &'a Model,
+    pub(crate) model: &'a Calendar,
     pub(crate) anchor: NaiveDate,
     pub(crate) hidden_calendars: &'a HashSet<String>,
     pub(crate) calendar_filter: Option<&'a str>,
@@ -367,7 +367,7 @@ impl<'a> AgendaSource<'a> {
 }
 
 fn visible_events_on<'a>(
-    model: &'a Model,
+    model: &'a Calendar,
     date: NaiveDate,
     hidden_calendars: &HashSet<String>,
     calendar_filter: Option<&str>,
@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn source<'a>(
-        model: &'a Model,
+        model: &'a Calendar,
         anchor: NaiveDate,
         hidden_calendars: &'a HashSet<String>,
     ) -> AgendaSource<'a> {
@@ -455,11 +455,11 @@ mod tests {
             recurrence_interval: 1,
             recurrence_until: None,
             recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
+            recurrence_exdates: ui::tilo_resource::Set::default(),
+            occurrence_overrides: ui::tilo_resource::Keyed::default(),
             timezone: "floating".into(),
             organizer: None,
-            attendees: Vec::new(),
+            attendees: ui::tilo_resource::Keyed::default(),
             reminder_min: None,
             project: None,
             calendar_id: calendar_id.map(str::to_owned),
@@ -473,12 +473,12 @@ mod tests {
         // Case `content_extent_grows_with_headings_and_rows`.
         {
             let anchor = date(1);
-            let one = Model {
-                events: vec![event(1, None)],
-                ..Model::default()
+            let one = Calendar {
+                events: vec![event(1, None)].into(),
+                ..Calendar::default()
             };
-            let two = Model {
-                events: vec![event(1, None)],
+            let two = Calendar {
+                events: vec![event(1, None)].into(),
                 tasks: vec![Task {
                     id: Uuid::new_v4(),
                     title: "Task".into(),
@@ -487,8 +487,9 @@ mod tests {
                     priority: Priority::None,
                     project: None,
                     parent: None,
-                }],
-                ..Model::default()
+                }]
+                .into(),
+                ..Calendar::default()
             };
             let hidden = HashSet::new();
             let h1 = content_height(&source(&one, anchor, &hidden), &mut text, &theme);
@@ -499,9 +500,9 @@ mod tests {
         // Case `hidden_remote_calendars_do_not_expand_the_scroll_extent`.
         {
             let anchor = date(1);
-            let model = Model {
-                events: vec![event(1, Some("hidden"))],
-                ..Model::default()
+            let model = Calendar {
+                events: vec![event(1, Some("hidden"))].into(),
+                ..Calendar::default()
             };
             let hidden = HashSet::from(["hidden".to_string()]);
             assert_eq!(
@@ -515,13 +516,14 @@ mod tests {
         // Case `selected_calendar_filters_events_without_overriding_visibility`.
         {
             let anchor = date(1);
-            let model = Model {
+            let model = Calendar {
                 events: vec![
                     event(1, None),
                     event(1, Some("work")),
                     event(1, Some("home")),
-                ],
-                ..Model::default()
+                ]
+                .into(),
+                ..Calendar::default()
             };
             assert_eq!(
                 visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
@@ -565,9 +567,9 @@ mod tests {
         let mut reversed = tasks.clone();
         reversed.reverse();
         for tasks in [tasks, reversed] {
-            let model = Model {
-                tasks,
-                ..Model::default()
+            let model = Calendar {
+                tasks: tasks.into(),
+                ..Calendar::default()
             };
             let titles: Vec<&str> = source(&model, anchor, &hidden)
                 .tasks_on(anchor)
@@ -589,9 +591,9 @@ mod tests {
     #[test]
     fn larger_text_grows_the_list() {
         let anchor = date(1);
-        let model = Model {
-            events: vec![event(1, None)],
-            ..Model::default()
+        let model = Calendar {
+            events: vec![event(1, None)].into(),
+            ..Calendar::default()
         };
         let hidden = HashSet::new();
         let mut text = TextRenderer::new();

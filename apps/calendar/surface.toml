@@ -1,0 +1,1206 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "calendar.calendar"
+label = "Calendar"
+version = 1
+
+[[resources.fields]]
+owner = "calendar"
+path = "projects"
+stored = "keyed"
+title = "The task projects"
+type = "Keyed<Project>"
+
+[[resources.fields]]
+owner = "project"
+path = "projects.*.id"
+readonly = true
+stored = "value"
+title = "Its id"
+type = "Id"
+
+[[resources.fields]]
+label = true
+owner = "project"
+path = "projects.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "project"
+path = "projects.*.color"
+stored = "value"
+title = "Colour"
+type = "Palette"
+
+[[resources.fields]]
+owner = "project"
+path = "projects.*.order"
+stored = "value"
+title = "Where it lists among the projects"
+type = "u32"
+
+[[resources.fields]]
+owner = "calendar"
+path = "events"
+stored = "keyed"
+title = "The events"
+type = "Keyed<Event>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.id"
+readonly = true
+stored = "value"
+title = "Its id"
+type = "Id"
+
+[[resources.fields]]
+label = true
+owner = "event"
+path = "events.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.start"
+stored = "value"
+title = "Start"
+type = "NaiveDateTime"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.end"
+stored = "value"
+title = "End"
+type = "NaiveDateTime"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.all_day"
+stored = "value"
+title = "All day"
+type = "bool"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.location"
+stored = "value"
+title = "Place"
+type = "String"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.color"
+stored = "value"
+title = "Colour"
+type = "Palette"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.recurrence"
+stored = "value"
+title = "How it repeats"
+type = "Recurrence"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.recurrence_interval"
+stored = "value"
+title = "Positive recurrence interval. For example, weekly + 2 is every other"
+type = "u32"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.recurrence_until"
+stored = "value"
+title = "Inclusive final original occurrence date"
+type = "Option<NaiveDate>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.recurrence_count"
+stored = "value"
+title = "Maximum number of original occurrences, including the seed"
+type = "Option<u32>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.recurrence_exdates"
+stored = "value"
+title = "Absolute original occurrence dates omitted from the series"
+type = "Set<NaiveDate>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.occurrence_overrides"
+stored = "keyed"
+title = "Per-occurrence absolute cancellation/reschedule/content edits"
+type = "Keyed<OccurrenceOverride>"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.original_date"
+readonly = true
+stored = "value"
+title = "The date it was on"
+type = "NaiveDate"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.original_time"
+readonly = true
+stored = "value"
+title = "Time component when the RFC identity was DATE-TIME rather than DATE"
+type = "Option<NaiveTime>"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.cancelled"
+stored = "value"
+title = "Cancelled"
+type = "bool"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.start"
+stored = "value"
+title = "Start"
+type = "Option<NaiveDateTime>"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.end"
+stored = "value"
+title = "End"
+type = "Option<NaiveDateTime>"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.title"
+stored = "value"
+title = "Title"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "occurrence-override"
+path = "events.*.occurrence_overrides.*.location"
+stored = "value"
+title = "Place"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.timezone"
+stored = "value"
+title = "IANA time-zone identifier, or `floating` for legacy/local wall time"
+type = "String"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.organizer"
+stored = "value"
+title = "Stable attendee id designating the organizer, when known"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.attendees"
+stored = "keyed"
+title = "Who is invited"
+type = "Keyed<Attendee>"
+
+[[resources.fields]]
+owner = "attendee"
+path = "events.*.attendees.*.id"
+readonly = true
+stored = "value"
+title = "Its id"
+type = "Id"
+
+[[resources.fields]]
+owner = "attendee"
+path = "events.*.attendees.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "attendee"
+path = "events.*.attendees.*.email"
+stored = "value"
+title = "Email address"
+type = "String"
+
+[[resources.fields]]
+owner = "attendee"
+path = "events.*.attendees.*.status"
+stored = "value"
+title = "Whether they come"
+type = "InviteStatus"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.reminder_min"
+stored = "value"
+title = "Minutes before start for a reminder, if any"
+type = "Option<i64>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.project"
+stored = "value"
+title = "The project it is filed under"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "event"
+path = "events.*.calendar_id"
+stored = "value"
+title = "Which remote calendar this event was synced from, if any. Local events"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "calendar"
+path = "tasks"
+stored = "keyed"
+title = "The tasks"
+type = "Keyed<Task>"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.id"
+readonly = true
+stored = "value"
+title = "Its id"
+type = "Id"
+
+[[resources.fields]]
+label = true
+owner = "task"
+path = "tasks.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.done"
+stored = "value"
+title = "Done"
+type = "bool"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.due"
+stored = "value"
+title = "When it is due"
+type = "Option<NaiveDate>"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.priority"
+stored = "value"
+title = "Priority"
+type = "Priority"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.project"
+stored = "value"
+title = "The project it is filed under"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "task"
+path = "tasks.*.parent"
+readonly = true
+stored = "value"
+title = "The task it is a step of"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "calendar"
+path = "notes"
+stored = "value"
+title = "Each event's and task's notes, under its id"
+type = "BTreeMap<String, RichText>"
+
+[[resources.fields]]
+owner = "calendar"
+path = "remote"
+readonly = true
+stored = "value"
+title = "What each remote item's server last confirmed, under the item's id"
+type = "BTreeMap<String, RemoteCopy>"
+
+[[resources.fields]]
+owner = "calendar"
+path = "sync_tokens"
+readonly = true
+stored = "value"
+title = "Where each remote calendar's last pull ended (its sync token)"
+type = "BTreeMap<String, String>"
+
+[[resources.verbs]]
+description = "New event  Adds an event, on the local calendar unless it names a remote one."
+id = "new-event"
+kind = "undoable"
+label = "New event"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The event: title, start and end (YYYY-MM-DDTHH:MM) at least"
+type = "object"
+
+[resources.verbs.params.schema.properties.all_day]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.attendees]
+type = "array"
+
+[resources.verbs.params.schema.properties.attendees.items]
+additionalProperties = false
+required = [
+    "id",
+    "name",
+    "email",
+    "status",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.email]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.status]
+type = "string"
+
+[resources.verbs.params.schema.properties.calendar_id]
+description = 'Source calendar id, or `""` for the local on-device calendar.'
+type = "string"
+
+[resources.verbs.params.schema.properties.color]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides]
+type = "array"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items]
+additionalProperties = false
+required = [
+    "original_date",
+    "cancelled",
+    "start",
+    "end",
+    "title",
+    "location",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.cancelled]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.original_date]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.original_time]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.title]
+type = "string"
+
+[resources.verbs.params.schema.properties.organizer]
+type = "string"
+
+[resources.verbs.params.schema.properties.project]
+description = 'Owning project id (string form), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.properties.recurrence_count]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.recurrence_exdates]
+type = "array"
+
+[resources.verbs.params.schema.properties.recurrence_exdates.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.recurrence_interval]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.recurrence_until]
+type = "string"
+
+[resources.verbs.params.schema.properties.reminder]
+description = "Minutes before start for a reminder, or `-1` for none."
+type = "integer"
+
+[resources.verbs.params.schema.properties.rrule]
+type = "string"
+
+[resources.verbs.params.schema.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.properties.timezone]
+type = "string"
+
+[resources.verbs.params.schema.properties.title]
+type = "string"
+
+[[resources.verbs]]
+description = "New task  Adds a task."
+id = "new-task"
+kind = "undoable"
+label = "New task"
+
+[[resources.verbs.params]]
+name = "task"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The task: its title at least"
+type = "object"
+
+[resources.verbs.params.schema.properties.done]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.due]
+description = 'Due date (`DATE_FMT`), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.parent]
+type = "string"
+
+[resources.verbs.params.schema.properties.priority]
+description = "Priority rank (0 = highest)."
+maximum = 255
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.project]
+type = "string"
+
+[resources.verbs.params.schema.properties.title]
+type = "string"
+
+[[resources.verbs]]
+description = "New task project  Adds a project to file tasks and events under."
+id = "new-project"
+kind = "undoable"
+label = "New task project"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Its name"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete event  Deletes an event and its notes; a server holding it deletes it too."
+id = "delete-event"
+kind = "undoable"
+label = "Delete event"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+description = "Event"
+type = "string"
+
+[[resources.verbs]]
+description = "Reschedule  Moves an event to another start and end."
+id = "reschedule"
+kind = "undoable"
+label = "Reschedule"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+description = "Event"
+type = "string"
+
+[[resources.verbs.params]]
+name = "start"
+required = true
+
+[resources.verbs.params.schema]
+description = "When it starts"
+pattern = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$'
+type = "string"
+
+[[resources.verbs.params]]
+name = "end"
+required = true
+
+[resources.verbs.params.schema]
+description = "When it ends, at or after the start"
+pattern = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$'
+type = "string"
+
+[[resources.verbs]]
+description = "Move to calendar  Files an event on another calendar, in that calendar's colour."
+id = "move-to-calendar"
+kind = "undoable"
+label = "Move to calendar"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+description = "Event"
+type = "string"
+
+[[resources.verbs.params]]
+name = "calendar"
+required = false
+
+[resources.verbs.params.schema]
+description = "The remote calendar's id; none for the calendar on this device"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "color"
+required = true
+
+[resources.verbs.params.schema]
+description = "The colour it takes"
+enum = [
+    "indigo",
+    "emerald",
+    "amber",
+    "red",
+    "blue",
+    "violet",
+    "slate",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Invite  Adds someone to an event's attendees, awaiting their answer."
+id = "invite"
+kind = "undoable"
+label = "Invite"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+description = "Event"
+type = "string"
+
+[[resources.verbs.params]]
+name = "email"
+required = true
+
+[resources.verbs.params.schema]
+description = "Their email address"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Their name"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete task  Deletes a task with its steps and their notes."
+id = "delete-task"
+kind = "undoable"
+label = "Delete task"
+
+[[resources.verbs.params]]
+name = "task"
+required = true
+
+[resources.verbs.params.schema]
+description = "Task"
+type = "string"
+
+[[resources.verbs]]
+description = "Delete project  Deletes a project; the events and tasks filed under it stay, unfiled."
+destructive = true
+id = "delete-project"
+kind = "undoable"
+label = "Delete project"
+
+[[resources.verbs.params]]
+name = "project"
+required = true
+
+[resources.verbs.params.schema]
+description = "Project"
+type = "string"
+
+[[resources.verbs]]
+description = "Import calendar items  Adds the events and tasks of a calendar file, leaving out what the calendar already holds."
+id = "import-items"
+kind = "undoable"
+label = "Import calendar items"
+
+[[resources.verbs.params]]
+name = "events"
+required = true
+
+[resources.verbs.params.schema]
+description = "The events, each under its own new id"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "An event as JSON, as a verb takes one: datetimes as `YYYY-MM-DDTHH:MM`, colour as a palette index, recurrence as an RRULE body, no reminder as `-1`. `Self::from_event` and `Self::to_event` round-trip losslessly."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.all_day]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.attendees]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.attendees.items]
+additionalProperties = false
+required = [
+    "id",
+    "name",
+    "email",
+    "status",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.attendees.items.properties.email]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.attendees.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.attendees.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.attendees.items.properties.status]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.calendar_id]
+description = 'Source calendar id, or `""` for the local on-device calendar.'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.color]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items]
+additionalProperties = false
+required = [
+    "original_date",
+    "cancelled",
+    "start",
+    "end",
+    "title",
+    "location",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.cancelled]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.original_date]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.original_time]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.occurrence_overrides.items.properties.title]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.organizer]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.project]
+description = 'Owning project id (string form), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.recurrence_count]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.recurrence_exdates]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.recurrence_exdates.items]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.recurrence_interval]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.recurrence_until]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.reminder]
+description = "Minutes before start for a reminder, or `-1` for none."
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.rrule]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.timezone]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.title]
+type = "string"
+
+[[resources.verbs.params]]
+name = "tasks"
+required = true
+
+[resources.verbs.params.schema]
+description = "The tasks"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "A task as JSON, as a verb takes one."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.done]
+type = "boolean"
+
+[resources.verbs.params.schema.items.properties.due]
+description = 'Due date (`DATE_FMT`), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.parent]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.priority]
+description = "Priority rank (0 = highest)."
+maximum = 255
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.project]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.title]
+type = "string"
+
+[[resources.verbs]]
+description = "Adopt a server's event  Writes an event as its server holds it, which therefore needs no upload."
+id = "adopt-remote-event"
+kind = "undoable"
+label = "Adopt a server's event"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The event as the server holds it"
+type = "object"
+
+[resources.verbs.params.schema.properties.all_day]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.attendees]
+type = "array"
+
+[resources.verbs.params.schema.properties.attendees.items]
+additionalProperties = false
+required = [
+    "id",
+    "name",
+    "email",
+    "status",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.email]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.attendees.items.properties.status]
+type = "string"
+
+[resources.verbs.params.schema.properties.calendar_id]
+description = 'Source calendar id, or `""` for the local on-device calendar.'
+type = "string"
+
+[resources.verbs.params.schema.properties.color]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides]
+type = "array"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items]
+additionalProperties = false
+required = [
+    "original_date",
+    "cancelled",
+    "start",
+    "end",
+    "title",
+    "location",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.cancelled]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.end]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.location]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.original_date]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.original_time]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.properties.occurrence_overrides.items.properties.title]
+type = "string"
+
+[resources.verbs.params.schema.properties.organizer]
+type = "string"
+
+[resources.verbs.params.schema.properties.project]
+description = 'Owning project id (string form), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.properties.recurrence_count]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.recurrence_exdates]
+type = "array"
+
+[resources.verbs.params.schema.properties.recurrence_exdates.items]
+type = "string"
+
+[resources.verbs.params.schema.properties.recurrence_interval]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.recurrence_until]
+type = "string"
+
+[resources.verbs.params.schema.properties.reminder]
+description = "Minutes before start for a reminder, or `-1` for none."
+type = "integer"
+
+[resources.verbs.params.schema.properties.rrule]
+type = "string"
+
+[resources.verbs.params.schema.properties.start]
+type = "string"
+
+[resources.verbs.params.schema.properties.timezone]
+type = "string"
+
+[resources.verbs.params.schema.properties.title]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where the server keeps it"
+required = [
+    "calendar",
+    "href",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.calendar]
+description = "The remote calendar's id"
+type = "string"
+
+[resources.verbs.params.schema.properties.etag]
+description = "The version the server reported (its `ETag`)"
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.href]
+description = "The item's address on the server; empty for a sample server's item"
+type = "string"
+
+[[resources.verbs]]
+description = "Adopt a server's task  Writes a task as its server holds it."
+id = "adopt-remote-task"
+kind = "undoable"
+label = "Adopt a server's task"
+
+[[resources.verbs.params]]
+name = "task"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The task as the server holds it"
+type = "object"
+
+[resources.verbs.params.schema.properties.done]
+type = "boolean"
+
+[resources.verbs.params.schema.properties.due]
+description = 'Due date (`DATE_FMT`), or `""` for none.'
+type = "string"
+
+[resources.verbs.params.schema.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.parent]
+type = "string"
+
+[resources.verbs.params.schema.properties.priority]
+description = "Priority rank (0 = highest)."
+maximum = 255
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.project]
+type = "string"
+
+[resources.verbs.params.schema.properties.title]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where the server keeps it"
+required = [
+    "calendar",
+    "href",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.calendar]
+description = "The remote calendar's id"
+type = "string"
+
+[resources.verbs.params.schema.properties.etag]
+description = "The version the server reported (its `ETag`)"
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.href]
+description = "The item's address on the server; empty for a sample server's item"
+type = "string"
+
+[[resources.verbs]]
+description = "Drop what a server removed  Removes an item its server no longer holds."
+id = "drop-remote-item"
+kind = "undoable"
+label = "Drop what a server removed"
+
+[[resources.verbs.params]]
+name = "item"
+required = true
+
+[resources.verbs.params.schema]
+description = "The event or task"
+format = "uuid"
+type = "string"
+
+[[resources.verbs]]
+description = "Record an upload  Records that a server took the version of an event it was sent."
+id = "server-applied"
+kind = "undoable"
+label = "Record an upload"
+
+[[resources.verbs.params]]
+name = "event"
+required = true
+
+[resources.verbs.params.schema]
+description = "The event"
+format = "uuid"
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where the server now keeps it"
+required = [
+    "calendar",
+    "href",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.calendar]
+description = "The remote calendar's id"
+type = "string"
+
+[resources.verbs.params.schema.properties.etag]
+description = "The version the server reported (its `ETag`)"
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.href]
+description = "The item's address on the server; empty for a sample server's item"
+type = "string"
+
+[[resources.verbs.params]]
+name = "holds"
+required = true
+
+[resources.verbs.params.schema]
+description = "What it now holds: the uploaded version's fingerprint"
+type = "string"
+
+[[resources.verbs]]
+description = "Record a server delete  Records that a server deleted an item it was told to."
+id = "server-removed"
+kind = "undoable"
+label = "Record a server delete"
+
+[[resources.verbs.params]]
+name = "item"
+required = true
+
+[resources.verbs.params.schema]
+description = "The event"
+format = "uuid"
+type = "string"
+
+[[resources.verbs]]
+description = "Record a pull  Remembers where a remote calendar's last pull ended."
+id = "pulled"
+kind = "undoable"
+label = "Record a pull"
+
+[[resources.verbs.params]]
+name = "calendar"
+required = true
+
+[resources.verbs.params.schema]
+description = "The remote calendar's id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "token"
+required = true
+
+[resources.verbs.params.schema]
+description = "Its sync token"
+type = "string"
