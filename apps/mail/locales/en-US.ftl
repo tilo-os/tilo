@@ -92,3 +92,4 @@ mail-draft-state-calendar-ics = Changed the invitation in the draft
 mail-draft-state-attachments = Changed the attachments of the draft
 mail-draft-state-rich-body = Edited the draft
 mail-save-draft = Saved the draft
+mail-mail-server = Recorded how a mail server took a change

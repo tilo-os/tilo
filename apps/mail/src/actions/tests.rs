@@ -347,7 +347,8 @@ fn drafts_labels_and_folders_round_trip_and_stay_bounded() {
             .is_err(),
             "a folder has a name"
         );
-        edit(&mut mail, &folders.remove(&Id::from_raw("f-b"))).unwrap();
+        mail.apply_confirmed(Invoke::edit(&folders.remove(&Id::from_raw("f-b"))).unwrap())
+            .unwrap();
         assert_eq!(
             mail.state().unwrap().custom_folders(),
             [("f-a".to_owned(), "Invoices".to_owned())]

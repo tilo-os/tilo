@@ -8,10 +8,11 @@
 //! written, and the messages sent and not yet delivered. Starring, moving
 //! one message, labels, folder names and the draft's fields are field edits;
 //! the methods below are what is more than setting a field. Where a
-//! message's flags and folder differ from what its server holds, every
-//! device with the account tells the server ([`Mail::server_updates`]),
-//! whoever made the change — a click, the palette, an agent, a collaborator
-//! or an undo — and records what the server confirmed.
+//! message's flags and folder differ from what its server holds, the
+//! mailbox queues telling the server ([`Mail::server_updates`] into
+//! [`Mail::server`]), whoever made the change — a click, the palette, an
+//! agent, a collaborator or an undo; the device with the account carries it
+//! out and records what the server confirmed.
 
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
@@ -41,6 +42,9 @@ pub(crate) const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
 pub(crate) const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
 pub(crate) const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
 
+/// How many settled server updates and sent messages the mailbox keeps.
+const SETTLED_KEPT: usize = 64;
+
 /// How many messages the published mailbox carries as places; the rest are
 /// the window's loaded rows.
 pub(crate) const OPEN_MESSAGE_LIMIT: usize = 100;
@@ -56,6 +60,9 @@ pub struct Mail {
     pub draft: DraftState,
     /// Messages sent and waiting for a device that holds their account.
     pub outbox: Outbox<Outgoing>,
+    /// What servers still have to be told: flags, moves and deletes the
+    /// reader made that a message's server does not hold yet.
+    pub server: Outbox<ServerUpdate>,
 }
 
 /// What the reader did with one message, and what its server holds.
@@ -234,6 +241,7 @@ impl DraftState {
     children = Mail::places,
     search = Mail::search,
     scopes = Mail::scopes,
+    queue = Mail::queue,
 )]
 impl Mail {
     /// Mark messages read
@@ -570,6 +578,29 @@ impl Mail {
     /// mailbox's flags, folder and permanent deletions where the server
     /// differs, in the order a server applies them (flags in the folder the
     /// message is in, then the move).
+    /// After every change, whoever made it: queue telling each message's
+    /// server what it does not hold yet, and forget what it no longer has
+    /// to be told (an undo that took the change back first).
+    fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
+        let wanted = self.server_updates();
+        let stale: Vec<Id> = self
+            .server
+            .pending()
+            .filter(|(_, update)| !wanted.contains(update))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.server.forget(&id);
+        }
+        for update in wanted {
+            if !self.server.pending().any(|(_, queued)| *queued == update) {
+                self.server.push(cx.id(), update);
+            }
+        }
+        self.server.prune(SETTLED_KEPT);
+        self.outbox.prune(SETTLED_KEPT);
+    }
+
     pub fn server_updates(&self) -> Vec<ServerUpdate> {
         let mut updates = Vec::new();
         for (id, message) in self.messages.iter() {
@@ -897,6 +928,15 @@ impl TestMail {
         Self::change(doc, Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}));
     }
 
+    /// Record how the delivery of the outbox message `id` settled, as the
+    /// outbox drain does.
+    pub(crate) fn settle_delivery(doc: &mut tilo_resource::Doc, id: &str, settled: &Settled) {
+        Self::change(
+            doc,
+            tilo_resource::Invoke::from(Mail::paths().outbox.settle(&Id::from_raw(id), settled)),
+        );
+    }
+
     pub(crate) fn set_folder_for(doc: &mut tilo_resource::Doc, id: &str, folder: Folder) {
         Self::change(
             doc,
@@ -1034,6 +1074,15 @@ impl ResourceApp for MailShell {
     }
 }
 
+/// Whether an account set up on this device sends from `address`.
+fn holds_account(state: &crate::state::MailState, address: &str) -> bool {
+    state
+        .accounts
+        .accounts
+        .iter()
+        .any(|account| account.config.email == address)
+}
+
 impl ResourceSurface<Mail, MailEffect> for MailApp {
     /// Every message already loaded, outside Trash: its subject, sender and
     /// body come from the engine, not the document.
@@ -1065,15 +1114,11 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
             }
         }
         let outbox = self.server_outbox();
-        let projection = cx.drain(
-            |state: &Mail| {
-                state
-                    .server_updates()
-                    .into_iter()
-                    .map(|update| (update.clone(), update))
-                    .collect()
-            },
-            move |update: ServerUpdate, cx| {
+        let shared = std::rc::Rc::clone(&self.shared);
+        let projection = cx.outbox(
+            Mail::paths().server,
+            move |_, update: &ServerUpdate| holds_account(&shared.borrow(), update.account()),
+            move |_, update: ServerUpdate, cx| {
                 let reply = cx.reply();
                 outbox.borrow_mut().push(
                     update,
@@ -1086,20 +1131,19 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         );
         self.follow_projection(projection);
         let outbox = self.server_outbox();
-        let delivery = cx.drain(
-            |state: &Mail| {
-                state
-                    .outbox
-                    .pending()
-                    .map(|(id, outgoing)| (id.clone(), outgoing.clone()))
-                    .collect()
-            },
-            move |outgoing: Outgoing, cx| {
+        let shared = std::rc::Rc::clone(&self.shared);
+        let delivery = cx.outbox(
+            Mail::paths().outbox,
+            move |_, outgoing: &Outgoing| holds_account(&shared.borrow(), &outgoing.account),
+            move |_, outgoing: Outgoing, cx| {
                 let reply = cx.reply();
                 outbox.borrow_mut().deliver(
                     outgoing,
                     Box::new(move |result| {
-                        reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+                        reply.finish(result.map(|settled| tilo_actions::ActionOutput {
+                            value: serde_json::to_value(&settled).ok(),
+                            resources: Vec::new(),
+                        }));
                     }),
                 );
                 Ok(Effected::Pending)

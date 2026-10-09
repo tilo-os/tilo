@@ -124,11 +124,15 @@ struct PendingSend {
     outgoing: Outgoing,
     /// The copy Sent shows once it is delivered.
     message: Message,
-    done: ServerUpdateDone,
+    done: DeliveryDone,
 }
 
 /// How the drain that asked for a server update hears how it went.
 type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
+
+/// How the outbox drain hears how a delivery went: delivered, or refused
+/// for good with the server's reason; an error leaves it to try again.
+type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
 
 /// The server updates the document's projection asked for: queued until the
 /// next sync hands them to the engine, then carried out by it. Whichever
@@ -139,7 +143,7 @@ pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
     /// Messages from the document's outbox, waiting for the engine.
-    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
+    deliveries: Vec<(Outgoing, DeliveryDone)>,
 }
 
 impl ServerOutbox {
@@ -149,7 +153,7 @@ impl ServerOutbox {
     }
 
     /// Deliver `outgoing`, then tell `done` how it went.
-    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         self.deliveries.push((outgoing, done));
     }
 }
@@ -2307,14 +2311,7 @@ impl MailApp {
         // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        st.submit(
-            doc,
-            Mail::paths().outbox.settle(
-                &ui::tilo_resource::Id::from_raw(pending.outgoing.id),
-                &ui::tilo_resource::Settled::Done(()),
-            ),
-        );
-        (pending.done)(Ok(()));
+        (pending.done)(Ok(ui::tilo_resource::Settled::Done(())));
         st.status = Some("Delivered".into());
         self.editing_draft = None;
         self.compose.close();
@@ -2322,7 +2319,6 @@ impl MailApp {
 
     fn apply_engine_error(
         &mut self,
-        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2348,21 +2344,11 @@ impl MailApp {
         if let Some(pending) = self.pending_send.remove(&request_id) {
             // The server refused it: it stays in the outbox with the reason,
             // and comes back to the composer to be fixed and sent again.
-            st.submit(
-                doc,
-                Mail::paths().outbox.settle(
-                    &ui::tilo_resource::Id::from_raw(pending.outgoing.id.clone()),
-                    &ui::tilo_resource::Settled::Failed {
-                        reason: detail.clone(),
-                        partial: (),
-                    },
-                ),
-            );
             if !self.compose.open {
                 self.compose.open_with_draft(&pending.outgoing.to_draft());
-                self.resending = Some(pending.outgoing.id);
+                self.resending = Some(pending.outgoing.id.clone());
             }
-            (pending.done)(Err(detail.clone()));
+            (pending.done)(Ok(ui::tilo_resource::Settled::failed(detail.clone())));
         }
         if self
             .resource_refresh_invocation
@@ -2438,7 +2424,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(doc, st, request_id, &context, &message);
+                self.apply_engine_error(st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2508,7 +2494,7 @@ impl MailApp {
     /// Hand an outbox message to the engine on the account it is sent from.
     /// One whose account this device does not hold is left for a device
     /// that does.
-    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+    fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
         let account = self
             .shared
             .borrow()
@@ -6194,9 +6180,12 @@ mod tests {
                 tx: outgoing_tx,
                 rx: incoming_rx,
             });
-            app.server_outbox()
-                .borrow_mut()
-                .deliver(outgoing.clone(), Box::new(|_| {}));
+            let heard = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let answer = std::rc::Rc::clone(&heard);
+            app.server_outbox().borrow_mut().deliver(
+                outgoing.clone(),
+                Box::new(move |result| *answer.borrow_mut() = Some(result)),
+            );
             app.flush_server_outbox();
             let (&request_id, _) = app
                 .pending_send
@@ -6212,6 +6201,14 @@ mod tests {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+            let settled = heard
+                .borrow_mut()
+                .take()
+                .expect("the delivery answered")
+                .expect("refused for good, not tried again");
+            assert!(!settled.is_done());
+            // The outbox drain records how it settled.
+            TestMail::settle_delivery(&mut doc, &outgoing.id, &settled);
             let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),

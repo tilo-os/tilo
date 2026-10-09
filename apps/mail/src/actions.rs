@@ -372,7 +372,8 @@ impl IngestBaseline {
 
 /// One change a mail server still has to be told about, as
 /// [`Mail::server_updates`](crate::resource::Mail::server_updates) finds
-/// it: the message, where it lives on the server, and what to do there.
+/// it and the mailbox queues it: the message, where it lives on the
+/// server, and what to do there.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum ServerUpdate {
     /// Set the message's read and starred flags (`UID STORE`).
@@ -399,6 +400,22 @@ pub enum ServerUpdate {
         locator: String,
         folder: Folder,
     },
+}
+
+tilo_resource::json_model!(ServerUpdate);
+
+/// Nothing to tell: what a queue entry reads as before it is written.
+impl Default for ServerUpdate {
+    fn default() -> Self {
+        Self::Flags {
+            id: String::new(),
+            account: String::new(),
+            locator: String::new(),
+            folder: Folder::Inbox,
+            read: false,
+            starred: false,
+        }
+    }
 }
 
 impl ServerUpdate {
