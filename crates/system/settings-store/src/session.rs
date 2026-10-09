@@ -31,9 +31,15 @@ use std::sync::{Mutex, PoisonError};
 use serde_json::{Map, Value};
 
 use crate::continuity::{SettingScope, classify};
-use crate::{ConditionalUpdate, SettingsSource, load_at, merge_section, write_atomic};
+use crate::{
+    ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, load_at, merge_section,
+    write_atomic,
+};
 
+mod change_log;
 mod view;
+
+use change_log::LeafChange;
 
 #[derive(Clone)]
 struct Committed {
@@ -71,6 +77,12 @@ impl SessionPaths {
     #[must_use]
     pub fn configured() -> Option<Self> {
         crate::settings_path().map(Self::beside)
+    }
+
+    /// The bounded log of who changed which leaf, beside the records.
+    #[must_use]
+    pub fn change_log(&self) -> PathBuf {
+        change_log::path_beside(&self.person)
     }
 }
 
@@ -136,8 +148,15 @@ impl State {
         doc
     }
 
-    /// Store `value` at `section.leaf` in the record its scope names.
-    fn put(&mut self, section: &str, leaf: &str, value: Value) -> Touched {
+    /// Store `value` at `section.leaf` in the record its scope names, and
+    /// note the change in `log` when there is one.
+    fn put(
+        &mut self,
+        section: &str,
+        leaf: &str,
+        value: Value,
+        log: &mut Vec<LeafChange>,
+    ) -> Touched {
         let personal = classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal);
         let record = if personal {
             &mut self.person
@@ -156,7 +175,13 @@ impl State {
         if leaves.get(leaf) == Some(&value) {
             return Touched::default();
         }
-        leaves.insert(leaf.to_string(), value);
+        let before = leaves.insert(leaf.to_string(), value.clone());
+        log.push(LeafChange {
+            section: section.to_string(),
+            leaf: Some(leaf.to_string()),
+            before,
+            after: value,
+        });
         Touched {
             person: personal,
             device: !personal,
@@ -164,11 +189,17 @@ impl State {
     }
 
     /// A top-level value that is not a section (`version`): device-local.
-    fn put_top_level(&mut self, name: &str, value: Value) -> Touched {
+    fn put_top_level(&mut self, name: &str, value: Value, log: &mut Vec<LeafChange>) -> Touched {
         if self.device.get(name) == Some(&value) {
             return Touched::default();
         }
-        self.device.insert(name.to_string(), value);
+        let before = self.device.insert(name.to_string(), value.clone());
+        log.push(LeafChange {
+            section: name.to_string(),
+            leaf: None,
+            before,
+            after: value,
+        });
         Touched {
             person: false,
             device: true,
@@ -178,7 +209,12 @@ impl State {
     /// Apply every leaf of `doc` that differs from `previous`, the copy it
     /// replaced. Leaves `doc` no longer has are left alone: writers merge
     /// sections, they never remove keys.
-    fn take_in(&mut self, doc: &Map<String, Value>, previous: &Map<String, Value>) -> Touched {
+    fn take_in(
+        &mut self,
+        doc: &Map<String, Value>,
+        previous: &Map<String, Value>,
+        log: &mut Vec<LeafChange>,
+    ) -> Touched {
         let mut touched = Touched::default();
         for (name, value) in doc {
             match (value, previous.get(name)) {
@@ -186,12 +222,12 @@ impl State {
                     let before = before.and_then(Value::as_object);
                     for (leaf, value) in leaves {
                         if before.and_then(|b| b.get(leaf)) != Some(value) {
-                            touched = touched.or(self.put(name, leaf, value.clone()));
+                            touched = touched.or(self.put(name, leaf, value.clone(), log));
                         }
                     }
                 }
                 (value, before) if before != Some(value) => {
-                    touched = touched.or(self.put_top_level(name, value.clone()));
+                    touched = touched.or(self.put_top_level(name, value.clone(), log));
                 }
                 _ => {}
             }
@@ -242,8 +278,10 @@ impl SessionSettings {
         };
         let copy = load_at(&paths.copy);
         let previous = state.projection();
-        let touched = state.take_in(&copy, &previous);
+        let mut log = Vec::new();
+        let touched = state.take_in(&copy, &previous, &mut log);
         persist(&paths, &state, touched)?;
+        change_log::append(&paths.change_log(), &log, None);
         state.copy = copy;
         state.copy_identity = copy_identity(&paths.copy);
         write_copy(&paths, &mut state)?;
@@ -323,12 +361,14 @@ impl SessionSettings {
         let identity = copy_identity(&self.paths.copy);
         let copy = load_at(&self.paths.copy);
         let (person, device) = (state.person.clone(), state.device.clone());
-        let touched = state.take_in(&copy, &state.copy.clone());
+        let mut log = Vec::new();
+        let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
         if let Err(error) = persist(&self.paths, state, touched) {
             state.person = person;
             state.device = device;
             return Err(error);
         }
+        change_log::append(&self.paths.change_log(), &log, None);
         state.copy = copy;
         state.copy_identity = identity;
         if touched.person || touched.device {
@@ -338,35 +378,67 @@ impl SessionSettings {
     }
 }
 
+/// What a session write makes of the section it found (`None`: absent): the
+/// leaves to merge, or `None` when the caller's intent was superseded.
+type Decide<'a> = dyn FnMut(Option<&Value>) -> Option<Map<String, Value>> + 'a;
+
 impl SessionSettings {
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "canonical state and external-copy locks cover comparison, durable merge and publication"
-    )]
+    /// The log of who changed which leaf, oldest first: one JSON object per
+    /// change with `section`, `leaf`, `before`, `after`, `action`,
+    /// `principal` and `via` (`session` for a write through this source,
+    /// `copy` for one another process made to the copy).
+    #[must_use]
+    pub fn change_log(&self) -> Vec<Value> {
+        change_log::read(&self.paths.change_log())
+    }
+
     fn update_section_if(
         &self,
         name: &str,
         expected: Option<&Map<String, Value>>,
         values: Map<String, Value>,
     ) -> std::io::Result<ConditionalUpdate> {
+        let mut values = Some(values);
+        self.update_section_where(name, &ChangeOrigin::default(), &mut |current| {
+            if expected.is_some_and(|expected| current != Some(&Value::Object(expected.clone()))) {
+                return None;
+            }
+            Some(values.take().unwrap_or_default())
+        })
+    }
+
+    /// Under the state and copy locks: take in the copy, let `decide` look
+    /// at section `name` as it now stands, and merge what it returns,
+    /// recording `origin` with each changed leaf.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "canonical state and external-copy locks cover comparison, durable merge and publication"
+    )]
+    fn update_section_where(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        decide: &mut Decide<'_>,
+    ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let _lock = lock_copy(&self.paths.copy)?;
         self.take_in_copy(&mut state)?;
-        if expected.is_some_and(|expected| {
-            state.projection().get(name) != Some(&Value::Object(expected.clone()))
-        }) {
+        let current = state.projection().get(name).cloned();
+        let Some(values) = decide(current.as_ref()) else {
             return Ok(ConditionalUpdate::Superseded);
-        }
+        };
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut touched = Touched::default();
+        let mut log = Vec::new();
         for (leaf, value) in values {
-            touched = touched.or(state.put(name, &leaf, value));
+            touched = touched.or(state.put(name, &leaf, value, &mut log));
         }
         if let Err(error) = persist(&self.paths, &state, touched) {
             state.person = person;
             state.device = device;
             return Err(error);
         }
+        change_log::append(&self.paths.change_log(), &log, Some(origin));
         if touched.person || touched.device {
             self.publish_committed(&state);
         }
@@ -391,6 +463,30 @@ impl SettingsSource for SessionSettings {
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         self.update_section_if(name, None, values)?
             .into_sync_result()
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        let mut values = Some(values);
+        self.update_section_where(name, origin, &mut |_| values.take())?
+            .into_sync_result()
+    }
+
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.update_section_where(name, origin, &mut |current| {
+            let empty = Map::new();
+            Some(change(current.and_then(Value::as_object).unwrap_or(&empty)))
+        })?
+        .into_sync_result()
     }
 
     fn update_section_report(
@@ -437,15 +533,21 @@ impl SettingsSource for SessionSettings {
         }
         let previous = state.device.clone();
         let mut touched = Touched::default();
+        let mut log = Vec::new();
         for (section, values) in sections {
             for (leaf, value) in values {
-                touched = touched.or(state.put(section, &leaf, value));
+                touched = touched.or(state.put(section, &leaf, value, &mut log));
             }
         }
         if let Err(error) = persist(&self.paths, &state, touched) {
             state.device = previous;
             return Err(error);
         }
+        change_log::append(
+            &self.paths.change_log(),
+            &log,
+            Some(&ChangeOrigin::default()),
+        );
         if touched.device {
             self.publish_committed(&state);
         }
@@ -500,7 +602,7 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 }
 
 /// Lock the settings file at `path`, creating its directory if needed.
-fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
+pub(crate) fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
     let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
     tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
         .map_err(std::io::Error::other)
@@ -811,6 +913,122 @@ mod tests {
         drop(session);
         let restarted = open(dir.path());
         assert_eq!(Value::Object(restarted.load()), expected);
+    }
+
+    #[test]
+    fn origin_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let paths = session.paths().clone();
+        let origin = ChangeOrigin::action("x").by("agent:alice");
+        session
+            .update_section_by(
+                "input",
+                object(json!({"touchpad_enabled": false, "tap_to_click": true})),
+                &origin,
+            )
+            .unwrap();
+        // Writing what is already stored changes nothing and records nothing.
+        session
+            .update_section_by("input", object(json!({"tap_to_click": true})), &origin)
+            .unwrap();
+        crate::update_section_at(&paths.copy, "power", object(json!({"auto_suspend": false})))
+            .unwrap();
+        session.refresh();
+
+        let log = session.change_log();
+        let entry = |leaf: &str| {
+            log.iter()
+                .find(|entry| entry["leaf"] == leaf)
+                .unwrap_or_else(|| panic!("{leaf} is logged: {log:?}"))
+                .clone()
+        };
+        assert_eq!(log.len(), 3, "one line per changed leaf: {log:?}");
+        let touchpad = entry("touchpad_enabled");
+        assert_eq!(touchpad["section"], "input");
+        assert_eq!(touchpad["before"], Value::Null, "it was unset");
+        assert_eq!(touchpad["after"], false);
+        assert_eq!(touchpad["action"], "x");
+        assert_eq!(touchpad["principal"], "agent:alice");
+        assert_eq!(touchpad["via"], "session");
+        assert_eq!(entry("tap_to_click")["action"], "x");
+        let external = entry("auto_suspend");
+        assert_eq!(external["section"], "power");
+        assert_eq!(
+            external["action"],
+            Value::Null,
+            "a copy take-in has no origin"
+        );
+        assert_eq!(external["principal"], Value::Null);
+        assert_eq!(external["via"], "copy");
+    }
+
+    #[test]
+    fn a_section_change_reads_and_writes_under_the_records_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = std::sync::Arc::new(open(dir.path()));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let session = std::sync::Arc::clone(&session);
+                std::thread::spawn(move || {
+                    for _ in 0..100 {
+                        session
+                            .update_section_with(
+                                "input",
+                                &ChangeOrigin::local("media-key.touchpad-toggle"),
+                                &mut |section| {
+                                    let on = section
+                                        .get("touchpad_enabled")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or(true);
+                                    object(json!({"touchpad_enabled": !on}))
+                                },
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(
+            session.load()["input"]["touchpad_enabled"],
+            true,
+            "200 flips from on end on only if none was lost"
+        );
+        assert_eq!(session.change_log().len(), 200, "every flip is attributed");
+    }
+
+    #[test]
+    fn the_change_log_keeps_its_newest_half_once_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        let filler = "x".repeat(4096);
+        let mut writes = 0_u64;
+        while std::fs::metadata(session.paths().change_log()).map_or(0, |meta| meta.len())
+            <= change_log::CAPACITY.div_euclid(2)
+            || writes < 100
+        {
+            writes = writes.saturating_add(1);
+            session
+                .update_section(
+                    "notes",
+                    object(json!({"text": format!("{writes}{filler}")})),
+                )
+                .unwrap();
+        }
+        let size = std::fs::metadata(session.paths().change_log())
+            .unwrap()
+            .len();
+        assert!(size <= change_log::CAPACITY, "bounded: {size} bytes");
+        let log = session.change_log();
+        assert!(!log.is_empty(), "compaction keeps the newest entries");
+        assert_eq!(
+            log.last().unwrap()["after"],
+            format!("{writes}{filler}"),
+            "the newest write survives"
+        );
     }
 
     #[test]

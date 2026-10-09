@@ -46,6 +46,8 @@ use crate::vmbuild;
 mod admin;
 mod builder;
 mod device;
+#[cfg(test)]
+mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
@@ -296,6 +298,7 @@ struct Published {
 /// What `vm create` will do, settled before it does anything.
 struct Plan {
     choice: host::Choice,
+    ssh_port: Option<u16>,
     image: Option<PathBuf>,
     /// The format of `image`.
     image_format: Option<image::Format>,
@@ -309,6 +312,13 @@ struct Plan {
 impl Plan {
     fn describe(&self) -> String {
         let mut lines = vec![format!("  hypervisor: {}", self.choice.describe())];
+        if let Some(port) = self.ssh_port
+            && matches!(self.choice.adapter, "libvirt" | "qemu" | "whpx")
+        {
+            lines.push(format!(
+                "  SSH forwarding: host TCP port {port} (availability checked, not reserved)"
+            ));
+        }
         match (&self.image, &self.published) {
             (Some(image), _) => {
                 let format = self.image_format.map_or("", image::Format::name);
@@ -920,21 +930,9 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
-            Some(Command::LayerPack {
-                component,
-                profile,
-                features,
-                source_inventory,
-            }) => Self::packed(crate::builderlayer::pack_with_source(
-                &component,
-                &profile,
-                &features,
-                source_inventory.as_deref(),
-            )),
-            Some(Command::AppPack {
-                app,
-                source_inventory,
-            }) => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
+            Some(command @ (Command::LayerPack { .. } | Command::AppPack { .. })) => {
+                Self::pack_command(command)
+            }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -943,6 +941,31 @@ impl App {
                 keep_targets,
                 min_age,
             }) => self.gc(dry_run, keep, keep_targets, min_age),
+        }
+    }
+
+    fn pack_command(command: Command) -> Result<Outcome, CliError> {
+        match command {
+            Command::LayerPack {
+                component,
+                profile,
+                features,
+                source_inventory,
+                cached_layer,
+                binary,
+            } => Self::packed(crate::builderlayer::pack_with_source(
+                &component,
+                &profile,
+                &features,
+                source_inventory.as_deref(),
+                &cached_layer,
+                binary,
+            )),
+            Command::AppPack {
+                app,
+                source_inventory,
+            } => Self::packed(crate::builderapp::pack(&app, &source_inventory)),
+            _ => Err(CliError::InvalidInput("not a remote pack command".into())),
         }
     }
 
@@ -1725,6 +1748,8 @@ impl App {
             });
         }
         Self::validate_create_options(choice.adapter, args)?;
+        let ssh_port =
+            crate::forwarded_port::select(&self.registry()?, choice.adapter, args.ssh_port)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1801,6 +1826,7 @@ impl App {
         }
         Ok(Plan {
             choice,
+            ssh_port,
             image,
             image_format,
             import,
@@ -1985,7 +2011,7 @@ impl App {
             gl: args.gl,
             resolution: args.resolution,
             cpus: args.cpus,
-            ssh_port: args.ssh_port,
+            ssh_port: plan.ssh_port,
             template: args.template,
             image_format: image_format
                 .filter(|f| *f == image::Format::Raw)
@@ -2047,7 +2073,7 @@ impl App {
         let slot = "tilo-vm slot create --headless".to_owned();
         let mut outcome = Outcome::new(
             text,
-            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "key": key, "key_as_credential": credentials, "commands": commands }),
+            json!({ "vm": args.name, "created": true, "tag": tag, "hypervisor": plan.choice, "ssh_port": plan.ssh_port, "key": key, "key_as_credential": credentials, "commands": commands }),
         );
         outcome.next = vec![start, slot];
         Ok(outcome)
@@ -4542,7 +4568,7 @@ impl App {
                     }
                 }
             }
-            Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Host => self.install_app_from_host(&mut remote, &vm, &worktree, slot, dir)?,
             Builder::Remote => {
                 let command = configured
                     .filter(|line| !line.is_empty())
@@ -4568,6 +4594,7 @@ impl App {
     fn install_app_from_host(
         &mut self,
         remote: &mut Remote,
+        vm: &Resolved,
         worktree: &Worktree,
         slot: &str,
         dir: &str,
@@ -4577,18 +4604,35 @@ impl App {
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
         let package = build::app_package(&target, dir, &tapp);
+        self.install_host_app_package(
+            remote,
+            slot,
+            |runner| {
+                if !runner.interactive(&package)? {
+                    return Err(CliError::CommandFailed {
+                        command: package.display(),
+                        status: "failed".into(),
+                        stderr: String::new(),
+                    });
+                }
+                Ok(tapp)
+            },
+            |app| app.connect(vm),
+        )
+    }
+
+    fn install_host_app_package(
+        &mut self,
+        remote: &mut Remote,
+        slot: &str,
+        build: impl FnOnce(&mut SystemRunner) -> Result<PathBuf, CliError>,
+        reconnect: impl FnOnce(&mut Self) -> Result<Remote, CliError>,
+    ) -> Result<AppInstallResult, CliError> {
         let runner = &mut self.runner;
-        let built = self.receipt.phase("build", || -> Result<(), CliError> {
-            if !runner.interactive(&package)? {
-                return Err(CliError::CommandFailed {
-                    command: package.display(),
-                    status: "failed".into(),
-                    stderr: String::new(),
-                });
-            }
-            Ok(())
-        });
-        built?;
+        let tapp = self.receipt.phase("build", || build(runner))?;
+        // Packaging may outlast the transport's idle lifetime. Open the usual
+        // authenticated route again before any upload; never replay AppInstall.
+        *remote = reconnect(self)?;
         let upload = self
             .receipt
             .phase("transfer", || -> Result<String, CliError> {

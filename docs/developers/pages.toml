@@ -48,6 +48,20 @@ nav = "Add a capability"
 description = "The offline tilo-app guide actions workflow."
 
 [[page]]
+slug = "task-collaborate"
+source = "docs/developers/tasks/collaborate.md"
+section = "Quick tasks"
+nav = "Collaboration and undo"
+description = "The offline tilo-app guide collaborate workflow: shared state, per-author undo, history and the device transport boundary."
+
+[[page]]
+slug = "task-network"
+source = "docs/developers/tasks/network.md"
+section = "Quick tasks"
+nav = "Fetch data"
+description = "The offline tilo-app guide network workflow: portable HTTP, declared capabilities, network hints and resource effects."
+
+[[page]]
 slug = "task-verify"
 source = "docs/developers/tasks/verify.md"
 section = "Quick tasks"

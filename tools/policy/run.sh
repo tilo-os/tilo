@@ -51,6 +51,7 @@ run 'Application resource/action contract' \
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Sealed images share one UKI pipeline' python3 tools/policy/check_uki_pipeline.py
 run 'Image builders copy what they compile, and only that' \
   python3 tools/policy/check_image_builder_inputs.py
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
@@ -58,6 +59,7 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Settings are written through typed keys' python3 tools/policy/check_settings_writes.py
 run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
 run 'App content store contract' python3 tools/policy/check_app_content_store.py
 run 'Apps and portable SDK crates hold no platform code' \

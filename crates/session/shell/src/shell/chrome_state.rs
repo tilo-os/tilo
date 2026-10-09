@@ -350,8 +350,9 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// Read-only kernel battery snapshot for the quick status row.
-    pub battery: os_actions::BatteryInfo,
+    /// The top bar's battery reading — same type, same sysfs parser — so
+    /// the panel and the tray cannot disagree about the charge.
+    pub battery: tilo_power_mgmt::BatterySnapshot,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -444,22 +445,14 @@ impl Default for QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/tilo-power-supply",
-            )),
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -492,16 +485,7 @@ impl QuickSettingsState {
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: os_actions::BatteryInfo {
-                present: false,
-                capacity: 0,
-                status: String::new(),
-                cycle_count: None,
-                on_ac: false,
-                full_capacity: None,
-                design_capacity: None,
-                charge_limit: None,
-            },
+            battery: tilo_power_mgmt::BatterySnapshot::absent(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -608,6 +592,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Which chrome this is, unique in the process. [`Self::revision`]
+    /// counts from zero in every chrome, so a cache keyed on it names the
+    /// chrome too.
+    instance: u64,
     /// Bumped when an appearance action writes the store so the live frame
     /// applies theme and locale on the next paint without waiting for the
     /// settings-file poll.
@@ -858,6 +846,10 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
@@ -1462,6 +1454,11 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// This chrome's identity, unique in the process; see `instance`.
+    pub(crate) fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// Persist-side appearance change: chrome rebuilds, and the live frame
@@ -3764,6 +3761,8 @@ mod active_tab_tests {
             let mut replica = tree_with(100);
             let replica_workspace = replica.desktop.active;
             assert!(replica.set_room(replica_workspace, room));
+            // The host's invite pins it (hub 1) as the room's governor.
+            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
             let baseline = tree
                 .export_room_changes_since(room, &[])
                 .expect("host room baseline");
