@@ -130,8 +130,7 @@ impl ResourceApp for App {
         // A form: the new bookmark's parameters, local to this window,
         // never synced or undone, submitted as one invocation of `add`.
         let form = cx.form::<bookmarks::Add>();
-        let new = bookmarks::Add::paths();
-        let url = cx.input(new.url).with_placeholder(keys::BOOKMARKS_URL_PLACEHOLDER);
+        let url = cx.input(form.paths().url).with_placeholder(keys::BOOKMARKS_URL_PLACEHOLDER);
         let add = cx.button(keys::BOOKMARKS_ADD, form.submit());
 
         let rows = cx.each(|library| &library.bookmarks, |row| {

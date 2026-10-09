@@ -39,7 +39,7 @@ impl ResourceApp for BookmarksApp {
 
     fn view(cx: &mut ViewCx<Bookmarks>) -> Element {
         let form = cx.form::<bookmarks::Add>();
-        let p = bookmarks::Add::paths();
+        let p = form.paths();
         Box::new(tilo_app::column![
             cx.input(p.url).with_id("url"),
             cx.input(p.title).with_id("title"),

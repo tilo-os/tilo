@@ -597,7 +597,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The form of the verb whose parameters are `P`
     /// (`cx.form::<bookmarks::Add>()`): local values, never synced or
     /// undone, that controls bind to with the parameters' paths
-    /// (`cx.input(bookmarks::Add::paths().url)`) and a button submits as one
+    /// (`cx.input(form.paths().url)`) and a button submits as one
     /// invocation (`cx.button("bookmarks-add", form.submit())`). The same
     /// form is answered for `P` everywhere in this scope.
     pub fn form<P: Params<Resource = R>>(&self) -> Form<P> {
