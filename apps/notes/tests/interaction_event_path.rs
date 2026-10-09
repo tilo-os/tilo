@@ -333,11 +333,15 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             0..11,
             Mark::Transclusion(uuid::Uuid::new_v4()),
         )]);
-        let blocks = vec![
-            Block::table("| Key | Value |\n| --- | --- |\n| Name | Test |", true),
-            Block::paragraph("![Diagram](diagram.png)"),
-            embedded,
-        ];
+        // Pushed one by one: a literal array of three blocks is too large
+        // for the stack.
+        let mut blocks = Vec::with_capacity(3);
+        blocks.push(Block::table(
+            "| Key | Value |\n| --- | --- |\n| Name | Test |",
+            true,
+        ));
+        blocks.push(Block::paragraph("![Diagram](diagram.png)"));
+        blocks.push(embedded);
         for block in blocks {
             let mut editor = BlockEditor::new().with_wrap_lines(true);
             editor.set_blocks(vec![block]);
