@@ -141,6 +141,7 @@ pub struct ActionCatalog {
     /// accessor works through this.
     visible: Vec<usize>,
     hierarchies: Vec<Option<ActionHierarchy>>,
+    completion: super::QueryCompletion,
 }
 
 impl ActionCatalog {
@@ -188,12 +189,9 @@ impl ActionCatalog {
         // Remote callers do not open the palette, which normally maintains
         // retained provider indexes. Start/poll that same asynchronous work
         // here so subsequent requests can discover cold sources too.
+        registry.begin_catalogue_query();
         registry.refresh_indexes(args);
-        let results = if include_programmatic {
-            registry.query_with_programmatic(args)
-        } else {
-            registry.query_exhaustive(args)
-        };
+        let (results, completion) = registry.query_catalogue(args, include_programmatic);
         let visible: Vec<usize> = results
             .iter()
             .enumerate()
@@ -205,6 +203,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion,
         }
     }
 
@@ -252,6 +251,7 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
@@ -312,11 +312,16 @@ impl ActionCatalog {
             results,
             visible,
             hierarchies,
+            completion: super::QueryCompletion::default(),
         }
     }
 
     /// Enumerate the typed descriptors the caller may see. Render-free —
     /// no scene is built, no widget is touched.
+    pub fn completion(&self) -> &super::QueryCompletion {
+        &self.completion
+    }
+
     pub fn enumerate(&self) -> Vec<ExportedAction> {
         self.visible
             .iter()
@@ -553,6 +558,83 @@ mod tests {
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use std::rc::Rc;
+
+    struct DeferredEmptyCatalogue(std::cell::Cell<bool>);
+
+    impl super::super::SearchProvider for DeferredEmptyCatalogue {
+        fn id(&self) -> &'static str {
+            "deferred-empty"
+        }
+        fn name(&self) -> &'static str {
+            "Deferred empty"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+        fn query(&self, _: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            Vec::new()
+        }
+        fn query_incomplete_reason(&self) -> Option<super::super::QueryIncompleteReason> {
+            (!self.0.get()).then_some(super::super::QueryIncompleteReason::Pending)
+        }
+        fn query_page(
+            &self,
+            _: super::super::SearchContext<'_>,
+            _: Option<&super::super::SearchCursor>,
+            _: super::super::SearchBudget,
+        ) -> super::super::SearchPage {
+            if self.0.get() {
+                super::super::SearchPage::exhausted("ready", Vec::new())
+            } else {
+                super::super::SearchPage {
+                    revision: "pending".into(),
+                    results: Vec::new(),
+                    next_cursor: Some(super::super::SearchCursor {
+                        revision: "pending".into(),
+                        token: "pending".into(),
+                    }),
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: false,
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_catalogue_retains_pending_and_complete_traversal() {
+        let source = Rc::new(DeferredEmptyCatalogue(std::cell::Cell::new(false)));
+        let mut registry = SearchRegistry::new();
+        registry.register(source.clone());
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(pending.completion()).unwrap(),
+            serde_json::json!({
+                "complete": false, "incomplete": [{"provider": "deferred-empty", "reason": "pending"}],
+            })
+        );
+        source.0.set(true);
+        let complete = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(complete.enumerate().is_empty());
+        assert_eq!(
+            serde_json::to_value(complete.completion()).unwrap(),
+            serde_json::json!({
+                "complete": true, "incomplete": [],
+            })
+        );
+    }
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();

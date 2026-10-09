@@ -266,6 +266,17 @@ modes distinguishable: "that action does not exist for you" and "I ran it and
 nothing happened" must not look alike to a caller with no way to check the
 screen.
 
+Unlocked native desktop `actions list --json` includes `completion` alongside `count` and
+`actions`. `completion.complete` is true only when every selected provider
+exhausted its bounded traversal and has no outstanding work or failed reply.
+An empty `actions` array with `complete: false` is not proof that the application
+publishes nothing. `completion.incomplete` names the provider and the observed
+reason (`pending`, `refused`, `unavailable`, `timed_out`, `stale_cursor`,
+`budget_exhausted`, `continuation`, or `invalid_input`); it exposes no document contents or
+additional authority. Older transports without this field do not establish
+completion. Keep any returned actions, but require completion before treating an
+empty listing as authoritative or using a listing for readiness acceptance.
+
 Invocation re-resolves the address against a freshly built catalogue before
 anything runs, so an address that was valid at enumeration time and is no longer
 valid now fails loudly instead of running something else. The request runs from

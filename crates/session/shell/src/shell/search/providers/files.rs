@@ -424,6 +424,15 @@ impl SearchProvider for FilesProvider {
         .results
     }
 
+    fn query_incomplete_reason(&self) -> Option<crate::shell::search::QueryIncompleteReason> {
+        // Generation zero is the placeholder before the first walk publishes.
+        // It establishes neither an empty home nor a finished query source.
+        self.published()
+            .as_ref()
+            .is_none_or(|index| index.generation == 0)
+            .then_some(crate::shell::search::QueryIncompleteReason::Unavailable)
+    }
+
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
         self.published().map_or_else(
             || "unavailable".into(),
@@ -1588,6 +1597,44 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn file_catalogue_completion_rejects_unpublished_placeholder() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let provider = std::rc::Rc::new(provider_from_entries(Vec::new()));
+        *provider.name_index.lock().unwrap() = Arc::new(NameIndex::default());
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let chrome = empty_chrome();
+        let doc = automerge::AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let unknown = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(unknown.enumerate().is_empty());
+        assert!(!unknown.completion().complete);
+        assert_eq!(
+            unknown
+                .completion()
+                .incomplete
+                .first()
+                .expect("unpublished source")
+                .reason,
+            QueryIncompleteReason::Unavailable
+        );
+        *provider.name_index.lock().unwrap() = Arc::new(NameIndex::from_entries(Vec::new(), 1));
+        let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(ready.enumerate().is_empty());
+        assert!(ready.completion().complete);
     }
 
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {

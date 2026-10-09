@@ -375,6 +375,46 @@ impl std::fmt::Debug for SearchResult {
     }
 }
 
+/// Why a bounded catalogue traversal has not established exhaustion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryIncompleteReason {
+    Pending,
+    Refused,
+    Unavailable,
+    TimedOut,
+    StaleCursor,
+    BudgetExhausted,
+    Continuation,
+    InvalidInput,
+}
+
+/// Inert completion metadata; it carries no action or resource authority.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct QueryCompletion {
+    pub complete: bool,
+    pub incomplete: Vec<ProviderIncomplete>,
+}
+
+/// One selected provider whose observation did not finish.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ProviderIncomplete {
+    pub provider: String,
+    pub reason: QueryIncompleteReason,
+}
+
+impl QueryCompletion {
+    fn invalid_input() -> Self {
+        Self {
+            complete: false,
+            incomplete: vec![ProviderIncomplete {
+                provider: "registry".into(),
+                reason: QueryIncompleteReason::InvalidInput,
+            }],
+        }
+    }
+}
+
 /// A provider that turns a query into results, owning its own
 /// domain-specific matching logic — a heavy backend (network, disk index)
 /// spawns its own worker(s) inside `query`.
@@ -431,6 +471,15 @@ pub trait SearchProvider {
     /// large provider may begin or poll a deduplicated background build here;
     /// `query_page` must only ever observe ready immutable snapshots.
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {}
+
+    /// Start one machine observation without retaining earlier reply failures.
+    fn begin_catalogue_query(&self) {}
+
+    /// Existing outstanding work or a failed reply, when the provider owns it.
+    /// Page exhaustion remains required even when this returns `None`.
+    fn query_incomplete_reason(&self) -> Option<QueryIncompleteReason> {
+        None
+    }
 
     /// Version of the retained index used by [`Self::query_page`].  A
     /// provider whose data is immutable may keep the default.  Mutable
@@ -689,6 +738,30 @@ struct ProviderQuery<'a> {
     seen: HashSet<SearchCursor>,
     results: Vec<SearchResult>,
     done: bool,
+    incomplete: Option<QueryIncompleteReason>,
+}
+
+impl ProviderQuery<'_> {
+    fn note_page(&mut self, page: &SearchPage) {
+        self.incomplete = if page.stale_cursor {
+            Some(QueryIncompleteReason::StaleCursor)
+        } else if page.exhausted {
+            None
+        } else if page.budget_exhausted {
+            Some(QueryIncompleteReason::BudgetExhausted)
+        } else {
+            Some(QueryIncompleteReason::Continuation)
+        };
+    }
+
+    fn report_incomplete(&self, target: &mut Vec<ProviderIncomplete>) {
+        if let Some(reason) = self.provider.query_incomplete_reason().or(self.incomplete) {
+            target.push(ProviderIncomplete {
+                provider: self.provider.id().into(),
+                reason,
+            });
+        }
+    }
 }
 
 impl Default for SearchRegistry {
@@ -1035,19 +1108,34 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, false, false)
+        self.query_inner(args, false, false).0
     }
 
     /// Exhaust every provider continuation for a render-free action listing.
     /// Interactive palette queries deliberately remain one bounded page.
     pub fn query_exhaustive(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true, false)
+        self.query_inner(args, true, false).0
     }
 
     /// Explicit machine enumeration includes programmatic actions within the
     /// same bounded provider, continuation and visibility machinery.
     pub fn query_with_programmatic(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
-        self.query_inner(args, true, true)
+        self.query_inner(args, true, true).0
+    }
+
+    pub fn begin_catalogue_query(&self) {
+        for provider in self.enabled_providers() {
+            provider.begin_catalogue_query();
+        }
+    }
+
+    /// Exhaust the existing machine traversal while retaining its completion.
+    pub fn query_catalogue(
+        &self,
+        args: &QueryArgs<'_>,
+        include_programmatic: bool,
+    ) -> (Vec<SearchResult>, QueryCompletion) {
+        self.query_inner(args, true, include_programmatic)
     }
 
     fn query_rounds(
@@ -1077,6 +1165,7 @@ impl SearchRegistry {
                     seen: HashSet::new(),
                     results: Vec::new(),
                     done: false,
+                    incomplete: Some(QueryIncompleteReason::Continuation),
                 })
             })
             .collect();
@@ -1123,6 +1212,7 @@ impl SearchRegistry {
                 );
                 pages = pages.saturating_add(1);
                 advanced = true;
+                source.note_page(&page);
                 if page.stale_cursor {
                     // Keep any earlier valid page, including legacy providers'
                     // first page when their synthetic continuation is stale.
@@ -1136,6 +1226,7 @@ impl SearchRegistry {
                             || size > HEADLESS_MAX_BYTES.saturating_sub(bytes))
                     {
                         source.done = true;
+                        source.incomplete = Some(QueryIncompleteReason::BudgetExhausted);
                         break;
                     }
                     results = results.saturating_add(1);
@@ -1156,6 +1247,11 @@ impl SearchRegistry {
                 break;
             }
         }
+        for source in &mut sources {
+            if !source.done {
+                source.incomplete = Some(QueryIncompleteReason::BudgetExhausted);
+            }
+        }
         sources
     }
 
@@ -1164,9 +1260,9 @@ impl SearchRegistry {
         args: &QueryArgs<'_>,
         exhaustive: bool,
         include_programmatic: bool,
-    ) -> Vec<SearchResult> {
+    ) -> (Vec<SearchResult>, QueryCompletion) {
         if !query_input_is_bounded(args.needle) {
-            return Vec::new();
+            return (Vec::new(), QueryCompletion::invalid_input());
         }
         let QueryArgs {
             needle,
@@ -1177,8 +1273,10 @@ impl SearchRegistry {
         } = *args;
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
+        let mut incomplete = Vec::new();
         for source in self.query_rounds(args, exhaustive, include_programmatic) {
             let provider = source.provider;
+            source.report_incomplete(&mut incomplete);
             let top = provider.max_score().max(1);
             for r in source.results {
                 // A score above `top` exceeds strength 1.0 and silently
@@ -1264,7 +1362,11 @@ impl SearchRegistry {
             // results keep the provider's own order rather than being
             // re-alphabetised by title.
         });
-        merged.into_iter().map(|(r, _)| r).collect()
+        let completion = QueryCompletion {
+            complete: incomplete.is_empty(),
+            incomplete,
+        };
+        (merged.into_iter().map(|(r, _)| r).collect(), completion)
     }
 
     /// [`Self::query`], arranged into contiguous per-kind groups and
@@ -1634,6 +1736,47 @@ mod tests {
                 48
             );
         }
+    }
+
+    #[test]
+    fn catalogue_completion_retains_bounds_and_exhaustion() {
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(PagedProvider {
+            calls: Rc::new(std::cell::Cell::new(0)),
+            id: "finite",
+            pages: Some(2),
+        }));
+        let (rows, completion) = registry.query_catalogue(&args, true);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            completion.complete,
+            "an exhausted last page completes despite its page budget flag"
+        );
+        registry.register(Rc::new(PagedProvider {
+            calls: Rc::new(std::cell::Cell::new(0)),
+            id: "endless",
+            pages: None,
+        }));
+        let (_, completion) = registry.query_catalogue(&args, true);
+        assert!(!completion.complete);
+        assert!(
+            completion
+                .incomplete
+                .iter()
+                .any(|source| source.provider == "endless"
+                    && source.reason == super::QueryIncompleteReason::BudgetExhausted)
+        );
     }
 
     struct PagedProvider {
