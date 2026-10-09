@@ -174,13 +174,29 @@ def session_env(root: Path, args: argparse.Namespace, ctl_path: Path, trace: Pat
     return env
 
 
+def observation_dir() -> Path:
+    """Where the compositor's log and frame trace are written while it runs.
+
+    Memory, where there is some: the compositor writes both from its frame
+    loop, and on a disk filesystem such a write waits for any journal commit
+    in flight (an fsync anywhere on that filesystem, the session's own state
+    saves included). That stall is the benchmark's, not the compositor's: a
+    real session logs to the journal through a pipe and writes no trace. The
+    session's own state stays on disk, so its I/O is measured as it is.
+    """
+    shm = Path("/dev/shm")
+    memory = shm if shm.is_dir() and os.access(shm, os.W_OK) else None
+    return Path(tempfile.mkdtemp(prefix="tilo-latency-observe-", dir=memory))
+
+
 def measure(args: argparse.Namespace) -> dict[str, Any]:
     shell = Path(args.shell_bin)
     if not shell.is_file():
         raise RuntimeError(f"no shell binary at {shell}")
     args.out.mkdir(parents=True, exist_ok=True)
-    log = args.out / "compositor.log"
-    trace = args.out / "frame-trace.csv"
+    observe = observation_dir()
+    log = observe / "compositor.log"
+    trace = observe / "frame-trace.csv"
     root = Path(tempfile.mkdtemp(prefix="tilo-latency-bench-"))
     (root / "run").mkdir(mode=0o700)
     ctl_path = root / "run" / "test-control.sock"
@@ -216,6 +232,11 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
         if proc is not None:
             bench.stop_process_group(proc)
         shutil.rmtree(root, ignore_errors=True)
+        for kept in (log, trace):
+            if kept.is_file():
+                shutil.copy2(kept, args.out / kept.name)
+        shutil.rmtree(observe, ignore_errors=True)
+    trace = args.out / trace.name
     _, rows = bench.read_trace(trace)
     pointer = trailing_burst(rows)
     if len(pointer) < args.min_pointer_ratio * sent:
