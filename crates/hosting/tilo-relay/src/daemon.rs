@@ -22,7 +22,7 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
 };
 
-use crate::auth::{HandshakeTrust, PeerRole};
+use crate::auth::PeerRole;
 use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
@@ -2235,7 +2235,7 @@ impl ProtocolHandler for ManagementProtocol {
         let peer = self
             .server_auth()
             .authenticate(
-                EndpointTrust::Fixed(HandshakeTrust::OwnerDevicesOnly),
+                EndpointTrust::Fixed(crate::auth::HandshakeTrust::OwnerDevicesOnly),
                 &mut recv,
                 &mut send,
                 MAX_FRAME_BYTES,
