@@ -6417,6 +6417,7 @@ impl FrameHarness {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
+        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
         let result = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -6435,12 +6436,14 @@ impl FrameHarness {
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        drop(answering);
         drop(scopes);
         self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),
             &target,
             &result,
+            on_behalf_of,
         ) {
             tracing::warn!(?error, "headless: bound control feedback unavailable");
         }

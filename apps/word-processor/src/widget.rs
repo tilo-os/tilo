@@ -1675,7 +1675,7 @@ impl WordProcessorWidget {
     fn answer_edit_effect(
         &mut self,
         effect: &WordProcessorEffect,
-        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        cx: &mut ui::framework::EffectCx<crate::framework::Document, Self>,
     ) -> Option<ui::framework::EffectAnswer> {
         let doc = match cx.document() {
             Some(doc) => doc.clone(),
@@ -1728,6 +1728,15 @@ impl WordProcessorWidget {
             None => self.pending_local = Some((local_version(&doc), next)),
         }
         self.lifecycle.dirty = true;
+        // One that answers its caller does so with the blocks its edit
+        // changed, once the door applied it.
+        if answers_later(effect) {
+            return Some(cx.when_landed(|_, landed, _| {
+                Ok(ui::framework::Effected::value(
+                    landed.answer.unwrap_or_default(),
+                ))
+            }));
+        }
         Some(Ok(ui::framework::Effected::done()))
     }
 
@@ -10071,6 +10080,15 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
         *handled = true;
     }
+}
+
+/// Whether `effect` answers its caller once its edit applied.
+fn answers_later(effect: &WordProcessorEffect) -> bool {
+    use ui::tilo_resource::Effect as _;
+    let id = effect.id();
+    WordProcessorEffect::declarations()
+        .iter()
+        .any(|declaration| declaration.id == id && declaration.is_job())
 }
 
 impl WordProcessorWidget {

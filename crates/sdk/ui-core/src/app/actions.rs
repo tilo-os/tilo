@@ -2996,6 +2996,7 @@ impl App {
                 self.root_widget.as_mut(),
                 target,
                 &result,
+                on_behalf_of,
             ) {
                 tracing::warn!(?error, "bound control feedback unavailable");
             }
@@ -3008,12 +3009,14 @@ impl App {
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
+        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
         let result = self.invoke_bound_target(
             target,
             &ResourceInvocation::new(&target.address.address, &actor)
                 .argument(Some(&argument))
                 .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
         );
+        drop(answering);
         drop(scopes);
         // Nobody here asked for it: the person at the device is never
         // prompted to confirm another invoker's edit.
@@ -3024,6 +3027,7 @@ impl App {
                     self.root_widget.as_mut(),
                     target,
                     &result,
+                    on_behalf_of,
                 ) {
                     tracing::warn!(?error, "bound control feedback unavailable");
                 }
@@ -3036,6 +3040,7 @@ impl App {
             self.root_widget.as_mut(),
             target,
             &result,
+            on_behalf_of,
         ) {
             tracing::warn!(?error, "bound control feedback unavailable");
         }

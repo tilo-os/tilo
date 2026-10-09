@@ -575,6 +575,42 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         }
     }
 
+    /// Answer once what this effect submitted through its
+    /// [`dispatcher`](Self::dispatcher) landed: each submission goes through
+    /// the door like any other, checked again for the effect's invoker, and
+    /// `then` runs with the last one's [`Landed`] — what the door answered
+    /// (what an edit changed, as the resource's surface reports it) and the
+    /// items it created — to reply to the effect's caller. A refused
+    /// submission fails the effect with why. The effect must be declared
+    /// `job`, since it answers after the edits apply.
+    ///
+    /// ```ignore
+    /// cx.dispatcher().submit(Doc::BODY.edit(op));
+    /// cx.when_landed(|_, landed, _| Ok(Effected::value(landed.answer)))
+    /// ```
+    ///
+    /// # Errors
+    /// When the effect was not invoked (a view's own job) or submitted
+    /// nothing to wait for.
+    pub fn when_landed(
+        &mut self,
+        then: impl FnOnce(&mut H, super::Landed, &mut Self) -> EffectAnswer + 'static,
+    ) -> EffectAnswer {
+        let invocation = self
+            .invocation
+            .ok_or("only an invoked effect waits for what it submitted")?;
+        let receiver = self
+            .env
+            .dispatch
+            .wait_landed(invocation)
+            .ok_or("the effect submitted nothing to wait for")?;
+        Ok(self.wait_for(receiver, |host, landed, cx| match landed {
+            Some(Ok(landed)) => then(host, landed, cx),
+            Some(Err(refused)) => Err(refused),
+            None => Err("the submission was dropped before it landed".into()),
+        }))
+    }
+
     /// Run `then` on the UI thread with what `receiver` delivers, `None`
     /// when its sender went away unanswered. Nothing waits on a thread (a
     /// browser page has none to spare): the job looks each time the app

@@ -419,20 +419,51 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
     }
 }
 
+thread_local! {
+    static ANSWERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn answering() -> bool {
+    ANSWERING.with(std::cell::Cell::get)
+}
+
+/// While held, a document action the door applies answers what it changed
+/// even when its declaration answers nothing: it continues an operation
+/// that waits on it, and that operation replies to its caller from it.
+pub(crate) struct Answering(bool);
+
+impl Answering {
+    pub(crate) fn enter(on: bool) -> Self {
+        Self(ANSWERING.with(|cell| cell.replace(on)))
+    }
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        ANSWERING.with(|cell| cell.set(self.0));
+    }
+}
+
 /// Deliver feedback only to the component that emitted the local intent.
 /// Domain resource addresses can be shared by multiple live instances.
+///
+/// `on_behalf_of` names the operation the submission continues (an effect
+/// that submitted it and waits for it), as
+/// [`crate::widget::controls::result_on_behalf_of`] tells the component.
 pub(crate) fn notify_control_invocation_result(
     root: &mut dyn Widget,
     target: &BoundActionTarget,
     result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    on_behalf_of: Option<tilo_actions::InvocationId>,
 ) -> Result<(), BoundDispatchError> {
     let mut visit = |_: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
-        crate::widget::controls::on_control_invocation_result(
+        crate::widget::controls::on_control_invocation_result_for(
             widget,
             &target.address.address,
             result,
+            on_behalf_of,
         );
         None
     };
@@ -2064,17 +2095,21 @@ pub(crate) fn execute_resource_operation(
                 path,
             );
         }
-        let value =
-            matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
+        let declared = matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. });
+        // An edit an effect waits on answers it what it changed, whatever its
+        // declaration: the effect replies to its own caller from that.
+        let value = (declared || answering())
+            .then(|| {
                 // Submitted to another host, nothing here shows its effect.
-                before
-                    .as_ref()
-                    .and_then(|before| {
-                        let after = doc.get_heads();
-                        let changes = doc.diff(before, &after);
-                        crate::resources::document_action_result(&*widget, doc, address, &changes)
-                    })
-                    .unwrap_or(serde_json::Value::Null)
+                before.as_ref().and_then(|before| {
+                    let after = doc.get_heads();
+                    let changes = doc.diff(before, &after);
+                    crate::resources::document_action_result(&*widget, doc, address, &changes)
+                })
+            })
+            .and_then(|value| match value {
+                None if declared => Some(serde_json::Value::Null),
+                value => value,
             });
         // A verb that created items names them, so the view that submitted
         // it can show what it made.
@@ -2171,9 +2206,20 @@ pub(crate) fn execute_resource_operation(
             ));
         }
         crate::widget::ResourceOperationStart::Completed(output) => {
+            // What a document action answers an effect waiting on it is
+            // beside its declaration, which says what its callers get.
+            let declared = match &spec.contract.result {
+                tilo_actions::ResultSpec::None | tilo_actions::ResultSpec::Job if answering() => {
+                    tilo_actions::ActionOutput {
+                        value: None,
+                        ..output.clone()
+                    }
+                }
+                _ => output.clone(),
+            };
             spec.contract
                 .result
-                .validate(output)
+                .validate(&declared)
                 .map_err(tilo_actions::DoorError::Failed)?;
         }
         crate::widget::ResourceOperationStart::Accepted => {}

@@ -190,7 +190,7 @@ pub enum WordProcessorEffect {
     ///
     /// Makes your selected paragraphs (or the caret paragraph) a heading, a
     /// list or a body paragraph.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, job, returns)]
     SetParagraphStyle {
         #[param("Paragraph kind", choices = ["paragraph", "heading", "list_item"])]
         kind: String,
@@ -212,7 +212,7 @@ pub enum WordProcessorEffect {
     ///
     /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
     /// replacing your selection.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, job, returns)]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
         text: Option<String>,

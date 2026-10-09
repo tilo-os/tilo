@@ -15,6 +15,8 @@ pub mod child_resources;
 pub mod confirmation;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
+#[path = "edit_answers.rs"]
+pub mod edit_answers;
 #[path = "effects.rs"]
 pub mod effects;
 #[path = "forms.rs"]

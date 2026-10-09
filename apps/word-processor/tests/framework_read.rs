@@ -111,18 +111,32 @@ fn invoke(
         instance_id: INSTANCE,
         address: address(&harness.resources(), action).expect("the action is published"),
     };
-    let output = harness
-        .invoke_bound_action(&address, arguments.as_object().unwrap())
-        .unwrap()
-        .completed()
-        .and_then(|output| output.value);
-    // An edit at the caret is applied as the frame settles.
+    let (invocation, started) = harness
+        .start_bound_job(&address, arguments.as_object().unwrap(), false)
+        .unwrap();
+    // An edit at the caret is applied as the frame settles; one that answers
+    // with what it changed does so then.
     harness.relayout();
-    output
+    if let Some(output) = started.completed() {
+        return output.value;
+    }
+    for _ in 0..4 {
+        if let Some(update) = harness
+            .job_updates(invocation)
+            .iter()
+            .find(|update| update.is_terminal())
+        {
+            return match update {
+                tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value.clone(),
+                other => panic!("{action} failed: {other:?}"),
+            };
+        }
+        harness.relayout();
+    }
+    panic!("{action} never answered")
 }
 
 #[test]
-#[ignore = "an edit effect answers before its edit applies: GAPS 'edit effects answer with what they changed'"]
 fn an_edit_answers_with_the_blocks_it_changed() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();

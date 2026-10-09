@@ -139,6 +139,9 @@ pub struct Dispatcher<R: Resource> {
     refused: LocalState<Option<Refused>>,
     /// The last submission of this view the door applied.
     landed: LocalState<Option<Landed>>,
+    /// What the effects that queued submissions here wait on: how many are
+    /// still to land, per effect invocation.
+    waits: Rc<RefCell<Waits>>,
     /// Why the record does not read as the resource, while it does not:
     /// nothing is submitted against a state nobody can see.
     unreadable: Rc<RefCell<Option<String>>>,
@@ -220,6 +223,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
             landed: self.landed.clone(),
+            waits: Rc::clone(&self.waits),
             unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
@@ -264,9 +268,45 @@ impl<R: Resource> Dispatcher<R> {
             }
             None => super::effect::acting_for(),
         };
+        if let Some(invocation) = on_behalf_of {
+            self.waits.borrow_mut().submitted(invocation);
+        }
         self.queue
             .borrow_mut()
             .push_back((ControlInvocation { address, arguments }, on_behalf_of));
+    }
+
+    /// Hand the door's result for a submission the effect `invocation`
+    /// queued to that effect, once it waits for its submissions to land.
+    pub(crate) fn note_continuation(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        action: &str,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        let landed = match result {
+            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+                Ok(Landed::of(action, output))
+            }
+            // Handed on to the broker: it applies there, answering nothing here.
+            Ok(ui_core::host_operation::ResourceOperationStart::Accepted) => Ok(Landed {
+                action: action.to_owned(),
+                answer: None,
+                created: Vec::new(),
+            }),
+            Err(error) => Err(error.to_string()),
+        };
+        self.waits.borrow_mut().landed(invocation, landed);
+    }
+
+    /// What the effect `invocation` submitted here, once it all landed: the
+    /// last submission's [`Landed`], or why one was refused. Nothing arrives
+    /// when it submitted nothing.
+    pub(crate) fn wait_landed(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<std::sync::mpsc::Receiver<Result<Landed, String>>> {
+        self.waits.borrow_mut().wait(invocation)
     }
 
     pub(crate) fn new(
@@ -289,6 +329,7 @@ impl<R: Resource> Dispatcher<R> {
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             landed: LocalState::new(None),
+            waits: Rc::default(),
             unreadable: Rc::default(),
             host: Rc::default(),
             submit_now: Rc::new(|host, edits, action, context| {
@@ -468,11 +509,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
-        self.landed.set(Some(Landed {
-            action: action.to_owned(),
-            answer: output.value.clone(),
-            created: output.resources.clone(),
-        }));
+        self.landed.set(Some(Landed::of(action, output)));
     }
 
     fn view_only() -> String {
@@ -867,6 +904,7 @@ impl<R: Resource> Dispatcher<R> {
             permission_of: Rc::new(|_: &C::Action| PermissionRequirement::Read),
             refused: self.refused.clone(),
             landed: self.landed.clone(),
+            waits: Rc::clone(&self.waits),
             unreadable: Rc::default(),
             host: Rc::clone(&self.host),
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
@@ -923,6 +961,7 @@ impl<R: Resource> Dispatcher<R> {
             }),
             refused: self.refused.clone(),
             landed: self.landed.clone(),
+            waits: Rc::clone(&self.waits),
             unreadable: Rc::clone(&self.unreadable),
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
@@ -1021,6 +1060,14 @@ pub struct Landed {
 }
 
 impl Landed {
+    fn of(action: &str, output: &tilo_actions::ActionOutput) -> Self {
+        Self {
+            action: action.to_owned(),
+            answer: output.value.clone(),
+            created: output.resources.clone(),
+        }
+    }
+
     /// The ids the action minted, in the order it minted them: the item a
     /// "new" verb created first.
     #[must_use]
@@ -1030,6 +1077,67 @@ impl Landed {
             .filter_map(|resource| resource.rsplit('/').next())
             .map(tilo_resource::Id::from_raw)
             .collect()
+    }
+}
+
+/// The submissions each effect queued that have not landed yet, and the
+/// effects waiting for theirs.
+#[derive(Default)]
+struct Waits(std::collections::HashMap<tilo_actions::InvocationId, Wait>);
+
+#[derive(Default)]
+struct Wait {
+    /// Queued, not yet answered by the door.
+    outstanding: usize,
+    /// The last that landed, or the first refusal.
+    result: Option<Result<Landed, String>>,
+    waiter: Option<std::sync::mpsc::Sender<Result<Landed, String>>>,
+}
+
+impl Waits {
+    fn submitted(&mut self, invocation: tilo_actions::InvocationId) {
+        let wait = self.0.entry(invocation).or_default();
+        wait.outstanding = wait.outstanding.saturating_add(1);
+    }
+
+    fn landed(&mut self, invocation: tilo_actions::InvocationId, landed: Result<Landed, String>) {
+        let Some(wait) = self.0.get_mut(&invocation) else {
+            return;
+        };
+        wait.outstanding = wait.outstanding.saturating_sub(1);
+        // The first refusal stands: the effect failed with it.
+        if !matches!(wait.result, Some(Err(_))) {
+            wait.result = Some(landed);
+        }
+        self.settle(invocation);
+    }
+
+    fn wait(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<std::sync::mpsc::Receiver<Result<Landed, String>>> {
+        let wait = self.0.get_mut(&invocation)?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        wait.waiter = Some(sender);
+        self.settle(invocation);
+        Some(receiver)
+    }
+
+    /// Answer the waiting effect once nothing it submitted is outstanding;
+    /// forget an effect nobody waits on then.
+    fn settle(&mut self, invocation: tilo_actions::InvocationId) {
+        let Some(wait) = self.0.get_mut(&invocation) else {
+            return;
+        };
+        if wait.outstanding > 0 {
+            return;
+        }
+        if let Some(waiter) = wait.waiter.take()
+            && let Some(result) = wait.result.take()
+        {
+            let _ = waiter.send(result);
+        }
+        self.0.remove(&invocation);
     }
 }
 
