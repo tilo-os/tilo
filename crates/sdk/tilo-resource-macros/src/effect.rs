@@ -257,6 +257,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             ));
         }
         let action_kind = match options.kind.as_deref() {
+            // An edit at the invoker's caret is an undoable change of the
+            // record, whatever else it is.
+            None if options.edit => quote!(Undoable),
             None if options.view => quote!(Read),
             None | Some("outside") => quote!(Outside),
             Some("read") => quote!(Read),
