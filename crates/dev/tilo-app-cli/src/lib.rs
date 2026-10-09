@@ -4481,18 +4481,18 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
     let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
-    // `#[resource]` turns `#[action]` methods into the published, replayable
-    // catalogue, and `ResourceApp` hosts it; a hand-written `impl Resource`
-    // (a custom storage layout) is the same contract.
-    let framework_surface = (code.contains("#[resource(") && code.contains("#[action"))
-        || code.contains("impl Resource for");
+    // `#[resource]` publishes the model's field edits and turns `#[action]`
+    // methods into verbs, the replayable catalogue `ResourceApp` hosts; a
+    // hand-written `impl Resource` (a custom storage layout) is the same
+    // contract.
+    let framework_surface = code.contains("#[resource(") || code.contains("impl Resource for");
     let framework_host = code.contains("impl ResourceApp for");
     let framework = framework_surface && framework_host;
     let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
             if framework {
-                "the app framework publishes the resource's typed actions"
+                "the app framework publishes the resource's field edits and verbs"
             } else if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
             } else if custom_operation {
