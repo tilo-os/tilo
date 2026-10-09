@@ -3631,47 +3631,47 @@ struct KeySchedule {
     pushed: bool,
     /// Routes told to ask since the last round.
     marked: std::collections::BTreeSet<String>,
-    /// When the timer's next round is due, and the wait after it.
-    due: tokio::time::Instant,
+    /// The timer's next round, and the wait it was armed with.
+    timer: Pin<Box<tokio::time::Sleep>>,
     wait: Duration,
 }
 
 impl KeySchedule {
-    fn new(now: tokio::time::Instant) -> Self {
+    fn new() -> Self {
         Self {
             pushed: true,
             marked: std::collections::BTreeSet::new(),
-            due: now + CHANNEL_KEY_REFRESH,
+            timer: Box::pin(tokio::time::sleep(CHANNEL_KEY_REFRESH)),
             wait: CHANNEL_KEY_REFRESH,
         }
     }
 
-    /// When the timer starts its next round: never while every route holds
-    /// keys and the broker pushes their changes.
-    fn next_round(&self, awaiting: bool) -> Option<tokio::time::Instant> {
-        (!self.pushed || awaiting).then_some(self.due)
+    /// Whether the timer starts rounds: never while every route holds keys
+    /// and the broker pushes their changes.
+    fn timed(&self, awaiting: bool) -> bool {
+        !self.pushed || awaiting
     }
 
-    fn note(&mut self, signal: KeySignal, now: tokio::time::Instant) {
+    fn note(&mut self, signal: KeySignal) {
         match signal {
             KeySignal::Changed(route) => {
                 self.marked.insert(route);
-                self.restart(now);
+                self.restart();
             }
             KeySignal::Unpushed if self.pushed => {
                 self.pushed = false;
-                self.restart(now);
+                self.restart();
             }
             KeySignal::Unpushed => {}
         }
     }
 
-    /// The round the timer starts `now`.
-    fn timer_round(&mut self, now: tokio::time::Instant) -> KeyRound {
+    /// The round the timer starts now that it fired; arms the next one.
+    fn timer_round(&mut self) -> KeyRound {
         if self.pushed {
             self.wait = self.wait.saturating_mul(2).min(CHANNEL_KEY_WAIT_LONGEST);
         }
-        self.due = now + self.wait;
+        self.arm();
         KeyRound {
             all: !self.pushed,
             waiting: true,
@@ -3688,10 +3688,10 @@ impl KeySchedule {
         })
     }
 
-    /// The round a route that joined `now` starts: it learns its keys, or
+    /// The round a route that just joined starts: it learns its keys, or
     /// that it waits, before its first edit.
-    fn join_round(&mut self, now: tokio::time::Instant) -> KeyRound {
-        self.restart(now);
+    fn join_round(&mut self) -> KeyRound {
+        self.restart();
         KeyRound {
             all: !self.pushed,
             waiting: true,
@@ -3701,9 +3701,13 @@ impl KeySchedule {
 
     /// Something changed (a route joined, keys or access moved): a route
     /// still waiting is asked again soon.
-    fn restart(&mut self, now: tokio::time::Instant) {
+    fn restart(&mut self) {
         self.wait = CHANNEL_KEY_REFRESH;
-        self.due = now + CHANNEL_KEY_REFRESH;
+        self.arm();
+    }
+
+    fn arm(&mut self) {
+        self.timer.set(tokio::time::sleep(self.wait));
     }
 }
 
@@ -3785,7 +3789,7 @@ async fn drive_shovel(
     );
     // When to ask for keys: see `KeySchedule`. Each encrypted route follows
     // its channel's changes and marks itself on `key_signals`.
-    let mut key_schedule = KeySchedule::new(tokio::time::Instant::now());
+    let mut key_schedule = KeySchedule::new();
     let (key_signals, mut key_signal_rx) = tokio_mpsc::unbounded_channel::<KeySignal>();
     // A certified identity service is asked on a blocking thread. A round
     // runs alongside this loop, which keeps sending while the routes keep
@@ -3805,15 +3809,13 @@ async fn drive_shovel(
     let mut unpublished: Option<String> = None;
 
     loop {
-        let next_round = if asks_channel_keys && key_fetch.is_none() {
-            key_schedule.next_round(any_route_awaiting_keys(&routes))
-        } else {
-            None
-        };
+        let timed = asks_channel_keys
+            && key_fetch.is_none()
+            && key_schedule.timed(any_route_awaiting_keys(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
             Some(signal) = key_signal_rx.recv() => {
-                key_schedule.note(signal, tokio::time::Instant::now());
+                key_schedule.note(signal);
                 if key_fetch.is_none()
                     && let Some(round) = key_schedule.marked_round()
                 {
@@ -3821,13 +3823,8 @@ async fn drive_shovel(
                 }
                 continue;
             }
-            () = async {
-                match next_round {
-                    Some(due) => tokio::time::sleep_until(due).await,
-                    None => std::future::pending().await,
-                }
-            }, if next_round.is_some() => {
-                let round = key_schedule.timer_round(tokio::time::Instant::now());
+            () = key_schedule.timer.as_mut(), if timed => {
+                let round = key_schedule.timer_round();
                 key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
                 continue;
             }
@@ -3840,7 +3837,7 @@ async fn drive_shovel(
             {
                 key_fetch = None;
                 if apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await {
-                    key_schedule.restart(tokio::time::Instant::now());
+                    key_schedule.restart();
                 }
                 // Routes told to ask while the round was out ask now.
                 if let Some(round) = key_schedule.marked_round() {
@@ -4127,7 +4124,7 @@ async fn drive_shovel(
             if let Some(fetch) = key_fetch.take() {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
-            let round = key_schedule.join_round(tokio::time::Instant::now());
+            let round = key_schedule.join_round();
             if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await {
                 apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
             }
@@ -9007,23 +9004,22 @@ mod tests {
     /// asked every second.
     #[test]
     fn key_schedule_polls_only_what_is_not_pushed() {
-        let start = tokio::time::Instant::now();
-        let mut schedule = KeySchedule::new(start);
-        assert_eq!(
-            schedule.next_round(false),
-            None,
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let mut schedule = KeySchedule::new();
+        assert!(
+            !schedule.timed(false),
             "routes holding keys are never polled while changes are pushed"
         );
-        let mut now = start;
-        let mut waits = Vec::new();
-        for _ in 0..7 {
-            let due = schedule
-                .next_round(true)
-                .expect("a waiting route is polled");
-            waits.push(due.duration_since(now));
-            now = due;
-            let round = schedule.timer_round(now);
+        assert!(schedule.timed(true), "a waiting route is polled");
+        let mut waits = vec![schedule.wait];
+        for _ in 0..6 {
+            let round = schedule.timer_round();
             assert!(round.waiting && !round.all, "{round:?}");
+            waits.push(schedule.wait);
         }
         assert_eq!(
             waits,
@@ -9031,21 +9027,21 @@ mod tests {
             "waiting routes back off to the longest wait"
         );
 
-        schedule.note(KeySignal::Changed("route".into()), now);
-        assert_eq!(schedule.next_round(true), Some(now + CHANNEL_KEY_REFRESH));
+        schedule.note(KeySignal::Changed("route".into()));
+        assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "a change starts over");
         let round = schedule.marked_round().expect("the changed route asks now");
         assert!(!round.all && !round.waiting);
         assert_eq!(round.routes.into_iter().collect::<Vec<_>>(), ["route"]);
         assert_eq!(schedule.marked_round(), None, "asked once");
 
-        schedule.note(KeySignal::Unpushed, now);
+        schedule.note(KeySignal::Unpushed);
+        assert!(
+            schedule.timed(false),
+            "without pushes, every route is polled"
+        );
         for _ in 0..3 {
-            let due = schedule
-                .next_round(false)
-                .expect("without pushes, every route");
-            assert_eq!(due.duration_since(now), CHANNEL_KEY_REFRESH);
-            now = due;
-            assert!(schedule.timer_round(now).all);
+            assert!(schedule.timer_round().all);
+            assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "every second");
         }
     }
 
