@@ -13,7 +13,7 @@
 //! after the client's image.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::ImageData;
 use vello_encoding::{DrawTag, Patch, Transform};
 
@@ -78,7 +78,7 @@ impl DrawnOnTop {
     /// Where its pixels land once the scene is magnified by `to_scene`.
     pub(crate) fn placed(self, to_scene: Affine) -> Self {
         Self {
-            transform: to_scene * self.transform,
+            transform: self.transform.then(to_scene),
             ..self
         }
     }
@@ -216,13 +216,15 @@ pub fn pixel_exact_origin(transform: Affine, size: (u32, u32)) -> Option<(i32, i
     let origin = (whole(tx)? as i32, whole(ty)? as i32);
     // The far corner must land on whole pixels too: a scale that passed the
     // check above but drifts by a pixel over a 4K image would not.
-    let far = transform * Point::new(f64::from(size.0), f64::from(size.1));
+    // Unit scale without rotation keeps the corners of the bounding box.
+    let placed =
+        transform.transform_rect_bbox(Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1)));
     let far_expected = (
         f64::from(origin.0) + f64::from(size.0),
         f64::from(origin.1) + f64::from(size.1),
     );
-    ((far.x - far_expected.0).abs() <= PIXEL_EPSILON
-        && (far.y - far_expected.1).abs() <= PIXEL_EPSILON)
+    ((placed.x1 - far_expected.0).abs() <= PIXEL_EPSILON
+        && (placed.y1 - far_expected.1).abs() <= PIXEL_EPSILON)
         .then_some(origin)
 }
 
@@ -350,14 +352,14 @@ mod tests {
         );
         // A 2x output drawing a buffer-scale-2 client: logical half size,
         // magnified back.
-        let logical = Affine::translate((960.0, 0.0)) * Affine::scale(0.5);
+        let logical = Affine::scale(0.5).then_translate(vello::kurbo::Vec2::new(960.0, 0.0));
         let to_scene = Affine::scale(2.0);
         assert_eq!(
-            pixel_exact_origin(to_scene * logical, size),
+            pixel_exact_origin(logical.then(to_scene), size),
             Some((1920, 0))
         );
         // Fractional 1.5 through f32 encoding precision.
-        let fractional = Affine::scale(1.5) * Affine::scale(f64::from(1.0_f32 / 1.5_f32));
+        let fractional = Affine::scale(f64::from(1.0_f32 / 1.5_f32)).then(Affine::scale(1.5));
         assert_eq!(pixel_exact_origin(fractional, size), Some((0, 0)));
         // Scaled, rotated, half-pixel, empty, non-finite: not pixel for pixel.
         assert_eq!(pixel_exact_origin(Affine::scale(0.5), size), None);
