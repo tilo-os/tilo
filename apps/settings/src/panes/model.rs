@@ -10,9 +10,7 @@ use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use vello::kurbo::Rect;
 
 /// The state of one area of Settings, as its pane shows it.
 pub trait PaneModel: 'static {
