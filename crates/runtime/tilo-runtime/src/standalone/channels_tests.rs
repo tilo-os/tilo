@@ -80,7 +80,7 @@ mod pump {
     /// on a timer would miss it.
     fn promptly(mut done: impl FnMut() -> bool) -> bool {
         let start = Instant::now();
-        while start.elapsed() < LIVE_INTERVAL / 2 {
+        while start.elapsed() < LIVE_INTERVAL.div_f64(2.0) {
             if done() {
                 return true;
             }
