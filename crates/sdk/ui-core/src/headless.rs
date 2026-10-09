@@ -3227,7 +3227,11 @@ impl FrameHarness {
             && let Some(saved) = self.ordinary_palette_return_focus.take()
             && !self.focus_trap_active
         {
-            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+                self.root.as_ref(),
+                &self.taffy,
+            );
+            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
             // SAFETY: this final layout owns the freshly admitted tree.
             self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
         }
@@ -3625,14 +3629,17 @@ impl FrameHarness {
             });
             return order;
         }
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-        {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        if self.history.is_some() || restrictions.has_surfaces() {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            order = self.history_app_focus_order(root).0;
+            order = self.history_app_focus_order(root, &restrictions).0;
         } else {
             order =
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
@@ -3640,13 +3647,16 @@ impl FrameHarness {
         order
     }
 
-    fn history_app_focus_order(&self, root: NodeId) -> (Vec<NodeId>, bool) {
+    fn history_app_focus_order(
+        &self,
+        root: NodeId,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) -> (Vec<NodeId>, bool) {
         crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
-            let allowed =
-                crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
-                    && self.history.as_ref().is_none_or(|history| {
-                        !history.captures_input() || history.owns_node(node, &self.taffy)
-                    });
+            let allowed = restrictions.allows(node)
+                && self.history.as_ref().is_none_or(|history| {
+                    !history.captures_input() || history.owns_node(node, &self.taffy)
+                });
             self.inspect_node(node, |widget| {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
@@ -3662,15 +3672,17 @@ impl FrameHarness {
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
-        let (mut order, trapped) = if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-        {
+        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
+            self.root.as_ref(),
+            &self.taffy,
+        );
+        let (mut order, trapped) = if self.history.is_some() || restrictions.has_surfaces() {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let (order, app_trap) = self.history_app_focus_order(root);
+            let (order, app_trap) = self.history_app_focus_order(root, &restrictions);
             (
                 order,
                 app_trap
@@ -3697,7 +3709,7 @@ impl FrameHarness {
             // Bound component delegates can be absent from Widget::children's
             // generic order. Eligibility comes from this newly admitted layout,
             // with the same embedded-history restrictions as mapped traversal.
-            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            let (allowed, _) = self.history_app_focus_order(self.child_node, &restrictions);
             let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&allowed))
             });
@@ -9006,6 +9018,69 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_focus_trap_enumerates_history_once() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.focus_trap_active = true;
+        visits.set(0);
+        frame.update_focus_trap(None);
+        assert!(!frame.focus_trap_active);
+        assert_eq!(
+            visits.get(),
+            1,
+            "trap closure reuses the same History snapshot"
+        );
+    }
+
+    #[test]
+    fn history_focus_order_rechecks_input_capture_between_calls() {
+        let state = State::new();
+        let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(3, &state);
+        let frame = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        let live_rows = |order: Vec<NodeId>| {
+            order
+                .into_iter()
+                .filter_map(|node| {
+                    frame
+                        .inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                        .unwrap()
+                        .filter(|id| id.starts_with("row-"))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(live_rows(frame.focus_order()), ["row-0", "row-1", "row-2"]);
+        crate::history_mode::capability::visit_framework_history(
+            frame.root.as_ref(),
+            &mut |history, _| {
+                assert!(history.request_open());
+            },
+        );
+        visits.set(0);
+        let captured = frame.focus_order();
+        assert_eq!(visits.get(), 1);
+        assert!(!captured.is_empty(), "History controls stay focusable");
+        assert!(
+            live_rows(captured).is_empty(),
+            "fresh capture denies live rows"
+        );
+    }
     use automerge::transaction::Transactable;
 
     /// A widget that asks for frames as configured, over its children.

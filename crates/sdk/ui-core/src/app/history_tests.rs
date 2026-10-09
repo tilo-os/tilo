@@ -2,6 +2,53 @@ use super::*;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
+
+#[test]
+fn native_focus_order_enumerates_history_once() {
+    let state = State::new();
+    let (root, visits) = crate::history_mode::focus_tests::FocusHistoryRoot::new(2_000, &state);
+    let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+    layout(&mut app);
+    visits.set(0);
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() >= 2_000,
+        "all live rows remain focusable"
+    );
+    assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
+}
+
+#[test]
+fn native_focus_order_keeps_live_rows_before_history_controls() {
+    let root = crate::widget::Column::new()
+        .push(Box::new(crate::widget::Button::new("first-row", "First")))
+        .push(Box::new(crate::widget::Button::new("second-row", "Second")));
+    let mut app = app_with_root(State::new(), Box::new(root));
+    layout(&mut app);
+    app.update_focusable_order();
+    let history = app.history.as_ref().unwrap();
+    let first_owned = app
+        .focusable_order
+        .iter()
+        .position(|&node| history.owns_node(node, &app.layout.taffy))
+        .expect("History contributes a focusable control");
+    let live_ids: Vec<_> = app.focusable_order[..first_owned]
+        .iter()
+        .map(|&node| {
+            app.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        live_ids,
+        vec![Some("first-row".into()), Some("second-row".into())]
+    );
+    assert!(
+        app.focusable_order[first_owned..]
+            .iter()
+            .all(|&node| history.owns_node(node, &app.layout.taffy))
+    );
+}
 static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "dev.tilo.native-history-fixture",
     scopes: &[HistoryScopeDefinition {

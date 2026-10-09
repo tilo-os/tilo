@@ -412,9 +412,19 @@ impl NativeWorkspaceOwner {
     /// Admit and durably commit a document write signed by this device,
     /// with its outgoing custody, before any receipt.
     ///
+    /// # Sequence contract
+    /// The envelope is signed before this owner turn starts, so its sequence
+    /// must come from [`collab_types::next_unordered_document_sequence`] (as
+    /// every SDK document signer does). A dense `floor + 1` read through
+    /// [`Self::with_current`] races [`Self::reconcile_outgoing`], which
+    /// reserves `floor + 1` for a recovery projection without exact evidence
+    /// in its own turn; the write is then refused as stale. A caller that
+    /// needs the dense sequence prepares it inside the turn with
+    /// [`Self::commit_document_with_current`].
+    ///
     /// # Errors
-    /// The request is not an admissible local document write, or the record
-    /// cannot be published.
+    /// The request is not an admissible local document write, its signed
+    /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,

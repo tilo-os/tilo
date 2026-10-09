@@ -222,6 +222,41 @@ pub fn live_artifact_id(record_digest: &[u8; 32], kind: u8, seq: u64) -> Artifac
     ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
+static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Sequence for a document write signed outside its record owner's
+/// serialized turn: never below wall-clock microseconds and strictly
+/// increasing within the process, so the owner's own dense `floor + 1`
+/// reservations (recovery projections) cannot take it first.
+///
+/// This is the one process-wide allocator for caller-signed document
+/// writes; every SDK document signer and every out-of-turn test signer
+/// draws from it.
+#[must_use]
+pub fn next_unordered_document_sequence(now: SystemTime) -> u64 {
+    use std::sync::atomic::Ordering;
+
+    let wall = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+        });
+    let mut observed = LAST_UNORDERED_DOCUMENT_SEQUENCE.load(Ordering::Relaxed);
+    loop {
+        let candidate = wall.max(observed.saturating_add(1));
+        match LAST_UNORDERED_DOCUMENT_SEQUENCE.compare_exchange_weak(
+            observed,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
 /// Deterministic attestation slot used by certified workspace admission.
 /// The admitted validator does not trust this id by itself; it remains stable
 /// so scrollback and audit entries do not mint arbitrary ids per edit.
@@ -728,6 +763,26 @@ mod tests {
     use super::*;
     use crate::canonical::from_canonical_bytes;
     use crate::crypto::generate_keypair;
+
+    /// The unordered document sequence never falls below wall-clock
+    /// microseconds and strictly increases, even when the clock stands still
+    /// or steps backwards.
+    #[test]
+    fn next_unordered_document_sequence_is_monotonic_and_at_least_wall_clock() {
+        let now = SystemTime::now();
+        let micros = u64::try_from(
+            now.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
+        )
+        .unwrap();
+        let first = next_unordered_document_sequence(now);
+        assert!(first >= micros, "{first} < wall clock {micros}");
+        let second = next_unordered_document_sequence(now);
+        assert!(second > first, "same instant must still advance");
+        let earlier = next_unordered_document_sequence(SystemTime::UNIX_EPOCH);
+        assert!(earlier > second, "a backwards clock must still advance");
+    }
 
     /// Signed ops round-trip with and without encryption; encryption metadata changes the signing
     /// bytes, which exclude the signature; version-one metadata keeps the legacy wire and signing

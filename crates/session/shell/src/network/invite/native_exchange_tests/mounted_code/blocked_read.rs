@@ -32,9 +32,25 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
     )
     .await;
     let owner = target.network.native_owner().unwrap();
-    let expected = format!("{BODY}// refused after the native authority is fenced\n");
-    let request = prepare_edit(device, &owner, &expected);
-    assert!(has_committed_body(&owner, BODY));
+    let committed = format!("{BODY}// committed before the native authority is fenced\n");
+    commit_edit(device, &owner, BODY, &committed);
+    assert!(has_committed_body(&owner, &committed));
+    tilo_test_env::within(
+        "the original mounted reader to show the committed native edit",
+        async {
+            loop {
+                target.frame();
+                if target.has_body(&committed) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await;
+    let refused = format!("{committed}// refused after the native authority is fenced\n");
+    let request = prepare_edit(device, &owner, &committed, &refused);
+    assert!(has_committed_body(&owner, &committed));
     owner.fence_all();
     assert_eq!(
         owner
@@ -77,8 +93,9 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
         .unwrap();
     assert_eq!(
         snapshot["body_hash"],
-        hex::encode(Sha256::digest(BODY.as_bytes())),
-        "a fenced original capture cannot admit the refused native edit"
+        hex::encode(Sha256::digest(committed.as_bytes())),
+        "a fenced original capture keeps the edit committed before the fence and never admits \
+         the refused one"
     );
 }
 
@@ -92,65 +109,52 @@ pub(super) fn phase(target: &Mounted) -> serde_json::Value {
     phases.into_iter().next().unwrap()
 }
 
-pub(super) fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, expected: &str) {
-    let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+/// Commit an edit of the Code record from `base` to `expected` through the
+/// production caller-signed entry, signed outside the owner turn exactly as
+/// the SDK signs an app's write.
+pub(super) fn commit_edit(
+    device: &Device,
+    owner: &NativeWorkspaceOwner,
+    base: &str,
+    expected: &str,
+) {
     owner
-        .commit_document_with_current(
-            room,
-            |view| prepare_edit_from_view(device, view, room, expected),
+        .commit_document(
+            prepare_edit(device, owner, base, expected),
             SystemTime::now(),
         )
         .unwrap_or_else(|error| {
-            panic!("native mounted edit requires an exact owner receipt: {error}")
+            panic!("native mounted edit requires an exact owner admission: {error}")
         });
 }
 
 fn prepare_edit(
     device: &Device,
     owner: &NativeWorkspaceOwner,
+    base: &str,
     expected: &str,
 ) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
-    owner
+    let changes = owner
         .with_current(room, |view| {
-            prepare_edit_from_view(device, view, room, expected)
+            let mut document =
+                automerge::AutoCommit::load(&view.peer().document(APP, cold_code::RECORD).unwrap())
+                    .unwrap();
+            document.set_actor(automerge::ActorId::from(
+                device.identity.device_cert.device_public_key.to_vec(),
+            ));
+            let before = document.get_heads();
+            code_editor::actions::text_edit_action(FILE, base, expected)
+                .apply(&mut document)
+                .unwrap();
+            Ok(document.save_after(&before))
         })
-        .unwrap()
-}
-
-fn prepare_edit_from_view(
-    device: &Device,
-    view: &tilo_joined_room::NativeCommittedView,
-    room: RoomId,
-    expected: &str,
-) -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, String> {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-    let mut document =
-        automerge::AutoCommit::load(&view.peer().document(APP, cold_code::RECORD).unwrap())
-            .unwrap();
-    document.set_actor(automerge::ActorId::from(
-        device.identity.device_cert.device_public_key.to_vec(),
-    ));
-    let before = document.get_heads();
-    code_editor::actions::text_edit_action(FILE, BODY, expected)
-        .apply(&mut document)
         .unwrap();
-    let message = view.peer().clone().publish_incremental(
-        APP,
-        cold_code::RECORD,
-        document.save_after(&before),
+    let message = cold_code::unordered_document_message(
+        room,
+        changes,
         &device.identity.device_signing_key,
         SystemTime::now(),
-    )?;
-    let NeighbourMsg::AppDocument { envelope, .. } = message else {
-        return Err("native edit must be signed app data".into());
-    };
-    Ok(OwnerCommitRequest {
-        room: room.to_string(),
-        operation: CommitOperation::Document {
-            app: APP.into(),
-            record: cold_code::RECORD.into(),
-            envelope,
-        },
-    })
+    );
+    tilo_joined_room::testing::request(&message).unwrap()
 }

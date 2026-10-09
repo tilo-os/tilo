@@ -627,6 +627,148 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
         .unwrap();
 }
 
+/// Commit one original edit that the governor has not yet admitted, then give
+/// the route a fresh governor checkpoint that does not cover it, so the next
+/// `reconcile_outgoing` signs a recovery projection at the dense `floor + 1`.
+fn with_pending_original(joined: &Enrolled) {
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let original = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "original awaiting ack",
+    );
+    joined.owner.commit_document(original, joined.now).unwrap();
+    for message in remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap()
+    {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+}
+
+fn projections(joined: &Enrolled) -> usize {
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(crate::testing::projection(view)?.len())
+        })
+        .unwrap()
+}
+
+/// A write signed outside the owner turn the way every SDK document signer
+/// signs it: with the process-wide unordered sequence, not `floor + 1`.
+fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
+    use collab_types::{
+        DocumentMutation, Ed25519PublicKey, OpClass, SignedOp, document_artifact_id,
+        document_attestation_id, next_unordered_document_sequence, sign_op,
+    };
+    let changes = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            let before = chat.get_heads();
+            chat.put(ROOT, "topic", topic).unwrap();
+            chat.commit();
+            Ok(chat.save_after(&before))
+        })
+        .unwrap();
+    let key = member();
+    let mut envelope = SignedOp::new_unsigned(
+        DocumentMutation::Incremental(changes).encode().unwrap(),
+        document_artifact_id(APP, ROOM, ""),
+        Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+        document_attestation_id(APP, ROOM, ""),
+        OpClass::Splice,
+        joined.now,
+        next_unordered_document_sequence(joined.now),
+    );
+    sign_op(&mut envelope, &key).unwrap();
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::Document {
+            app: APP.into(),
+            record: String::new(),
+            envelope: Box::new(envelope),
+        },
+    }
+}
+
+#[test]
+fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let dense = edit_with(&joined.owner, joined.room, joined.now, "dense edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    assert_eq!(
+        joined.owner.commit_document(dense, joined.now).unwrap_err(),
+        "native local document signed sequence is stale"
+    );
+}
+
+#[test]
+fn unordered_sequence_survives_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let request = unordered_edit(&joined, "unordered edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    joined
+        .owner
+        .commit_document(request.clone(), joined.now)
+        .unwrap();
+    let CommitOperation::Document { envelope, .. } = &request.operation else {
+        panic!("the unordered edit is a document write")
+    };
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.peer()
+                    .lookup_exact_local_document(APP, "", envelope, joined.now)
+                    .map_err(|error| error.to_string())?
+                    .is_some(),
+                "the caller-signed write must leave exact admission evidence"
+            );
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("unordered edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn an_uncertain_write_fences_every_room_until_reopened() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
