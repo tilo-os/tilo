@@ -23,7 +23,12 @@ use crate::wire::Link;
 
 mod agent_loop;
 mod chat;
+mod outstanding;
 use chat::ChatRun;
+
+/// The default [`Config::pace`], in milliseconds: none. Demos that want the
+/// caret to be watched pass `--pace-ms`.
+pub const DEFAULT_PACE_MS: u64 = 0;
 
 /// How long a fetched catalogue is trusted before acting fetches it again.
 const CATALOGUE_FRESH_FOR: Duration = Duration::from_secs(1);
@@ -41,6 +46,10 @@ const TASK_STEP_REPLY_WAIT: Duration = if cfg!(test) {
     Duration::from_secs(15)
 };
 const TASK_STEP_RETRY_PAUSE: Duration = Duration::from_millis(200);
+/// The first pause before observing a running invocation; it doubles up to
+/// [`FOLLOW_MOST_WAIT`] while the invocation keeps running.
+const FOLLOW_FIRST_WAIT: Duration = Duration::from_millis(5);
+const FOLLOW_MOST_WAIT: Duration = Duration::from_millis(50);
 /// The broker's refusal before any child is bound when its host has no step
 /// ledger. Only this refusal may fall back to the legacy invocation path.
 const TASK_STEPS_UNAVAILABLE: &str = "enrolled task steps unavailable";
@@ -179,24 +188,26 @@ fn report_enrolled(
     link.wait_enrolled_reply(request_id)
 }
 
-/// Send one live update as enrolled progress. Best effort: a refusal is
-/// logged and turns live updates off, never the task.
+/// Send one live update as enrolled progress, without waiting for the
+/// host's answer; its request id, or `None` when it could not be sent. Best
+/// effort: a refusal arrives later and turns live updates off, never the
+/// task ([`Session::absorb_refusals`]).
 fn send_live(
     link: &mut Link,
     next_request: &mut u64,
     sequence: &mut u64,
     acceptance: &runtime_collab::EnrolledTaskAcceptance,
     message: String,
-) -> bool {
-    report_enrolled(
+) -> Option<u64> {
+    outstanding::report_enrolled_detached(
         link,
         next_request,
         sequence,
         acceptance.clone(),
         runtime_collab::TaskRunUpdate::Progress { message },
     )
-    .inspect_err(|error| tracing::warn!(%error, "live update refused; live updates stop"))
-    .is_ok()
+    .inspect_err(|error| tracing::warn!(%error, "live update not sent; live updates stop"))
+    .ok()
 }
 
 /// What the next task step is built from.
@@ -269,6 +280,9 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
         || run.lease.len() > 128
     {
         return Err("The task envelope has an invalid id, title, or lease".into());
+    }
+    if let Some(budget) = run.execution_budget {
+        budget.validate().map_err(str::to_owned)?;
     }
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The task has an invalid action context".to_string())?;
@@ -345,7 +359,9 @@ pub struct Config {
     /// Display name used by name-addressed instructions. The admitted id
     /// remains the author and structured-mention target.
     pub name: String,
-    /// Pause between edits, so people can watch the caret work.
+    /// Pause after each visible action and edit, so people can watch the
+    /// caret work. A demo affordance: nothing waits on it, so the default
+    /// ([`DEFAULT_PACE_MS`]) is none.
     pub pace: Duration,
     /// Stop after the first instruction has been carried out.
     pub once: bool,
@@ -408,6 +424,8 @@ pub struct Session {
     enrolled_custody: Option<runtime_collab::EnrolledRecipientCustody>,
     enrolled_active: Option<runtime_collab::EnrolledTaskAcceptance>,
     enrolled_sequence: u64,
+    /// Monotonic deadline from an explicit broker-minted owner task policy.
+    task_deadline: Option<Instant>,
     /// When the agent last asked the room for the document. It asks again
     /// until it has one: an app that was still opening its file when the
     /// agent arrived never saw the first ask, and the agent would then wait
@@ -441,12 +459,15 @@ pub struct Session {
     live: crate::live::LivePublisher,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
-    /// The task catalogue survey for [`Self::broker_revision`].
-    catalogue_cache: Option<(u64, surface::Catalogue)>,
+    /// The task catalogue survey for [`Self::broker_revision`], shared by
+    /// every reader until the broker republishes.
+    catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
     /// The model turn in flight while a task loop runs.
     turn: Option<agent_loop::ActiveTurn>,
     /// What this agent was asked, did and said in earlier tasks.
     memory: agent_loop::Memory,
+    /// What the task in progress asked its host without waiting in line.
+    outstanding: outstanding::Outstanding,
 }
 
 /// How often the agent asks again while it still has no document.
@@ -554,6 +575,7 @@ impl Session {
             enrolled_custody,
             enrolled_active: None,
             enrolled_sequence: 0,
+            task_deadline: None,
             last_route: None,
             asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -571,6 +593,7 @@ impl Session {
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
+            outstanding: outstanding::Outstanding::default(),
         })
     }
 
@@ -716,6 +739,7 @@ impl Session {
             self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
             return Ok(());
         }
+        self.begin_task_watch();
         if self.enrolled_active.is_none() {
             self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         } else {
@@ -725,16 +749,18 @@ impl Session {
                 .set_state(crate::live::LiveState::Thinking, "Thinking", None);
             self.live_publish(true);
         }
+        // None of these three waits for the host: the model call is the long
+        // pole, and the planner below starts it at once. The cancellation
+        // answer is read before the first step (or the first planned action),
+        // which it reaches the host ahead of.
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
                 message: "Reviewing the permission-filtered action catalogue".into(),
             },
         )?;
+        self.poll_cancellation(run)?;
         self.wait_for_task_catalogue()?;
-        if self.task_cancelled(run)? {
-            return self.cancel_task(run, "Cancelled before planning");
-        }
         // A model task is a discover → invoke → observe loop over the live
         // catalogue. A managed agent has no other planner; a legacy one
         // without a model falls back to the rules-only survey below.
@@ -777,6 +803,11 @@ impl Session {
                 agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
             };
+        }
+        // The rules-only planner has no model call to overlap: settle the
+        // poll already out before planning, as before.
+        if self.task_cancelled(run)? {
+            return self.cancel_task(run, "Cancelled before planning");
         }
         let (actions, reply) = match self.plan_task(run) {
             Ok((actions, reply)) if !actions.is_empty() => (actions, reply),
@@ -868,15 +899,22 @@ impl Session {
         self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
+    /// The live broker offers of one publishing peer — all an action of that
+    /// peer can be looked up in, without building every peer's offers.
+    fn peer_offers(&self, peer: u64) -> impl Iterator<Item = surface::Offer> + '_ {
+        self.broker_surfaces
+            .iter()
+            .filter(move |surface| surface.peer_id == peer)
+            .flat_map(|surface| surface::broker_offers(std::slice::from_ref(surface)))
+    }
+
     /// The broker offer `action` was built from.
     fn offer_of(&self, action: &TaskAction) -> Option<surface::Offer> {
-        surface::broker_offers(&self.broker_surfaces)
-            .into_iter()
-            .find(|offer| {
-                offer.broker_peer_id == Some(action.peer_id)
-                    && offer.descriptor.address.resource == action.resource
-                    && offer.descriptor.address.action == action.action
-            })
+        self.peer_offers(action.peer_id).find(|offer| {
+            offer.broker_peer_id == Some(action.peer_id)
+                && offer.descriptor.address.resource == action.resource
+                && offer.descriptor.address.action == action.action
+        })
     }
 
     /// Whether `action` is written in parts: its own descriptor declares an
@@ -917,14 +955,12 @@ impl Session {
         if !text_param(offer) {
             return None;
         }
-        let continuation = surface::broker_offers(&self.broker_surfaces)
-            .into_iter()
-            .find(|candidate| {
-                candidate.broker_peer_id == Some(peer)
-                    && candidate.descriptor.address.resource == offer.descriptor.address.resource
-                    && candidate.descriptor.address.action == next
-                    && text_param(candidate)
-            })?;
+        let continuation = self.peer_offers(peer).find(|candidate| {
+            candidate.broker_peer_id == Some(peer)
+                && candidate.descriptor.address.resource == offer.descriptor.address.resource
+                && candidate.descriptor.address.action == next
+                && text_param(candidate)
+        })?;
         let mut sample = serde_json::Map::new();
         sample.insert(param.to_owned(), serde_json::Value::String("…".into()));
         let next = task_action_from_offer(&continuation, sample).ok()?;
@@ -1001,14 +1037,23 @@ impl Session {
         } else {
             None
         };
+        // A cancellation poll already out answers ahead of this step in the
+        // client's one ordered queue: honouring it costs no round trip.
+        if self.cancelled_before_step()? {
+            return Ok(Err(TaskActionStop::Cancelled(Some(
+                "Cancelled before the next step".into(),
+            ))));
+        }
         self.chooser
             .mark(tilo_model_gateway::TraceEvent::ActionSubmitted, index);
-        Ok(match step {
+        let settled = match step {
             Some(step) => self.invoke_task_step(run, step, action, arguments, stepped)?,
             None => self
                 .invoke_task_action(run, action, arguments)?
                 .map(Handoff::Legacy),
-        })
+        };
+        self.step_settled();
+        Ok(settled)
     }
 
     /// Show `action` being applied, labelled from its own descriptor.
@@ -1053,12 +1098,15 @@ impl Session {
     }
 
     /// Send the live view: `flush` sends any change now, otherwise at most
-    /// [`crate::live::MAX_UPDATES_PER_SECOND`] per second. Best effort.
+    /// [`crate::live::MAX_UPDATES_PER_SECOND`] per second. Best effort, and
+    /// never waits for the host: while one periodic update is unanswered the
+    /// next coalesces in the publisher rather than queueing behind it.
     fn live_publish(&mut self, flush: bool) {
+        self.absorb_refusals();
         let Some(acceptance) = self.enrolled_active.clone() else {
             return;
         };
-        if !self.live.is_active() {
+        if !self.live.is_active() || (!flush && self.live_in_flight()) {
             return;
         }
         let Session {
@@ -1066,6 +1114,7 @@ impl Session {
             link,
             next_broker_request,
             enrolled_sequence,
+            outstanding,
             ..
         } = self;
         let mut send = |message: String| {
@@ -1076,6 +1125,8 @@ impl Session {
                 &acceptance,
                 message,
             )
+            .map(|request_id| outstanding.record_live(request_id))
+            .is_some()
         };
         if flush {
             live.flush(ui::time::now(), &mut send);
@@ -1100,6 +1151,20 @@ impl Session {
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
         if let Some(acceptance) = self.enrolled_active.clone() {
+            if matches!(update, runtime_collab::TaskRunUpdate::Progress { .. }) {
+                // Progress is display: it reaches the host in order without
+                // the task waiting for each answer. A refusal arrives later
+                // and turns live updates off. A terminal report still waits:
+                // it ends the task's custody.
+                outstanding::report_enrolled_detached(
+                    &mut self.link,
+                    &mut self.next_broker_request,
+                    &mut self.enrolled_sequence,
+                    acceptance,
+                    update,
+                )?;
+                return Ok(());
+            }
             return report_enrolled(
                 &mut self.link,
                 &mut self.next_broker_request,
@@ -1139,7 +1204,7 @@ impl Session {
         if !self.broker_surfaces.is_empty() {
             return Ok(());
         }
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         let mut deferred = Vec::new();
         while ui::time::now() < deadline {
             let remaining = deadline.saturating_duration_since(ui::time::now());
@@ -1157,45 +1222,16 @@ impl Session {
         Ok(())
     }
 
-    fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
-        let request_id = self.next_request_id();
-        self.link.send(&CollabRequest::TaskRunCancellation {
-            request_id,
-            run_id: run.run_id,
-            lease: run.lease.clone(),
-        })?;
-        self.wait_for_task_cancellation(request_id)
+    fn task_wait_deadline(&self, maximum: Duration) -> Instant {
+        let now = ui::time::now();
+        let ordinary = now.checked_add(maximum).unwrap_or(now);
+        self.task_deadline
+            .map_or(ordinary, |task| ordinary.min(task))
     }
 
-    fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
-        let deadline = ui::time::now() + Duration::from_secs(5);
-        let mut deferred = Vec::new();
-        loop {
-            let now = ui::time::now();
-            if now >= deadline {
-                self.link.defer(deferred);
-                return Err(anyhow::anyhow!(
-                    "the broker did not answer task cancellation status"
-                ));
-            }
-            match self
-                .link
-                .recv((deadline - now).min(Duration::from_millis(100)))?
-            {
-                Some(CollabEvent::TaskRunCancellation {
-                    request_id: received,
-                    result,
-                }) if received == request_id => {
-                    self.link.defer(deferred);
-                    return result.map_err(anyhow::Error::msg);
-                }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces);
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
+    fn task_budget_expired(&self) -> bool {
+        self.task_deadline
+            .is_some_and(|deadline| ui::time::now() >= deadline)
     }
 
     /// The rules-only planner: one surveyed action matched by the words of
@@ -1204,8 +1240,8 @@ impl Session {
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<(Vec<TaskAction>, Option<String>), String> {
-        let offers = self.task_catalogue().offers;
-        let (offer, arguments) = surface::from_verbs(&run.title, &offers)
+        let catalogue = self.task_catalogue();
+        let (offer, arguments) = surface::from_verbs(&run.title, &catalogue.offers)
             .map_err(|error| format!("Rules-only planner could not choose an action: {error:?}"))?;
         task_action_from_offer(offer, arguments).map(|action| (vec![action], None))
     }
@@ -1223,6 +1259,11 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         stepped: &mut bool,
     ) -> Result<Result<Handoff, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before starting a step".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         // One invocation id for every attempt: a retry is the same request.
         let invocation = tilo_actions::InvocationId::new();
@@ -1237,8 +1278,15 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         };
-        let deadline = ui::time::now() + TASK_STEP_WAIT;
+        let deadline = self.task_wait_deadline(TASK_STEP_WAIT);
         loop {
+            if self.task_budget_expired() {
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel { invocation },
+                })?;
+                return Ok(Err(TaskActionStop::Failed(
+                    "Task time budget expired; cancellation requested, step outcome remains unknown".into())));
+            }
             self.link.send(&request)?;
             match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
                 // No reply or a pending step: the outcome is uncertain, so
@@ -1295,6 +1343,11 @@ impl Session {
         action: &TaskAction,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
+        if self.task_budget_expired() {
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired before invoking an action".into(),
+            )));
+        }
         let request_id = self.next_request_id();
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::InvokeTaskAction {
@@ -1326,9 +1379,26 @@ impl Session {
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let mut interaction_sequence = 0_u64;
         self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = ui::time::now() + TASK_ACTION_WAIT;
+        let deadline = self.task_wait_deadline(TASK_ACTION_WAIT);
+        let mut wait = FOLLOW_FIRST_WAIT;
         while !update.is_terminal() && ui::time::now() < deadline {
-            if self.task_cancelled(run)? {
+            let left = deadline.saturating_duration_since(ui::time::now());
+            let pushed = self.await_invocation_news(invocation, wait.min(left))?;
+            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
+            // Asked without waiting: the answer arrives ahead of the
+            // observation's in the client's one ordered queue, so it is read
+            // below as fresh as the observation itself.
+            self.poll_cancellation(run)?;
+            update = match pushed {
+                Some(pushed) => pushed,
+                None => match self.observe(invocation)? {
+                    Ok(update) => update,
+                    Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
+                },
+            };
+            interaction_sequence = interaction_sequence.saturating_add(1);
+            self.publish_task_interaction(run, action, &update, interaction_sequence)?;
+            if !update.is_terminal() && self.cancellation_known()? {
                 self.link.send(&CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Cancel { invocation },
                 })?;
@@ -1349,13 +1419,15 @@ impl Session {
                     "Cancelled from Task Center".into(),
                 ))));
             }
-            std::thread::sleep(Duration::from_millis(50));
-            update = match self.observe(invocation)? {
-                Ok(update) => update,
-                Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
-            };
-            interaction_sequence = interaction_sequence.saturating_add(1);
-            self.publish_task_interaction(run, action, &update, interaction_sequence)?;
+        }
+        if self.task_budget_expired() && !update.is_terminal() {
+            self.link.send(&CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation },
+            })?;
+            return Ok(Err(TaskActionStop::Failed(
+                "Task time budget expired; cancellation requested, action outcome remains unknown"
+                    .into(),
+            )));
         }
         match update {
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
@@ -1516,7 +1588,7 @@ impl Session {
         request_id: u64,
         wait: Duration,
     ) -> Result<Option<TaskReply>> {
-        let deadline = ui::time::now() + wait;
+        let deadline = self.task_wait_deadline(wait);
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
@@ -1662,7 +1734,6 @@ impl Session {
             self.chat_pending = acted;
             Ok(acted)
         } else {
-            self.refresh_stale_catalogue()?;
             self.act()
         }
     }
@@ -1909,7 +1980,7 @@ impl Session {
         }
         // The broker's pushed directory travels on its own stream and may
         // be one frame behind the document that named the action.
-        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
+        let deadline = self.task_wait_deadline(TASK_CATALOGUE_WAIT);
         let mut deferred = Vec::new();
         let mut found = None;
         while ui::time::now() < deadline {
@@ -2037,21 +2108,75 @@ impl Session {
     }
 
     /// Observe `invocation` until it is terminal or `deadline` passes,
-    /// starting from `update`.
+    /// starting from `update`. Between observations the session waits on the
+    /// link rather than sleeping: an update the host pushes is taken as it
+    /// arrives, and the room's own change (most often this action's effect)
+    /// asks again at once. The pause grows from [`FOLLOW_FIRST_WAIT`], so a
+    /// quick action is seen settled in milliseconds.
     fn follow_invocation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         mut update: tilo_actions::InvocationUpdate,
         deadline: Instant,
     ) -> Result<Result<tilo_actions::InvocationUpdate, String>> {
+        let mut wait = FOLLOW_FIRST_WAIT;
         while !update.is_terminal() && ui::time::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
+            let left = deadline.saturating_duration_since(ui::time::now());
+            if let Some(pushed) = self.await_invocation_news(invocation, wait.min(left))? {
+                update = pushed;
+                continue;
+            }
+            wait = (wait * 2).min(FOLLOW_MOST_WAIT);
             match self.observe(invocation)? {
                 Ok(latest) => update = latest,
                 Err(error) => return Ok(Err(error)),
             }
         }
         Ok(Ok(update))
+    }
+
+    /// Wait up to `wait` for news of `invocation`: its update, when the host
+    /// pushes one (returned), or a document change in the room (absorbed;
+    /// the wait ends so the caller asks at once). Catalogue updates are
+    /// applied and every other event keeps its place.
+    fn await_invocation_news(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        wait: Duration,
+    ) -> Result<Option<tilo_actions::InvocationUpdate>> {
+        let deadline = ui::time::now() + wait;
+        let mut deferred = Vec::new();
+        let mut pushed = None;
+        loop {
+            self.pump_turn();
+            let now = ui::time::now();
+            if now >= deadline {
+                break;
+            }
+            match self.link.recv(deadline - now)? {
+                Some(CollabEvent::RemoteAction {
+                    message:
+                        RemoteActionMessage::Update {
+                            invocation: answered,
+                            state: Some(state),
+                        },
+                }) if answered == invocation => {
+                    pushed = Some(state.update);
+                    break;
+                }
+                Some(event @ CollabEvent::Document { .. }) => {
+                    let _ = self.absorb_document_event(&event)?;
+                    break;
+                }
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.set_broker_surfaces(surfaces);
+                }
+                Some(event) => deferred.push(event),
+                None => break,
+            }
+        }
+        self.link.defer(deferred);
+        Ok(pushed)
     }
 
     /// The latest state of an invocation this agent started.
@@ -2221,7 +2346,7 @@ impl Session {
             }
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
                 tracing::info!(%id, invocation = %invocation.0, ?output, "broker action completed");
-                std::thread::sleep(self.cfg.pace);
+                self.pace();
                 Ok(Ok(StepOutcome { output }))
             }
             _ => Ok(Err(format!(
@@ -2243,7 +2368,7 @@ impl Session {
         &mut self,
         wanted: impl Fn(&RemoteActionMessage) -> bool,
     ) -> Result<Option<RemoteActionMessage>> {
-        let deadline = ui::time::now() + Duration::from_secs(10);
+        let deadline = self.task_wait_deadline(Duration::from_secs(10));
         let mut deferred = Vec::new();
         loop {
             self.pump_turn();
@@ -2300,6 +2425,9 @@ impl Session {
                 .insert(ins_id, (instruction_block.text.clone(), ui::time::now()));
             return Ok(false);
         }
+        // Only an instruction about to be decided needs the catalogue: a
+        // change that asks nothing of the agent never pays for its walk.
+        self.refresh_stale_catalogue()?;
         self.watching.remove(&ins_id);
         self.handled.insert(ins_id.clone());
 
@@ -2741,8 +2869,16 @@ impl Session {
             });
             tracing::warn!(block = %focus, "{} changed nothing", describe(action));
         }
-        std::thread::sleep(self.cfg.pace);
+        self.pace();
         Ok(())
+    }
+
+    /// The demo pause after a visible action ([`Config::pace`]); none by
+    /// default.
+    fn pace(&self) {
+        if !self.cfg.pace.is_zero() {
+            std::thread::sleep(self.cfg.pace);
+        }
     }
 }
 
@@ -3146,6 +3282,7 @@ mod tests {
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            execution_budget: None,
             action_context: serde_json::json!({
                 "purpose": "Review draft",
                 "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
@@ -3160,6 +3297,181 @@ mod tests {
         run.action_context["purpose"] = serde_json::Value::Null;
         run.action_context["group"]["label"] = serde_json::json!(run.task_id);
         assert!(validate_enrolled_context(&run).is_ok());
+    }
+
+    mod plan_actions {
+        use super::*;
+        use std::{cell::RefCell, rc::Rc};
+        use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+
+        /// Admits every invocation as still running and reports it succeeded
+        /// once it is observed.
+        struct Host {
+            events: Vec<CollabEvent>,
+            observed: Rc<RefCell<usize>>,
+        }
+
+        impl ui::collaboration::PeerTransport for Host {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn poll(&mut self) -> Vec<CollabEvent> {
+                std::mem::take(&mut self.events)
+            }
+            fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+                let message = match request {
+                    CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Invoke(invoke),
+                    } => RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                        invocation: invoke.invocation,
+                        status: tilo_actions::remote::ReceiptStatus::Accepted,
+                    }),
+                    CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Observe { invocation },
+                    } => {
+                        *self.observed.borrow_mut() += 1;
+                        RemoteActionMessage::Update {
+                            invocation,
+                            state: Some(tilo_actions::remote::InvocationState::new(
+                                invocation,
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                },
+                            )),
+                        }
+                    }
+                    CollabRequest::Presence { .. } => return Ok(()),
+                    other => panic!("unexpected request {other:?}"),
+                };
+                self.events.push(CollabEvent::RemoteAction { message });
+                Ok(())
+            }
+        }
+
+        /// One live document operation, as Writer publishes it.
+        fn surfaces() -> Vec<BrokerActionSurface> {
+            vec![BrokerActionSurface {
+                peer_id: 7,
+                app_id: "so.tilo.word-processor".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![BrokerActionDescriptor {
+                    semantic_identity: None,
+                    resource: "word-processor.document".into(),
+                    action: "insert-heading".into(),
+                    resource_kind: "word_processor.document".into(),
+                    resource_label: "Brief".into(),
+                    action_label: "Insert a heading".into(),
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::Document,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    input: BrokerActionInput {
+                        kind: "none".into(),
+                        prompt: String::new(),
+                        placeholder: String::new(),
+                        wants_content: false,
+                    },
+                }],
+            }]
+        }
+
+        /// A document-mode session with the pace every launcher starts with.
+        fn session(link: Link, broker_surfaces: Vec<BrokerActionSurface>) -> Session {
+            Session {
+                cfg: Config {
+                    agent_id: "agent-1".into(),
+                    endpoint: None,
+                    endpoint_identity: None,
+                    app_id: "so.tilo.word-processor".into(),
+                    cluster: Uuid::from_u128(1),
+                    record: None,
+                    name: "agent-1".into(),
+                    pace: Duration::from_millis(DEFAULT_PACE_MS),
+                    once: false,
+                    model: false,
+                    model_timeout: Duration::ZERO,
+                    await_document: Duration::ZERO,
+                    settle: Duration::ZERO,
+                    permissions: PermissionContext::from_capabilities(
+                        ui::permissions::Actor::agent("agent-1"),
+                        vec![],
+                    ),
+                    content: tilo_content::ContentStore::memory(),
+                },
+                link,
+                editor: None,
+                peers: BTreeMap::new(),
+                handled: HashSet::new(),
+                watching: HashMap::new(),
+                dispatched_this_turn: HashSet::new(),
+                chooser: Chooser::new(false, Duration::ZERO),
+                enrolled_custody: None,
+                enrolled_active: None,
+                enrolled_sequence: 0,
+                task_deadline: None,
+                asked_at: ui::time::now(),
+                last_route: None,
+                broker_catalogue: tilo_actions::remote::CataloguePage::default(),
+                catalogue_fetched: None,
+                broker_surfaces,
+                next_broker_request: 1,
+                active_run: None,
+                chat_run: None,
+                chat_pending: false,
+                chat_catalogue_received: false,
+                last_chat_action: None,
+                chat_sources: HashMap::new(),
+                live: crate::live::LivePublisher::default(),
+                memory: agent_loop::Memory::default(),
+                broker_revision: 0,
+                catalogue_cache: None,
+                turn: None,
+                outstanding: outstanding::Outstanding::default(),
+            }
+        }
+
+        /// A plan's brokered action is admitted and still running, so the
+        /// agent follows it to its result — at once, not after a fixed sleep
+        /// — and with the default pace it does not pause afterwards either.
+        /// Eight actions used to take eight 50 ms sleeps before observing and,
+        /// at the old default pace, eight 250 ms pauses after.
+        #[test]
+        fn plan_actions_follow_their_result_without_pausing() {
+            const ACTIONS: usize = 8;
+            let observed = Rc::new(RefCell::new(0));
+            let link = crate::wire::test_link(Host {
+                events: Vec::new(),
+                observed: observed.clone(),
+            });
+            let surfaces = surfaces();
+            let offer = surface::broker_offers(&surfaces).remove(0);
+            let mut session = session(link, surfaces);
+            let began = ui::time::now();
+            for _ in 0..ACTIONS {
+                let outcome = session
+                    .perform_broker(
+                        &offer.id(),
+                        &offer,
+                        &serde_json::Map::new(),
+                        &ConfirmationEvidence::None,
+                    )
+                    .unwrap();
+                assert!(outcome.is_ok(), "{outcome:?}");
+            }
+            let took = began.elapsed();
+            assert_eq!(
+                *observed.borrow(),
+                ACTIONS,
+                "each action is followed to its result"
+            );
+            assert!(
+                took < Duration::from_millis(250),
+                "{ACTIONS} plan actions must not sleep or pause: {took:?}"
+            );
+        }
     }
 
     #[test]
@@ -3314,6 +3626,7 @@ mod tests {
                     enrolled_custody: managed.then_some(custody),
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
+                    task_deadline: None,
                     asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3331,6 +3644,7 @@ mod tests {
                     broker_revision: 0,
                     catalogue_cache: None,
                     turn: None,
+                    outstanding: outstanding::Outstanding::default(),
                 };
                 let action = TaskAction {
                     app: "app".into(),
@@ -3567,6 +3881,7 @@ mod tests {
                 enrolled_custody: Some(custody),
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
+                task_deadline: None,
                 asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),
@@ -3584,6 +3899,7 @@ mod tests {
                 broker_revision: 0,
                 catalogue_cache: None,
                 turn: None,
+                outstanding: outstanding::Outstanding::default(),
             };
             (session, run, sent)
         }
@@ -4165,10 +4481,6 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("collab.sock");
-            let _broker = peer::spawn_with_agent_actions(
-                &socket,
-                &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
-            );
             let mut photo = automerge::AutoCommit::new();
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
             let source_hash = content.put(&source).unwrap();
@@ -4181,6 +4493,16 @@ mod tests {
                 &mut photo,
             )
             .unwrap();
+            // Exactly the open photograph's production and view, and the
+            // document's placement: grants name the resource they are on.
+            let _broker = peer::spawn_with_agent_actions(
+                &socket,
+                &[
+                    (PHOTOS, image_id.as_str(), PRODUCE),
+                    (PHOTOS, image_id.as_str(), "view"),
+                    (WRITER, peer::WP_DOCUMENT, "place-image"),
+                ],
+            );
             let mut document = automerge::AutoCommit::new();
             let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
             let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);

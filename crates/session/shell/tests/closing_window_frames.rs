@@ -36,11 +36,11 @@ use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
-const APP_ID: &str = "org.example.Closing";
+pub(crate) const APP_ID: &str = "org.example.Closing";
 const SIZE: i32 = 64;
 
 #[derive(Default)]
-struct Client {
+pub(crate) struct Client {
     globals: Vec<(u32, String, u32)>,
     configured: bool,
     close_requested: bool,
@@ -145,17 +145,17 @@ delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(Client: ignore xdg_popup::XdgPopup);
 
-struct Harness {
+pub(crate) struct Harness {
     display: Display<State>,
-    state: State,
+    pub(crate) state: State,
     conn: Connection,
-    queue: EventQueue<Client>,
+    pub(crate) queue: EventQueue<Client>,
     client: Client,
     _event_loop: EventLoop<'static, State>,
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let event_loop = EventLoop::try_new().expect("calloop");
         let display = Display::new().expect("display");
         let mut state = State::new(event_loop.handle(), display.handle());
@@ -203,7 +203,7 @@ impl Harness {
     /// Exchange messages both ways until neither side has anything queued.
     /// Never runs a paint pass: whatever the client sees here, it saw without
     /// the compositor drawing a frame.
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         for _ in 0..8 {
             let _ = self.queue.flush();
             let _ = self.display.dispatch_clients(&mut self.state);
@@ -330,8 +330,8 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
         c.frames_done.contains(&2)
     });
 
-    // The client draws once more while it shuts down; its tab is gone, so no
-    // paint would ever show it. The callback must still come, without one.
+    // The client draws once more while it shuts down. Its callback must
+    // still come immediately without needing another paint.
     draw(&surface, &buffer, &qh, 3);
     h.pump_until("frame 3's callback on commit", |c| {
         c.frames_done.contains(&3)
@@ -400,7 +400,7 @@ fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
 
 /// A mapped toplevel of [`APP_ID`], placed and configured, with a buffer to
 /// draw with.
-fn shown_window(
+pub(crate) fn shown_window(
     h: &mut Harness,
 ) -> (
     wl_compositor::WlCompositor,
@@ -672,5 +672,70 @@ fn a_window_closed_after_an_action_reached_its_app_is_not_lost() {
     assert!(
         !shell::shell::launcher::take_launch_vanished("org.example.Acted"),
         "a window its app closed after an action reached it was closed, not lost"
+    );
+}
+
+/// xdg close is a request: an unsaved-document/save-error decision may keep
+/// the client alive. Its tab must stay discoverable until actual destruction.
+#[test]
+fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(APP_ID.into());
+    surface.commit();
+    h.pump();
+    let id = adopted_surface(&h.state);
+    let chrome =
+        shell::shell::chrome_state::ChromeState::new_with_handle(h.state.workspace_tree.clone());
+    let tab_id = chrome.borrow().tree().desktop.workspaces.iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| matches!(tab.tile, shell::shell::state::TileContent::Foreign { surface_id, .. } if surface_id == id))
+        .expect("adopted tab").id;
+    shell::shell::window_actions::close_tab(&mut chrome.borrow_mut(), tab_id).unwrap();
+    for requested in chrome.borrow_mut().take_surface_close_requests() {
+        h.state.close_surface_on_request(requested);
+    }
+    h.pump_until("the close request", |client| client.close_requested);
+    assert_eq!(
+        adopted_surface(&h.state),
+        id,
+        "the client can still show its close decision"
+    );
+    assert!(
+        chrome.borrow_mut().reopen_closed_tab().is_none(),
+        "a live client is not a completed close"
+    );
+    // A refusing client can commit a decision frame and remains discoverable.
+    surface.commit();
+    h.pump();
+    assert_eq!(adopted_surface(&h.state), id);
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !h.state
+            .workspace_tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| tab.id == tab_id),
+        "actual destruction removes the tab"
+    );
+    chrome.borrow_mut().sync_external_tree_revision();
+    assert!(
+        chrome.borrow_mut().reopen_closed_tab().is_some(),
+        "actual close has an Undo entry"
     );
 }

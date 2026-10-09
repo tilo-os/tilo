@@ -18,6 +18,9 @@ use vello::peniko::Color;
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry, layout};
 
+// Match the existing host-window fallback for blank scenes in both render paths.
+const FALLBACK_BG: Color = Color::from_rgb8(0x1A, 0x1B, 0x26);
+
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
 /// the `shots --mode offscreen` default. Mirrors the env-var-driven
@@ -284,6 +287,13 @@ fn rects_overlap(first: &Output, second: &Output) -> bool {
 pub const DEFAULT_WIDTH: u32 = 1600;
 pub const DEFAULT_HEIGHT: u32 = 900;
 
+#[derive(Clone, Copy)]
+struct CompletedFrame {
+    revision: u64,
+    size: (u32, u32),
+    validated: bool,
+}
+
 /// Wgpu-offscreen [`Backend`] for display-free runs.
 ///
 /// While watched ([`HEADLESS_WATCH_ENV`], [`Backend::set_watched`]), each
@@ -298,6 +308,8 @@ pub struct HeadlessBackend {
     /// Latest painted RGBA frame, kept so `test_control`'s `snapshot`
     /// command can write a PNG without re-rendering.
     last_frame: Vec<u8>,
+    /// Version of a synchronous image; only bounded validation permits reuse.
+    completed_frame: Option<CompletedFrame>,
     /// Whether the one startup `Redraw` has been handed over yet.
     emitted_first_redraw: bool,
     /// Whether a viewer reads the rasterized frames. Nobody does by
@@ -359,6 +371,7 @@ impl HeadlessBackend {
             outputs,
             events: Vec::new(),
             last_frame: Vec::new(),
+            completed_frame: None,
             emitted_first_redraw: false,
             watched: std::env::var(HEADLESS_WATCH_ENV).is_ok_and(|value| value.trim() == "1"),
         })
@@ -440,7 +453,12 @@ pub fn resolve_initial_outputs() -> Result<Vec<Output>, String> {
 }
 
 impl Backend for HeadlessBackend {
+    fn supports_retained_scene_damage(&self) -> bool {
+        self.watched
+    }
+
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
+        self.completed_frame = None;
         // `OffscreenRenderer::render` is a wgpu round-trip per call; unlike
         // `WinitBackend` it doesn't need a `present()` step since there is
         // no swapchain. We cache the RGBA bytes so test-control's
@@ -453,8 +471,7 @@ impl Backend for HeadlessBackend {
             self.last_frame = Vec::new();
             return;
         }
-        let bg = Color::from_rgb8(0x1A, 0x1B, 0x26);
-        self.last_frame = self.renderer.render(scene, bg);
+        self.last_frame = self.renderer.render(scene, FALLBACK_BG);
         #[cfg(target_os = "linux")]
         crate::shader_seed::after_frame();
     }
@@ -464,11 +481,42 @@ impl Backend for HeadlessBackend {
         frame: &crate::compositor::frame::FramePaint,
         output: OutputId,
     ) {
-        // Dense like `submit_frame`, with the floating surfaces over their
-        // blurred backdrop like the DRM presenter draws them.
+        let retainable = self.watched
+            && frame.revision != 0
+            && frame.backdrop.is_none()
+            && frame.hdr_layers.is_empty();
+        if retainable
+            && frame.damage_regions.as_ref().is_some_and(Vec::is_empty)
+            && let Some(completed) = self.completed_frame
+            && Some(completed.revision) == frame.previous_revision
+            && completed.size == self.frame_size()
+        {
+            if !completed.validated {
+                // A first ordinary readback may have overflowed or warmed an
+                // atlas. Never freeze it: establish two clean submissions with
+                // the existing bounded screenshot validator before reusing it.
+                self.last_frame = self.renderer.render_resilient(&frame.scene, FALLBACK_BG);
+                #[cfg(target_os = "linux")]
+                crate::shader_seed::after_frame();
+            }
+            self.completed_frame = Some(CompletedFrame {
+                revision: frame.revision,
+                size: completed.size,
+                validated: true,
+            });
+            return;
+        }
+        // Unproven or material-dependent frames keep the original dense path.
         self.renderer.set_backdrop(frame.backdrop.clone());
         self.submit_frame(&frame.scene, output);
         self.renderer.set_backdrop(None);
+        if retainable {
+            self.completed_frame = Some(CompletedFrame {
+                revision: frame.revision,
+                size: self.frame_size(),
+                validated: false,
+            });
+        }
     }
 
     fn needs_idle_poll(&self) -> bool {
@@ -477,6 +525,9 @@ impl Backend for HeadlessBackend {
 
     fn set_watched(&mut self, watched: bool) -> bool {
         let attached = watched && !self.watched;
+        if watched != self.watched {
+            self.completed_frame = None;
+        }
         self.watched = watched;
         attached
     }
@@ -729,3 +780,7 @@ mod tests {
         assert_eq!(backend.frame_size(), combined_geometry(&outputs));
     }
 }
+
+#[cfg(test)]
+#[path = "headless/retained_tests.rs"]
+mod retained_tests;

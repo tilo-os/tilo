@@ -67,8 +67,26 @@ an approved queued payload and resumes a matching pending outbox report after
 restart. Hosts call `FeedbackServices::pump` on storage/transport wakes so the
 current private presentation updates and announces progress without another
 click; its local-state wake belongs to that component's retirement scope.
-Native/browser desktop entry points are not mounted yet. A host
-must supply its existing durable profile store, an admitted
+The native application catalogue and the browser desktop now open the shared
+composer through its private preparation path. Its ephemeral draft owner never
+enters the desktop's shared records, replication stores or document restoration;
+the native mount has no collaboration manager. Closing discards an unapproved
+review, while the approved outbox remains owned by the profile. A controller
+permits only one mounted editor at a time.
+
+`tilo_desktop::feedback::PrivateFeedback` binds an already-admitted host adapter
+to the profile's durable store. Its outbox is a private package key pinned to
+the exact destination. Native hosts install it through
+`InProcessApps::install_feedback` and pump it on storage/transport wakes, even
+while its window is closed. Browser tile hosts have the same custody slot and
+wake pump; their launch configuration cannot supply a destination or adapter.
+Pending private writes schedule a storage wake independently of draft records;
+awaiting a destination receipt does not schedule automatic transport retries.
+An unconfigured entry refuses review/send rather than choosing a public room.
+The production startup still needs to install its authenticated adapter and
+admitted destination; the source acceptance uses isolated private fixtures.
+
+A host must supply its existing durable profile store, an admitted
 `Destination { room, provider, channel }`, authenticated action transport,
 content storage, and an explicit focused-surface capture adapter. The composer
 must show the masked preview and offer description, context/screenshot opt-in,
@@ -142,6 +160,8 @@ Run with the configured cargo drop-in:
 cargo test --locked -p tilo-feedback-review --lib
 cargo test --locked -p tilo-feedback --lib
 cargo test --locked -p tilo-app --lib feedback_composer::tests
+cargo test --locked -p shell --lib shell::in_process::feedback_tests::
+cargo check --locked -p tilo-browser-runtime --target wasm32-unknown-unknown
 cargo test --locked -p chat --lib feedback::
 cargo clippy --locked -p tilo-feedback -p chat --all-targets -- -D warnings
 cargo check --locked -p shell --tests

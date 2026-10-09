@@ -12,6 +12,7 @@ python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
+python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
 

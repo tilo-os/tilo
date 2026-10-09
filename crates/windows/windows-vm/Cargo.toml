@@ -7,7 +7,7 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
 quick-xml.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

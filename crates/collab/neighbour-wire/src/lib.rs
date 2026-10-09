@@ -29,7 +29,7 @@ pub mod contribution;
 pub mod hdr_metadata;
 pub mod retention;
 
-pub use retention::{Retention, retention};
+pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
 
@@ -206,7 +206,9 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         event: Vec<u8>,
     },
-    /// `peer` would like permission `capability`.
+    /// Retired: `peer` would like permission `capability`. No build produces
+    /// it and receivers refuse it ([`NeighbourMsg::is_retired`]); it stays
+    /// only so every later Postcard discriminant keeps its value.
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
@@ -296,10 +298,11 @@ pub enum NeighbourMsg {
         /// Hashed Iroh peer id of the answering broker.
         responder: PeerId,
     },
-    /// Root-signed device certificate announced on one room. Appended to the
-    /// enum to preserve every existing Postcard discriminant. The receiver
-    /// binds it to the transport-authenticated sender endpoint and only the
-    /// room governor may promote it into replicated governance.
+    /// Retired first generation of [`Self::IdentityAnnouncementV2`]: a
+    /// root-signed device certificate announced on one room, without the
+    /// revocations that keep a lost device out. No build produces it and
+    /// receivers refuse it ([`NeighbourMsg::is_retired`]); it stays only so
+    /// every later Postcard discriminant keeps its value.
     IdentityAnnouncement {
         room: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
@@ -434,6 +437,67 @@ pub enum NeighbourMsg {
         offset: u64,
         bytes: Vec<u8>,
     },
+}
+
+impl NeighbourMsg {
+    /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
+    /// is wire-frozen (peers and hosts persist and exchange these frames), and
+    /// a unit test pins this value to a real encoding.
+    pub const APP_DOCUMENT_TAG: u8 = 12;
+
+    /// Whether `bytes` encode an [`NeighbourMsg::AppDocument`], reading only
+    /// the postcard variant tag and not the variant's fields.
+    ///
+    /// Postcard writes a variant index as a varint `u32` before the fields.
+    /// An index below `0x80` is that single byte with its continuation bit
+    /// clear, so a first byte equal to [`Self::APP_DOCUMENT_TAG`] is exactly
+    /// that index and nothing longer. The fields are not checked: a frame
+    /// tagged `AppDocument` whose fields do not decode still answers `true`.
+    pub fn is_app_document(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::APP_DOCUMENT_TAG < 0x80);
+        bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
+    }
+
+    /// Whether this is a retired wire generation that no current build
+    /// produces. Receivers refuse such a message once, where it enters,
+    /// before any handler or authorization sees it; the variant itself stays
+    /// only because removing it would shift every later Postcard
+    /// discriminant.
+    pub fn is_retired(&self) -> bool {
+        match self {
+            // Superseded by `IdentityAnnouncementV2`, whose revocations a
+            // receiver must see before trusting the certificate.
+            Self::IdentityAnnouncement { .. }
+            // Never acted on; control consent rides `PermissionGrant`.
+            | Self::PermissionRequest { .. } => true,
+            Self::SyncReq { .. }
+            | Self::SyncResp { .. }
+            | Self::PresenceMoved { .. }
+            | Self::PresenceCleared { .. }
+            | Self::SurfaceFrame { .. }
+            | Self::SurfaceStreamStart { .. }
+            | Self::SurfaceStreamEnd { .. }
+            | Self::RemoteInput { .. }
+            | Self::PermissionGrant { .. }
+            | Self::Heartbeat { .. }
+            | Self::IdentityHello { .. }
+            | Self::AppDocument { .. }
+            | Self::AppPresenceV2 { .. }
+            | Self::ScrollbackRequest { .. }
+            | Self::ScrollbackResponse { .. }
+            | Self::IdentityAnnouncementV2 { .. }
+            | Self::PersonalContinuityRequest { .. }
+            | Self::PersonalContinuityCheckpoint { .. }
+            | Self::RemoteAction { .. }
+            | Self::MediaCapabilities { .. }
+            | Self::MlsGovernance { .. }
+            | Self::MlsAccessRequest { .. }
+            | Self::MlsGovernanceAck { .. }
+            | Self::PersonalWorkspaces { .. }
+            | Self::RecordContentWant { .. }
+            | Self::RecordContentPiece { .. } => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -834,6 +898,42 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
             assert_eq!(message, decoded, "{case} changed in transit");
         }
+    }
+
+    /// The tag peek agrees with a full decode on a real encoding of every
+    /// variant, and the pinned tag is the varint postcard writes for
+    /// `AppDocument`.
+    #[test]
+    fn app_document_tag_matches_encoding() {
+        let mut app_documents = 0;
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let is_app_document = matches!(message, NeighbourMsg::AppDocument { .. });
+            assert_eq!(
+                NeighbourMsg::is_app_document(&bytes),
+                is_app_document,
+                "{case}"
+            );
+            if is_app_document {
+                app_documents += 1;
+                let (tag, _) = postcard::take_from_bytes::<u32>(&bytes).unwrap();
+                assert_eq!(tag, u32::from(NeighbourMsg::APP_DOCUMENT_TAG), "{case}");
+            }
+        }
+        assert!(app_documents > 0, "no AppDocument fixture was classified");
+        assert!(!NeighbourMsg::is_app_document(&[]));
+    }
+
+    /// Exactly the two generations no build produces are retired; every
+    /// other variant, including both identity successors, stays live.
+    #[test]
+    fn only_the_unproduced_generations_are_retired() {
+        let retired: Vec<&str> = fixtures()
+            .iter()
+            .filter(|(_, message)| message.is_retired())
+            .map(|(_, message)| variant(message))
+            .collect();
+        assert_eq!(retired, ["PermissionRequest", "IdentityAnnouncement"]);
     }
 
     /// Names every variant through an exhaustive match, so adding a variant

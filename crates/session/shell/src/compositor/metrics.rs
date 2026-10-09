@@ -6,9 +6,13 @@
 //! exact submitted serial).
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
+//! `TILO_FRAME_CPU_TRACE` adds a bounded numeric-only companion with phase CPU and clock anchors.
 //! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
+
+mod cpu_trace;
+pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -396,6 +400,7 @@ pub struct FrameRecorder {
     completed_retirement_latency_us: Option<u32>,
     /// The loop thread's CPU clock when the current tick began.
     tick_cpu_start: Option<Duration>,
+    cpu_trace: Option<cpu_trace::CpuTrace>,
 }
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
@@ -457,6 +462,7 @@ impl FrameRecorder {
             pending_retirement: None,
             completed_retirement_latency_us: None,
             tick_cpu_start: None,
+            cpu_trace: None,
         }
     }
 
@@ -464,7 +470,8 @@ impl FrameRecorder {
     pub fn from_env() -> Self {
         let trace_path = std::env::var_os(TRACE_ENV);
         let summary_path = std::env::var_os(SUMMARY_ENV);
-        if trace_path.is_none() && summary_path.is_none() {
+        let cpu_path = std::env::var_os(cpu_trace::ENV);
+        if trace_path.is_none() && summary_path.is_none() && cpu_path.is_none() {
             return Self::disabled();
         }
         let warmup_ms = std::env::var(WARMUP_ENV)
@@ -491,15 +498,25 @@ impl FrameRecorder {
         });
         let mut me = Self::disabled();
         me.enabled = true;
+        me.cpu_trace = cpu_path.and_then(|path| {
+            match cpu_trace::CpuTrace::open(std::path::Path::new(&path)) {
+                Ok(trace) => Some(trace),
+                Err(error) => {
+                    eprintln!("frame-metrics: cannot open CPU trace ({error})");
+                    None
+                }
+            }
+        });
         me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
         me.trace_path = opened_trace_path;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
         eprintln!(
-            "frame-metrics: recording (warmup {warmup_ms} ms, trace={}, summary={})",
+            "frame-metrics: recording (warmup {warmup_ms} ms, trace={}, summary={}, cpu_trace={})",
             me.trace.is_some(),
-            me.summary_path.is_some()
+            me.summary_path.is_some(),
+            me.cpu_trace.is_some()
         );
         me
     }
@@ -533,7 +550,29 @@ impl FrameRecorder {
         };
         self.cur.input_retirement_latency_us = self.completed_retirement_latency_us.take();
         self.tick_cpu_start = thread_cpu_time();
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.begin_tick(now);
+        }
         self.seq = self.seq.saturating_add(1);
+    }
+
+    /// Snapshot phase CPU only for an explicitly requested CPU companion trace.
+    pub(crate) fn cpu_snapshot(&self) -> Option<CpuSnapshot> {
+        self.cpu_trace
+            .as_ref()
+            .and_then(cpu_trace::CpuTrace::snapshot)
+    }
+
+    pub(crate) fn mark_cpu(&mut self, phase: CpuPhase, start: Option<CpuSnapshot>) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.mark(phase, start);
+        }
+    }
+
+    pub(crate) fn mark_paint_wall(&mut self, wall: Duration) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.mark_paint_wall(wall);
+        }
     }
 
     /// Note that an input event was consumed this tick; the first painted frame that follows closes
@@ -665,6 +704,9 @@ impl FrameRecorder {
             .zip(thread_cpu_time())
             .map(|(start, end)| us(end.saturating_sub(start)));
         let sample = self.cur;
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.end_tick(sample);
+        }
         if let Some(t) = self.trace.as_mut()
             && let Err(e) = sample.write_csv_row(t)
         {
@@ -750,6 +792,9 @@ impl FrameRecorder {
 
     /// Flush the trace and write the JSON summary. Called from `Drop`, and directly by the loop's shutdown path (which `process::exit`s past destructors).
     pub fn finish(&mut self) {
+        if let Some(trace) = self.cpu_trace.as_mut() {
+            trace.finish();
+        }
         if !self.enabled {
             return;
         }

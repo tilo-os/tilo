@@ -1,5 +1,6 @@
 //! Hosted compositor mode — runs the shell inside the developer's existing X11/Wayland session
-//! via `winit`. The legacy path every `cargo run -p tilo-desktop` invocation uses; kept separate so `--mode native` has somewhere to land.
+//! via `winit`, as a `ui::App` the toolkit paints. A dev opt-in (`--mode hosted`) for machines with no DRM/KMS and no spare
+//! Wayland session; the default is `--mode native`.
 
 use std::sync::Arc;
 
@@ -351,7 +352,7 @@ fn spawn_peer_sync(
     if !enable_peer_sync {
         return None;
     }
-    match ShellNetwork::spawn(tree_handle, &peer_key_path()) {
+    match ShellNetwork::spawn_for_session(tree_handle) {
         Ok(handle) => {
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
@@ -401,6 +402,11 @@ fn attach_peer_sync_bridge(
                 role,
             )
             .map(crate::shell::overlay_host::PeerSyncResponse::Message)
+        }
+        crate::shell::overlay_host::PeerSyncRequest::IssueInvitation(terms) => {
+            let active = tree_for_bridge.read().desktop.active;
+            net.issue_invitation(active, &terms)
+                .map(crate::shell::overlay_host::PeerSyncResponse::Message)
         }
         crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
             let active = tree_for_bridge.read().desktop.active;

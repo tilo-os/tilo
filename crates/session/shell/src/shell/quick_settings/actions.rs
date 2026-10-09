@@ -4,13 +4,13 @@
 //! Settings app. This module retains only the names and unavailable dispatcher
 //! that belong to shell composition.
 
-pub use os_actions::{BatteryInfo, PowerProfile, PrivacyStatus, WiredInfo};
+pub use os_actions::{PowerProfile, PrivacyStatus, WiredInfo};
 
 // Historical names; `os-actions` itself uses the neutral `Dispatcher`.
 pub use os_actions::Dispatcher as QsActions;
 pub use os_actions::RealDispatcher as RealQsActions;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag independently records whether one Quick Settings backend is present"

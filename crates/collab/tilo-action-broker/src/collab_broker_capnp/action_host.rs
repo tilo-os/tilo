@@ -17,8 +17,8 @@ use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
-    application_provider, pending, workspace_provider, workspace_provider_room,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, application_provider,
+    pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -33,6 +33,11 @@ use super::{
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
 use tilo_automation::SHORTCUTS_APP_ID;
+
+/// The longest a waiter on a running invocation sleeps without a signalled
+/// change, so a change nothing signals (an idle expiry) costs latency, never
+/// a stalled shortcut run.
+const CHANGE_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why an action's arguments are too large to pass, in words a caller can
 /// act on: how large they are, the most one action takes, and to split.
@@ -115,6 +120,13 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         self.state.action_observe(caller, id)
     }
 
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        // A connection interleaves many invocations, so only a change after
+        // this call counts; the safety interval bounds a missed one.
+        self.state
+            .action_next_change(caller, id, self.state.invocation_changes())
+    }
+
     fn cancel(
         &self,
         caller: &Caller,
@@ -127,7 +139,19 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
 /// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
 /// a shortcut run invokes its steps through. It stands for no connection:
 /// every step is admitted for the run's caller alone.
-struct BrokerDoor(Arc<CapnpBrokerState>);
+pub(super) struct BrokerDoor {
+    state: Arc<CapnpBrokerState>,
+    /// The invocation changes the run had seen when it last observed, so
+    /// a change between that observation and its next wait is not missed.
+    seen: std::sync::Mutex<tokio::sync::watch::Receiver<u64>>,
+}
+
+impl BrokerDoor {
+    pub(super) fn new(state: Arc<CapnpBrokerState>) -> Self {
+        let seen = std::sync::Mutex::new(state.invocation_changes());
+        Self { state, seen }
+    }
+}
 
 impl tilo_actions::remote::ActionHost for BrokerDoor {
     fn query(
@@ -135,7 +159,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.0.action_query(caller, &query)
+        self.state.action_query(caller, &query)
     }
 
     fn invoke(
@@ -143,11 +167,21 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.0.action_invoke(caller, None, None, &request)
+        self.state.action_invoke(caller, None, None, &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.action_observe(caller, id)
+        // Marked before the snapshot: a change racing it wakes the next
+        // wait (spuriously at worst) instead of slipping past it.
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.mark_unchanged();
+        }
+        self.state.action_observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        let seen = self.seen.lock().ok()?.clone();
+        self.state.action_next_change(caller, id, seen)
     }
 
     fn cancel(
@@ -155,7 +189,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.0.action_cancel(caller, id)
+        self.state.action_cancel(caller, id)
     }
 }
 
@@ -482,6 +516,7 @@ impl CapnpBrokerState {
         policy: &Actor,
         now: u64,
         app: &str,
+        resource: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
     ) -> bool {
@@ -497,6 +532,7 @@ impl CapnpBrokerState {
                 policy,
                 &ResourceRef::Action {
                     app: app.to_string(),
+                    resource: resource.to_string(),
                     action: action.to_string(),
                 },
                 verb,
@@ -559,6 +595,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 &surface.app_id,
+                                &action.resource,
                                 &action.action,
                                 action.contract.permission,
                             )
@@ -615,6 +652,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 governance.app_id(),
+                                &descriptor.address.resource,
                                 &descriptor.address.action,
                                 descriptor.contract.permission,
                             )
@@ -634,6 +672,7 @@ impl CapnpBrokerState {
                                 &policy,
                                 now,
                                 SHORTCUTS_APP_ID,
+                                &descriptor.address.resource,
                                 &descriptor.address.action,
                                 descriptor.contract.permission,
                             )
@@ -655,6 +694,7 @@ impl CapnpBrokerState {
                                     &policy,
                                     now,
                                     service.app_id(),
+                                    &descriptor.address.resource,
                                     &descriptor.address.action,
                                     descriptor.contract.permission,
                                 )
@@ -752,6 +792,7 @@ impl CapnpBrokerState {
                                 policy,
                                 now,
                                 &surface.app_id,
+                                &action.resource,
                                 &action.action,
                                 action.contract.permission,
                             )
@@ -1069,50 +1110,47 @@ impl CapnpBrokerState {
                 return Pending::ready(Err(error));
             }
         };
+        let runtime = match super::launchable::delivery_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                return Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: format!("the launch could not start: {error}"),
+                }));
+            }
+        };
         let origin = origin.cloned();
         let (completer, answer) = pending();
         let state = Arc::clone(self);
         let caller = caller.clone();
         let request = request.clone();
-        let invocation = request.invocation;
-        // Launching and waiting for the app block; they run beside the
-        // broker, never on its local set.
-        let spawned = std::thread::Builder::new()
-            .name("tilo-launchable-invoke".into())
-            .spawn(move || {
-                let started = state.relaunch_and_deliver(
-                    &completer,
-                    &caller,
-                    &destination,
-                    origin.as_ref(),
-                    &request,
-                );
-                let result = match state.remote_invocations.lock() {
-                    Ok(mut ledger) => match started {
-                        Ok(job) => {
-                            ledger.complete(&request.invocation, job);
-                            drop(ledger);
-                            Ok(state.receipt_for(request.invocation, job))
-                        }
-                        Err(error) => {
-                            ledger.abandon(&request.invocation);
-                            Err(error)
-                        }
-                    },
-                    Err(_) => Err(ActionHostError::Unavailable {
-                        reason: "the invocation ledger is unavailable".into(),
-                    }),
-                };
-                completer.complete(result);
-            });
-        if let Err(error) = spawned {
-            if let Ok(mut ledger) = self.remote_invocations.lock() {
-                ledger.abandon(&invocation);
-            }
-            return Pending::ready(Err(ActionHostError::Unavailable {
-                reason: format!("the launch could not start: {error}"),
-            }));
-        }
+        // Launching blocks and waiting for the app is an event: the launch
+        // runs on the delivery runtime's blocking pool, the wait is a task
+        // there, and neither runs on the broker's local set.
+        runtime.spawn(async move {
+            let started = state
+                .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
+                .await;
+            let result = match state.remote_invocations.lock() {
+                Ok(mut ledger) => match started {
+                    Ok(job) => {
+                        ledger.complete(&request.invocation, job);
+                        drop(ledger);
+                        Ok(state.receipt_for(request.invocation, job))
+                    }
+                    Err(error) => {
+                        ledger.abandon(&request.invocation);
+                        Err(error)
+                    }
+                },
+                Err(_) => Err(ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                }),
+            };
+            completer.complete(result);
+        });
         answer
     }
 
@@ -1183,6 +1221,7 @@ impl CapnpBrokerState {
                 &policy,
                 now,
                 &app_id,
+                &action.resource,
                 &action.action,
                 action.contract.permission,
             ) {
@@ -1202,27 +1241,36 @@ impl CapnpBrokerState {
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
-    fn relaunch_and_deliver(
-        &self,
+    ///
+    /// The wait wakes on what readiness depends on — a surface published or
+    /// withdrawn, an invocation stream opened or closed, in either order —
+    /// on the delivery deadline, and on the caller dropping its answer.
+    async fn relaunch_and_deliver(
+        self: &Arc<Self>,
         completer: &Completer<Result<InvocationReceipt, ActionHostError>>,
         caller: &Caller,
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
-        const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+        let stopped_waiting = || ActionHostError::Unavailable {
+            reason: "the caller stopped waiting for admission".into(),
+        };
         let room = destination.workspace.room.to_string();
         let app_id = &destination.app_id;
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
-        let deadline = std::time::Instant::now().checked_add(timeout);
+        let deadline = tokio::time::sleep(timeout);
+        let abandoned = completer.abandoned();
+        tokio::pin!(deadline, abandoned);
+        // Taken before the first look, so a publication between that look
+        // and the wait below still wakes it.
+        let mut changes = self.publisher_changes();
         let mut launched = false;
         loop {
             self.check_launch_origin(caller, origin, &room)?;
             if completer.is_abandoned() {
-                return Err(ActionHostError::Unavailable {
-                    reason: "the caller stopped waiting for admission".into(),
-                });
+                return Err(stopped_waiting());
             }
             if let Some(peer_id) =
                 self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
@@ -1240,23 +1288,36 @@ impl CapnpBrokerState {
                 {
                     return Err(ActionHostError::NotPermitted);
                 }
-                self.launch_retained(app_id, &current.workspace)
-                    .map_err(|reason| ActionHostError::Refused {
-                        reason: format!("{app_id} could not be launched: {reason}"),
-                    })?;
+                let state = Arc::clone(self);
+                let app = app_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    state.launch_retained(&app, &current.workspace)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()))
+                .map_err(|reason| ActionHostError::Refused {
+                    reason: format!("{app_id} could not be launched: {reason}"),
+                })?;
                 launched = true;
                 continue;
             }
-            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                return Err(ActionHostError::Unavailable {
-                    reason: format!(
-                        "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                        address.action,
-                        timeout.as_secs_f32()
-                    ),
-                });
+            tokio::select! {
+                seen = changes.changed() => if seen.is_err() {
+                    return Err(ActionHostError::Unavailable {
+                        reason: "the broker stopped".into(),
+                    });
+                },
+                () = &mut deadline => {
+                    return Err(ActionHostError::Unavailable {
+                        reason: format!(
+                            "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                            address.action,
+                            timeout.as_secs_f32()
+                        ),
+                    });
+                }
+                () = &mut abandoned => return Err(stopped_waiting()),
             }
-            std::thread::sleep(POLL);
         }
     }
 
@@ -1290,6 +1351,23 @@ impl CapnpBrokerState {
                     self.revalidate_admission(route, admitted)
                         .map_err(|error| refusal(error.to_string()))?,
                 )
+            }
+            Some(super::published_invocation::InvocationCaller::NativePerson {
+                room: original_room,
+                certificate,
+                ..
+            }) => {
+                if original_room != room
+                    || caller.principal()
+                        != &tilo_actions::remote::CallerPrincipal::Person(
+                            super::principal_id_for_root(certificate.user_public_key),
+                        )
+                {
+                    return Err(ActionHostError::NotPermitted);
+                }
+                self.current_native_person(room, certificate)
+                    .map_err(refusal)?;
+                None
             }
             None => None,
         };
@@ -1657,6 +1735,7 @@ impl CapnpBrokerState {
                     &policy,
                     now,
                     &surface.app_id,
+                    &action.resource,
                     &action.action,
                     action.contract.permission,
                 )
@@ -1809,6 +1888,7 @@ impl CapnpBrokerState {
             policy,
             now,
             SHORTCUTS_APP_ID,
+            &descriptor.address.resource,
             action,
             descriptor.contract.permission,
         ) {
@@ -1879,6 +1959,7 @@ impl CapnpBrokerState {
             policy,
             now,
             service.app_id(),
+            &address.resource,
             &address.action,
             descriptor.contract.permission,
         ) {
@@ -1975,7 +2056,7 @@ impl CapnpBrokerState {
                     mode: automation::run_mode(request.confirmation.as_ref()),
                     inputs,
                 },
-                automation::DoorHooks::new(request.confirmation.clone()),
+                |runtime| automation::DoorHooks::new(request.confirmation.clone(), runtime),
             )
             .map_err(abandon)?;
         if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -2002,7 +2083,9 @@ impl CapnpBrokerState {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
-        let hooks = automation::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+        let prompts = self.step_prompts.clone();
+        let name = shortcut.name.clone();
+        let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
         self.start_shortcut_run(
             caller,
             room,
@@ -2076,7 +2159,9 @@ impl CapnpBrokerState {
             }
         })?;
         if matches!(trigger, tilo_automation::TriggerSpec::Keyboard { .. }) {
-            let hooks = automation::SheetHooks::new(self.step_prompts.clone(), &shortcut.name);
+            let prompts = self.step_prompts.clone();
+            let name = shortcut.name.clone();
+            let hooks = |runtime| automation::SheetHooks::new(prompts, name, runtime);
             return self.start_shortcut_run(
                 caller,
                 room,
@@ -2100,7 +2185,7 @@ impl CapnpBrokerState {
                 mode: tilo_automation::RunMode::Unattended,
                 inputs,
             },
-            automation::DoorHooks::new(None),
+            |runtime| automation::DoorHooks::new(None, runtime),
         )
     }
 
@@ -2132,7 +2217,7 @@ impl CapnpBrokerState {
         room: &str,
         shortcut: tilo_automation::Shortcut,
         start: automation::RunStart,
-        hooks: K,
+        hooks: impl FnOnce(tokio::runtime::Handle) -> K,
     ) -> Result<u64, ActionHostError>
     where
         K: tilo_automation::RunHooks + Send + 'static,
@@ -2144,6 +2229,7 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?
             .runtime()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let hooks = hooks(runtime.clone());
         let actor = BrokerActor::for_caller(caller).id;
         let job = self
             .invocation_id
@@ -2156,7 +2242,7 @@ impl CapnpBrokerState {
             },
             tilo_actions::InvocationUpdate::Accepted { invocation },
         );
-        let host = BrokerDoor(Arc::clone(self));
+        let host = BrokerDoor::new(Arc::clone(self));
         let consents = if shortcut.saved_by.as_deref() == Some(actor.as_str()) {
             shortcut.consents.clone()
         } else {
@@ -2200,6 +2286,11 @@ impl CapnpBrokerState {
     /// Shortcut runs finished since the last call, oldest first.
     pub fn take_finished_shortcut_runs(&self) -> Vec<automation::FinishedShortcutRun> {
         self.shortcut_runs.take()
+    }
+
+    /// Whether a finished shortcut run is waiting to be taken.
+    pub fn has_finished_shortcut_runs(&self) -> bool {
+        self.shortcut_runs.has_finished()
     }
 
     /// Execute a host-owned workspace governance action (permission
@@ -2388,6 +2479,30 @@ impl CapnpBrokerState {
             .map(|update| InvocationState::new(*id, update))
     }
 
+    /// Resolves once an invocation changes after what `seen` has seen, or
+    /// after [`CHANGE_SAFETY_INTERVAL`] without one — the
+    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
+    /// of the broker's hosts. `None` for an invocation `caller` did not
+    /// admit, or off a runtime, where the waiter polls on its own schedule.
+    pub(super) fn action_next_change(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+        mut seen: tokio::sync::watch::Receiver<u64>,
+    ) -> Option<Pending<()>> {
+        self.remote_job(caller, id)?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let (changed, change) = pending();
+        runtime.spawn(async move {
+            tokio::select! {
+                _ = seen.changed() => {}
+                () = tilo_rt::sleep(CHANGE_SAFETY_INTERVAL) => {}
+            }
+            changed.complete(());
+        });
+        Some(change)
+    }
+
     /// Ask an invocation `caller` admitted to stop.
     ///
     /// # Errors
@@ -2443,20 +2558,11 @@ fn directory_row(
             id: row.resource.clone(),
             kind: row.resource_kind.clone(),
             label: row.resource_label.clone(),
-            presentation: serde_json::from_str::<tilo_actions::ResourcePresentation>(
-                &row.resource_presentation_json,
-            )
-            .ok()
-            .filter(tilo_actions::ResourcePresentation::is_valid),
+            presentation: row.presentation.clone(),
         },
         action,
         has_children: row.has_children,
-        visibility: row.visibility_action.clone().and_then(|action| {
-            Some(RowVisibility {
-                action,
-                contract: serde_json::from_str(&row.visibility_contract_json).ok()?,
-            })
-        }),
+        visibility: row.visibility.clone(),
     })
 }
 

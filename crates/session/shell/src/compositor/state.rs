@@ -281,6 +281,76 @@ pub(crate) struct TrackedPopup {
     grabbed: bool,
 }
 
+/// Everything the capture protection of transient surfaces is derived
+/// from, as of the last [`State::sync_capture_protection`] pass. Compared
+/// field by field on each wakeup without allocating, taking the tree lock
+/// or the store's protection lock; any difference re-derives, so a newly
+/// mapped popup, a reparented one, a secret field gaining focus, an app
+/// asking for protection or a renamed tab is never missed.
+#[derive(Default, PartialEq)]
+pub(crate) struct CaptureProtectionInputs {
+    /// The focused text field declares its content secret.
+    secret_field: bool,
+    osk: Option<SurfaceId>,
+    /// The workspace tree's write generation and the store's protection
+    /// epoch: which app each tiled surface belongs to, and which apps and
+    /// surfaces are protected.
+    versions: (u64, u64),
+    input_method_popups: Vec<(SurfaceId, Option<SurfaceId>)>,
+    popups: Vec<(SurfaceId, bool, SurfaceId)>,
+    /// Floating toplevels and their apps.
+    floating: Vec<(SurfaceId, String)>,
+}
+
+impl CaptureProtectionInputs {
+    fn capture(state: &State, secret_field: bool, versions: (u64, u64)) -> Self {
+        Self {
+            secret_field,
+            osk: state.osk_surface,
+            versions,
+            input_method_popups: state.capture_protection_input_method_popups().collect(),
+            popups: state.capture_protection_popups().collect(),
+            floating: state
+                .floating_toplevels
+                .iter()
+                .map(|toplevel| (toplevel.surface_id, toplevel.app_id.clone()))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, state: &State, secret_field: bool, versions: (u64, u64)) -> bool {
+        self.secret_field == secret_field
+            && self.osk == state.osk_surface
+            && self.versions == versions
+            && self
+                .input_method_popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_input_method_popups())
+            && self
+                .popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_popups())
+            && self
+                .floating
+                .iter()
+                .map(|(surface, app_id)| (*surface, app_id.as_str()))
+                .eq(state
+                    .floating_toplevels
+                    .iter()
+                    .map(|toplevel| (toplevel.surface_id, toplevel.app_id.as_str())))
+    }
+}
+
+/// [`State::sync_capture_protection`]'s memory between wakeups.
+#[derive(Default)]
+pub(crate) struct CaptureProtectionSync {
+    last: Option<CaptureProtectionInputs>,
+    #[cfg(test)]
+    passes: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct FullscreenTarget {
     pub surface_id: u64,
@@ -794,6 +864,8 @@ pub struct State {
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    /// What transient surfaces' capture protection was last derived from.
+    capture_protection_sync: CaptureProtectionSync,
 }
 
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
@@ -1021,6 +1093,26 @@ impl State {
         let now = std::time::Instant::now();
         let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
         self.closing_toplevels.insert(id, until);
+        if let Some(pid) = toplevel
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != toplevel.wl_surface()
+                        && !self
+                            .closing_toplevels
+                            .contains_key(&crate::compositor::state::surface_id(other.wl_surface()))
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         toplevel.send_close();
         self.release_frame_callbacks(toplevel.wl_surface());
     }
@@ -1056,13 +1148,11 @@ impl State {
         fired
     }
 
-    /// The user or the shell closed the window showing `surface_id`: its tab
-    /// goes, and the client and every sheet over it are asked to close.
+    /// Ask the client showing `surface_id` to close. Its tab remains available
+    /// for a deferred save decision until actual destruction removes it.
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+        // xdg close is a request, not admission. Destruction owns durable
+        // removal so a client's save/refusal decision stays visible.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -1350,6 +1440,7 @@ impl State {
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
             floating_toplevel_events: Vec::new(),
+            capture_protection_sync: CaptureProtectionSync::default(),
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
@@ -1524,6 +1615,13 @@ impl State {
     /// working keymap in place.
     pub fn reload_keyboard_settings(&mut self) {
         let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        self.apply_keyboard_settings(settings);
+    }
+
+    pub(crate) fn apply_keyboard_settings(
+        &mut self,
+        settings: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    ) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -1933,7 +2031,7 @@ impl State {
             });
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
-        let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
+        let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
@@ -1945,19 +2043,32 @@ impl State {
 
     /// Whether shared window `surface` must reach its viewers as the
     /// placeholder instead of its pixels.
+    ///
+    /// The app behind a tiled surface comes from the input router's cache of
+    /// the tree, without the tree lock. Until the loop folds a tree write
+    /// into that cache, the tree itself is read, so a renamed or newly
+    /// adopted tab is never judged by a stale app id.
     pub fn is_surface_capture_protected(&self, surface: SurfaceId) -> bool {
-        let app_id = {
-            let tree = self.workspace_tree.read();
-            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
-        }
-        .or_else(|| {
+        let floating = || {
             self.floating_toplevels
                 .iter()
                 .find(|toplevel| toplevel.surface_id == surface)
-                .map(|toplevel| toplevel.app_id.clone())
-        });
-        crate::compositor::foreign::store()
-            .is_capture_protected(surface, app_id.as_deref().unwrap_or_default())
+                .map(|toplevel| toplevel.app_id.as_str())
+        };
+        let store = crate::compositor::foreign::store();
+        if self
+            .client_input
+            .app_ids_current(self.workspace_tree.generation())
+        {
+            let app_id = self.client_input.app_id(surface).or_else(floating);
+            return store.is_capture_protected(surface, app_id.unwrap_or_default());
+        }
+        let tiled = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
+        };
+        let app_id = tiled.as_deref().or_else(floating);
+        store.is_capture_protected(surface, app_id.unwrap_or_default())
     }
 
     /// A share session's next frame: the window's pixels, or the themed
@@ -2769,7 +2880,12 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::Shm(_) => {
+                            // SHM conversion is asynchronous, but this applied
+                            // non-null commit already maps the surface for input.
+                            store().note_buffer_committed(surface_id);
+                            CaptureOutcome::Queued
+                        }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed
                         | ForeignCommitCapture::Removed => {
@@ -4727,44 +4843,102 @@ impl State {
     /// protected while the focused field declares its content secret (a
     /// password, a PIN or hidden text), and an input method's popup also
     /// while the window it serves is protected.
-    pub fn sync_capture_protection(&self) {
+    ///
+    /// Re-derived only when something it depends on changed since the last
+    /// pass (see [`CaptureProtectionInputs`]); otherwise a wakeup takes
+    /// neither the tree lock nor the store's protection lock.
+    pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
         let store = crate::compositor::foreign::store();
-        if let Some(keyboard) = self.osk_surface {
-            store.set_surface_capture_protected(keyboard, secret_field);
-        }
-        for popup in self
-            .input_method_popups
-            .iter()
-            .filter(|popup| popup.alive())
+        // Loaded before anything they guard is read: a change racing this
+        // pass advances them again and is folded in on the next wakeup.
+        let versions = (
+            self.workspace_tree.generation(),
+            store.capture_protection_epoch(),
+        );
+        if self
+            .capture_protection_sync
+            .last
+            .as_ref()
+            .is_some_and(|last| last.matches(self, secret_field, versions))
         {
-            let parent_protected = popup.get_parent().is_some_and(|parent| {
-                self.is_surface_capture_protected(surface_id(&parent.surface))
-            });
-            store.set_surface_capture_protected(
-                surface_id(popup.wl_surface()),
-                secret_field || parent_protected,
-            );
+            return;
         }
+        #[cfg(test)]
+        {
+            self.capture_protection_sync.passes =
+                self.capture_protection_sync.passes.saturating_add(1);
+        }
+        let mut protected = Vec::new();
+        if let Some(keyboard) = self.osk_surface {
+            protected.push((keyboard, secret_field));
+        }
+        for (popup, parent) in self.capture_protection_input_method_popups() {
+            let parent_protected =
+                parent.is_some_and(|parent| self.is_surface_capture_protected(parent));
+            protected.push((popup, secret_field || parent_protected));
+        }
+        // Nested popups chain to their toplevel through every tracked popup,
+        // live or not; a malformed graph is bounded exactly as
+        // `popup_parent_rect` bounds it.
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .popups
+            .iter()
+            .map(|popup| (surface_id(popup.surface.wl_surface()), popup.parent))
+            .collect();
         for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
             let mut root = popup.parent;
-            // Nested popups chain to their toplevel; a malformed graph is
-            // bounded exactly as `popup_parent_rect` bounds it.
             for _ in 0..16 {
-                match self
-                    .popups
-                    .iter()
-                    .find(|candidate| surface_id(candidate.surface.wl_surface()) == root)
-                {
-                    Some(parent) => root = parent.parent,
+                match parents.get(&root) {
+                    Some(parent) => root = *parent,
                     None => break,
                 }
             }
-            store.set_surface_capture_protected(
+            protected.push((
                 surface_id(popup.surface.wl_surface()),
                 self.is_surface_capture_protected(root),
-            );
+            ));
         }
+        store.set_surfaces_capture_protected(&protected);
+        self.capture_protection_sync.last = Some(CaptureProtectionInputs::capture(
+            self,
+            secret_field,
+            versions,
+        ));
+    }
+
+    /// Live input-method popups and the surface each one serves.
+    fn capture_protection_input_method_popups(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceId, Option<SurfaceId>)> + '_ {
+        self.input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+            .map(|popup| {
+                (
+                    surface_id(popup.wl_surface()),
+                    popup.get_parent().map(|parent| surface_id(&parent.surface)),
+                )
+            })
+    }
+
+    /// Every tracked xdg popup: its surface, whether it is alive, and its
+    /// parent.
+    fn capture_protection_popups(&self) -> impl Iterator<Item = (SurfaceId, bool, SurfaceId)> + '_ {
+        self.popups.iter().map(|popup| {
+            (
+                surface_id(popup.surface.wl_surface()),
+                popup.surface.alive(),
+                popup.parent,
+            )
+        })
+    }
+
+    /// Passes [`Self::sync_capture_protection`] has made that re-derived
+    /// protection rather than finding nothing changed.
+    #[cfg(test)]
+    pub(crate) const fn capture_protection_passes(&self) -> usize {
+        self.capture_protection_sync.passes
     }
 
     #[doc(hidden)]
@@ -5488,6 +5662,23 @@ impl XdgShellHandler for State {
         let person_reached_it = self
             .clients_given_input
             .contains(&client_index_of(surface_id));
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != surface.wl_surface()
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
@@ -7820,6 +8011,127 @@ mod keycap_layout_tests {
         assert_eq!(label(), "Strg+Alt+Entf");
         // The stored chord never changed.
         assert_eq!(power.display(), "Ctrl+Alt+Delete");
+    }
+}
+
+/// The compositor loop re-derives state from the workspace tree and the
+/// surface registries only after something it depends on changed.
+#[cfg(test)]
+mod loop_gating_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn make_state() -> State {
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn update_surface_scales_drops_unplaced_surfaces() {
+        let mut state = make_state();
+        state.update_surface_scales(&[(1, (0.0, 0.0)), (2, (10.0, 10.0)), (2, (10.0, 10.0))]);
+        let mut placed = state.surface_scales.keys().copied().collect::<Vec<_>>();
+        placed.sort_unstable();
+        assert_eq!(placed, vec![1, 2]);
+        state.update_surface_scales(&[(2, (10.0, 10.0))]);
+        assert_eq!(
+            state.surface_scales.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+            "a surface no longer placed loses its cached scale"
+        );
+        state.update_surface_scales(&[]);
+        assert!(state.surface_scales.is_empty());
+    }
+
+    #[test]
+    fn a_wakeup_without_a_tree_write_walks_nothing() {
+        const SURFACE: u64 = 0x0188_0001;
+        const APP: &str = "org.example.LoopGating";
+        let mut state = make_state();
+        let tree = state.workspace_tree.clone();
+        state.client_input.refresh_from_tree(&tree);
+        let walks = state.client_input.tree_walks();
+        assert_eq!(walks, 1, "the first wakeup derives everything once");
+        for _ in 0..100 {
+            assert!(!state.client_input.refresh_from_tree(&tree));
+        }
+        assert_eq!(
+            state.client_input.tree_walks(),
+            walks,
+            "wakeups with no tree write and no surface change walk nothing"
+        );
+
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree.write(),
+            SURFACE,
+            Some(APP.into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            !state.client_input.app_ids_current(tree.generation()),
+            "a tree written since the last wakeup is not answered from the cache"
+        );
+        state.client_input.refresh_from_tree(&tree);
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+        assert!(state.client_input.app_ids_current(tree.generation()));
+        assert_eq!(state.client_input.app_id(SURFACE), Some(APP));
+        for _ in 0..100 {
+            state.client_input.refresh_from_tree(&tree);
+        }
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+    }
+
+    #[test]
+    fn capture_protection_is_rederived_only_after_an_input_changed() {
+        const KEYBOARD: u64 = 0x0188_0002;
+        const CONNECTION: u64 = 0x0188_0C02;
+        const APP: &str = "org.example.LoopGatingProtected";
+        let store = crate::compositor::foreign::store();
+        let mut state = make_state();
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 1);
+        for _ in 0..100 {
+            state.sync_capture_protection();
+        }
+        assert_eq!(
+            state.capture_protection_passes(),
+            1,
+            "wakeups that change nothing take neither the tree nor the protection lock"
+        );
+
+        drop(state.workspace_tree.write());
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            2,
+            "a tree write may have renamed a protected window's tab"
+        );
+
+        state.osk_surface = Some(KEYBOARD);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            3,
+            "a new keyboard surface"
+        );
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 3);
+
+        store.request_app_capture_protection(CONNECTION, APP, true);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            4,
+            "an app asked for protection"
+        );
+        store.release_capture_protection(CONNECTION);
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5, "and gave it up");
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5);
+        store.forget(KEYBOARD);
     }
 }
 

@@ -59,8 +59,10 @@ fn only_answering(name: &str) -> ui::permissions::PermissionContext {
     let answer = |action: &str| {
         CapOverride::grant(
             Subject::agent(name),
+            // A participant addresses the document it holds by its kind.
             Scope::Action {
                 app: APP.to_string(),
+                resource: "tilo.rich-text".to_string(),
                 action: action.to_string(),
             },
             Verb::Write,
@@ -156,7 +158,7 @@ fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
     reason = "the harness owns one end-to-end relay scenario, including its lifecycle and observable outcomes"
 )]
 fn run(
-    agent_actions: &[(&str, &str)],
+    agent_actions: &[(&str, &str, &str)],
     cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
@@ -289,8 +291,13 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
         let replica = seed_document_with_image(
             "Scribe: delete the image, then give this a title, then delete the image again",
         );
+        let image = blocks(&replica)
+            .into_iter()
+            .find(|block| block.kind == "image")
+            .map(|block| format!("word-processor.image:{}", block.id))
+            .expect("the seeded image");
         let (mut replica, acted, invocation_actor, _) = run(
-            &[("so.tilo.word-processor", "delete")],
+            &[("so.tilo.word-processor", &image, "delete")],
             |sock, room| Config {
                 endpoint: Some(sock),
                 endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -439,7 +446,11 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
         let (mut replica, acted, invocation_actor, invocation_context) = run(
-            &[("so.tilo.word-processor", "insert-table")],
+            &[(
+                "so.tilo.word-processor",
+                typed_peer::WP_DOCUMENT,
+                "insert-table",
+            )],
             |sock, room| Config {
                 endpoint: Some(sock),
                 endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -526,7 +537,17 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("collab.sock");
-        let _broker = typed_peer::spawn(&sock);
+        // Grants name the resource they are on: the photograph the photo
+        // editor opens, and the document the image is placed into.
+        let photo = fixture_photo_resource();
+        let _broker = typed_peer::spawn_with_agent_actions(
+            &sock,
+            &[
+                ("so.tilo.photos", &photo, "rotate-right"),
+                ("so.tilo.photos", &photo, "export-edited-content"),
+                (APP, typed_peer::WP_DOCUMENT, "place-image"),
+            ],
+        );
         tilo_test_env::wait_until("the relay to bind its socket", || sock.exists());
         let room = typed_peer::room();
 
@@ -698,6 +719,19 @@ fn connect_photo_editor(
     .expect("the photograph is imported");
     photo_replica.commit();
     (photo_peer, photo_replica)
+}
+
+/// The resource id the photo editor publishes its fixture photograph under.
+fn fixture_photo_resource() -> String {
+    let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
+        .expect("the source photograph encodes");
+    let hash = ContentStore::memory()
+        .put(&png)
+        .expect("the source photograph is stored");
+    photos::model::LibraryPhoto::from_image(
+        photos::OpenImage::from_path("photo.png", 40, 24).with_content(&hash),
+    )
+    .id
 }
 
 /// The capability the agent needs to touch both applications in this room.

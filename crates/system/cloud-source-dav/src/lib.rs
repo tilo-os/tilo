@@ -25,15 +25,14 @@
     reason = "fallible methods return cloud_source::Error, documented there"
 )]
 
-use std::io::Read;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use cloud_source::{
     Capabilities, Change, ChangeFeed, ChangePage, CloudSource, ContentHash, Credential,
     CredentialSource, Cursor, Download, Error, HashAlgorithm, Item, ItemId, ItemKind, Quota,
-    Result, Revision, RevisionInfo, UploadSession, UploadState, UploadTarget,
+    Result, Revision, RevisionInfo, UploadSession, UploadState, UploadTarget, http,
 };
 use tilo_dav::{
     Credentials, DavClient, DavResponse, Depth, Limits, Precondition, PropName, StatusCode, Url,
@@ -269,24 +268,13 @@ impl DavSource {
     }
 
     fn status_error(&self, response: &DavResponse) -> Error {
-        let status = response.status();
+        let status = response.status().as_u16();
+        let retry_after = response
+            .header("retry-after")
+            .and_then(|value| http::parse_retry_after(&value, SystemTime::now()));
         match status {
-            StatusCode::UNAUTHORIZED => {
-                self.credentials.rejected();
-                Error::Unauthorized
-            }
-            StatusCode::FORBIDDEN => Error::Forbidden,
-            StatusCode::NOT_FOUND | StatusCode::GONE => Error::NotFound,
-            StatusCode::PRECONDITION_FAILED => Error::Conflict { current: None },
-            StatusCode::INSUFFICIENT_STORAGE => Error::InsufficientStorage,
-            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => Error::RateLimited {
-                retry_after: response
-                    .header("retry-after")
-                    .and_then(|v| v.trim().parse().ok())
-                    .map(Duration::from_secs),
-            },
-            status if status.is_redirection() => Error::InvalidResponse("redirect refused"),
-            status => Error::Status(status.as_u16()),
+            401 => http::unauthorized(self.credentials.as_ref()),
+            status => http::classify(status, retry_after).unwrap_or(Error::Status(status)),
         }
     }
 
@@ -425,42 +413,18 @@ impl DavSource {
             (sent, _) => self.check(sent)?,
         };
         let revision = response.etag().map(Revision::new);
-        let declared = response.content_length();
-        let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-        let content_range = response.content_range();
-        let total = if partial {
-            content_range.as_ref().and_then(|(_, total)| *total)
-        } else {
-            declared
+        let served = http::Served {
+            partial: response.status() == StatusCode::PARTIAL_CONTENT,
+            content_range: response
+                .header("content-range")
+                .as_deref()
+                .and_then(http::parse_content_range),
+            declared: response.content_length(),
         };
-        let mut body = response.into_reader();
-        let range = match range {
-            None => 0..declared.unwrap_or(u64::MAX),
-            Some(wanted) => {
-                let end = total.map_or(wanted.end, |t| wanted.end.min(t));
-                let wanted = wanted.start..end.max(wanted.start);
-                if partial {
-                    let (got, _) = content_range.ok_or(Error::InvalidResponse("content-range"))?;
-                    if got.start != wanted.start || got.end < wanted.end {
-                        return Err(Error::InvalidResponse("content-range"));
-                    }
-                } else {
-                    // The server sent the whole body: skip to the range.
-                    let skipped =
-                        std::io::copy(&mut (&mut body).take(wanted.start), &mut std::io::sink())?;
-                    if skipped != wanted.start {
-                        return Err(Error::InvalidResponse("short body"));
-                    }
-                }
-                wanted
-            }
-        };
-        let len = range.end.saturating_sub(range.start);
+        let download = http::ranged_body(response.into_reader(), range, served)?;
         Ok(Download {
-            body: Box::new(body.take(len)),
-            range,
-            total,
             revision,
+            ..download
         })
     }
 

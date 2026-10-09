@@ -482,7 +482,7 @@ fn validate_authority(
         || !tilo_relay_protocol::room_workspace_id_matches(peer.room(), current.workspace)
         || peer.admitted_room().is_none()
         || tilo_peer_state::room::governance_of(peer.admitted_room())
-            .0
+            .owner
             .as_deref()
             != Some(hex::encode(current.pinned_governor.user_public_key).as_str())
     {

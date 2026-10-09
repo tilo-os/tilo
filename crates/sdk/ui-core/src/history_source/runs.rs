@@ -135,9 +135,7 @@ pub fn record_run_with_details(
     let first = steps.first()?;
     let key = format!("{RUNS_KEY}{}", hex16(&first.run.start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
-    let at = crate::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let at = i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX);
 
     // Replacing the record wholesale keeps a re-record atomic: no peer ever
     // observes the new label against the old step list.

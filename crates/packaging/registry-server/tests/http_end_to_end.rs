@@ -134,10 +134,7 @@ async fn moderation_http_is_signed_authorised_and_bounded() {
             .unwrap();
         approve(&h, "so.tilo.editor");
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = tilo_clock::try_unix_now().unwrap();
         let report = signed_report(&h.outsider, "http-report-one", now);
         let response = client
             .post(url(h.addr, "/moderation/mutations"))
@@ -266,10 +263,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
     let previous = storage.load_snapshot().unwrap();
     let mut entries = storage.load_entries().unwrap();
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
         sequence: previous
@@ -886,6 +880,43 @@ async fn package_ids_must_lie_in_a_verified_namespace() {
         .await
         .expect("send");
     assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+/// An allowlisted publisher whose row names no namespace — a hand-written or
+/// pre-namespace `publishers.toml` row — owns nothing, so it cannot claim Tilo's
+/// own `so.tilo.store`.
+#[tokio::test]
+async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
+    let h = spawn_server(true).await;
+    std::fs::write(
+        h.storage.publishers_path(),
+        format!(
+            "[[publisher]]\npubkey_hex = \"{}\"\ncan_add_new = true\nnote = \"community\"\n",
+            hex::encode(h.publisher.verifying_key().to_bytes())
+        ),
+    )
+    .unwrap();
+    let row = h.storage.load_allowlist().unwrap().publishers[0].clone();
+    assert!(row.can_add_new);
+    assert!(row.namespaces.is_empty());
+
+    let client = tilo_net::http::client().build().expect("http client");
+    let mut store = sample_entry(&h.publisher, 100);
+    store.package_id = "so.tilo.store".into();
+    registry_types::sign_entry(&mut store, &h.publisher);
+    let resp = client
+        .post(url(h.addr, "/entries"))
+        .json(&sign_change_request(EntryAction::Add, store, &h.publisher))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("package id so.tilo.store is outside this publisher's verified namespaces"),
+        "{body}"
+    );
+    assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
 /// A package signed by `key`, in full.

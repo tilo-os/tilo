@@ -578,15 +578,14 @@ impl Widget for CodeEditor {
         self.inner.capture_layout_text_scale(theme.text_scale);
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -626,13 +625,7 @@ impl Widget for CodeEditor {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = crate::widget::layout_rect(taffy, node, origin);
         self.inner.apply_layout_external(rect);
     }
 

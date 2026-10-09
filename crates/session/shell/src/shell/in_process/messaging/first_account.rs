@@ -202,22 +202,34 @@ struct Actor {
 }
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
-    let sms = super::sms_first::new(principal.clone(), wake);
-    combine(principal, signal, sms)
+    let sms = super::sms_first::new(principal.clone(), wake.clone());
+    let native = super::native_first::new(principal.clone(), wake);
+    combine_all(principal, signal, sms, Some(native))
 }
+#[cfg(test)]
 fn combine(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
+) -> Rc<dyn FirstAccounts> {
+    combine_all(principal, signal, sms, None)
+}
+fn combine_all(
+    principal: String,
+    signal: Rc<dyn FirstAccounts>,
+    sms: Rc<dyn FirstAccounts>,
+    native: Option<Rc<dyn FirstAccounts>>,
 ) -> Rc<dyn FirstAccounts> {
     Rc::new(Combined {
         port: Arc::new(CombinedPort {
             principal,
             signal: signal.client(),
             sms: sms.client(),
+            native: native.as_ref().map(|owner| owner.client()),
         }),
         signal,
         sms,
+        native,
     })
 }
 fn with_source(principal: String, wake: Wake, source: Arc<dyn Source>) -> Rc<dyn FirstAccounts> {
@@ -758,17 +770,24 @@ pub(super) fn fixture(
 }
 
 struct Combined {
+    native: Option<Rc<dyn FirstAccounts>>,
     port: Arc<CombinedPort>,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
 }
 struct CombinedPort {
+    native: Option<EnrollmentClient>,
     principal: String,
     signal: EnrollmentClient,
     sms: EnrollmentClient,
 }
 impl CombinedPort {
     fn account(&self, account: &ServiceAccount) -> &EnrollmentClient {
+        if account.service == "tilo"
+            && let Some(native) = &self.native
+        {
+            return native;
+        }
         if account.service == "sms" {
             &self.sms
         } else {
@@ -783,9 +802,21 @@ impl FirstAccounts for Combined {
     fn pump(&self, apps: &mut super::super::InProcessApps) {
         self.signal.pump(apps);
         self.sms.pump(apps);
+        if let Some(native) = &self.native {
+            native.pump(apps);
+        }
     }
 }
 impl EnrollmentHost for CombinedPort {
+    fn prepare(&self, service: String) -> EnrollmentReviewFuture {
+        let native = self.native.clone();
+        Box::pin(async move {
+            if service != "tilo" {
+                return Err(SendError::Unavailable);
+            }
+            native.ok_or(SendError::Unavailable)?.prepare(service).await
+        })
+    }
     fn begin(&self, service: String) -> PairingFuture {
         let client = self.signal.clone();
         Box::pin(async move { client.begin(service).await })

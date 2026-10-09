@@ -164,8 +164,10 @@ Generated applications depend on `tilo-app` (normally under the concise Rust
 name `ui`), never directly on the internal `ui-core` package. `tilo-app` is not
 a reduced or declarative-only widget set: it re-exports the complete layout,
 retained-widget, canvas, custom-painting, native-view and GPU surface API.
-Applications keep full control of presentation and composition. The boundary
-exists so tooling can prove that an application participates in Tilo actions,
+Applications control their content and composition, not the theme. Colours,
+fonts, borders, shadows and motion come from theme tokens that the system and
+the user own, so a user's theme applies to every app. The boundary exists so
+tooling can prove that an application participates in Tilo actions,
 collaboration, history, accessibility and lifecycle contracts. `ui-core` is
 reserved for the shell and framework implementation.
 
@@ -224,7 +226,13 @@ list or callback table. If availability changes, return the updated resource
 tree. The host resolves the selected address again immediately before
 execution.
 
-### Custom widgets retain custom rendering
+### Custom widgets draw with the system theme
+
+An app can build its own widgets, down to fully custom GPU-accelerated drawing,
+but ordinary tasks should use the toolkit widgets. The goal is a custom widget
+that still looks native: build it from the system's primitives and draw
+it with the theme's real colours, fonts, borders and shadows rather than
+hard-coded values. The user stays in control of the theme.
 
 Custom rendering follows the same contract without being forced into a stock
 widget. A custom `Widget` can own `ActionEmitter<T>`, call `emit(value)` from
@@ -234,7 +242,8 @@ its pointer, keyboard or accessibility path, return queued intents from
 accessibility semantics and route semantic activation to the same emitter.
 Those semantics and declared resources are projected into the searchable,
 agent-operable tree. Canvas geometry, native views, shaders and bespoke input
-remain app-defined; only the meaning and route of an interaction are explicit.
+remain app-defined; the theme they draw with and the meaning and route of an
+interaction do not.
 
 ### Certification requirements
 
@@ -932,8 +941,8 @@ to the app the host prepared.
 | Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
 | Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
 
-Apps do not depend on `settings-store`, `app-state` or `xdg-paths`: those
-are the SDK's internals (the last is a deprecated shim over `tilo-paths`). The exceptions are
+Apps do not depend on `settings-store` or `app-state`: those are the SDK's
+internals. The exceptions are
 the Settings app, which owns the settings document, and Notes' capture
 fault-injection scenario, which locates its record on disk. Desktop-only code
 that must name a native path uses `tilo_paths` and `tilo_files::native`

@@ -52,6 +52,11 @@ inputs = ["dist/session/tilo-flight-recorder.py"]
 suites = ["os/tests/flight_recorder_test.py"]
 
 [[group]]
+name = "runtime-dependency-closure"
+inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "dist/apps/package-apps.sh"]
+suites = ["os/tests/test_runtime_dependency_closure.py"]
+
+[[group]]
 name = "os"
 inputs = ["os/"]
 suites = [
@@ -130,6 +135,7 @@ suites = [
   "os/tests/test_guest_loader_inspection.py",
   "os/tests/test_hardware_firmware_artifact.py",
   "os/tests/test_identity_public_key.py",
+  "os/tests/test_image_cohort_archives.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_install_dev_ssh.py",
@@ -324,8 +330,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/desktop-catalog.json", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py"]
 
 [[group]]
 name = "ntfs-helper"
@@ -337,6 +343,10 @@ name = "dist"
 inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
+  "dist/ci/tests/test_failed_rpm_retention.py",
+  "dist/ci/tests/test_host_session_rpm_replay.py",
+  "dist/session/tests/vm-e2e-exit-status.py",
+  "dist/session/tests/test-files-workspace.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/local-models/u2net-subject/contract-test.sh",
@@ -346,6 +356,7 @@ suites = [
   "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
   "dist/rpm/test-rpmbuild-route.sh",
+  "dist/rpm/test-rpmlint-config.py",
 ]
 
 [[group]]
@@ -376,6 +387,9 @@ suites = [
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
+  "scripts/vm-acceptance/test_app_cohort.py",
+  "scripts/vm-acceptance/test_store_chooser.py",
+  "scripts/vm-acceptance/test_runtime_backing.py",
 ]
 
 [[group]]
@@ -498,6 +512,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
@@ -587,13 +602,22 @@ inputs = [
   "tools/with-test-environment.sh",
   "scripts/headless-examples/startup-frame-timeline.py",
   "scripts/headless-examples/_control.py",
+  # The NetHost grant vectors apps must answer like environments do.
+  "crates/collab/collab-types/tests/net_host_vectors.txt",
 ]
 readers = [
   "crates/packaging/launcher/src/manifest.rs",
+  "crates/packaging/launcher/src/netgate.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
   "crates/packaging/launcher/examples/startup_frame_timeline.rs",
 ]
+
+[[cargo]]
+package = "tilo-egress"
+# The NetHost grant vectors environments must answer like apps do.
+inputs = ["crates/collab/collab-types/tests/net_host_vectors.txt"]
+readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -691,13 +715,14 @@ inputs = [
   "crates/system/tilo-startup-metrics/",
   "crates/system/tts/",
   "crates/system/wire-frame/",
-  "crates/system/xdg-paths/",
   "crates/text/spellcheck/",
   "crates/workspace-hack/",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Focused source lookup verifies the embedded shared-checklist test bytes.
+  "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
   # Android packaging copies the standalone font catalog out of the SDK.
@@ -1236,6 +1261,10 @@ suite = "os/tests/prove_kernel_failure_cache_local.py"
 reason = "needs rootful Podman with cached images"
 
 [[unrequired]]
+suite = "os/tests/rootfs_firmware_cache.py"
+reason = "needs rootful Podman to observe real firmware mount layer-cache reuse on the build host"
+
+[[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
@@ -1390,6 +1419,8 @@ reason = "explicit root private-mount-namespace integration entrypoint; run with
 [[cargo]]
 package = "runtime-bundle"
 inputs = [
+  "tools/font-catalog.py",
+  "crates/sdk/ui-core/assets/fonts/",
   "tools/apps/browser_runtime_release.py",
   "tools/apps/signal_runtime_fixture.py",
   "tools/apps/signal_provider_release.py",
@@ -1413,6 +1444,7 @@ inputs = [
   "os/Containerfile",
 ]
 readers = [
+  "crates/packaging/runtime-bundle/src/lib.rs",
   "crates/packaging/runtime-bundle/examples/browser_runtime_release.rs",
   "crates/packaging/runtime-bundle/examples/signal_runtime_fixture.rs",
   "crates/packaging/runtime-bundle/examples/signal_provider_release.rs",
@@ -1455,3 +1487,7 @@ readers = ["apps/video-player/build.rs"]
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"
+
+[[unrequired]]
+suite = "os/tests/flatpak_default_initialization_test.py"
+reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the digest-pinned ci-fast image has no Flatpak; run explicitly with python3 os/tests/flatpak_default_initialization_test.py, failing when prerequisites are absent"

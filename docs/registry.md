@@ -159,8 +159,9 @@ of `add`, `update`, or `delete`. All three must carry:
 `add` and `update` also require the `package_id` to lie in one of that row's
 `namespaces`: `com.acme.notes` needs `com.acme`. Package ids are
 lowercase reverse DNS with at least three labels
-(`registry_types::namespace`). A row without `namespaces` is one of Tilo's own
-publishers and owns `so.tilo`.
+(`registry_types::namespace`). A row without `namespaces` (or with an empty
+list) owns nothing: it can still delete its own entries but can add or update
+none. `so.tilo` is granted only by naming it.
 
 `update` and `delete` additionally require that the
 `publisher_pubkey_hex` matches the stored entry's — publishers
@@ -312,7 +313,26 @@ tilo-registry-server add-publisher \
 it, they may only propose edits or deletion of their own rows —
 useful for onboarding a publisher who's inheriting an existing
 entry. `--namespace` (repeatable) is the reverse-DNS prefix the publisher's
-package ids must start with; it defaults to `so.tilo`.
+package ids must start with; it is required and has no default. Naming Tilo's
+own namespace `so.tilo` (or one inside it) also requires `--first-party`, so a
+first-party grant is always deliberate:
+
+```
+tilo-registry-server add-publisher \
+    --pubkey <publisher-hex> \
+    --can-add-new \
+    --namespace so.tilo \
+    --first-party
+```
+
+**Upgrading an existing registry.** Rows written before namespaces existed
+were read as `so.tilo`; they now own nothing. `serve` and `list-publishers`
+log a warning naming each such key, and `list-publishers` shows it with
+`namespaces = []`. For every key that genuinely publishes Tilo's own apps,
+rerun `add-publisher --pubkey <hex> [--can-add-new] --namespace so.tilo
+--first-party` (it replaces the row); give any other key its own namespace.
+Until then those keys can still delete their entries, and moderation keeps
+working.
 
 ### 4. Serve
 
@@ -620,6 +640,12 @@ offering it, and the rollback, fork and freeze checks are unchanged. Its
 artifacts stay while a retained history snapshot (which `rollback-snapshot`
 may restore) or the previous version index (which a client one snapshot behind
 may still fetch) lists it; the prune after that deletes them.
+
+Retention is also what lets a device open an app without fetching a runtime:
+a first open takes the newest retained version whose runtime build the device
+already has (`app_cli::first_open_offer`). With the default of 20, an image or
+per-user runtime from within the last 20 releases of an app opens it with no
+runtime download; an older one downloads the runtime the newest version names.
 
 `prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
 published versions that policy drops and what pruning deletes once they are

@@ -1231,12 +1231,14 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                         ssid: "Cafe WiFi".into(),
                         signal: 3,
                         secure: true,
+                        security: os_actions::WifiSecurity::Wpa2,
                         connected: false,
                     },
                     WifiNetwork {
                         ssid: "Airport Free".into(),
                         signal: 2,
                         secure: false,
+                        security: os_actions::WifiSecurity::Open,
                         connected: false,
                     },
                 ];

@@ -157,6 +157,9 @@ pub enum Command {
         /// VM's, read over SSH).
         #[arg(long, requires = "direct")]
         cmdline: Option<String>,
+        /// Shell only: record phase CPU timing at each stand-in slot startup.
+        #[arg(long)]
+        frame_cpu_trace: bool,
     },
     /// Keyboard, pointer, touch, pen and gamepad input on a headful slot's own seat (real kernel input path).
     #[command(
@@ -252,6 +255,12 @@ pub enum Command {
         /// Attested source inventory used to verify the builder inputs.
         #[arg(long)]
         source_inventory: Option<PathBuf>,
+        /// Content hashes the target has verified; at most eight.
+        #[arg(long)]
+        cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(
@@ -674,6 +683,14 @@ pub enum GamepadCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VmCommand {
+    /// Carry the canonical semantic action operations over the owner's authenticated device route.
+    Actions {
+        /// The registered device (default: the one this worktree uses).
+        #[arg(long = "device")]
+        name: Option<String>,
+        #[command(subcommand)]
+        command: DeviceActionCommand,
+    },
     /// List registered VMs and which one this worktree uses.
     #[command(after_help = "Examples:\n  tilo-vm vm list")]
     List,
@@ -842,6 +859,32 @@ pub enum VmCommand {
     },
 }
 
+/// Transport-only spelling of the existing console semantic operations.
+#[derive(Debug, Subcommand)]
+pub enum DeviceActionCommand {
+    /// List the device's declared actions and typed arguments.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions list\n  tilo-vm vm actions list enroll"
+    )]
+    List {
+        /// Filter declared actions by this query (default: list all actions).
+        query: Option<String>,
+    },
+    /// Invoke a declared action; private arguments come only from stdin.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm actions invoke device-unlock enroll --args-stdin < private-args.json\n\nRead the action's declared JSON arguments with vm actions list. Private\narguments are read from stdin and never placed in the command line."
+    )]
+    Invoke {
+        /// The provider returned by vm actions list.
+        provider: String,
+        /// The declared action ID returned by vm actions list.
+        id: String,
+        /// Read the action's JSON arguments from stdin, including private fields.
+        #[arg(long, required = true)]
+        args_stdin: bool,
+    },
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// The name to register the device under.
@@ -919,7 +962,8 @@ pub struct CreateArgs {
     /// `[user@]host[:port]` when the adapter cannot discover it.
     #[arg(long)]
     pub ssh: Option<String>,
-    /// Host port forwarded to the guest's SSH (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH (libvirt, qemu, whpx).
+    /// Defaults to the first unregistered, available port from 2222.
     #[arg(long)]
     pub ssh_port: Option<u16>,
     /// UTM VM to clone.
@@ -1124,6 +1168,26 @@ pub enum SeatCommand {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_swap_accepts_explicit_frame_cpu_recording() {
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--frame-cpu-trace"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: true,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                frame_cpu_trace: false,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn target_flag_works_before_and_after_swap() {
         use clap::Parser as _;
@@ -1427,7 +1491,7 @@ mod tests {
             .unwrap();
             assert!(cli.json);
             assert!(
-                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None, frame_cpu_trace: false }) if component == "fs" && slot == "vm" && from == "layer:ab")
             );
             assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
             let cli =

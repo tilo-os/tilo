@@ -352,7 +352,7 @@ fn validate_name(name: &str) -> Result<()> {
 }
 
 fn dirs_data_home() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home()
+    tilo_paths::xdg::data_home()
 }
 
 #[cfg(test)]

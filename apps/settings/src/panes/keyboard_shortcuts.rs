@@ -152,8 +152,7 @@ pub struct ShortcutPane {
     refused: LocalState<Option<ui::framework::Refused>>,
     refusal_shown: Option<String>,
     structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    composed: ui::widget::Composed,
 }
 
 impl ShortcutPane {
@@ -176,8 +175,7 @@ impl ShortcutPane {
             chords,
             refusal_shown: None,
             structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            composed: ui::widget::Composed::default(),
         };
         pane.show();
         pane
@@ -296,9 +294,7 @@ impl Widget for ShortcutPane {
         if self.controls.refresh() {
             self.vim_mode.set(self.controls.get().vim_mode);
         }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -309,7 +305,7 @@ impl Widget for ShortcutPane {
     ) -> NodeId {
         let mut c = self.composition();
         let child = c.build_layout(taffy, theme, node_map);
-        self.composed = Some(c);
+        self.composed.replace(c);
         let node = taffy
             .new_with_children(
                 taffy::Style {
@@ -328,19 +324,7 @@ impl Widget for ShortcutPane {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -350,44 +334,28 @@ impl Widget for ShortcutPane {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text, theme, presence);
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
+        self.composed.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
     fn name(&self) -> &'static str {
         "ShortcutPane"
     }
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         own || child
     }
 }

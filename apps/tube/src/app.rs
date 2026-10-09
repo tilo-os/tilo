@@ -17,7 +17,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use ui::time::UNIX_EPOCH;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -48,14 +47,6 @@ use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{ActionDecl, Invoke};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-
-fn history_now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
 
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
@@ -362,7 +353,7 @@ impl TubeApp {
                 ));
             }
             TubeEffect::MarkWatched { video } => {
-                let at_ms = history_now_ms();
+                let at_ms = ui::time::unix_now_ms();
                 self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
             }
             TubeEffect::ForgetWatched { video } => {
@@ -558,7 +549,7 @@ impl TubeApp {
                 && self.change_preferences(|current| *current = settings)
         });
 
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         let pulled: Vec<(String, u64)> = remote
             .watch_history
             .into_iter()
@@ -1556,7 +1547,7 @@ impl TubeApp {
     /// Shared by the card and search-result open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
-        let watched_at_ms = history_now_ms();
+        let watched_at_ms = ui::time::unix_now_ms();
         self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
@@ -2199,12 +2190,7 @@ impl Widget for TubeApp {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = crate::widgets::node_layout(taffy, node);
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::placed(layout, origin);
         // A new window size re-sizes the width-driven watch page.
         if rect.size() != self.rect.size() {
             self.shell_stale = true;

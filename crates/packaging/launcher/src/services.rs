@@ -219,7 +219,7 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir().unwrap_or_else(|| {
+    let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
         let uid = unsafe { libc::geteuid() };
         PathBuf::from(format!("/run/user/{uid}"))
     });
@@ -255,6 +255,7 @@ pub fn identity_socket() -> PathBuf {
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,
+    egress: &crate::netgate::EgressDecision,
 ) -> Result<(), ServiceError> {
     let Some(service) = resolved
         .iter()
@@ -276,6 +277,7 @@ pub fn authenticate_shell_ui_bind(
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
+        "network_status_allowed": !matches!(egress, crate::netgate::EgressDecision::Blocked),
     }))
     .map_err(|error| ServiceError::OpenFailed {
         path: path.clone(),
@@ -1260,15 +1262,27 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
             let mut services = BTreeMap::new();
             services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
-            let resolved = resolve_service_binds(&services, false).unwrap();
-            authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
+            for (mode, hosts, allowed) in [
+                ("off", Vec::new(), false),
+                ("host", Vec::new(), true),
+                ("allowlist", vec!["example.com".to_owned()], true),
+                ("allowlist", Vec::new(), false),
+            ] {
+                let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
+                let resolved = resolve_service_binds(&services, false).unwrap();
+                authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
 
-            let (stream, _) = listener.accept().unwrap();
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).unwrap();
-            let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
-            assert_eq!(handshake["app_id"], "so.tilo.chat");
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).unwrap();
+                let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
+                assert_eq!(handshake["app_id"], "so.tilo.chat");
+                assert_eq!(
+                    handshake["network_status_allowed"], allowed,
+                    "{mode}: {hosts:?}"
+                );
+            }
         }
     }
 

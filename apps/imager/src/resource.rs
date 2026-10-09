@@ -107,6 +107,28 @@ pub enum ImagerEffect {
         )]
         value: String,
     },
+    /// Set the owner SSH public key for the next write on this machine.
+    #[effect(permission = "admin")]
+    SetSshKey {
+        #[param("OpenSSH public keys, one per line, without authorized_keys options")]
+        value: String,
+    },
+    /// Customize a regular raw image file through the installed-root path.
+    #[effect(job, returns, permission = "admin")]
+    CustomizeImage {
+        #[param("Path to the regular raw disk image; devices and symlinks are refused")]
+        image: String,
+        #[param("Optional hostname for the image")]
+        hostname: Option<String>,
+        #[param("Optional Wi-Fi network name")]
+        wifi_ssid: Option<String>,
+        #[param("Path to a local file containing the Wi-Fi passphrase")]
+        wifi_psk_file: Option<String>,
+        #[param("Path to an owner public-key file, one OpenSSH key per line")]
+        ssh_keys_file: Option<String>,
+        #[param("Files to place in the image account's home")]
+        home_files: Vec<String>,
+    },
     /// Choose a disk image.
     #[effect(job)]
     ChooseImage,
@@ -209,7 +231,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
-    const TITLE: &'static str = "Disk Imager";
+    const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
     // Only hosts with a local workspace runtime can attach the imager.
@@ -510,6 +532,8 @@ mod tests {
             "status",
             "export-config",
             "set-wifi-psk",
+            "set-ssh-key",
+            "customize-image",
             "rescan",
             "choose-drive",
             "choose-image",
@@ -616,6 +640,37 @@ mod tests {
             ),
             "the passphrase never reaches the document"
         );
+    }
+
+    #[test]
+    fn owner_ssh_key_effect_validates_and_stays_on_the_setup_machine() {
+        let mut app = customizing();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
+        app.effect(&ImagerEffect::SetSshKey { value: key.into() })
+            .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(wizard.ssh_key_for_test(), key);
+            })
+            .expect("the hosted wizard");
+        assert!(
+            app.effect(&ImagerEffect::SetSshKey {
+                value: "no-pty ssh-ed25519 invalid".into()
+            })
+            .is_err()
+        );
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                assert_eq!(
+                    wizard.ssh_key_for_test(),
+                    key,
+                    "a rejected effect preserves the accepted key"
+                );
+            })
+            .expect("the hosted wizard");
+        assert!(app.read_document(|doc| {
+            !String::from_utf8_lossy(&doc.clone().save()).contains("owner@example")
+        }));
     }
 
     #[test]

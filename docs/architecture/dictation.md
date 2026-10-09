@@ -143,24 +143,41 @@ commands. Tilo keeps insertion on the original trusted IME connection, excludes
 control characters and rejects a changed terminal epoch. Command safety and
 recognition accuracy still require representative live qualification.
 
-The user's exact bookmark URLs were not available. These are public candidates,
-not confirmed bookmark identities. That initial review imported no code or
-weights; the later CPU-worker qualification below records the exact vendored
-runtime and the public test model used on the builder.
+The bookmarks behind this research were identified on 2026-10-07 from the
+owner's X bookmarks (research comment on issue #3543). The candidates below are
+those confirmed identities; earlier guesses are corrected. That initial review
+imported no code or weights; the later CPU-worker qualification below records
+the exact vendored runtime and the public test model used on the builder.
 
-[0xDAEF0F/whistle](https://github.com/0xDAEF0F/whistle) describes a Tauri app with
-transcription, shortcuts, clipboard integration and DeepSeek text polishing; its
-README claims MIT licensing. That is useful interaction precedent but does not
-establish a private, compositor-native Linux insertion boundary or an audited
-offline pipeline. Verify its actual dependencies, network behavior and license
-files before adopting code. The upstream instructions to remove macOS quarantine
-or reset permissions are not appropriate Tilo integration steps.
+**Whistle** is [Cactus Compute's Whistle](https://huggingface.co/Cactus-Compute/whistle)
+([announcement](https://cactuscompute.com/blog/whistle); bookmarked post
+<https://x.com/cactuscompute/status/2106083041265562075>): a single 16.9 MB,
+2–4-bit speech-to-text model for English, German, French, Spanish, Italian,
+Dutch and Polish, with Apache-2.0 licensing. It runs on the dependency-free
+[Needle](https://github.com/cactus-compute/needle) CPU engine
+([platform builds](https://huggingface.co/Cactus-Compute/needle3)), whose speech
+C API is `needle_load`, `needle_transcribe` and `needle_embed`. One pass accepts
+at most 30 seconds of 16 kHz mono audio, so the 120-second session would need
+chunking. Its model card's benchmark chart reports 4.31%/10.49% WER on LibriSpeech
+test-clean/test-other, a 21.4% average over its seven FLEURS languages and
+11.1 ms to the first token on an Apple M4 Pro CPU. Those are the publisher's
+own measurements, not `speech_benchmark` results, and no older-CPU, Arm-board or
+1 GiB worker-limit evidence exists yet. Keyword biasing is a candidate mechanism
+for a personal dictionary. An earlier revision of this section guessed
+[0xDAEF0F/whistle](https://github.com/0xDAEF0F/whistle), a Tauri dictation app
+with DeepSeek text polishing; it is unrelated to the bookmark and is not a
+candidate.
 
-[Fermion Research Phonon-2](https://huggingface.co/FermionResearch/Phonon-2) is an
-English ASR model with CC-BY-4.0 weights. Its published small download is promising
-for older machines; download size does not establish runtime memory or latency.
-Keep attribution/NOTICE with the exact artifact. It is a plausible match for
-“phonnon 2”, not a confirmed identity or a multilingual default.
+**Phonon-2** is confirmed: the bookmarked post
+<https://x.com/yoitsmanan/status/2107505508655759729> announces its Core ML
+package as the default model of Fermion's Detta app, and the
+[model card](https://huggingface.co/FermionResearch/Phonon-2) states that
+Phonon-2 is the model inside Detta. It is an English-only ASR model with
+CC-BY-4.0 weights, distilled from NVIDIA Parakeet TDT 0.6B v3; its card reports a
+5.21% average WER over seven English benchmark sets. Its published small
+download is promising for older machines; download size does not establish
+runtime memory or latency, and its CPU memory use is unpublished. Keep
+attribution/NOTICE with the exact artifact. It is not a multilingual default.
 
 [Phonon runtime](https://github.com/fermionresearch/phonon) publishes CPU paths for
 x86-64/SSE4.1 and Arm64/NEON, with an Apache-2.0 CLI. Its

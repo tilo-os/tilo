@@ -194,7 +194,7 @@ impl Dialer {
             self.device.as_ref(),
             &nonce,
             &binding,
-            net::now_ns(),
+            tilo_clock::unix_now_ns(),
         )
         .map_err(Failure::Untrusted)?;
         let proof = handshake::prove(

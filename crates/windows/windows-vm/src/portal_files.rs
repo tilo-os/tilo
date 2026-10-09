@@ -77,7 +77,7 @@ impl Default for PortalDocumentStore {
 /// appliance-control namespace below `/run/tilo/windows-vm`.
 #[must_use]
 pub fn portal_lease_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
+    tilo_paths::xdg::runtime_dir()
         .unwrap_or_else(|| {
             // SAFETY: `geteuid` only reads the process credentials and has no
             // preconditions.
@@ -331,7 +331,7 @@ impl CapabilityBroker for PortalRailCapabilityBroker {
         // a partially-live lease.
         let shares = self.documents.materialize(&lease_id, request)?;
         let network_proxy = if request.grants.network {
-            match crate::GuestNetworkProxy::start(request.grants.network_hosts.clone()) {
+            match crate::GuestNetworkProxy::start(&request.grants.network_hosts) {
                 Ok(proxy) => Some(proxy),
                 Err(error) => {
                     let _ = self.documents.revoke_checked(&lease_id);

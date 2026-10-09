@@ -113,7 +113,7 @@ impl Widget for Divider {
             DividerAxis::Horizontal => (percent(1.0_f32), length(self.thickness)),
             DividerAxis::Vertical => (length(self.thickness), percent(1.0_f32)),
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             // Never shrink the 1px cross-axis away under tight budgets.
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -121,9 +121,8 @@ impl Widget for Divider {
                 height: h,
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

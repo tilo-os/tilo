@@ -68,7 +68,8 @@ use ui::portal;
 use ui::tilo_resource::Effect as _;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace, Tone,
+    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace,
+    SegmentedTouch, SegmentedTouchGroup, SegmentedTouchResult, Tone,
 };
 
 mod block_layout;
@@ -1128,6 +1129,7 @@ pub struct WordProcessorWidget {
     panel_rect: Rect,
     /// Clickable targets inside the styles panel, rebuilt each draw.
     panel_hits: Vec<(Rect, PanelHit)>,
+    segmented_touch: SegmentedTouch,
     /// The numeric field currently being typed into (click-to-type), if any.
     editing_field: Option<NumField>,
     /// The inspector's style property fields.
@@ -1433,6 +1435,7 @@ impl WordProcessorWidget {
             // narrow tile rather than permanently consuming half the canvas.
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
+            segmented_touch: SegmentedTouch::default(),
             editing_field: None,
             num_inputs: [
                 NumField::Size,
@@ -10309,13 +10312,7 @@ impl Widget for WordProcessorWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -10702,6 +10699,17 @@ impl Widget for WordProcessorWidget {
     fn test_id(&self) -> Option<&str> {
         Some("word_processor")
     }
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.segmented_rects()
+            .iter()
+            .flatten()
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -11366,7 +11374,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: ui::clock::Instant,
+        now: ui::time::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
@@ -11944,6 +11952,104 @@ impl WordProcessorWidget {
         }
         self.focused_style_key()
             .map_or(16.5, |k| self.sheet.get(&k).size)
+    }
+
+    fn segmented_rects(&self) -> [Vec<Rect>; 3] {
+        if self.modal_capture().is_some()
+            || self.color_picker.is_open()
+            || self.compact_swatch_palette.is_open()
+        {
+            return std::array::from_fn(|_| Vec::new());
+        }
+        let align = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, PanelHit::ParaAlign(_)).then_some(*rect))
+            .collect();
+        let placement = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                matches!(
+                    hit,
+                    PanelHit::ImageInline
+                        | PanelHit::ImageFreePosition
+                        | PanelHit::ImageWrapLeft
+                        | PanelHit::ImageWrapRight
+                )
+                .then_some(*rect)
+            })
+            .collect();
+        let font = self
+            .panel_hits
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, PanelHit::SetFont(_)).then_some(*rect))
+            .collect();
+        [align, placement, font]
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let [align, placement, font] = self.segmented_rects();
+        let current = self.current_align();
+        let selected_align = ["left", "center", "right", "justify"]
+            .iter()
+            .position(|value| *value == current)
+            .unwrap_or(ui::widget::toggle_group::NONE_CHOSEN);
+        let image = self.selected_image_id();
+        let selected_placement = self
+            .blocks
+            .iter()
+            .find(|block| Some(&block.id) == image.as_ref())
+            .map_or(ui::widget::toggle_group::NONE_CHOSEN, |block| {
+                match (image_anchor(block), image_wrap(block)) {
+                    ("page", _) => 1,
+                    (_, "left") => 2,
+                    (_, "right") => 3,
+                    _ => 0,
+                }
+            });
+        let selected_font = self.focused_style_key().map_or(0, |key| {
+            ["sans", "serif", "mono"]
+                .iter()
+                .position(|value| *value == self.sheet.get(&key).font)
+                .unwrap_or(0)
+        });
+        let groups = [
+            SegmentedTouchGroup::new(0, &align, selected_align),
+            SegmentedTouchGroup::new(1, &placement, selected_placement),
+            SegmentedTouchGroup::new(2, &font, selected_font),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { group, index } = result {
+            let hit = match group {
+                0 => ["left", "center", "right", "justify"]
+                    .get(index)
+                    .copied()
+                    .map(PanelHit::ParaAlign),
+                1 => [
+                    PanelHit::ImageInline,
+                    PanelHit::ImageFreePosition,
+                    PanelHit::ImageWrapLeft,
+                    PanelHit::ImageWrapRight,
+                ]
+                .get(index)
+                .cloned(),
+                2 => ["sans", "serif", "mono"]
+                    .get(index)
+                    .copied()
+                    .map(PanelHit::SetFont),
+                _ => None,
+            };
+            if let Some(hit) = hit {
+                self.apply_panel_hit(edits, hit);
+            }
+        }
+        result.handled()
     }
 
     fn current_align(&self) -> String {
@@ -13342,6 +13448,12 @@ impl WordProcessorWidget {
             if self.thread_comment.is_some() {
                 self.close_comment_thread();
             }
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
         }
         let shift = ctx.modifiers.state().shift_key();
         let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
