@@ -234,6 +234,16 @@ pub mod __private {
         }
     }
 
+    /// The first non-empty line of the text `value` carries: one part of a
+    /// label.
+    pub fn first_line<T: crate::Model>(value: &T) -> Option<String> {
+        let mut text = Vec::new();
+        value.collect_text(&mut text);
+        text.into_iter()
+            .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
+            .find(|line| !line.is_empty())
+    }
+
     /// The parameter type of a `T` that may or may not describe its JSON
     /// form: `(&ParamOf::<T>::new()).param_type()` reads `T`'s schema when it
     /// implements [`JsonSchema`](crate::JsonSchema) (whatever it is called:

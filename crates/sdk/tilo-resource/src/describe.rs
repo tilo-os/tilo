@@ -35,11 +35,30 @@ fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The text of the `#[model(label)]` field of the record of shape `shape`
-/// stored in the map `obj`.
+/// The label of the record of shape `shape` stored in the map `obj`: the
+/// texts of its label fields joined by spaces, else its `#[model(label)]`
+/// field's.
 fn label_of(doc: &Doc, shape: Shape, obj: &ObjId) -> Option<String> {
+    let mut parts: Vec<_> = shape
+        .fields()
+        .iter()
+        .filter(|field| field.label_part > 0)
+        .collect();
+    parts.sort_by_key(|field| field.label_part);
+    let joined: Vec<String> = parts
+        .iter()
+        .filter_map(|field| field_text(doc, obj, field.key))
+        .collect();
+    if !joined.is_empty() {
+        return Some(joined.join(" "));
+    }
     let field = shape.fields().iter().find(|field| field.label)?;
-    let text = match get(doc, obj, field.key)? {
+    field_text(doc, obj, field.key)
+}
+
+/// The first line of the text stored at `key` of the map `obj`.
+fn field_text(doc: &Doc, obj: &ObjId, key: &str) -> Option<String> {
+    let text = match get(doc, obj, key)? {
         (Value::Object(ObjType::Text), id) => doc.text(&id).ok()?,
         (Value::Scalar(scalar), _) => match scalar.as_ref() {
             ScalarValue::Str(text) => text.to_string(),
@@ -112,14 +131,26 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
 /// The label an item written as `value` (its JSON form) carries, for a
 /// collection item of shape `item`.
 fn label_in(item: Shape, value: &serde_json::Value) -> Option<String> {
-    let field = item.fields().iter().find(|field| field.label)?;
-    value
-        .get(field.key)?
-        .as_str()?
-        .lines()
-        .next()
-        .map(|line| line.trim().to_owned())
-        .filter(|line| !line.is_empty())
+    let text = |key: &str| {
+        value
+            .get(key)?
+            .as_str()?
+            .lines()
+            .next()
+            .map(|line| line.trim().to_owned())
+            .filter(|line| !line.is_empty())
+    };
+    let mut parts: Vec<_> = item
+        .fields()
+        .iter()
+        .filter(|field| field.label_part > 0)
+        .collect();
+    parts.sort_by_key(|field| field.label_part);
+    let joined: Vec<String> = parts.iter().filter_map(|field| text(field.key)).collect();
+    if !joined.is_empty() {
+        return Some(joined.join(" "));
+    }
+    text(item.fields().iter().find(|field| field.label)?.key)
 }
 
 fn scalar(value: &Value<'_>) -> Option<Scalar> {

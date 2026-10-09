@@ -2,6 +2,7 @@
 //! crate only generates calls into it.
 
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use proc_macro2::TokenStream as Tokens;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
@@ -147,20 +148,34 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
     Ok(options)
 }
 
-/// `#[model(check = path)]` on the type.
-fn container_check(attrs: &[Attribute]) -> syn::Result<Option<syn::Path>> {
+/// `#[model(check = path, label = "first last")]` on the type: its
+/// invariant, and the fields whose texts, joined by spaces, name a value.
+fn container_options(attrs: &[Attribute]) -> syn::Result<(Option<syn::Path>, Vec<String>)> {
     let mut check = None;
+    let mut label = Vec::new();
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("model")) {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("check") {
                 check = Some(meta.value()?.parse::<syn::Path>()?);
                 Ok(())
+            } else if meta.path.is_ident("label") {
+                let fields = meta.value()?.parse::<syn::LitStr>()?;
+                label = fields
+                    .value()
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                if label.is_empty() {
+                    return Err(meta.error("`label = \"..\"` names the fields that make the label"));
+                }
+                Ok(())
             } else {
-                Err(meta.error("expected `check = path` on the type"))
+                Err(meta
+                    .error("expected `check = path` or `label = \"field field ..\"` on the type"))
             }
         })?;
     }
-    Ok(check)
+    Ok((check, label))
 }
 
 #[allow(
@@ -357,7 +372,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let name = &input.ident;
     let vis = &input.vis;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
-    let check = container_check(&input.attrs)?;
+    let (check, label_parts) = container_options(&input.attrs)?;
     let paths_name = format_ident!("{}Paths", name);
     let mut paths_generics = input.generics.clone();
     paths_generics.params.insert(0, syn::parse_quote!(__R));
@@ -402,6 +417,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         quote!(false)
     }];
     let mut label = None;
+    let mut label_fields = Vec::new();
     let mut readonly_fields = Vec::new();
     let mut get_arms = Vec::new();
     let mut op_coalesce_arms = Vec::new();
@@ -448,6 +464,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 |line| line.trim_end_matches('.').to_owned(),
             );
         let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        let label_part = label_parts
+            .iter()
+            .position(|part| *part == field_name)
+            .map_or(0_u8, |position| {
+                u8::try_from(position).unwrap_or(u8::MAX).saturating_add(1)
+            });
+        if label_part > 0 {
+            label_fields.push((label_part, ident.clone()));
+        }
         let quiet_remove = options.quiet_remove;
         if is_label {
             if label.is_some() {
@@ -538,6 +563,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             unit: #unit,
             readonly: #readonly,
             label: #is_label,
+            label_part: #label_part,
             quiet_remove: #quiet_remove,
         }));
         path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
@@ -684,20 +710,48 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             ));
         }
     };
-    let label_fn = label.as_ref().map_or_else(
-        || quote!(),
-        |ident| {
-            quote! {
-                fn label(&self) -> ::core::option::Option<::std::string::String> {
-                    let mut text = ::std::vec::Vec::new();
-                    #krate::Model::collect_text(&self.#ident, &mut text);
-                    text.into_iter()
-                        .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
-                        .find(|line| !line.is_empty())
-                }
-            }
-        },
+    if label_fields.len() != label_parts.len() {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            format!(
+                "`#[model(label = \"..\")]` names {} field(s) `{name}` does not have",
+                label_parts.len().saturating_sub(label_fields.len())
+            ),
+        ));
+    }
+    label_fields.sort_by_key(|(part, _)| *part);
+    let parts: Vec<&syn::Ident> = label_fields.iter().map(|(_, ident)| ident).collect();
+    let field_label = label.as_ref().map_or_else(
+        || quote!(::core::option::Option::None),
+        |ident| quote!(#krate::__private::first_line(&self.#ident)),
     );
+    let joined = if parts.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            let parts: ::std::vec::Vec<::std::string::String> = [
+                #(#krate::__private::first_line(&self.#parts),)*
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if !parts.is_empty() {
+                return ::core::option::Option::Some(parts.join(" "));
+            }
+        }
+    };
+    let label_fn = if label.is_none() && parts.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            /// The label: the texts of its label fields joined by spaces,
+            /// else its `#[model(label)]` field.
+            fn label(&self) -> ::core::option::Option<::std::string::String> {
+                #joined
+                #field_label
+            }
+        }
+    };
     let paths_doc = format!("The typed paths into a [`{name}`], one per field.");
     let paths_fn_doc = format!("The typed paths into a [`{name}`], rooted at it.");
     Ok(quote! {
