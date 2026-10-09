@@ -171,8 +171,9 @@ impl Snippets {
   collection it acts on. When the collection is not the only one, or the
   parameter name does not equal the field name, `#[action(item = field)]` names
   it; anything else is a compile error.
-- The verb's parameters are a generated struct (`Snippets::NewSnippet { title,
-  folder }`) with a JSON schema derived from the parameter types themselves.
+- The verb's parameters are a generated struct in a module named after the
+  record (`snippets::NewSnippet { title, folder }`) with a JSON schema derived
+  from the parameter types themselves.
   Agents, the palette and forms (§3.3) all use it.
 - Verbs run against the record the framework reads for them, and write back as
   a diff. A verb that only touches one item reads only that item.
@@ -225,12 +226,12 @@ action wraps child edits by hand.
 Things computed from state that people act on (folders derived from snippets,
 tags, smart lists) are derived resources: `#[resource(children = path)]`
 returns typed `Derived` entries whose actions are the parent's verbs with
-arguments bound, e.g. `Derived::new(folder_label).with(Snippets::NEW_SNIPPET.bind(folder = name))`.
+arguments bound, e.g. `Derived::new(folder_label).with(Snippets::NEW_SNIPPET.bind(snippets::NewSnippet::paths().folder, name))`.
 No string ids.
 
 ### 2.6 References to actions
 
-`Snippets::NEW_SNIPPET` is an `ActionRef<Snippets, Snippets::NewSnippet>`. It
+`Snippets::NEW_SNIPPET` is an `ActionRef<Snippets, snippets::NewSnippet>`. It
 carries an `ActionKey` (app id, resource kind, public action id), and building
 its arguments is total: a value that does not serialize, or arguments that do
 not match the schema, is an error at the call site, never `null` or an empty
@@ -276,7 +277,7 @@ undoable, invisible to collaborators. Its fields bind with the same paths; the
 button submits it as one action.
 
 ```rust
-let form = cx.form::<Bookmarks::Add>();
+let form = cx.form::<bookmarks::Add>();
 let url = cx.input(form.paths().url);
 let add = cx.button("bookmarks-add", form.submit());
 ```
