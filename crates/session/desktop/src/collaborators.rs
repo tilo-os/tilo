@@ -2437,20 +2437,16 @@ pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<
         }
     }
     let colors = roster_colors_with_local_user(&roster, local_user);
-    let agent_members = desktop.active_workspace().map_or_else(
-        Vec::new,
-        crate::authority::WorkspaceAuthority::agent_members,
-    );
+    let workspace = desktop.active_workspace();
+    let now = tilo_clock::unix_now();
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
-            let agent_role = agent_members
-                .iter()
-                .find(|(agent, _)| {
-                    agent.eq_ignore_ascii_case(&participant.id)
-                        || agent.eq_ignore_ascii_case(&participant.name)
-                })
-                .map(|(_, kinds)| *kinds);
+            let agent_role = workspace.and_then(|workspace| {
+                workspace
+                    .agent_role_at(&participant.id, now)
+                    .or_else(|| workspace.agent_role_at(&participant.name, now))
+            });
             let is_agent = agent_role.is_some();
             let (red, green, blue) = colors
                 .get(&participant.id)
@@ -2464,7 +2460,7 @@ pub fn collaborator_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 role: agent_role
-                    .map(crate::workspace_settings::agent_kinds_label)
+                    .map(crate::workspace_settings::role_label)
                     .or_else(|| participant.role_id.as_deref().map(display_role_id)),
                 invited: participant.invited,
                 activity: participant

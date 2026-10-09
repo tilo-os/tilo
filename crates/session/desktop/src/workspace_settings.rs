@@ -299,7 +299,11 @@ fn app_action_changes(
             ws.policy
                 .grants
                 .iter()
-                .filter(|grant| grant.subject == subject && grant.node == node)
+                // The grants given for this action, whether through this
+                // operation or by answering the app's ask in place.
+                .filter(|grant| {
+                    grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+                })
                 .map(|grant| Change::Revoke(grant.id.clone()))
                 .collect()
         }
@@ -3254,18 +3258,6 @@ fn draw_agent_row(
         text_renderer,
         theme,
     );
-}
-
-/// What an agent's room grants let it do, as the people panel labels it:
-/// the role a person with the same reach would hold.
-pub fn agent_kinds_label(kinds: tilo_action_policy::KindSet) -> String {
-    role_label(
-        if kinds.contains(tilo_action_policy::ActionKind::Undoable) {
-            CapRole::Editor
-        } else {
-            CapRole::Viewer
-        },
-    )
 }
 
 fn agent_admission_label(kinds: tilo_action_policy::KindSet) -> String {

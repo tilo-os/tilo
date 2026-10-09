@@ -360,6 +360,15 @@ pub fn project_workspace_shortcuts(
 /// Make the map at `key` hold exactly `entries` (key → JSON bytes), writing
 /// only what changed. A missing map is created only when there is something
 /// to write.
+/// The map at `key`, created empty when there is none.
+fn ensure_map(doc: &mut AutoCommit, key: &str) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+    if doc.get(&ROOT, key)?.is_none() {
+        doc.put_object(&ROOT, key, ObjType::Map)?;
+    }
+    Ok(())
+}
+
 fn project_blob_map(
     doc: &mut AutoCommit,
     key: &str,
@@ -480,6 +489,10 @@ pub fn project_room_policy(
         .iter()
         .filter_map(|(person, role)| Some((person.clone(), serde_json::to_vec(role).ok()?)))
         .collect();
+    // The room's members and grants are always present, if empty: readers
+    // of the room's security basis require both.
+    ensure_map(doc, ROOM_MEMBERS_KEY)?;
+    ensure_map(doc, ROOM_GRANTS_KEY)?;
     project_blob_map(doc, ROOM_MEMBERS_KEY, members)?;
     let grants = policy
         .grants

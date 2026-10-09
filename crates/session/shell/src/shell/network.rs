@@ -2796,8 +2796,7 @@ impl ShellNetwork {
             return;
         };
         // The person's own records come back from their always-on hosts as
-        // their owner wrote them; in a shared room, as this device's person
-        // stands in it now.
+        // their owner wrote them; in a shared room, as an editor's op.
         let Some(room) = RoomId::parse(&cluster_id) else {
             return;
         };
@@ -2808,10 +2807,7 @@ impl ShellNetwork {
                 person,
             )
         } else if self.is_in_room(&cluster_id) {
-            let Some(policy) = self.room_policy(room) else {
-                return;
-            };
-            tilo_action_policy::Standing::person(policy, person)
+            editor_standing(&cluster_id, person)
         } else {
             return;
         };
@@ -7332,7 +7328,11 @@ impl ShellNetwork {
 /// The standing of a peer this device did not authenticate, in a network
 /// that does not require it: an editor of `cluster_id`.
 fn unauthenticated_editor(cluster_id: &str, peer: u64) -> tilo_action_policy::Standing {
-    let person = format!("peer:{peer:016x}");
+    editor_standing(cluster_id, format!("peer:{peer:016x}"))
+}
+
+/// `person` as an editor of `cluster_id`, and nothing more.
+fn editor_standing(cluster_id: &str, person: String) -> tilo_action_policy::Standing {
     let mut policy = tilo_action_policy::RoomPolicy::unowned(
         cluster_id,
         &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
@@ -13307,9 +13307,11 @@ mod tests {
         let [document] = queued.as_slice() else {
             panic!("the foreign device's write reaches the broker queue once");
         };
-        assert_eq!(
-            document.author.policy.role_of(&document.author.person),
-            Some(collab_types::Role::Editor)
+        assert!(
+            document
+                .author
+                .is_bounded_by(&tilo_action_policy::Subject::ForeignDevice),
+            "the write is held to the foreign-device bound"
         );
     }
 

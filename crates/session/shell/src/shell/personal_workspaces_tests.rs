@@ -559,12 +559,21 @@ fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
         .merge(&update, &laptop_device.cert, 20)
         .expect("same person");
     assert!(board_list.adopt_into(&mut board, &person));
+    // The laptop renames the room before the board first hears from it.
+    laptop
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room == research)
+        .expect("made here")
+        .name = "Research notes".into();
     assert!(ship_room(
         &mut laptop,
         &mut board,
         research,
         &origin_of(&laptop_device)
     ));
+    assert_eq!(name_of(&board, research), "Research notes");
     assert_eq!(
         board.room_authority(research),
         RoomAuthority::Person(key),

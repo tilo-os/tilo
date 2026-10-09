@@ -54,6 +54,29 @@ pub fn action_rule(
     Rule::new(node.action(action), kinds, answer)
 }
 
+/// The confirmations a grant gives in advance: each allowing rule that
+/// names one action, as (resource, action) — the resource `*` where the
+/// rule covers every resource of its kind.
+#[must_use]
+pub fn advance_consents(grant: &[Rule]) -> Vec<(String, String)> {
+    grant
+        .iter()
+        .filter(|rule| rule.answer == Answer::Allow)
+        .filter_map(|rule| {
+            let segments = rule.node.segments();
+            let Some(Segment::Name(Level::Action, action)) = segments.last() else {
+                return None;
+            };
+            let resource = segments.iter().rev().find_map(|segment| match segment {
+                Segment::Name(Level::Resource, name) => Some(name.clone()),
+                Segment::Any(Level::Resource) => Some("*".to_owned()),
+                _ => None,
+            })?;
+            Some((resource, action.clone()))
+        })
+        .collect()
+}
+
 /// What a shortcut's grant answers for one step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepGrant {

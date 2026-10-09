@@ -356,6 +356,30 @@ impl AgentPreset {
             ],
         }
     }
+
+    /// The changes admitting `agent` with this preset to a room holding
+    /// `held`: its earlier admission, under any preset, is revoked first, so
+    /// admitting it again changes its preset rather than adding to it.
+    #[must_use]
+    pub fn admission(
+        self,
+        room: &str,
+        agent: &str,
+        granted_by: &Subject,
+        held: &[Grant],
+    ) -> Vec<crate::Change> {
+        let prefix = format!("agent-member:{agent}:");
+        let subject = Subject::agent(agent);
+        held.iter()
+            .filter(|grant| grant.subject == subject && grant.id.as_str().starts_with(&prefix))
+            .map(|grant| crate::Change::Revoke(grant.id.clone()))
+            .chain(
+                self.grants(room, agent, granted_by)
+                    .into_iter()
+                    .map(crate::Change::Grant),
+            )
+            .collect()
+    }
 }
 
 /// What a person may do from a device that is not theirs, in any room: read

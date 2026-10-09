@@ -591,18 +591,30 @@ impl PermissionContext {
         json: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> bool {
-        let answer = self.need_answer(
+        match self.invocation_answer(app_id, resource, action, json, argument) {
+            Answer::Allow => true,
+            Answer::Ask => self.standing.bounds.is_empty(),
+            Answer::Deny => false,
+        }
+    }
+
+    /// The answer for invoking `action` on `resource` with these arguments.
+    /// An Ask runs only once the person confirmed it in the host.
+    pub fn invocation_answer(
+        &self,
+        app_id: &str,
+        resource: &tilo_actions::Resource,
+        action: &tilo_actions::ActionSpec,
+        json: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> Answer {
+        self.need_answer(
             app_id,
             &resource.kind,
             resource.id.as_str(),
             &action.id,
             &action.need_for(json, argument),
-        );
-        match answer {
-            Answer::Allow => true,
-            Answer::Ask => self.standing.bounds.is_empty(),
-            Answer::Deny => false,
-        }
+        )
     }
 
     /// May the actor perform `action` on `resource` (of kind

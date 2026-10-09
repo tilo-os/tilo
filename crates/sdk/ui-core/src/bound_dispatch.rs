@@ -1137,6 +1137,23 @@ fn permits_invocation(
     )
 }
 
+/// Whether the room's grants ask the participant before this invocation.
+fn asks_first(
+    binding: &CallbackBinding,
+    resource: &tilo_actions::Resource,
+    action: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+) -> bool {
+    binding.permissions.borrow().invocation_answer(
+        &binding.app_id,
+        resource,
+        action,
+        typed,
+        argument,
+    ) == tilo_action_policy::Answer::Ask
+}
+
 /// The refusal of an invocation the participant may not take.
 pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
     tilo_actions::DoorError::Unavailable {
@@ -2232,6 +2249,15 @@ pub(crate) fn invoke_resource_action(
                     // this invocation needs what its value asks.
                     if !permits_invocation(binding, resource, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
+                    }
+                    // Where the room's grants ask first, the person's
+                    // confirmation in the host is the answer; the broker
+                    // took it before admitting what it delivers.
+                    if !confirmed
+                        && !broker_admitted
+                        && asks_first(binding, resource, spec, arguments.as_ref(), argument)
+                    {
+                        return Err(tilo_actions::DoorError::ConfirmationRequired.into());
                     }
                     crate::invocation_scope::check_continuation(
                         spec,

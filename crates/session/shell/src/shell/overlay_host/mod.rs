@@ -16342,6 +16342,24 @@ impl ShellOverlayHost {
         *handled = true;
     }
 
+    /// Whether the person here may take the governance action `action` in
+    /// the active workspace, which this device governs: whether a sheet
+    /// offering it is drawn. The action itself decides again.
+    fn may_govern_active(&self, action: &str) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        if let Some(forced) = state.test_only_owner_override {
+            return forced;
+        }
+        let user = state.active_local_user();
+        let tree = state.tree();
+        tree.desktop.active_workspace().is_some_and(|ws| {
+            tree.governs_room(ws.room) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
+        })
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "typed settings outcomes are intentionally applied in one exhaustive policy boundary"
@@ -16383,7 +16401,7 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-permission-roles\0".to_string();
             }
             WorkspaceSettingsOutcome::MemberRole(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::SET_ROLE) {
                     let current = self.chrome.as_ref().and_then(|chrome| {
                         chrome
                             .borrow()
@@ -16402,7 +16420,7 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::RemoveMember(user) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REMOVE_MEMBER) {
                     self.workspace_settings_overlay
                         .open_remove_member_sheet(user);
                     if let Some(chrome) = self.chrome.as_ref() {
@@ -16416,7 +16434,7 @@ impl ShellOverlayHost {
                 self.last_search_query = "\0workspace-ownership\0".to_string();
             }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
-                if is_owner {
+                if self.may_govern_active(tilo_action_policy::roles::governance::REVOKE) {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();

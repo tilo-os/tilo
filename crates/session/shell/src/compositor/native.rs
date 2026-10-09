@@ -15120,7 +15120,7 @@ mod tests {
             assert!(command.agent_permitted(), "{permitted}");
         }
         for refused in [
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"revoke","id":"x"}"#,
             r#"{"op":"state_dump"}"#,
             r#"{"op":"actions_invoke","provider":"actions","id":"x"}"#,
@@ -16484,7 +16484,7 @@ mod tests {
             r#"{"op":"click_at","x":10,"y":10}"#,
             r#"{"op":"type","text":"hello"}"#,
             r#"{"op":"snapshot","path":"admin.png"}"#,
-            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","access":"write"}"#,
             r#"{"op":"provision_test_identity"}"#,
             r#"{"op":"actions_enumerate","query":"","agent":"bot"}"#,
             r#"{"op":"state_dump","window":"so.tilo.notes"}"#,

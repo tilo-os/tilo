@@ -1822,10 +1822,10 @@ impl Action {
                 let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
-                    let Some((ws_id, room)) = tree
+                    let Some((ws_id, room, held)) = tree
                         .desktop
                         .active_workspace()
-                        .map(|w| (w.id, w.room.to_string()))
+                        .map(|w| (w.id, w.room.to_string(), w.policy.grants.clone()))
                     else {
                         return Err(ActionError::Refused(
                             "there is no workspace here to add an agent to".into(),
@@ -1833,15 +1833,12 @@ impl Action {
                     };
                     // Ordinary grants on the room, through the tree so they
                     // reach the room document (and other members) and disk.
-                    let changes = preset
-                        .grants(
-                            &room,
-                            &agent,
-                            &tilo_action_policy::Subject::person(user.clone()),
-                        )
-                        .into_iter()
-                        .map(tilo_action_policy::Change::Grant)
-                        .collect();
+                    let changes = preset.admission(
+                        &room,
+                        &agent,
+                        &tilo_action_policy::Subject::person(user.clone()),
+                        &held,
+                    );
                     tree.govern_in_workspace(ws_id, &user, changes).ok()
                 };
                 if granted.is_none() {

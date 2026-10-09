@@ -456,6 +456,21 @@ pub fn decide_capability(
         {
             continue;
         }
+        // An app's or agent's workspace grant makes it an author of the
+        // room, not a holder of storage, devices or network: it never
+        // reaches those, and never widens an explicit read-only file grant.
+        // A workspace restriction still clamps everything.
+        if cap.effect == Effect::Grant
+            && cap.scope == Scope::Workspace
+            && matches!(
+                cap.subject,
+                Subject::Principal(Principal::App(_) | Principal::Agent(_))
+            )
+            && resource != &ResourceRef::Workspace
+            && !matches!(resource, ResourceRef::Room(_))
+        {
+            continue;
+        }
         match cap.effect {
             Effect::Grant if cap.access.implies(access) => granted = true,
             Effect::Restrict if !cap.access.implies(access) => restricted = true,
@@ -472,6 +487,47 @@ pub fn decide_capability(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_apps_workspace_grant_reaches_no_storage_and_widens_no_file_grant() {
+        for (actor, subject) in [
+            (Actor::app("so.tilo.books"), Subject::app("so.tilo.books")),
+            (Actor::agent("reader"), Subject::agent("reader")),
+        ] {
+            let caps = vec![
+                CapOverride::grant(subject.clone(), Scope::Workspace, Access::Write),
+                CapOverride::grant(
+                    subject,
+                    Scope::FsPath("/approved/book.txt".into()),
+                    Access::Read,
+                ),
+            ];
+            let book = ResourceRef::FsPath("/approved/book.txt".into());
+            assert_eq!(
+                decide_capability(&actor, &book, Access::Read, &caps, None),
+                CapDecision::Allow
+            );
+            assert_ne!(
+                decide_capability(&actor, &book, Access::Write, &caps, None),
+                CapDecision::Allow,
+                "authorship of the room does not write the file"
+            );
+            assert_ne!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::FsPath("/home".into()),
+                    Access::Read,
+                    &caps,
+                    None
+                ),
+                CapDecision::Allow
+            );
+            assert_eq!(
+                decide_capability(&actor, &ResourceRef::Workspace, Access::Write, &caps, None),
+                CapDecision::Allow
+            );
+        }
+    }
 
     #[test]
     fn a_grant_reaches_its_scope_and_a_restriction_caps_it() {

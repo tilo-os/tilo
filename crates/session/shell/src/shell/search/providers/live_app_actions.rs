@@ -4539,7 +4539,8 @@ mod tests {
         {
             let id = [
                 "so.tilo.files",
-                "write",
+                "undoable",
+                "files.entry",
                 "room-7",
                 "file:/Brief.md",
                 "files.entry:/Brief.md",
@@ -4623,7 +4624,7 @@ mod tests {
                 record_id: "record".into(),
             }]);
             let provider = LiveAppActionsProvider::new(broker);
-            let local = provider.action_hierarchy("dev.tilo.files\u{1f}write\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
+            let local = provider.action_hierarchy("dev.tilo.files\u{1f}undoable\u{1f}files.entry\u{1f}room-7\u{1f}file:/Brief.md\u{1f}files.entry:/Brief.md\u{1f}rename").unwrap();
             assert_eq!(local.application, "dev.tilo.files");
             assert_eq!(local.room, "room-7");
             assert_eq!(local.record, "file:/Brief.md");
@@ -4666,7 +4667,8 @@ mod tests {
                 provider_id: PROVIDER_ID.into(),
                 id: [
                     "so.tilo.files",
-                    "write",
+                    "undoable",
+                    "files.entry",
                     cluster,
                     "file:/Brief.md",
                     "files.entry:/Brief.md",

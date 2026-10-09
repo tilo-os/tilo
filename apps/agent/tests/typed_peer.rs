@@ -433,7 +433,21 @@ pub fn spawn_with_agent_actions(
             owner.clone(),
         )
     };
+    // In an app it was given actions of, Scribe takes exactly those: every
+    // other action there is refused, its documents stay its to answer in.
     for (app, resource, action) in actions {
+        workspace.grant(tilo_action_policy::Grant::new(
+            format!("reviewed:{app}:other-actions"),
+            tilo_action_policy::Subject::agent("scribe"),
+            workspace
+                .node()
+                .app(*app)
+                .rest()
+                .any(tilo_action_policy::Level::Action),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Deny,
+            owner.clone(),
+        ));
         let node = workspace
             .node()
             .app(*app)

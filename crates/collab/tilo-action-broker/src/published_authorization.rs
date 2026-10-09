@@ -26,7 +26,8 @@ pub fn permits(answer: Answer, direct: bool) -> bool {
 /// Authorize `person` (from a device held to the foreign-device bound when
 /// `capped`) for `action` on `surface` at policy time `now`: the room's
 /// grants must allow the action where it is published *and* a change of the
-/// route record it acts on.
+/// route record it acts on. `Ok(true)` when the grants ask first: the
+/// invocation then runs only on the person's confirmation in the host.
 ///
 /// # Errors
 ///
@@ -39,7 +40,7 @@ pub fn authorize_person_published(
     capped: bool,
     surface: &PublishedSurface,
     action: &PublishedAction,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let record = canonical_record(&surface.route.record_id)?;
     let bound = roles::foreign_device_bound();
     let authority = workspace.person_authority_on(person, capped, &bound);
@@ -56,11 +57,12 @@ pub fn authorize_person_published(
         ),
         collab_types::validator::document_node(&workspace.policy.room, &surface.app_id, &record),
     ];
-    if nodes
+    let answers: Vec<Answer> = nodes
         .iter()
-        .all(|node| permits(authority.decide(node, kind, &cx).answer, !capped))
-    {
-        Ok(())
+        .map(|node| authority.decide(node, kind, &cx).answer)
+        .collect();
+    if answers.iter().all(|answer| permits(*answer, !capped)) {
+        Ok(answers.contains(&Answer::Ask))
     } else {
         Err("not authorized: caller no longer authorized for invocation".into())
     }
@@ -140,6 +142,30 @@ mod tests {
             "reaching outside asks first on a device that is not theirs"
         );
         assert!(authorize_person_published(&w, 10, OWNER, true, &s, &typing).is_ok());
+    }
+
+    #[test]
+    fn an_editor_reaching_outside_is_asked_and_the_owner_is_not() {
+        let mut w = workspace();
+        let member = "member-person";
+        w.admit(member, Role::Editor);
+        let mut send = action("send");
+        send.contract.kind = tilo_actions::ActionKind::Outside;
+        let typing = action("type-text");
+        let s = surface("rec-1", vec![send.clone(), typing.clone()]);
+        assert_eq!(
+            authorize_person_published(&w, 10, member, false, &s, &send),
+            Ok(true),
+            "an editor's outside effect runs only on their confirmation"
+        );
+        assert_eq!(
+            authorize_person_published(&w, 10, member, false, &s, &typing),
+            Ok(false)
+        );
+        assert_eq!(
+            authorize_person_published(&w, 10, OWNER, false, &s, &send),
+            Ok(false)
+        );
     }
 
     #[test]

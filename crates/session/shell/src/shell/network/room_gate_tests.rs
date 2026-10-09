@@ -490,7 +490,7 @@ fn viewer_app_document_is_dropped_at_the_gate() {
     net.dispatch_neighbour_msg(ws, peer, None, false, document());
     let logs = captured.take();
     assert!(logs.contains(GATE_REFUSAL), "{logs}");
-    assert!(logs.contains("Some(Comment)"), "{logs}");
+    assert!(logs.contains(r#"Name(Field, "comments")"#), "{logs}");
 
     let tree = net.replica.lock().expect("replica").tree.clone();
     tree.write()

@@ -758,6 +758,35 @@ impl Workspace {
         agents
     }
 
+    /// The role a person with `agent`'s reach in the room would hold: what
+    /// its grants let it change — the room, only its comments, or nothing.
+    /// `None` when no live grant admits it.
+    #[must_use]
+    pub fn agent_role_at(&self, agent: &str, now: u64) -> Option<Role> {
+        let cx = context_at(now);
+        let room = self.node();
+        let admitted = self.policy.grants.iter().any(|grant| {
+            matches!(&grant.subject, Subject::Agent(held) if held == agent)
+                && grant.node == room
+                && grant.answer != Answer::Deny
+                && grant.is_live(&cx)
+        });
+        if !admitted {
+            return None;
+        }
+        let authority = self.subject_authority(Subject::agent(agent));
+        let changes = |node: &TreePath| {
+            authority.decide(node, ActionKind::Undoable, &cx).answer == Answer::Allow
+        };
+        Some(if changes(&room) {
+            Role::Editor
+        } else if changes(&roles::comments(&self.policy.room)) {
+            Role::Commenter
+        } else {
+            Role::Viewer
+        })
+    }
+
     /// The grants naming a person on one node below the room — the share list
     /// of a resource, apart from the room's roster.
     #[must_use]

@@ -82,11 +82,7 @@ fn serialising_without_history_leaves_out_every_history_field() {
     // Everything that is not history is still there.
     assert_eq!(workspace["tasks"][0]["title"], "Tidy up");
     assert_eq!(workspace["strips"][0]["name"], "Main");
-    assert!(
-        workspace["capabilities"]
-            .as_array()
-            .is_some_and(|caps| !caps.is_empty())
-    );
+    assert_eq!(workspace["policy"]["owner"], "owner");
 
     // The switch is scoped: serialising after it writes history again, so
     // persistence and replication are never affected.

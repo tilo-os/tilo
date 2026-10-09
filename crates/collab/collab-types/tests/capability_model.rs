@@ -187,7 +187,9 @@ fn restrictions_cap_grants_and_devices_stay_apart() {
         CapDecision::NotGranted
     );
 
-    let mut caps = vec![CapOverride::grant(
+    // An app's workspace grant makes it an author of the room; it reaches
+    // no storage, device or network.
+    let workspace_wide = vec![CapOverride::grant(
         Subject::app("org.tilo.Camera"),
         Scope::Workspace,
         Access::Write,
@@ -198,10 +200,25 @@ fn restrictions_cap_grants_and_devices_stay_apart() {
         ResourceRef::NetHost("example.com".into()),
     ] {
         assert_eq!(
-            decide(&app, &resource, Access::Write, &caps),
-            CapDecision::Allow
+            decide(&app, &resource, Access::Write, &workspace_wide),
+            CapDecision::NotGranted,
+            "{resource:?}"
         );
     }
+    assert_eq!(
+        decide(
+            &app,
+            &ResourceRef::Workspace,
+            Access::Write,
+            &workspace_wide
+        ),
+        CapDecision::Allow
+    );
+    let mut caps = vec![CapOverride::grant(
+        Subject::app("org.tilo.Camera"),
+        Scope::FsPath("/var/workspace".into()),
+        Access::Write,
+    )];
     caps.push(CapOverride::new(
         Subject::app("org.tilo.Camera"),
         Scope::FsPath("/var/workspace/finance".into()),
@@ -260,7 +277,7 @@ fn grants_and_restrictions_lapse_at_their_expiry() {
     let caps = vec![
         CapOverride::grant(
             Subject::app("org.tilo.Ebook"),
-            Scope::Workspace,
+            Scope::FsPath("/var/workspace".into()),
             Access::Write,
         ),
         CapOverride::new(

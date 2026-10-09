@@ -1237,9 +1237,9 @@ fn an_unattended_run_takes_a_confirmed_step_only_with_advance_consent() {
     .find_map(|row| row.action)
     .expect("the shortcut is offered");
     assert!(
-        run.description.as_deref().is_some_and(
-            |text| text.contains("Confirmed in advance: `archive` on fixture.drafts:inbox")
-        ),
+        run.description.as_deref().is_some_and(|text| text
+            .split_once("Confirmed in advance: ")
+            .is_some_and(|(_, consents)| consents.contains("`archive` on fixture.drafts:inbox"))),
         "the consent is shown with the shortcut: {:?}",
         run.description
     );

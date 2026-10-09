@@ -4396,9 +4396,14 @@ impl CapnpBrokerState {
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<Option<String>, ActionDirectoryBridgeError> {
         match &contract.confirmation {
+            tilo_actions::ConfirmationPolicy::Confirm | tilo_actions::ConfirmationPolicy::None
+                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) =>
+            {
+                // Without a confirmation policy, a confirmation given anyway
+                // answers the room's ask, if the grants ask; admission
+                // decides whether they do.
+            }
             tilo_actions::ConfirmationPolicy::None => return Ok(None),
-            tilo_actions::ConfirmationPolicy::Confirm
-                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
             tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
                 {}
             _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
@@ -5048,7 +5053,8 @@ impl CapnpBrokerState {
         // Every check of this admission is decided on one committed sample,
         // so a policy change cannot land between the action check and the
         // record check.
-        self.membership
+        let asks = self
+            .membership
             .as_ref()
             .ok_or("workspace authority unavailable")?
             .decide_in_room(&offered.0.route.cluster_id, |workspace| {
@@ -5065,19 +5071,19 @@ impl CapnpBrokerState {
                     actor,
                     now,
                 )?;
-                if !actor.is_agent {
-                    // A person is authorized on the route record (Artifact)
-                    // too, not only on (app, action).
-                    crate::published_authorization::authorize_person_published(
-                        workspace,
-                        now,
-                        &actor.id,
-                        actor.capped,
-                        &offered.0,
-                        &offered.1,
-                    )?;
+                if actor.is_agent {
+                    return Ok::<bool, String>(false);
                 }
-                Ok::<(), String>(())
+                // A person is authorized on the route record (Artifact)
+                // too, not only on (app, action).
+                crate::published_authorization::authorize_person_published(
+                    workspace,
+                    now,
+                    &actor.id,
+                    actor.capped,
+                    &offered.0,
+                    &offered.1,
+                )
             })??;
 
         if (durable.is_some() || execution.is_some())
@@ -5098,10 +5104,15 @@ impl CapnpBrokerState {
         if durable.is_some() && journal.is_none() {
             return Err("durable admission unavailable".into());
         }
-        if !matches!(
-            offered.1.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ) {
+        // Where the room's grants ask first, the person's confirmation in
+        // the host is the answer: the invocation needs a confirmation token
+        // even when the action itself asks for none.
+        if asks
+            || !matches!(
+                offered.1.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            )
+        {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
                     .to_string()
@@ -5428,14 +5439,17 @@ impl CapnpBrokerState {
         actor: &str,
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
-        use tilo_actions::remote::ActionHostError;
+        use tilo_actions::remote::{ActionHostError, Confirmation};
         if matches!(
             offered.contract.advertised_confirmation(),
             tilo_actions::ConfirmationPolicy::None
         ) {
-            return Ok(None);
-        }
-        if !confirmation_satisfied(offered, evidence) {
+            // A confirmation given anyway answers the room's ask, if the
+            // grants ask; admission decides whether they do.
+            if !matches!(evidence, Some(Confirmation::Confirmed)) {
+                return Ok(None);
+            }
+        } else if !confirmation_satisfied(offered, evidence) {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let unavailable = || ActionHostError::Unavailable {

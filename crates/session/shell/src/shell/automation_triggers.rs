@@ -1595,6 +1595,17 @@ mod tests {
                 .with_id("inbox-read"),
             )
             .expect("the owner shares the folder");
+        workspace
+            .grant_as(
+                &owner,
+                CapOverride::grant(
+                    Subject::person("person:me"),
+                    Scope::NetHost("example.org".into()),
+                    Access::Read,
+                )
+                .with_id("me-host"),
+            )
+            .expect("the owner shares a host");
         workspace.shortcuts = vec![event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
@@ -1615,8 +1626,8 @@ mod tests {
             }]
         );
         assert!(
-            readable_folder(&workspace, "me-membership", "person:me")
-                .expect_err("a membership is no folder")
+            readable_folder(&workspace, "me-host", "person:me")
+                .expect_err("a host is no folder")
                 .contains("does not share a folder")
         );
 

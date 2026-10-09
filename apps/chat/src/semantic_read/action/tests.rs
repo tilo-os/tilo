@@ -148,7 +148,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
     .unwrap();
     assert_eq!(encoded.type_id, OPERATION_TYPE);
     let wire = serde_json::to_value(&resource.actions[0].contract).unwrap();
-    assert_eq!(wire["permission"], "read");
+    assert_eq!(wire["kind"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
     assert_eq!(wire["result"]["type"], "json");
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();

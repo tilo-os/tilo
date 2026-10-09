@@ -49,11 +49,23 @@ impl Door {
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Desk");
         workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
         workspace.set_owner(OWNER.to_string());
+        // A helper the owner admits to the room and lets change Notes, and
+        // holds no Settings grant.
+        let owner = tilo_action_policy::Subject::person(OWNER.to_string());
         workspace.admit_agent_preset(
             AGENT,
-            tilo_action_policy::roles::AgentPreset::Operator,
-            &tilo_action_policy::Subject::person(OWNER.to_string()),
+            tilo_action_policy::roles::AgentPreset::Observer,
+            &owner,
         );
+        let notes = workspace.node().app("so.tilo.notes");
+        workspace.grant(tilo_action_policy::Grant::new(
+            "helper-notes",
+            tilo_action_policy::Subject::agent(AGENT),
+            notes,
+            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            owner,
+        ));
         let mut tree = crate::shell::state::WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();

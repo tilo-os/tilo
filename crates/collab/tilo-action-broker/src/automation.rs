@@ -202,6 +202,14 @@ pub fn run_description(shortcut: &Shortcut) -> String {
         description.push_str(". Runs by itself ");
         description.push_str(&triggers.join(" and "));
     }
+    let consents: Vec<String> = tilo_automation::grant::advance_consents(&shortcut.grant)
+        .into_iter()
+        .map(|(resource, action)| format!("`{action}` on {resource}"))
+        .collect();
+    if !consents.is_empty() {
+        description.push_str(". Confirmed in advance: ");
+        description.push_str(&consents.join(", "));
+    }
     description
 }
 
