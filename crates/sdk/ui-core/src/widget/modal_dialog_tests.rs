@@ -119,13 +119,7 @@ fn cursor_at(p: Point) -> WindowEvent {
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::mouse_press;
 
 fn key_press_event(named: NamedKey) -> WindowEvent {
     crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
@@ -935,11 +929,11 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         assert!(dispatch(&mut d, &key_press_event(NamedKey::Escape)));
         assert_eq!(dismissed.get(), 1);
         dispatch(&mut d, &cursor_at(Point::new(10.0, 10.0)));
-        assert!(dispatch(&mut d, &left_press()), "swallowed");
+        assert!(dispatch(&mut d, &mouse_press()), "swallowed");
         assert_eq!(dismissed.get(), 2, "a scrim click dismisses");
         let close = d.close_rect().expect("no Cancel: a close control");
         dispatch(&mut d, &cursor_at(close.center()));
-        dispatch(&mut d, &left_press());
+        dispatch(&mut d, &mouse_press());
         assert_eq!(dismissed.get(), 3, "the close control dismisses");
         assert!(d.handle_detached(
             &key_press_event(NamedKey::Escape),
@@ -960,7 +954,7 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         lay_out(&mut d, WINDOW, &Theme::dark());
         let p = d.primary_rect().center();
         dispatch(&mut d, &cursor_at(p));
-        dispatch(&mut d, &left_press());
+        dispatch(&mut d, &mouse_press());
         assert_eq!(fired.get(), 1, "a click on the primary action fires it");
         dispatch(&mut d, &key_press_event(NamedKey::Enter));
         assert_eq!(fired.get(), 2, "Enter fires the primary action");
@@ -1038,14 +1032,14 @@ fn open_dialog_captures_input_and_closed_dialog_is_inert() {
         let inside = d.content().get_rect().center();
         dispatch(&mut d, &cursor_at(inside));
         let before = events.get();
-        assert!(dispatch(&mut d, &left_press()));
+        assert!(dispatch(&mut d, &mouse_press()));
         assert!(events.get() > before);
     }
 
     // Case `closed_dialog_is_inert`.
     {
         let (mut d, events) = laid_out_counting(false);
-        assert!(!dispatch(&mut d, &left_press()));
+        assert!(!dispatch(&mut d, &mouse_press()));
         assert_eq!(events.get(), 0);
     }
 }
@@ -1219,7 +1213,7 @@ fn a_three_way_question_stands_in_the_platform_order() {
     assert_eq!(cancelled.get(), 1);
     let t = d.tertiary_rect().center();
     dispatch(&mut d, &cursor_at(t));
-    dispatch(&mut d, &left_press());
+    dispatch(&mut d, &mouse_press());
     assert_eq!(discarded.get(), 1);
     assert!(
         footer_buttons(&d)
@@ -1244,7 +1238,7 @@ fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
     assert_eq!(erased.get(), 0, "Return never erases");
     let p = d.primary_rect().center();
     dispatch(&mut d, &cursor_at(p));
-    dispatch(&mut d, &left_press());
+    dispatch(&mut d, &mouse_press());
     assert_eq!(
         erased.get(),
         1,
@@ -1314,7 +1308,7 @@ fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
     dispatch(&mut d, &key_press_event(NamedKey::Enter));
     let p = d.primary_rect().center();
     dispatch(&mut d, &cursor_at(p));
-    dispatch(&mut d, &left_press());
+    dispatch(&mut d, &mouse_press());
     assert_eq!(
         fired.get(),
         0,
@@ -1420,7 +1414,7 @@ fn an_open_list_in_the_content_takes_the_press_before_the_scrim() {
     let below = Point::new(d.dialog_rect().center().x, d.dialog_rect().y1 + 20.0);
     dispatch(&mut d, &cursor_at(below));
     let before = events.get();
-    dispatch(&mut d, &left_press());
+    dispatch(&mut d, &mouse_press());
     assert!(events.get() > before, "the list sees the press");
     assert_eq!(
         dismissed.get(),
@@ -1460,7 +1454,7 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
     // The pointer: press and release on an action answer with it.
     let overwrite = layout.actions[1].center();
     assert_eq!(sheet.handle(&cursor_at(overwrite), 1.0), None);
-    assert_eq!(sheet.handle(&left_press(), 1.0), None);
+    assert_eq!(sheet.handle(&mouse_press(), 1.0), None);
     let release = WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
         state: ElementState::Released,
@@ -1469,7 +1463,7 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
     assert_eq!(sheet.handle(&release, 1.0), Some(SheetResponse::Action(1)));
     // The scrim swallows without answering when the spec says so.
     sheet.handle(&cursor_at(Point::new(5.0, 5.0)), 1.0);
-    assert_eq!(sheet.handle(&left_press(), 1.0), None);
+    assert_eq!(sheet.handle(&mouse_press(), 1.0), None);
     // The keyboard: Enter is the default, Tab walks the actions in the
     // order they stand, Escape dismisses.
     assert_eq!(

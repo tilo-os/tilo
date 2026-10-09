@@ -194,13 +194,7 @@ mod tests {
         }
     }
 
-    fn left_click() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn cursor_move() -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -337,7 +331,7 @@ mod tests {
 
             dialog.show("# config".into());
             assert!(dialog.handle_detached(
-                &left_click(),
+                &mouse_press(),
                 1.0,
                 Modifiers::default(),
                 &mut ui::widget::Edits::lend(&mut doc),
