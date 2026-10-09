@@ -72,6 +72,12 @@ impl Touched {
     pub fn written(&self) -> impl Iterator<Item = &str> {
         self.written.iter().map(String::as_str)
     }
+
+    fn merge(&mut self, other: Self) {
+        self.written.extend(other.written);
+        self.below.extend(other.below);
+        self.all |= other.all;
+    }
 }
 
 /// How one key of a map was touched by a [`Delta`].
@@ -113,6 +119,20 @@ impl Delta {
         Self {
             kind: Kind::Everything,
         }
+    }
+
+    /// Add what `other` touched, so the deltas of several syncs read as one.
+    pub fn merge(&mut self, other: Self) {
+        self.kind = match (std::mem::take(&mut self.kind), other.kind) {
+            (Kind::Everything, _) | (_, Kind::Everything) => Kind::Everything,
+            (Kind::Nothing, other) | (other, Kind::Nothing) => other,
+            (Kind::Indexed(mut index), Kind::Indexed(more)) => {
+                for (obj, touched) in more {
+                    index.entry(obj).or_default().merge(touched);
+                }
+                Kind::Indexed(index)
+            }
+        };
     }
 
     /// The delta Automerge's patches describe.
@@ -495,5 +515,28 @@ mod tests {
         assert_eq!(asked.get(), 1);
         assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
         assert_eq!(delta.under(&block).key("text"), Touch::Below);
+    }
+
+    #[test]
+    fn merged_deltas_read_as_one() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.put(ROOT, "b", 1).unwrap();
+        doc.commit();
+        let mut tracker = Tracker::new();
+        tracker.start(&mut doc);
+        doc.put(ROOT, "a", 2).unwrap();
+        doc.commit();
+        let mut merged = tracker.delta(&mut doc);
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        merged.merge(tracker.delta(&mut doc));
+        assert_eq!(merged.key(&ROOT, "a"), Touch::Written);
+        assert_eq!(merged.key(&ROOT, "b"), Touch::Written);
+        let mut nothing = Delta::nothing();
+        nothing.merge(merged.clone());
+        assert_eq!(nothing.key(&ROOT, "b"), Touch::Written);
+        merged.merge(Delta::everything());
+        assert!(merged.is_everything());
     }
 }

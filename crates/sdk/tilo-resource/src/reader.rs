@@ -88,6 +88,8 @@ pub struct Reader<R: Resource> {
     stale: bool,
     /// The open transaction last read: its base heads and length.
     uncommitted: Option<(Vec<ChangeHash>, usize)>,
+    /// What the last sync that changed the state applied.
+    last: Delta,
 }
 
 impl<R: Resource> Reader<R> {
@@ -108,6 +110,7 @@ impl<R: Resource> Reader<R> {
             revision: 0,
             stale: false,
             uncommitted: None,
+            last: Delta::everything(),
         })
     }
 
@@ -133,6 +136,7 @@ impl<R: Resource> Reader<R> {
             revision: 0,
             stale: false,
             uncommitted: None,
+            last: Delta::everything(),
         }
     }
 
@@ -144,6 +148,13 @@ impl<R: Resource> Reader<R> {
     /// than keep it.
     pub fn state(&self) -> &Rc<R::State> {
         &self.state
+    }
+
+    /// What the last sync that changed the state applied: the parts of the
+    /// document it touched, or [`Delta::everything`] when it read the state
+    /// whole (an open transaction, a failed refresh, the first read).
+    pub fn last_delta(&self) -> &Delta {
+        &self.last
     }
 
     /// Increases whenever the state changes.
@@ -215,10 +226,12 @@ impl<R: Resource> Reader<R> {
 
     fn apply(&mut self, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
         self.stale = true;
+        let mut applied = delta.clone();
         let state = match Rc::get_mut(&mut self.state) {
             Some(state) if !delta.is_everything() => {
                 if R::refresh(state, doc, delta).is_err() {
                     *state = R::read(doc)?;
+                    applied = Delta::everything();
                 }
                 R::load(state, doc, &self.demand)?;
                 None
@@ -229,6 +242,7 @@ impl<R: Resource> Reader<R> {
                 Some(state)
             }
         };
+        self.last = applied;
         if let Some(state) = state {
             self.state = Rc::new(state);
         }
