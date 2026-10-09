@@ -435,9 +435,17 @@ fn settles(operation: &impl Operation) -> bool {
 impl<O: Operation> Stamped<O> {
     /// Whether undoing this goes through `apply`, so what it queued outside
     /// is compensated the same way: a verb that declares its undo, and every
-    /// change of a record that queues (`#[resource(queue = path)]`).
+    /// change of a record that queues (`#[resource(queue = path)]`) a person
+    /// can take back.
     fn compensated(&self) -> bool {
-        if settles(&self.operation) {
+        // Bookkeeping, content from outside and housekeeping are nobody's
+        // undo step: nothing compensates them, however much they wrote.
+        if settles(&self.operation)
+            || matches!(
+                self.operation.change_kind(),
+                tilo_actions::ChangeKind::External | tilo_actions::ChangeKind::Housekeeping
+            )
+        {
             return false;
         }
         O::QUEUES || (self.operation.edit().is_none() && self.operation.compensates())

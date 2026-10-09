@@ -281,6 +281,20 @@ impl Planner {
         self.events.push(cx.id(), Event { title, remote });
     }
 
+    /// Take the events a server sent.
+    #[action(external)]
+    pub fn ingest(&mut self, cx: &mut ActionCx, titles: Vec<String>) {
+        for title in titles {
+            self.events.push(
+                cx.id(),
+                Event {
+                    title,
+                    remote: false,
+                },
+            );
+        }
+    }
+
     /// Every change of a remote event goes to its server.
     fn queue(&mut self, before: &Self, cx: &mut ActionCx) {
         let changed: Vec<(Id, String)> = self
@@ -369,4 +383,19 @@ fn every_change_of_a_record_that_queues_reaches_outside_and_undoes_through_apply
     let settled = planner.apply_action(&settle).unwrap().clone();
     assert!(settled.context.unwrap().compensation.is_none());
     assert_eq!(uploads(&planner).len(), 3);
+}
+
+#[test]
+fn content_from_outside_compensates_nothing_however_much_it_wrote() {
+    let mut planner = Replica::<Planner>::new();
+    let titles: Vec<String> = (0..3000)
+        .map(|n| format!("Pulled event number {n}"))
+        .collect();
+    let ingested = planner
+        .apply(Planner::INGEST.with(titles))
+        .expect("a large ingest is not held to the history budget")
+        .clone();
+    let context = ingested.context.as_ref().unwrap();
+    assert!(context.compensation.is_none(), "nobody undoes it");
+    assert_eq!(planner.state().unwrap().events.len(), 3000);
 }
