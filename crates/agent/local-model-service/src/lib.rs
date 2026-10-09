@@ -339,11 +339,11 @@ pub struct InstalledInProcessModel {
 }
 
 /// The per-user model store every Tilo model service shares:
-/// `$XDG_DATA_HOME/tilo/models`.
-pub fn user_model_root() -> PathBuf {
-    tilo_paths::xdg::data_home()
-        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
-        .join("tilo/models")
+/// `$XDG_DATA_HOME/tilo/models`, or `None` without a data home. There is no
+/// shared fallback: a store anyone can write would let them plant the model
+/// this user runs.
+pub fn user_model_root() -> Option<PathBuf> {
+    tilo_paths::xdg::data_home().map(|data| data.join("tilo/models"))
 }
 
 /// Find the installed in-process model that provides `capability` in the
