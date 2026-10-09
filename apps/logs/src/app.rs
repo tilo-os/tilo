@@ -19,7 +19,7 @@ use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use std::sync::mpsc::{Receiver, TryRecvError};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -742,22 +742,6 @@ fn shell_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// Build a single-child parent node that fills the window.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
-}
-
 fn export_request() -> PickRequest {
     PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
         .thread_name("logs-portal-export")
@@ -812,7 +796,7 @@ impl Widget for LogsApp {
             self.show_inspector(self.effective_selected());
         }
         let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, shell);
+        let node = taffy.fill_node(shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
