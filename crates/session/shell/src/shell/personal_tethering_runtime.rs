@@ -314,13 +314,7 @@ impl PersonalTetheringRuntime {
         };
         let mut host = ProductionHost { network };
         self.pump_with(&mut host, &local, &label, permitted, now_unix_ms);
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         let previous = std::mem::take(&mut self.online_peers);
         for peer in previous.difference(&online) {
             self.peer_unavailable(&mut host, &local, peer);

@@ -92,10 +92,11 @@ pub enum Command {
     },
     /// Revoke capability `id` on the active workspace, through `Workspace::revoke_as` — same authority check as `grant`.
     Revoke { id: String },
-    /// Ask `shell::actions::check_action` whether `actor` may invoke `app`'s `action`, against the live workspace.
+    /// Ask `shell::actions::check_action` whether `actor` may invoke `action` on `app`'s `resource`, against the live workspace.
     CheckAction {
         actor: String,
         app: String,
+        resource: String,
         action: String,
         verb: String,
         #[serde(default)]
@@ -354,6 +355,7 @@ pub trait ControlState {
         &self,
         _actor: &str,
         _app: &str,
+        _resource: &str,
         _action: &str,
         _verb: &str,
         _destructive: bool,
@@ -678,10 +680,11 @@ pub fn dispatch_command<S: ControlState>(
         Command::CheckAction {
             actor,
             app,
+            resource,
             action,
             verb,
             destructive,
-        } => check_action(state, actor, app, action, verb, *destructive),
+        } => check_action(state, actor, app, resource, action, verb, *destructive),
         Command::PlaceNextWindow { app_id } => {
             crate::shell::launcher::set_pending_placement(
                 app_id,
@@ -1191,13 +1194,14 @@ fn check_action<S: ControlState>(
     state: &S,
     actor: &str,
     app: &str,
+    resource: &str,
     action: &str,
     verb: &str,
     destructive: bool,
 ) -> (Response, Vec<PlannedAction>) {
     (
         answer_or_err(
-            state.check_action(actor, app, action, verb, destructive),
+            state.check_action(actor, app, resource, action, verb, destructive),
             "check_failed",
         ),
         Vec::new(),
@@ -1402,18 +1406,22 @@ pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope
         Some(("app", id)) => Ok(Scope::App(id.to_string())),
         Some(("fs", path)) => Ok(Scope::FsPath(path.to_string())),
         Some(("device", d)) => Ok(Scope::Device(d.to_string())),
-        Some(("action", rest)) => match rest.split_once('/') {
-            Some((app, action)) => Ok(Scope::Action {
+        Some(("action", rest)) => match rest
+            .split_once('@')
+            .and_then(|(named, resource)| Some((named.split_once('/')?, resource)))
+        {
+            Some(((app, action), resource)) if !resource.is_empty() => Ok(Scope::Action {
                 app: app.to_string(),
+                resource: resource.to_string(),
                 action: action.to_string(),
             }),
-            None => Err(format!(
-                "action scope must be action:<app>/<action>, got `{s}`"
+            _ => Err(format!(
+                "action scope must be action:<app>/<action>@<resource>, got `{s}`"
             )),
         },
         _ => Err(format!(
             "scope must be workspace, room, app:<id>, fs:<path>, device:<id> \
-             or action:<app>/<action>, got `{s}`"
+             or action:<app>/<action>@<resource>, got `{s}`"
         )),
     }
 }

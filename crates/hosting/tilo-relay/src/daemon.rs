@@ -1523,8 +1523,9 @@ fn open_bound_workspace(
     Ok(rt)
 }
 
-/// Spawn the revocation-refresh loop, the metrics-persist loop, and
-/// one reconnect-with-backoff task per configured peer relay,
+/// Spawn the revocation-refresh loop, the metrics-persist loop, the
+/// membership-file watch, and one reconnect-with-backoff task per configured
+/// peer relay,
 /// returning the abort-on-drop handle list `Relay` owns.
 ///
 /// Each peer-relay task dials via `RelayClient::connect` (same code
@@ -1551,6 +1552,9 @@ fn spawn_background_tasks(
 
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
     push_peer_relay_task(&peer_relay_tasks, metrics_task);
+
+    let membership_task = crate::membership_watch::spawn_membership_watch(&cfg.state_root);
+    push_peer_relay_task(&peer_relay_tasks, membership_task);
 
     for peer_cfg in cfg.peer_relays.iter().cloned() {
         let task = spawn_peer_relay_dial(

@@ -196,6 +196,16 @@ binary name, it is an authenticated Iroh workspace host, not a transport
 relay. Peers prove possession of certified device keys on the `tilo-relay/1`
 ALPN before subscribing.
 
+Devices talk to a host through `crates/hosting/tilo-relay-session`: the
+session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
+anti-entropy, room administration (`RoomAdminClient`) and the workspace join
+client (`WorkspaceJoinClient`). The shell, the action broker, joined rooms and
+the runtime depend on that crate alone; `tilo-relay` is the daemon, depends on
+the session crate and re-exports it under its historic paths, and appears in
+client crates only as a dev-dependency for tests that start a real host. The
+wire messages stay in `tilo-relay-protocol` and the frame codec in
+`tilo-relay-client`.
+
 The shell can attach a host with `ShellNetwork::connect_host`. For unattended
 configuration, `TILO_COLLAB_HOST` accepts an Iroh endpoint id or the JSON
 representation of a complete `EndpointAddr`. Durable messages travel to both the direct gossip mesh and the

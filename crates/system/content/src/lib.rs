@@ -348,7 +348,8 @@ impl ContentStore {
             .map(|stored| stored.hash)
     }
 
-    /// Store everything `reader` yields without holding it in memory.
+    /// Store everything `reader` yields without holding it in memory: the device store sends it
+    /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time.
     ///
     /// # Errors
     /// See [`ContentBackend::put`].

@@ -952,12 +952,14 @@ impl App {
                 features,
                 source_inventory,
                 cached_layer,
+                binary,
             } => Self::packed(crate::builderlayer::pack_with_source(
                 &component,
                 &profile,
                 &features,
                 source_inventory.as_deref(),
                 &cached_layer,
+                binary,
             )),
             Command::AppPack {
                 app,

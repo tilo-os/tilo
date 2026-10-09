@@ -323,7 +323,7 @@ impl StatePeer {
         if document.encryption_required {
             return Err("exact admitted Chat is encrypted".into());
         }
-        media::resolve_chat_binding(app, record, channel, &document.doc).map_err(err)
+        media::resolve_chat_binding(app, record, channel, &*document.doc).map_err(err)
     }
 
     /// Author a room media policy as the governance writer.

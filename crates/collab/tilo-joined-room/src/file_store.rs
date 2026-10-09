@@ -82,8 +82,10 @@ impl Store for FileStore {
             return Err("joined-room store is fenced after an uncertain publication".into());
         }
         preflight_storage(next)?;
+        // A machine file: compact JSON. The cap and its preflight still count
+        // the pretty-printed form, so the compact file always fits it.
         let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
-        serde_json::to_writer_pretty(&mut bytes, next).map_err(|e| e.to_string())?;
+        serde_json::to_writer(&mut bytes, next).map_err(|e| e.to_string())?;
         match tilo_files::native::atomic::replace(
             &self.path,
             &bytes.into_inner(),

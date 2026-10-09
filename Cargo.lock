@@ -2148,6 +2148,7 @@ dependencies = [
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2378,6 +2379,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tracing",
  "uuid",
  "web-time",
  "wire-frame",
@@ -6147,7 +6149,6 @@ dependencies = [
 name = "host-info"
 version = "0.1.0"
 dependencies = [
- "bounded-command",
  "libc",
  "workspace-hack",
 ]
@@ -10561,6 +10562,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-bluez",
  "tilo-crypto",
+ "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -14238,10 +14240,10 @@ dependencies = [
  "bounded-command",
  "browser",
  "bytes",
- "chat",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
+ "chat",
  "chrono",
  "code-editor",
  "collab-fixtures",
@@ -14306,6 +14308,7 @@ dependencies = [
  "signal-hook-registry",
  "smithay",
  "smithay-client-toolkit",
+ "store",
  "sysinfo 0.32.1",
  "taffy",
  "tar",
@@ -14350,11 +14353,13 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-moq",
+ "tilo-nm",
  "tilo-peer-state",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-resource",
  "tilo-rt",
  "tilo-runtime",
@@ -15843,6 +15848,7 @@ dependencies = [
  "tilo-joined-room",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-relay-session",
  "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
@@ -16739,6 +16745,7 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
@@ -16846,7 +16853,6 @@ dependencies = [
  "anyhow",
  "bao-tree",
  "blake3",
- "bounded-command",
  "bytes",
  "clap",
  "cloud-source",
@@ -16884,11 +16890,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -16926,6 +16934,7 @@ dependencies = [
  "tilo-files",
  "tilo-location",
  "tilo-media",
+ "tilo-net",
  "tilo-notify",
  "tilo-rt",
  "tilo-secrets",
@@ -17020,6 +17029,7 @@ dependencies = [
 name = "tilo-joined-room"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "channel-crypto",
  "collab-types",
@@ -17046,6 +17056,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -17255,6 +17266,18 @@ dependencies = [
  "web-transport-quinn",
  "wire-frame",
  "workspace-hack",
+ "zbus",
+]
+
+[[package]]
+name = "tilo-nm"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "thiserror 2.0.21",
+ "tokio",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -17511,7 +17534,9 @@ dependencies = [
  "getrandom 0.4.3",
  "google-cast-protocol",
  "hex",
+ "libc",
  "mdns-sd",
+ "postcard",
  "prost",
  "rand 0.10.1",
  "rand_core 0.10.0",
@@ -17530,9 +17555,11 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "wire-frame",
  "workspace-hack",
  "x509-parser 0.18.1",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -17610,6 +17637,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-rt",
  "tilo-seal",
  "tilo-test-env",
@@ -17669,6 +17697,42 @@ dependencies = [
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-relay-session"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "n0-future",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-automerge-isolate",
+ "tilo-clock",
+ "tilo-delivery-protocol",
+ "tilo-peer-state",
+ "tilo-relay-client",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "uuid",
+ "web-time",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -17837,6 +17901,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",
+ "tilo-relay-session",
  "tilo-resource",
  "tilo-rt",
  "tilo-secrets",

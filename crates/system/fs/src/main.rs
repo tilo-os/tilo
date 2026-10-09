@@ -572,6 +572,11 @@ impl std::fmt::Display for NotGovernor {
 impl std::error::Error for NotGovernor {}
 
 fn main() -> Result<()> {
+    // Before the runtime starts any thread: this executable also serves as
+    // the Automerge worker the conflict merge decodes peer versions in.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // FUSE callbacks poll their futures on the fuser threads via the
     // runtime handle; the workers only serve iroh, sockets and timers.
     let result = tilo_rt::daemon("tilo-fs").run(run_command())?;

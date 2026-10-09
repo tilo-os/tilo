@@ -84,7 +84,7 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
             [Available, Available, Unsupported(WEB_PEER_TO_PEER)],
         ),
         (Feature::Status, [Available, Available, Available]),
-        // Linux asks NetworkManager, which may not be running.
+        // Linux asks the session portal, which may be unavailable or refuse.
         (
             Feature::Metered,
             [Available, Unsupported(NOT_YET), Available],

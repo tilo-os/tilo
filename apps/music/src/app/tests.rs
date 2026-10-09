@@ -3001,10 +3001,15 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         .into_iter()
         .find(|action| action.id == "play")
         .expect("play resource action");
-        assert!(
-            matches!(play.contract.result, tilo_actions::ResultSpec::Job),
+        assert_eq!(
+            play.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false },
             "playing a track answers when its audio starts"
         );
+        play.contract
+            .result
+            .validate(&output)
+            .expect("the actual stream completion must match its published result");
     }
 
     // Phase `play_drives_the_audio_pipeline_path`.

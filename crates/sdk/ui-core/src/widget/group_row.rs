@@ -261,6 +261,8 @@ pub struct GroupRow {
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
+    /// A CPU presenter may move existing pixels only at whole layout pixels.
+    pixel_aligned_scroll: bool,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
@@ -898,6 +900,7 @@ impl GroupRow {
             tab_drop_target: None,
             cross_strip_drop_target: None,
             pan: Pan::default(),
+            pixel_aligned_scroll: false,
             lanes: Vec::new(),
             group_lanes: HashMap::new(),
             focus_lane: 0,
@@ -1755,9 +1758,25 @@ impl GroupRow {
         self.leading_pan().scroll_x
     }
 
-    /// The pan as drawn, preserving fractional motion and input geometry.
+    /// Select the presenter's strip-pan precision. Fractional motion is the default.
+    pub fn set_pixel_aligned_scroll(&mut self, enabled: bool) {
+        if self.pixel_aligned_scroll != enabled {
+            self.pixel_aligned_scroll = enabled;
+            self.scroll_dirty = true;
+        }
+    }
+
+    fn drawn_pan_x(&self, pan: &Pan) -> f64 {
+        if self.pixel_aligned_scroll {
+            pan.scroll_x.round()
+        } else {
+            pan.scroll_x
+        }
+    }
+
+    /// The pan used by layout, input geometry and the presenter's canvas.
     pub fn drawn_scroll_x(&self) -> f64 {
-        self.scroll_x()
+        self.drawn_pan_x(self.leading_pan())
     }
 
     /// Where a strip whose viewport is `viewport` draws: the viewport and a
@@ -3524,7 +3543,7 @@ impl Widget for GroupRow {
                 let (inset, scroll) = if collapsed.get(k).copied().unwrap_or(false) {
                     (0.0, 0.0)
                 } else {
-                    (pan.inset, pan.scroll_x)
+                    (pan.inset, self.drawn_pan_x(pan))
                 };
                 Point::new(pan.viewport.x0 + inset - scroll, pan.viewport.y0)
             })
@@ -3595,7 +3614,7 @@ impl Widget for GroupRow {
             // room for the rubber band left of the content, so the content
             // starts `pad` in and an overscroll pans like any other pan.
             let pan = self.pan_of_lane(k);
-            let scroll = pan.scroll_x();
+            let scroll = self.drawn_pan_x(pan);
             let max_scroll = pan.max_scroll_x();
             let pad = pan.canvas_pad();
             let unbake = crate::retained_present::unbake_scroll()
@@ -6914,6 +6933,22 @@ mod tests {
         relayout_strip(&mut row, viewport_w);
         relayout_strip(&mut row, viewport_w);
         row
+    }
+
+    #[test]
+    fn presenter_pan_precision_moves_real_input_rects_without_rounding_state() {
+        let mut row = strip_at(3, 800.0, 0.0, 1000);
+        let initial = row.groups[0].get_rect().x0;
+        row.set_scroll_x_for_test(120.5);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
+        row.set_pixel_aligned_scroll(true);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 121.0);
+        assert_eq!(row.scroll_x(), 120.5, "the gesture retains its precision");
+        row.set_pixel_aligned_scroll(false);
+        relayout_strip(&mut row, 800.0);
+        assert_eq!(row.groups[0].get_rect().x0, initial - 120.5);
     }
 
     fn set_strip_permille(row: &mut GroupRow, permille: u16) {

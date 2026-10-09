@@ -2835,6 +2835,30 @@ fn selective_publication_covers_foreign_metadata_only_admission_and_new_records(
     .unwrap();
     assert!(restored.covers(&original));
     assert!(restored.covers(&metadata_only));
+    // The covered floor is not coverage of whatever bytes claim it. The
+    // incremental is decoded in the isolate, which refuses a covered change
+    // followed by a copy of it with a bad checksum rather than keeping the
+    // valid prefix and reporting the checkpoint's heads unchanged.
+    let NeighbourMsg::AppDocument { envelope, .. } = &original else {
+        panic!("document publication")
+    };
+    let collab_types::DocumentMutation::Incremental(covered) =
+        collab_types::DocumentMutation::decode(&envelope.payload).unwrap()
+    else {
+        panic!("incremental publication")
+    };
+    let mut bad_checksum = covered.clone();
+    bad_checksum[4] ^= 0x01;
+    let mut corrupt = covered;
+    corrupt.extend_from_slice(&bad_checksum);
+    let mut forged = original.clone();
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
+        panic!("document publication")
+    };
+    envelope.payload = collab_types::DocumentMutation::Incremental(corrupt)
+        .encode()
+        .unwrap();
+    assert!(!restored.covers(&forged));
     let before = governor.clone();
     assert!(
         governor
@@ -2929,5 +2953,7 @@ fn selective_publication_cannot_discard_prior_document_basis() {
     );
 }
 
+#[path = "copy_on_write_tests.rs"]
+mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;

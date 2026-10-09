@@ -256,6 +256,7 @@ fn guarded_json_owned_string_limit_aggregates_across_capability_fields() {
     ));
     many.scope = collab_types::caps::Scope::Action {
         app: "a".repeat(4096),
+        resource: "r".into(),
         action: "b".repeat(4096),
     };
     many.granted_by = Some(collab_types::caps::Principal::Person("x".repeat(4096)));

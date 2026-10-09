@@ -908,38 +908,9 @@ fn private_may_overtake<'a>(
     active_control != Some(room) && queued.all(|frame| control_room(frame) != Some(room))
 }
 
-// Hash the same signed message bytes as the native publication cursor. This
-// target is opt-in: ordinary relay operation does not decode or hash for tracing.
-pub(crate) fn trace_native_publication(
-    phase: &str,
-    envelope: &Envelope,
-    recipient: Option<&[u8; 32]>,
-) {
-    if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
-        return;
-    }
-    let Envelope::Delta {
-        workspace_id,
-        author_device_public_key,
-        delta,
-        ..
-    } = envelope
-    else {
-        return;
-    };
-    let Some(payload) = crate::coedit::CoeditPayload::decode(delta) else {
-        return;
-    };
-    let (kind, body) = match payload {
-        crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
-        crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
-    };
-    tracing::debug!(target: "tilo_relay::native_publication",
-        phase, id = %blake3::hash(&body), kind, workspace_id,
-        author = %hex::encode(&author_device_public_key[..4]),
-        recipient = ?recipient.map(|key| hex::encode(&key[..4])),
-        "native relay publication hop");
-}
+// Both ends trace the same publication hop; the client side lives with the
+// session client.
+pub(crate) use tilo_relay_session::trace_native_publication;
 
 fn inbound_bytes(frame: &EnvelopeV2) -> usize {
     match frame {
@@ -1551,9 +1522,20 @@ fn authorize_replay_now(
     source: &StateSource,
     authority: &crate::persistence::ReplayAuthority,
 ) -> Result<(), StoreError> {
-    let members = store.load_membership()?;
+    // The in-memory set while the membership watch vouches for it; otherwise
+    // the file, as a fresh membership reload would read it.
+    let current = workspace.blocking_lock().membership_is_current();
+    let members = if current {
+        None
+    } else {
+        Some(store.load_membership()?)
+    };
     let runtime = workspace.blocking_lock();
-    let member = (members.contains(&source.peer.device_public_key)
+    let listed = members.as_ref().map_or_else(
+        || runtime.membership.contains(&source.peer.device_public_key),
+        |members| members.contains(&source.peer.device_public_key),
+    );
+    let member = (listed
         && runtime
             .membership_ceiling
             .as_ref()

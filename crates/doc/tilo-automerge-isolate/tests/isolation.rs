@@ -377,6 +377,43 @@ fn a_malformed_tail_refuses_the_whole_input() {
     assert_eq!(doc.save(), before);
 }
 
+/// Into a document that is not blank, `load_incremental` stops at a chunk
+/// whose stored checksum is wrong and keeps what came before it, without an
+/// error. A change with a bad checksum, new or already known, plain or
+/// compressed, must refuse the whole input instead.
+#[test]
+fn a_bad_change_checksum_refuses_the_whole_input() {
+    let isolate = isolate();
+    let mut doc = seeded_doc();
+    let good = remote_change(&mut doc, "good");
+    let mut remote = doc.fork();
+    remote
+        .put(ROOT, "large", "compressible ".repeat(512))
+        .unwrap();
+    remote.commit();
+    let mut last = remote.get_last_local_change().unwrap();
+    let compressed = last.bytes().to_vec();
+    assert_eq!(compressed[8], 2, "fixture must be a compressed change");
+    let known = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
+    for (what, prefix, mut bad) in [
+        ("new change", good.clone(), remote_change(&mut doc, "bad")),
+        ("known change", good.clone(), known),
+        ("compressed change", good, compressed),
+    ] {
+        bad[4] ^= 0x01;
+        let mut input = prefix;
+        input.extend(bad);
+        let before = doc.save();
+        let outcome = isolate.apply(&mut doc, &input, Dependencies::RetainOrphans);
+        assert!(
+            matches!(outcome, Err(Rejected::Invalid(_))),
+            "{what}: {outcome:?}"
+        );
+        assert_eq!(doc.save(), before, "{what}: a refusal changed the document");
+    }
+    still_admits(&isolate);
+}
+
 /// A document big enough that the worker's allocator frees and shrinks heap
 /// while rebuilding it, which reaches libc paths small inputs never do.
 #[test]

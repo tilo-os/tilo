@@ -260,7 +260,7 @@ fn room_media_restore_rejects_present_mismatched_bound_chat() {
             record: String::new(),
         })
         .unwrap()
-        .doc = AutoCommit::load(&bytes).unwrap();
+        .doc = AutoCommit::load(&bytes).unwrap().into();
     assert!(
         StatePeer::restore(
             &peer.durable().unwrap(),
