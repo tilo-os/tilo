@@ -133,7 +133,9 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     assert_eq!(off.tap, Some(false));
     assert_eq!(off.tap_drag_lock, Some(false));
     // Long enough for every notification of the write and one stamp poll.
-    std::thread::sleep(settings_store::live::POLL_INTERVAL + Duration::from_millis(300));
+    std::thread::sleep(
+        settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
+    );
     assert!(
         follower.changed_sections(&live).is_empty(),
         "no further change, no further reconfiguration"

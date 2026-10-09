@@ -380,12 +380,12 @@ mod tests {
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.section("display"), display(1.5));
         // Every notification of that one write is coalesced or found equal.
-        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(200));
+        std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(200)));
         assert_eq!(live.generation(), 1, "one write is one generation");
 
         // A rewrite with identical content is not a change.
         crate::update_section_at(&path, "display", display(1.5)).unwrap();
-        std::thread::sleep(POLL_INTERVAL + Duration::from_millis(200));
+        std::thread::sleep(POLL_INTERVAL.saturating_add(Duration::from_millis(200)));
         assert_eq!(live.generation(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
