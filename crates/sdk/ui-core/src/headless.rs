@@ -6915,6 +6915,7 @@ impl FrameHarness {
                     &self.action_registry,
                     self.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: None,
                         address,
                         resource,
                         spec,
@@ -7057,6 +7058,7 @@ impl FrameHarness {
                     &self.action_registry,
                     self.action_transport.as_mut(),
                     crate::bound_dispatch::ResourceOperation {
+                        target_route: None,
                         address: &intent.address,
                         resource,
                         spec,
@@ -7163,6 +7165,7 @@ impl FrameHarness {
             &self.action_registry,
             self.action_transport.as_mut(),
             crate::bound_dispatch::ResourceOperation {
+                target_route: None,
                 address,
                 resource,
                 spec,

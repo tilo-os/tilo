@@ -13,6 +13,8 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+mod approved_checks;
+pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
@@ -2773,6 +2775,7 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    approved_check_jobs: Mutex<approved_checks::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
     remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
@@ -3560,6 +3563,7 @@ impl CapnpBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                approved_check_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 shortcut_runs: crate::automation::ShortcutRuns::default(),
                 app_action_access: RwLock::new(
@@ -7247,6 +7251,32 @@ impl blob_stream::Server for BlobStreamServer {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn approved_check(
+        self: Rc<Self>,
+        params: channel_handle::ApprovedCheckParams,
+        mut results: channel_handle::ApprovedCheckResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params
+            .get()
+            .and_then(channel_handle::approved_check_params::Reader::get_request)
+            .map_err(|error| error.to_string())
+            .and_then(runtime_collab::approved_checks::Request::decode)
+        {
+            Ok(request) => request,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let context = match approved_checks::context(&self, request) {
+            Ok(context) => context,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        Promise::from_future(async move {
+            let reply = approved_checks::execute(context)
+                .await
+                .map_err(capnp::Error::failed)?;
+            results.get().set_receipt(&reply);
+            Ok(())
+        })
+    }
     fn offer_blob(
         self: Rc<Self>,
         params: channel_handle::OfferBlobParams,
@@ -13207,6 +13237,8 @@ pub mod tests {
     include!("owner_commit_tests.rs");
     #[cfg(test)]
     include!("resolved_invocation_tests.rs");
+    #[cfg(test)]
+    include!("approved_check_rpc_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
