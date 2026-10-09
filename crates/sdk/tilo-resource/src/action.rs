@@ -932,22 +932,6 @@ impl<R: Resource> Invoke<R> {
         })
     }
 
-    /// Select the audited low-risk door when this exact value is opted in.
-    /// The target independently revalidates the decoded value.
-    ///
-    /// # Errors
-    /// Returns the serialization error of `action`.
-    pub fn checked_apply(action: &R::Action) -> Result<Self, serde_json::Error> {
-        let mut invocation = Self::apply(action)?;
-        if R::AUDITED_LOW_MUTATIONS
-            && R::allows_low_mutation(action)
-            && tilo_actions::Action::risk(action) == tilo_actions::RiskLevel::Low
-        {
-            invocation.id = crate::APPLY_LOW;
-        }
-        Ok(invocation)
-    }
-
     /// Several invocations applied as one action: one change, one version,
     /// one undo step. Members that are groups themselves are flattened.
     pub fn group(members: impl IntoIterator<Item = Self>) -> Self {
@@ -970,12 +954,8 @@ impl<R: Resource> Invoke<R> {
                 }));
             }
         }
-        let low = !actions.is_empty()
-            && actions.iter().all(|member| {
-                member.get("action").and_then(serde_json::Value::as_str) == Some(crate::APPLY_LOW)
-            });
         Self {
-            id: if low { crate::GROUP_LOW } else { crate::GROUP },
+            id: crate::GROUP,
             arguments: serde_json::Map::from_iter([(
                 crate::GROUP_PARAM.to_owned(),
                 serde_json::Value::Array(actions),
@@ -988,7 +968,7 @@ impl<R: Resource> Invoke<R> {
 
     /// Whether this is a [`group`](Self::group) of invocations.
     pub fn is_group(&self) -> bool {
-        self.id == crate::GROUP || self.id == crate::GROUP_LOW
+        self.id == crate::GROUP
     }
 
     /// Build the replayable action on this (origin) machine. A group builds

@@ -92,7 +92,6 @@ def source_snapshot():
         "apps/code-editor/src/text_operations_tests.rs",
         "crates/sdk/tilo-resource/src/resource.rs",
         "crates/sdk/tilo-resource/src/action.rs",
-        "crates/sdk/tilo-resource/src/low_mutation.rs",
         "crates/sdk/ui-core/src/semantic_document_read.rs",
         "apps/code-editor/src/app.rs",
         "crates/sdk/ui-core/src/invocation_scope.rs",
