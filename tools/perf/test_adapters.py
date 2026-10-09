@@ -89,6 +89,22 @@ class TappSizes(unittest.TestCase):
         self.assertEqual(x86.meta["registry_sequence"], "753")
         self.assertEqual(records["footprint.tapp.bytes.aarch64"].n, 1)
 
+    def test_only_the_population_counts_and_the_rest_is_named(self):
+        def version(size):
+            return {"tapp_size_bytes": size, "released_at_unix": 1,
+                    "target": {"platform": "tilo-os", "architecture": "x86_64"}}
+
+        entries = {"sequence": 805, "entries": [
+            {"package_id": "so.tilo.runtime", "versions": [version(11_776)]},
+            {"package_id": "so.tilo.a", "versions": [version(2_000_000)]},
+            {"package_id": "so.tilo.b", "versions": [version(3_000_000)]},
+        ]}
+        (x86,) = adapters.tapp_sizes(entries, ENV, {"so.tilo.a", "so.tilo.b"})
+        self.assertEqual((x86.n, x86.p50, x86.max), (2, 2_000_000, 3_000_000))
+        self.assertEqual(x86.meta["not_counted"], "so.tilo.runtime")
+        with self.assertRaises(ValueError):
+            adapters.tapp_sizes(entries, ENV, {"so.tilo.gone"})
+
     def test_an_empty_index_fails(self):
         with self.assertRaises(ValueError):
             adapters.tapp_sizes({"entries": []}, ENV)
