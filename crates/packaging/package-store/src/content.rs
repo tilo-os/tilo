@@ -68,20 +68,6 @@ impl Content<'_> {
         Ok(BlobHash(*stored.as_bytes()))
     }
 
-    /// [`Self::ingest`] for the regular file at `path`, `len` bytes long. A
-    /// large file is imported straight from its path rather than through a
-    /// staged copy.
-    pub(crate) fn ingest_path(&self, len: u64, path: &Path) -> Result<BlobHash, StoreError> {
-        if len <= SMALL_BLOB || !path.is_absolute() {
-            return self.ingest(len, &mut std::fs::File::open(path)?);
-        }
-        let stored = self
-            .runtime
-            .block_on(self.store.ingest_file(path))
-            .map_err(content_error)?;
-        Ok(BlobHash(*stored.as_bytes()))
-    }
-
     /// Run `work`, a batch of ingests, with one database sync at its end
     /// instead of one per blob. The sync runs whatever `work` returned;
     /// nothing the batch wrote counts as stored until this returns `Ok`.
