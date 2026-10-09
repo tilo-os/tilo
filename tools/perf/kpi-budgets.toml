@@ -166,3 +166,83 @@ p50 = 3.0
 p99 = 7.0
 min_delta = 0.25
 source = "KPI document: MCP tool call <= local invoke + 2 ms"
+
+# Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
+# build on the shared `runner` class, input through the control socket,
+# lavapipe. The ceilings are the KPI document's 60 Hz targets ("Input→photon
+# latency": p50 <= 1 refresh + 8 ms, p99 <= 2 refreshes + 8 ms; "Workspace
+# switch": first frame <= 1 refresh, no dropped frame, <= 300 ms in all).
+# This lane has no panel, so they are reported, never enforced; the relative
+# rule catches regressions of the compositor's own work. A dropped-frame count
+# whose baseline is zero has no ratio, so one frame either way is not a change.
+
+[kpi."latency.input_to_frame.pointer"]
+unit = "ms"
+p50 = 24.7
+p99 = 41.3
+source = "KPI document: Input→photon latency (compositor side, headless)"
+
+[kpi."latency.workspace_switch.first_frame"]
+unit = "ms"
+p99 = 16.7
+source = "KPI document: Workspace switch, first frame (compositor side, headless)"
+
+[kpi."latency.workspace_switch.settled"]
+unit = "ms"
+max = 300.0
+source = "KPI document: Workspace switch, total (compositor side, headless)"
+
+[kpi."latency.workspace_switch.dropped_frames"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+source = "KPI document: Workspace switch, dropped frames (compositor side, headless)"
+
+# Latency on reference hardware (scripts/perf/device_latency_bench.py,
+# docs/benchmarks/reference-hardware.md): kernel input event to KMS
+# presentation, per refresh rate. Weekly and report-only; never run by the
+# nightly workflow, so never missing from it.
+
+[kpi."hw.key_to_present.notes.60hz"]
+unit = "ms"
+p50 = 24.7
+p99 = 41.3
+source = "KPI document: Input→photon latency at 60 Hz (to KMS presentation)"
+
+[kpi."hw.key_to_present.notes.144hz"]
+unit = "ms"
+p50 = 14.9
+p99 = 21.9
+source = "KPI document: Input→photon latency at 144 Hz (to KMS presentation)"
+
+[kpi."hw.workspace_switch.first_frame.60hz"]
+unit = "ms"
+p99 = 16.7
+source = "KPI document: Workspace switch, first frame at 60 Hz"
+
+[kpi."hw.workspace_switch.first_frame.144hz"]
+unit = "ms"
+p99 = 6.9
+source = "KPI document: Workspace switch, first frame at 144 Hz"
+
+[kpi."hw.workspace_switch.settled.60hz"]
+unit = "ms"
+max = 300.0
+source = "KPI document: Workspace switch, total at 60 Hz"
+
+[kpi."hw.workspace_switch.settled.144hz"]
+unit = "ms"
+max = 300.0
+source = "KPI document: Workspace switch, total at 144 Hz"
+
+[kpi."hw.workspace_switch.dropped_frames.60hz"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+source = "KPI document: Workspace switch, dropped frames at 60 Hz"
+
+[kpi."hw.workspace_switch.dropped_frames.144hz"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+source = "KPI document: Workspace switch, dropped frames at 144 Hz"
