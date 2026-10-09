@@ -686,13 +686,14 @@ fn import_image_payload(
                 "{relative}: image payload is not a regular file"
             )));
         }
-        let len = std::fs::metadata(&path)?.len();
+        let mut file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
         // A previous interrupted import may already hold this signed blob.
         // Cache completeness selects reuse; it does not verify the source.
         let actual = if content.len(expected)? == Some(len) {
-            BlobHash::of_reader(&mut std::fs::File::open(&path)?)?.0
+            BlobHash::of_reader(&mut file)?.0
         } else {
-            content.ingest_path(len, &path)?
+            content.ingest(len, &mut file)?
         };
         if actual != *expected {
             return Err(StoreError::Payload(format!(
