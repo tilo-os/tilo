@@ -4130,20 +4130,19 @@ impl ShellNetwork {
         };
         let governor = crate::shell::invite_policy::native_governor(owner, room);
         let local_user = crate::shell::state::local_user_id_for_room(&room);
-        let (route, ws) = {
-            let tree = tree_handle.read();
-            let ws = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == local && w.room == room)
-                .ok_or_else(missing)?;
-            // The same decision the invite composer and the palette are
-            // gated on: who may invite, and which authority signs it.
-            let route =
-                crate::shell::invite_policy::may_issue_invitation(&tree, ws, &local_user, governor);
-            (route, ws.clone())
-        };
+        let tree = tree_handle.read();
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == local && w.room == room)
+            .cloned()
+            .ok_or_else(missing)?;
+        // The same decision the invite composer and the palette are gated
+        // on: who may invite, and which authority signs it.
+        let route =
+            crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
+        drop(tree);
         let relay_room = match route {
             InviteRoute::Relay => Some(
                 self.administered_room(ws.room)

@@ -1635,7 +1635,7 @@ fn delegated_inviter_follows_the_capability_policy() {
         .expect("workspace")
         .capabilities
         .push(CapOverride::grant(
-            Subject::person(carol.clone()),
+            Subject::person(carol),
             Scope::Workspace,
             Verb::Invite,
         ));
