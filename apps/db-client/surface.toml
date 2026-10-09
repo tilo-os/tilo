@@ -1,0 +1,204 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "db-client.workspace"
+label = "Database"
+version = 1
+
+[[resources.fields]]
+owner = "workspace"
+path = "connections"
+stored = "collection"
+title = "Saved connections"
+type = "Collection<SavedConnection>"
+
+[[resources.fields]]
+label = true
+owner = "saved-connection"
+path = "connections.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.engine"
+stored = "value"
+title = "Engine"
+type = "Engine"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.host"
+stored = "value"
+title = "Host, for a network engine"
+type = "Atom"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.port"
+stored = "value"
+title = "Port, for a network engine"
+type = "u16"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.database"
+stored = "value"
+title = "Database"
+type = "Atom"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.user"
+stored = "value"
+title = "User"
+type = "Atom"
+
+[[resources.fields]]
+owner = "saved-connection"
+path = "connections.*.file_path"
+stored = "value"
+title = "File, for `SQLite`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "workspace"
+path = "saved_queries"
+stored = "collection"
+title = "Saved queries"
+type = "Collection<SavedQuery>"
+
+[[resources.fields]]
+label = true
+owner = "saved-query"
+path = "saved_queries.*.name"
+stored = "value"
+title = "Name: what search finds it by. Saved SQL can hold credentials or"
+type = "String"
+
+[[resources.fields]]
+owner = "saved-query"
+path = "saved_queries.*.sql"
+stored = "value"
+title = "SQL"
+type = "String"
+
+[[resources.fields]]
+owner = "workspace"
+path = "sql"
+stored = "value"
+title = "SQL: the query buffer, edited a splice at a time"
+type = "String"
+
+[[resources.verbs]]
+description = "Add connection  Save a connection profile; its password stays on each device. A network engine connects on its default port until the port is edited."
+id = "add-connection"
+kind = "undoable"
+label = "Add connection"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Connection name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "engine"
+required = true
+
+[resources.verbs.params.schema]
+description = "Database engine: sqlite, postgres or mysql"
+type = "string"
+
+[[resources.verbs.params]]
+name = "location"
+required = false
+
+[resources.verbs.params.schema]
+description = "Server host, or the SQLite file"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "database"
+required = false
+
+[resources.verbs.params.schema]
+description = "Database name"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "user"
+required = false
+
+[resources.verbs.params.schema]
+description = "User name"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove saved connection"
+destructive = true
+id = "remove-connection"
+kind = "undoable"
+label = "Remove saved connection"
+
+[[resources.verbs.params]]
+name = "connection"
+required = true
+
+[resources.verbs.params.schema]
+description = "Connection"
+type = "string"
+
+[[resources.verbs]]
+description = "Save query  Save SQL under a name: the SQL given, or the query being written."
+id = "save-query"
+kind = "undoable"
+label = "Save query"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Query name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "sql"
+required = false
+
+[resources.verbs.params.schema]
+description = "SQL; the query being written when none"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove saved query"
+destructive = true
+id = "remove-query"
+kind = "undoable"
+label = "Remove saved query"
+
+[[resources.verbs.params]]
+name = "query"
+required = true
+
+[resources.verbs.params.schema]
+description = "Query"
+type = "string"

@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use tilo_actions::Resource;
 use ui::tilo_actions::ActionAddress;
+use ui::tilo_actions::Resource;
 use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
 
@@ -464,7 +464,7 @@ mod tests {
     /// The app's search source over the index's entries, as the framework
     /// builds it.
     fn source(index: &DbSearchIndex) -> impl SearchProvider + use<> {
-        ui::framework::testing::search_source::<crate::resource::DbClient>(index.entries())
+        ui::framework::testing::search_source::<crate::record::Workspace>(index.entries())
     }
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
