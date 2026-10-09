@@ -1,6 +1,5 @@
 [ratchets.action_address_new]
 "apps/chat/src/component_tests.rs" = 7
-"apps/chat/src/events.rs" = 1
 "apps/chat/src/feedback/receipt_read/tests.rs" = 6
 "apps/chat/src/feedback/status_read/tests.rs" = 1
 "apps/chat/src/semantic_read/action/tests.rs" = 1
