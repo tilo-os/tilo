@@ -5887,14 +5887,7 @@ impl CapnpBrokerState {
         }
         self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
-        match self.host_workers.lock() {
-            Ok(mut workers) => {
-                workers.remove(&peer_id);
-            }
-            Err(poisoned) => {
-                poisoned.into_inner().remove(&peer_id);
-            }
-        }
+        self.withdraw_host_worker(peer_id);
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
         }
@@ -5984,6 +5977,17 @@ impl CapnpBrokerState {
             }
         }
         self.publish_action_catalogue();
+    }
+
+    fn withdraw_host_worker(&self, peer_id: u64) {
+        match self.host_workers.lock() {
+            Ok(mut workers) => {
+                workers.remove(&peer_id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&peer_id);
+            }
+        }
     }
 
     fn disconnect_file_transfers(&self, peer_id: u64) {
