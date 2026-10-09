@@ -173,7 +173,7 @@ fn a_malformed_contract_is_rejected_at_decode_with_the_row_named() {
             .get(0)
             .get_descriptor()
             .unwrap()
-            .set_contract_json("{\"permission\":\"everyone\"}");
+            .set_contract_json("{\"kind\":\"everyone\"}");
     })
     .unwrap_err();
     let message = error.to_string();

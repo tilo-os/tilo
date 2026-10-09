@@ -700,10 +700,12 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 4));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 6));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
+                    (WORKSPACE, "grant"),
+                    (WORKSPACE, "revoke"),
                     (WORKSPACE, "create-task"),
                     (WORKSPACE, "queue-agent-task"),
                 ];
@@ -725,7 +727,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 5));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 7));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();

@@ -139,6 +139,14 @@ impl ActionHost for BrokerActionHost {
     ) -> Result<(), ActionHostError> {
         self.broker.state().action_cancel(caller, id)
     }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.broker.state().request_witness(caller, None, request)
+    }
 }
 
 #[cfg(test)]

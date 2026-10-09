@@ -2081,9 +2081,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             target,
             argument: InvokeArgument::Json(arguments),
             context: self.context(),
-            // The MCP client admitted this call under its own
-            // allow/deny policy; that decision is the confirmation.
-            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+            // The MCP client's own allow/deny policy confirms nothing here:
+            // an action that asks is confirmed by the person on their
+            // device (see `start_confirmed`).
+            confirmation: None,
             revision,
             wait_ms: None,
         };
@@ -2337,8 +2338,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok((page, truncated))
     }
-    /// Start `request`, answering an exact-phrase confirmation contract with
-    /// the phrase it names.
+    /// Start `request`. An action that asks for confirmation is put to the
+    /// person this agent acts for, on their own device, and started again
+    /// with their answer; the agent never confirms by its own word.
     async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), String> {
         let Err(error) = self.start(request.clone()).await else {
             return Ok(());
@@ -2346,25 +2348,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if error != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string() {
             return Err(error);
         }
-        // Only an exact-phrase contract refuses the plain confirmation.
-        let revision = match request.revision.clone() {
-            Some(revision) => revision,
-            None => self.current_revision(&request.target.provider).await?,
-        };
-        match self
-            .contract_confirmation(&request.target, &revision)
-            .await?
+        // The person confirms the action as the directory is at this
+        // revision.
+        if request.revision.is_none()
+            && tilo_actions::remote::workspace_provider_room(&request.target.provider).is_none()
         {
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                // The phrase is the one the contract asks at this revision;
-                // the retry is bound to it, so a contract that moved on
-                // since is refused rather than answered with a stale phrase.
-                request.confirmation = Some(tilo_actions::remote::Confirmation::Phrase(phrase));
-                request.revision = Some(revision);
-                self.start(request.clone()).await
-            }
-            _ => Err(error),
+            request.revision = Some(self.current_revision(&request.target.provider).await?);
         }
+        let asked = request.clone();
+        let witnessed = tokio::time::timeout(
+            CONFIRMATION_PATIENCE,
+            self.at_host(false, move |host, caller| host.confirm(caller, &asked)),
+        )
+        .await
+        .map_err(|_| "ConfirmationRequired; the person did not answer in time".to_string())?
+        .ok_or_else(|| "Unavailable".to_string())?
+        .map_err(|error| error.to_string())?;
+        request.confirmation = Some(witnessed);
+        self.start(request.clone()).await
     }
     /// The invocation's update once it is terminal, or after `wait`.
     ///
@@ -2438,24 +2439,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .ok_or_else(|| "Unavailable".to_string())?
         .map(|_| ())
         .map_err(|error| error.to_string())
-    }
-    /// The confirmation the target's current contract asks for.
-    async fn contract_confirmation(
-        &self,
-        target: &RemoteActionTarget,
-        revision: &str,
-    ) -> Result<tilo_actions::ConfirmationPolicy, String> {
-        let page = self
-            .ask(CatalogueQuery::resolve(target, revision.to_owned()))
-            .await?;
-        if page.stale_cursor {
-            return Err("StaleRevision".into());
-        }
-        page.rows
-            .first()
-            .and_then(|row| row.action.as_ref())
-            .map(|action| action.contract.advertised_confirmation())
-            .ok_or_else(|| "NotFound".into())
     }
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_run().map(|run| tilo_actions::ActionContext {
@@ -2603,6 +2586,9 @@ const MAX_WAIT_MS: u64 = 30_000;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+/// How long an invocation waits for the person to confirm it on their
+/// device.
+const CONFIRMATION_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
 /// What `instances` asks: no provider and no rows, which a host answers with

@@ -145,6 +145,14 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     ) -> Result<(), ActionHostError> {
         self.state.action_cancel(caller, id)
     }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.state.request_witness(caller, None, request)
+    }
 }
 
 /// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
@@ -201,6 +209,14 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.state.action_cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.state.request_witness(caller, None, request)
     }
 }
 

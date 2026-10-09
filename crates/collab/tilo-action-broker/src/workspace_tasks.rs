@@ -735,7 +735,14 @@ mod tests {
             tilo_desktop_model::WorkspaceTaskControl::default(),
         );
         let catalogue = actions(&snapshot, "Workspace");
-        assert_eq!(catalogue.len(), 4);
+        // An open task offers its grant set's grant and revoke beside its
+        // own actions.
+        assert_eq!(catalogue.len(), 6);
+        assert!(
+            ["grant", "revoke"]
+                .iter()
+                .all(|id| catalogue.iter().any(|row| row.action == *id))
+        );
         assert_eq!(catalogue[0].resource_label, "Workspace");
         assert_eq!(catalogue[0].resource_kind, "workspace-membership");
         let inspect_action = catalogue
@@ -752,7 +759,7 @@ mod tests {
         task.route = WorkspaceTaskRoute::Model;
         snapshot.tasks = vec![task];
         let managed = actions(&snapshot, "Workspace");
-        assert_eq!(managed.len(), 4);
+        assert_eq!(managed.len(), 6);
         assert!(
             managed
                 .iter()

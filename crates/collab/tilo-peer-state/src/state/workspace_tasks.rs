@@ -440,13 +440,13 @@ mod tests {
             "the grant set ends with the task"
         );
         assert!(
-            !peer
-                .permissions(governor.device_public_key, now)
-                .unwrap()
-                .policy
-                .grants
-                .iter()
-                .any(|grant| grant.subject == Subject::Task(task.clone())),
+            !tilo_desktop_model::projection::room_policy_of(
+                peer.core.room_doc.as_deref().unwrap(),
+                ROOM
+            )
+            .grants
+            .iter()
+            .any(|grant| grant.subject == Subject::Task(task.clone())),
             "and no longer counts as the room's"
         );
     }

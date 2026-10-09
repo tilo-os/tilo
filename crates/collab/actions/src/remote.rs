@@ -908,6 +908,20 @@ pub trait ActionHost {
     /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
     /// does not own, or [`ActionHostError::NotCancellable`].
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+
+    /// Ask the person `caller` acts for to confirm `request` on their own
+    /// device, as the host shows it to them. The answer is a
+    /// [`Confirmation::Witnessed`] that `caller` invokes `request` again
+    /// with; a caller never confirms by its own word. A host with nobody to
+    /// ask answers [`ActionHostError::ConfirmationRequired`].
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        let _ = (caller, request);
+        Pending::ready(Err(ActionHostError::ConfirmationRequired))
+    }
 }
 
 /// A shared host is the host: what lets one be handed to [`serve`], which
@@ -943,6 +957,14 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
         (**self).cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
+        (**self).confirm(caller, request)
     }
 }
 

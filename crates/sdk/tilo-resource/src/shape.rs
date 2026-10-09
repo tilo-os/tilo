@@ -179,11 +179,11 @@ impl Shape {
                         if field.quiet_remove {
                             out.push(path.clone());
                         }
-                        walk(field.shape, &path, out, depth + 1);
+                        walk(field.shape, &path, out, depth.saturating_add(1));
                     }
                 }
                 Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
-                    walk(*item, &format!("{prefix}.*"), out, depth + 1);
+                    walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
                 }
                 Shape::Value => {}
             }

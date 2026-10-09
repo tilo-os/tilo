@@ -1161,7 +1161,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.kind, ActionKind::Undoable);
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce

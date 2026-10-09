@@ -361,7 +361,7 @@ mod tests {
             }
         );
         let restore = action("restore");
-        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Outside);
         assert!(
             restore.contract.validate_declaration().is_empty(),
             "the empty-target restore contract has no misleading confirmation"

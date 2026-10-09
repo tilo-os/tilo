@@ -602,20 +602,50 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
                 .starts_with("TimedOut")
         );
     }
-    // Phase `the_admitted_call_is_the_confirmation_and_terminal_content_survives_the_broker`.
-    // The MCP client's allow/deny decision admitted the call, so an action
-    // whose contract asks for confirmation runs.
+    // Phase `the_person_confirms_on_their_device_and_terminal_content_survives_the_broker`.
+    // The MCP client's own allow/deny decision confirms nothing: an action
+    // whose contract asks for confirmation is put to the person on their
+    // device, and runs on their answer.
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture,room,actor)=fixture();
         let actor_name=actor.clone();
+        let asked=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
+            asked: std::sync::Arc::clone(&asked),
+            answer: AppActionConsent::Deny,
+        }));
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0});
         let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
+        assert_eq!(reply["result"]["isError"],true,"the person declined: {reply}");
+        fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
+            asked: std::sync::Arc::clone(&asked),
+            answer: AppActionConsent::Once,
+        }));
+        // Resolved twice: asked, then started on the person's answer.
+        let invoke=server.handle(call("tilo_invoke",&args));
+        tokio::pin!(invoke);
+        let reply=loop {
+            tokio::select! {
+                reply = &mut invoke => break reply,
+                () = async {
+                    tokio::task::yield_now().await;
+                    drain_directory_bridge(&fixture).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                } => {}
+            }
+        };
+        let reply=reply.unwrap();
         assert_eq!(reply["result"]["isError"],false,"{reply}");
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
+        {
+            let asked = asked.lock().unwrap();
+            assert_eq!(asked.len(), 2, "the person was asked each time");
+            assert!(asked.iter().all(|question| question.confirming && question.person == actor_name));
+        }
         fixture.set_confirmation_required(false);
         fixture.set_result_spec(tilo_actions::ResultSpec::Json {schema:json!({"type":"object"})});
         let invoke=server.handle(call("tilo_invoke",&args));
@@ -646,3 +676,25 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert_eq!(other.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
     })).await;
 }
+
+/// The person at their device, answering every confirmation `answer`.
+struct AnsweringPerson {
+    asked: std::sync::Arc<
+        std::sync::Mutex<Vec<tilo_action_broker::app_actions::AppActionConsentRequest>>,
+    >,
+    answer: AppActionConsent,
+}
+
+impl tilo_action_broker::app_actions::AppActionConsentPrompter for AnsweringPerson {
+    fn ask(
+        &self,
+        request: tilo_action_broker::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+        self.asked.lock().unwrap().push(request);
+        let (answer, asked) = tokio::sync::oneshot::channel();
+        let _ = answer.send(self.answer);
+        Some(asked)
+    }
+}
+
+use tilo_action_broker::app_actions::AppActionConsent;

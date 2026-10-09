@@ -6210,7 +6210,7 @@ mod tests {
                 );
                 assert_eq!(
                     action.contract.kind,
-                    ui::tilo_actions::ActionKind::Undoable,
+                    ui::tilo_actions::ActionKind::Outside,
                     "reading a signed-in page takes the authority to operate it"
                 );
                 assert_eq!(
