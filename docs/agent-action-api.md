@@ -46,7 +46,7 @@ by a token:
   acts through its own collaboration connection and grants, never with the
   admin's. The socket is 0600 in a 0700 directory besides.
 - **It serves the action model only**: enumerate, invoke, status, cancel,
-  `state_dump` and `foreign_frames`. Synthetic input, screenshots, grants,
+  `windows`, `state_dump` and `foreign_frames`. Synthetic input, screenshots, grants,
   fixtures and agent seats are refused with `not_permitted`, naming the
   development socket that serves them.
 - **Every invocation passes the same capability gate** as the palette, as the
@@ -198,6 +198,45 @@ answer is the admission receipt, as before; with `device` it is ignored.
 A client making many calls can keep one connection: `tilo-control actions
 session` reads one wire request per stdin line and writes one answer per stdout
 line, in order, over a single connection.
+
+## `windows` and `state_dump`
+
+`windows` lists the open windows, one row per tab, read straight off the live
+tree:
+
+```json
+{"op":"windows"}
+```
+
+```json
+{"answer":{"windows":[
+  {"workspace":"Home","strip":"Main","group":100,"tab":1000,"kind":"Foreign",
+   "app_id":"so.tilo.notes","title":"Notes","active":true}
+]}}
+```
+
+`active` marks the tab in front of the active workspace's active group. A
+workspace or strip without a name is named by its id. `tilo-control windows`
+asks for this op, and reads the state dump instead when a compositor predates
+it.
+
+`state_dump` answers `workspace_tree`, `chrome`, `peers` and `sharing`. The
+tree is the desktop as it is now. A workspace's append-only history is left
+out: `effect_receipts`, `ownership_transfer_audit`,
+`ownership_transfer_cancellations` and each task's `audit`. That history grows
+with every action ever taken, so the dump stays the same size however long the
+desktop has been in use. Ask for the history explicitly when you need it:
+
+```json
+{"op":"state_dump","include_history":true}
+```
+
+```sh
+tilo-control state-dump --history --pretty
+```
+
+Polling `windows` or the plain dump after each action is cheap. A dump with
+history costs time on the compositor's thread in proportion to that history.
 
 ## Reading a terminal session
 

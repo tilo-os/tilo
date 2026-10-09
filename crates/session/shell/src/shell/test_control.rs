@@ -77,8 +77,15 @@ pub enum Command {
     Snapshot { path: String },
     /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame, and shared legacy windows are encoded only while watched. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport; the agent-control socket accepts it, so a partner's `POST /watch` lease reaches it.
     Watch { watching: bool },
-    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
-    StateDump,
+    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque JSON so future fields don't break the wire.
+    ///
+    /// The tree is the desktop as it is now. A workspace's append-only history — effect receipts, task audit trails, ownership-transfer records — grows with every action ever taken, so it is left out unless `include_history` asks for it (`tilo_desktop_model::history`).
+    StateDump {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_history: bool,
+    },
+    /// The open windows, one row per tab: `workspace`, `strip`, `group`, `tab`, `kind`, `app_id`, `title`, and `active` for the tab in front of the active workspace's active group. Read straight off the live tree, so it costs the windows, not a state dump.
+    Windows,
     /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
     ///
     /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`; `verb` is read / comment / write / invite / admin.
@@ -272,7 +279,8 @@ pub enum Response {
     ForeignFrames { frames: serde_json::Value },
     /// `state_dump` response — persisted `WorkspaceTree` + [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque.
     State {
-        workspace_tree: serde_json::Value,
+        /// Serialised once, straight from the tree, and written into the reply as it is.
+        workspace_tree: RawJson,
         chrome: serde_json::Value,
         /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
@@ -284,6 +292,57 @@ pub enum Response {
     Answer(serde_json::Value),
     /// `clipboard_paste` response. `None` means nothing has been copied — distinct from `Some("")`, an owned empty selection.
     Clipboard { text: Option<String> },
+}
+
+/// JSON text serialised once, straight from a typed value, and written into
+/// the reply as it is. Going through a `serde_json::Value` tree instead costs
+/// several times the serialisation itself for a whole desktop tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawJson(Box<serde_json::value::RawValue>);
+
+impl RawJson {
+    /// JSON `null`.
+    #[must_use]
+    pub fn null() -> Self {
+        Self(serde_json::value::RawValue::NULL.to_owned())
+    }
+
+    /// `value` as JSON text, or `null` if it will not serialise. The derived
+    /// `Serialize` impls are infallible in practice, and this crate builds
+    /// with `panic = "abort"`, so a hypothetical bad value must not take the
+    /// compositor down.
+    pub fn of<T: Serialize + ?Sized>(value: &T) -> Self {
+        serde_json::value::to_raw_value(value).map_or_else(
+            |error| {
+                tracing::error!(
+                    target: "shell::compositor::test_control",
+                    %error,
+                    "failed to serialise a state dump field; answering null"
+                );
+                Self::null()
+            },
+            Self,
+        )
+    }
+
+    /// The JSON text.
+    #[must_use]
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+
+    /// Parsed into a [`serde_json::Value`], for a reader that walks it.
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::from_str(self.get()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl PartialEq for RawJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
 }
 
 /// One `list_targets` entry. `rect` is `(x, y, w, h)` in the compositor's coordinate space.
@@ -306,9 +365,17 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
-    fn workspace_tree_json(&self) -> serde_json::Value {
-        serde_json::Value::Null
+    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+        RawJson::null()
+    }
+    /// The open windows, one row per tab ([`Command::Windows`]), from the live tree. Default impl refuses: "no tree" must not read as "no windows".
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal when this control state has no live tree.
+    fn windows_json(&self) -> Result<serde_json::Value, String> {
+        Err("no live workspace tree on this control state".to_string())
     }
     /// JSON view of [`ChromeState`](crate::shell::chrome_state::ChromeState) (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
     fn chrome_state_json(&self) -> serde_json::Value {
@@ -672,7 +739,16 @@ pub fn dispatch_command<S: ControlState>(
         }),
         Command::Snapshot { path } => snapshot(path),
         Command::ForeignFrames => foreign_frames(state),
-        Command::StateDump => state_dump(state),
+        Command::StateDump { include_history } => state_dump(state, *include_history),
+        Command::Windows => (
+            answer_or_err(
+                state
+                    .windows_json()
+                    .map(|windows| serde_json::json!({ "windows": windows })),
+                "windows_failed",
+            ),
+            Vec::new(),
+        ),
         Command::Grant {
             subject,
             scope,
@@ -1168,16 +1244,70 @@ fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) 
 }
 
 /// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
-fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+fn state_dump<S: ControlState>(state: &S, include_history: bool) -> (Response, Vec<PlannedAction>) {
     (
         Response::State {
-            workspace_tree: state.workspace_tree_json(),
+            workspace_tree: state.workspace_tree_json(include_history),
             chrome: state.chrome_state_json(),
             peers: state.peers_json(),
             sharing: state.sharing_json(),
         },
         Vec::new(),
     )
+}
+
+/// [`Command::Windows`]: one row per tab of `desktop` — where it is, which
+/// app shows it, and whether it is the tab in front of the active
+/// workspace's active strip and group. A workspace or strip without a name
+/// is named by its id; `kind` is the tile's variant and `app_id` the app it
+/// names, if any.
+#[must_use]
+pub fn window_rows(desktop: &crate::shell::state::DesktopTree) -> Vec<serde_json::Value> {
+    fn named(name: &str, id: u64) -> serde_json::Value {
+        if name.is_empty() {
+            id.into()
+        } else {
+            name.into()
+        }
+    }
+    let mut rows = Vec::new();
+    for workspace in &desktop.workspaces {
+        let workspace_active = workspace.id == desktop.active;
+        let active_strip = desktop.active_strip.get(&workspace.id);
+        for strip in &workspace.strips {
+            let strip_active = workspace_active && active_strip == Some(&strip.id);
+            let active_group = desktop.active_group.get(&strip.id);
+            for group in &strip.window_groups {
+                let group_active = strip_active && active_group == Some(&group.id);
+                for tab in &group.tabs {
+                    let (kind, app_id) = tile_kind(&tab.tile);
+                    rows.push(serde_json::json!({
+                        "workspace": named(&workspace.name, workspace.id.0),
+                        "strip": named(&strip.name, strip.id.0),
+                        "group": group.id,
+                        "tab": tab.id,
+                        "kind": kind,
+                        "app_id": app_id,
+                        "title": tab.title,
+                        "active": group_active && group.active_tab == tab.id,
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// A tile's variant name and the `app_id` it carries, as its JSON spells them.
+fn tile_kind(tile: &crate::shell::state::TileContent) -> (String, serde_json::Value) {
+    match serde_json::to_value(tile).unwrap_or_default() {
+        serde_json::Value::String(kind) => (kind, serde_json::Value::Null),
+        serde_json::Value::Object(variant) => variant.into_iter().next().map_or_else(
+            || (String::new(), serde_json::Value::Null),
+            |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
+        ),
+        _ => (String::new(), serde_json::Value::Null),
+    }
 }
 
 /// [`Command::Grant`]: grant a capability through the authority check.
@@ -1563,7 +1693,7 @@ pub const AGENT_CONTROL_NOT_PERMITTED: &str =
 /// serve. It names where the rest of the protocol lives, so a caller that
 /// reached for input learns the semantic route rather than retrying.
 pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
-     (actions list/invoke/status/cancel, state-dump, foreign-frames); synthetic input and \
+     (actions list/invoke/status/cancel, windows, state-dump, foreign-frames); synthetic input and \
      screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
 
 /// Protocol error for an action or screenshot asked for while the session
@@ -1585,7 +1715,8 @@ impl Command {
                 | Self::ActionsInvoke { .. }
                 | Self::ActionsStatus { .. }
                 | Self::ActionsCancel { .. }
-                | Self::StateDump
+                | Self::StateDump { .. }
+                | Self::Windows
                 | Self::ForeignFrames
         )
     }
@@ -1710,7 +1841,28 @@ mod tests {
             // Phase `parse_state_dump_command_round_trips`.
             {
                 let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
-                assert_eq!(cmd, Command::StateDump);
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: false
+                    }
+                );
+                // An older client's request is unchanged on the wire.
+                assert_eq!(
+                    serde_json::to_value(&cmd).unwrap(),
+                    serde_json::json!({ "op": "state_dump" })
+                );
+                let cmd = parse_command(r#"{"op":"state_dump","include_history":true}"#).unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: true
+                    }
+                );
+                assert_eq!(
+                    parse_command(r#"{"op":"windows"}"#).unwrap(),
+                    Command::Windows
+                );
             }
 
             // Phase `serialise_response_emits_kebab_friendly_json`.
@@ -1740,7 +1892,7 @@ mod tests {
             // Phase `serialise_state_response_emits_workspace_tree_chrome_and_peers`.
             {
                 let resp = Response::State {
-                    workspace_tree: serde_json::json!({ "workspaces": [] }),
+                    workspace_tree: RawJson::of(&serde_json::json!({ "workspaces": [] })),
                     chrome: serde_json::json!({ "overlays": {} }),
                     peers: serde_json::json!({ "pointers": [] }),
                     sharing: serde_json::json!({ "exposures": [] }),
@@ -1754,6 +1906,12 @@ mod tests {
                 assert!(out.contains("\"chrome\""), "got {out}");
                 assert!(out.contains("\"peers\""), "got {out}");
                 assert!(out.contains("\"sharing\""), "got {out}");
+                // The pre-serialised tree is spliced in as JSON, not as a string.
+                let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+                assert_eq!(
+                    parsed["state"]["workspace_tree"],
+                    serde_json::json!({ "workspaces": [] })
+                );
             }
         }
 
@@ -1805,7 +1963,12 @@ mod tests {
                         "revision": 7_u64,
                     }),
                 };
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty(), "state_dump must have no side effects");
                 let Response::State {
                     workspace_tree,
@@ -1816,6 +1979,7 @@ mod tests {
                 else {
                     panic!("expected Response::State, got something else");
                 };
+                let workspace_tree = workspace_tree.to_value();
                 assert!(
                     workspace_tree.get("workspaces").is_some(),
                     "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
@@ -1831,7 +1995,12 @@ mod tests {
             // Phase `state_dump_default_impl_returns_nulls`.
             {
                 let state = StaticState::new(&[]);
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty());
                 let Response::State {
                     workspace_tree,
@@ -1842,10 +2011,111 @@ mod tests {
                 else {
                     panic!("expected Response::State");
                 };
-                assert!(workspace_tree.is_null());
+                assert!(workspace_tree.to_value().is_null());
                 assert!(chrome.is_null());
             }
+
+            // Phase `windows_answers_rows_or_refuses_without_a_tree`.
+            {
+                let (resp, actions) = dispatch_command(&Command::Windows, &StaticState::new(&[]));
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("no tree is not the same answer as no windows");
+                };
+                assert_eq!(code, "windows_failed");
+                let state = StateDumpMockState {
+                    workspace_tree: serde_json::Value::Null,
+                    chrome: serde_json::Value::Null,
+                };
+                let (resp, actions) = dispatch_command(&Command::Windows, &state);
+                assert!(actions.is_empty());
+                assert_eq!(
+                    resp,
+                    Response::Answer(serde_json::json!({ "windows": [{ "tab": 1 }] }))
+                );
+            }
         }
+    }
+
+    /// One workspace, two strips; the active strip holds two groups, the
+    /// active one with two tabs.
+    fn windows_fixture() -> crate::shell::state::DesktopTree {
+        use crate::shell::state::{
+            AppKind, DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId,
+        };
+        let tab = |id, title: &str, tile| Tab {
+            id,
+            title: title.to_string(),
+            tile,
+        };
+        let group = |id, tabs: Vec<Tab>, active_tab| WindowGroup {
+            id,
+            tabs,
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let notes = || TileContent::Foreign {
+            app_id: "so.tilo.notes".into(),
+            surface_id: 9,
+        };
+        let mut home = Workspace::new(WorkspaceId(1), "Home");
+        let mut main = Strip::new(crate::shell::state::StripId(10), "Main");
+        main.window_groups = vec![
+            group(
+                100,
+                vec![
+                    tab(1000, "Notes", notes()),
+                    tab(
+                        1001,
+                        "Placeholder",
+                        TileContent::Stub {
+                            kind: AppKind::Terminal,
+                            label: "Terminal".into(),
+                        },
+                    ),
+                ],
+                1001,
+            ),
+            group(101, vec![tab(1010, "Notes 2", notes())], 1010),
+        ];
+        let mut unnamed = Strip::new(crate::shell::state::StripId(11), "");
+        unnamed.window_groups = vec![group(
+            110,
+            vec![tab(1100, "Activity", TileContent::WorkspaceActivity)],
+            1100,
+        )];
+        home.strips = vec![main, unnamed];
+        let mut tree = DesktopTree {
+            workspaces: vec![home],
+            active: WorkspaceId(1),
+            ..DesktopTree::default()
+        };
+        tree.active_strip
+            .insert(WorkspaceId(1), crate::shell::state::StripId(10));
+        tree.active_group
+            .insert(crate::shell::state::StripId(10), 100);
+        tree
+    }
+
+    #[test]
+    fn windows_list_every_tab_with_its_app_place_and_the_one_in_front() {
+        let rows = window_rows(&windows_fixture());
+        assert_eq!(
+            serde_json::Value::Array(rows),
+            serde_json::json!([
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1000, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes", "active": false},
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1001, "kind": "Stub",
+                 "app_id": null, "title": "Placeholder", "active": true},
+                {"workspace": "Home", "strip": "Main", "group": 101, "tab": 1010, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes 2", "active": false},
+                // An unnamed strip is named by its id; a unit tile by its variant.
+                {"workspace": "Home", "strip": 11, "group": 110, "tab": 1100, "kind": "WorkspaceActivity",
+                 "app_id": null, "title": "Activity", "active": false},
+            ])
+        );
     }
 
     #[test]
@@ -2583,11 +2853,14 @@ mod tests {
         fn widget_registry(&self) -> HashMap<String, Rect> {
             HashMap::new()
         }
-        fn workspace_tree_json(&self) -> serde_json::Value {
-            self.workspace_tree.clone()
+        fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+            RawJson::of(&self.workspace_tree)
         }
         fn chrome_state_json(&self) -> serde_json::Value {
             self.chrome.clone()
+        }
+        fn windows_json(&self) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!([{ "tab": 1 }]))
         }
     }
 
