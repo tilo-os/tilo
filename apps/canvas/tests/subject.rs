@@ -244,13 +244,11 @@ fn an_accepted_edge_job_allows_its_participants_published_inspect() {
             canvas::resource::Inspect::default(),
         ))
         .unwrap();
-    assert!(
-        output.value.unwrap()["marks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|mark| mark["id"] == "photo")
-    );
+    let inspected = output.value.unwrap();
+    let marks = inspected["marks_bottom_first"]
+        .as_array()
+        .unwrap_or_else(|| panic!("inspect did not publish its marks: {inspected}"));
+    assert!(marks.iter().any(|mark| mark["id"] == "photo"));
     app.harness()
         .wait_until(ui::time::Duration::from_secs(10), |harness| {
             harness
