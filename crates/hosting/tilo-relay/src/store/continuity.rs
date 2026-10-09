@@ -23,7 +23,19 @@ pub(crate) struct Evidence {
 impl Evidence {
     /// The caller must freshly authorize this source before accepting its input.
     pub(crate) fn authenticated(envelope: &Envelope, peer: &AuthenticatedPeer) -> Option<Self> {
-        let Envelope::Delta { workspace_id, .. } = envelope else {
+        let Envelope::Delta {
+            workspace_id,
+            delta,
+            ..
+        } = envelope
+        else {
+            return None;
+        };
+        // Metadata only rejects ordinary deltas. Checkpoints still require
+        // complete wrapper validation and authenticated group matching below.
+        let Some((_, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
+        else {
             return None;
         };
         let bytes = crate::transport::encode(envelope).ok()?;
