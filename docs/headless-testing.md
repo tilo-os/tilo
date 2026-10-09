@@ -160,9 +160,10 @@ not establish application identity.
 
 After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
-provider/ID with its declared arguments. Inspect the invocation receipt and,
-when pending, use `actions status INVOCATION_ID` until it reaches a terminal
-state. Then read back the affected resource or desktop state to verify the
+provider/ID with its declared arguments, adding `--wait` so the answer is the
+result and not the admission. To follow a pending receipt, use
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
+`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
 presented app identity, surface, frame count, and rendering errors for foreign
