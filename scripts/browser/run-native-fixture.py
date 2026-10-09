@@ -7,6 +7,7 @@ test-environment wrapper cannot race their profile writes during cleanup.
 """
 import ctypes
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -19,6 +20,10 @@ def main(arguments):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
         raise OSError(ctypes.get_errno(), "could not supervise fixture descendants")
+    # An intentional renderer SIGSEGV must reach CEF's real termination callback
+    # within the fixture's bound. Dumping libcef's large process image can keep
+    # that same process alive past the bound; this owned fixture needs no cores.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     result = subprocess.run(arguments, check=False)
     deadline = time.monotonic() + 40
     while True:
