@@ -330,6 +330,33 @@ fn flatpak_remote_enabled_from(
     run_host_command(command)
 }
 
+/// Update or uninstall (`verb`) the account's `app_id`.
+fn flatpak_app_from(binary: &std::path::Path, verb: &str, app_id: &str) -> Result<String, Error> {
+    require_flatpak_selector(app_id)?;
+    let mut command = std::process::Command::new(binary);
+    command.args([verb, "--user", "--noninteractive", "--", app_id]);
+    run_host_command(command)
+}
+
+/// Add the account source `name` at `url`, unless one of that name exists.
+fn flatpak_remote_add_from(
+    binary: &std::path::Path,
+    name: &str,
+    url: &str,
+) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args(["remote-add", "--user", "--if-not-exists", "--", name, url]);
+    run_host_command(command)
+}
+
+fn flatpak_remote_delete_from(binary: &std::path::Path, name: &str) -> Result<String, Error> {
+    require_flatpak_selector(name)?;
+    let mut command = std::process::Command::new(binary);
+    command.args(["remote-delete", "--user", "--force", "--", name]);
+    run_host_command(command)
+}
+
 fn flatpak_install_remote_from(
     binary: &std::path::Path,
     remote: &str,
@@ -879,32 +906,25 @@ impl app_host::Server for AppHostServer {
                 return Err(Error::failed("Flatpak reference exceeds 64 KiB".into()));
             }
             let status = tokio::task::spawn_blocking(move || {
-                let mut command = std::process::Command::new("flatpak");
+                let flatpak = std::path::Path::new("/usr/bin/flatpak");
                 match action {
                     WireFlatpakAction::Install => {
-                        command.args(["install", "--user", "--noninteractive"]);
                         if reference.is_empty() {
-                            return flatpak_install_flathub_from(
-                                std::path::Path::new("/usr/bin/flatpak"),
-                                &app_id,
-                            );
+                            return flatpak_install_flathub_from(flatpak, &app_id);
                         }
                         let mut staged = tempfile::NamedTempFile::new()
                             .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
                         staged
                             .write_all(&reference)
                             .map_err(|e| Error::failed(format!("stage Flatpak reference: {e}")))?;
+                        let mut command = std::process::Command::new(flatpak);
+                        command.args(["install", "--user", "--noninteractive", "--"]);
                         command.arg(staged.path());
-                        return run_host_command(command);
+                        run_host_command(command)
                     }
-                    WireFlatpakAction::Update => {
-                        command.args(["update", "--user", "--noninteractive", &app_id]);
-                    }
-                    WireFlatpakAction::Remove => {
-                        command.args(["uninstall", "--user", "--noninteractive", &app_id]);
-                    }
+                    WireFlatpakAction::Update => flatpak_app_from(flatpak, "update", &app_id),
+                    WireFlatpakAction::Remove => flatpak_app_from(flatpak, "uninstall", &app_id),
                 }
-                run_host_command(command)
             })
             .await
             .map_err(|e| Error::failed(format!("join: {e}")))??;
@@ -936,23 +956,18 @@ impl app_host::Server for AppHostServer {
                 .to_string()
                 .map_err(|e| Error::failed(e.to_string()))?;
             let status = tokio::task::spawn_blocking(move || {
-                let mut command = std::process::Command::new("flatpak");
+                let flatpak = std::path::Path::new("/usr/bin/flatpak");
                 match action {
-                    WireRemoteAction::Add => {
-                        command.args(["remote-add", "--user", "--if-not-exists", &name, &url]);
-                    }
-                    WireRemoteAction::Remove => {
-                        command.args(["remote-delete", "--user", "--force", &name]);
-                    }
+                    WireRemoteAction::Add => flatpak_remote_add_from(flatpak, &name, &url),
+                    WireRemoteAction::Remove => flatpak_remote_delete_from(flatpak, &name),
                     WireRemoteAction::Enable | WireRemoteAction::Disable => {
-                        return flatpak_remote_enabled_from(
-                            std::path::Path::new("/usr/bin/flatpak"),
+                        flatpak_remote_enabled_from(
+                            flatpak,
                             &name,
                             action == WireRemoteAction::Enable,
-                        );
+                        )
                     }
                 }
-                run_host_command(command)
             })
             .await
             .map_err(|e| Error::failed(format!("join: {e}")))??;
@@ -1281,6 +1296,39 @@ exit 1
                 .to_string()
                 .contains("No account source with that name")
         );
+    }
+
+    #[test]
+    fn app_and_source_changes_end_options_before_caller_values() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("flatpak");
+        std::fs::write(&binary, "#!/bin/sh\nprintf '%s ' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            super::flatpak_app_from(&binary, "uninstall", "org.example.App")
+                .unwrap()
+                .trim(),
+            "uninstall --user --noninteractive -- org.example.App"
+        );
+        assert_eq!(
+            super::flatpak_remote_add_from(&binary, "tools", "--no-gpg-verify")
+                .unwrap()
+                .trim(),
+            "remote-add --user --if-not-exists -- tools --no-gpg-verify"
+        );
+        assert_eq!(
+            super::flatpak_remote_delete_from(&binary, "tools")
+                .unwrap()
+                .trim(),
+            "remote-delete --user --force -- tools"
+        );
+        // `--all` would uninstall every app the account has.
+        for selector in ["--all", "--delete-data", "", "a b"] {
+            assert!(super::flatpak_app_from(&binary, "uninstall", selector).is_err());
+            assert!(super::flatpak_remote_add_from(&binary, selector, "https://x").is_err());
+            assert!(super::flatpak_remote_delete_from(&binary, selector).is_err());
+        }
     }
 
     #[test]

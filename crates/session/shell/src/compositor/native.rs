@@ -6664,15 +6664,20 @@ fn install_device_fabric_bridge(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) {
     let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
-        None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
+        None::<(Instant, u64, crate::shell::overlay_host::DeviceFabricView)>,
     ));
+    // `pw-dump` and `wpctl` run on the graph's own thread; the view reads
+    // the graph as last read and never waits on `PipeWire`.
+    let local_audio =
+        crate::shell::local_audio_graph::LocalAudioGraph::system(fabric_net.loop_waker());
     host.set_device_fabric_bridge({
         let fabric_cache = std::rc::Rc::clone(&fabric_cache);
         std::rc::Rc::new(move |action| {
             use crate::shell::overlay_host::DeviceFabricUiAction;
             if matches!(action, DeviceFabricUiAction::Snapshot)
-                && let Some((updated, view)) = fabric_cache.borrow().as_ref()
+                && let Some((updated, audio_revision, view)) = fabric_cache.borrow().as_ref()
                 && updated.elapsed() < Duration::from_millis(750)
+                && *audio_revision == local_audio.revision()
             {
                 return Ok(view.clone());
             }
@@ -6707,13 +6712,22 @@ fn install_device_fabric_bridge(
                     )?;
                 }
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
-                    crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
+                    local_audio.submit(
+                        crate::shell::local_audio_graph::LocalAudioEdit::RouteOutput(node_id),
+                    )?;
                 }
                 DeviceFabricUiAction::SelectLocalInput { node_id } => {
-                    crate::shell::device_fabric_runtime::select_local_input(node_id)?;
+                    local_audio.submit(
+                        crate::shell::local_audio_graph::LocalAudioEdit::SelectInput(node_id),
+                    )?;
                 }
                 DeviceFabricUiAction::StepInputLevel { node_id, raise } => {
-                    crate::shell::device_fabric_runtime::step_input_level(node_id, raise)?;
+                    local_audio.submit(
+                        crate::shell::local_audio_graph::LocalAudioEdit::StepInput {
+                            node_id,
+                            raise,
+                        },
+                    )?;
                 }
                 DeviceFabricUiAction::HandoffBluetooth {
                     address,
@@ -6943,13 +6957,17 @@ fn install_device_fabric_bridge(
                     )?;
                 }
             }
-            let mut view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            let audio_revision = local_audio.revision();
+            let mut view = crate::shell::device_fabric_runtime::device_fabric_view(
+                &fabric_net,
+                local_audio.graph(),
+            );
             view.local_gamepads =
                 crate::shell::physical_gamepad::local_physical_gamepads().unwrap_or_default();
             let focus = active_physical_gamepad_binding(&tree_handle.read());
             view.remote_audio =
                 crate::shell::device_fabric_runtime::remote_audio_view(focus.as_ref());
-            *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
+            *fabric_cache.borrow_mut() = Some((Instant::now(), audio_revision, view.clone()));
             Ok(view)
         })
     });
@@ -6958,29 +6976,19 @@ fn install_device_fabric_bridge(
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
 /// path after the identity ceremony releases the desktop.
-fn visible_wifi_security(ssid: &str) -> Result<Option<os_actions::WifiSecurity>, String> {
-    os_actions::list_wifi_networks().map(|networks| {
-        networks
-            .into_iter()
-            .find(|network| network.ssid == ssid)
-            .map(|network| network.security)
-    })
-}
-
 fn install_wifi_secret_bridge(
     host: &mut crate::shell::overlay_host::ShellOverlayHost,
     wifi_net: Arc<crate::shell::network::ShellNetwork>,
 ) {
     host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
-        crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
-            let Some(security) = visible_wifi_security(&ssid)? else {
-                return Ok(None);
-            };
+        crate::shell::overlay_host::WifiSecretAction::Lookup { ssid, security } => {
             Ok(wifi_net.shared_wifi_password(&ssid, security))
         }
-        crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
-            let security = visible_wifi_security(&ssid)?
-                .ok_or_else(|| "could not verify the connected Wi-Fi security mode".to_string())?;
+        crate::shell::overlay_host::WifiSecretAction::Share {
+            ssid,
+            security,
+            password,
+        } => {
             if matches!(
                 security,
                 os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe
@@ -8731,6 +8739,9 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    // The volume and mute keys' writes, on a thread of their own from the
+    // first press on: `wpctl` must never hold up input or painting.
+    let mut media_key_audio: Option<crate::shell::audio_writer::AudioWriter> = None;
     let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
@@ -9796,10 +9807,17 @@ pub fn run() {
                         let pointer = frame_builder.host().pointer_position();
                         let under_pointer = pointer
                             .and_then(|p| output_connector_at(backend.outputs(), (p.x, p.y)));
+                        let audio: &crate::shell::audio_writer::AudioWriter = media_key_audio
+                            .get_or_insert_with(|| {
+                                crate::shell::audio_writer::AudioWriter::system(
+                                    frame_builder.host().status_bridge().cloned(),
+                                )
+                            });
                         let response = crate::shell::media_keys::apply(
                             mk,
                             &crate::shell::media_keys::Context {
                                 actions: frame_builder.host().qs_actions(),
+                                audio,
                                 status: frame_builder.host().status_bridge(),
                                 transport_osd: &transport_osd,
                                 airplane_mode,
@@ -11981,6 +11999,7 @@ pub fn run() {
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
+            let paint_cpu = metrics.cpu_snapshot();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
             // `relayout` publishes a new tile rect (for a tab switch, move,
@@ -12025,7 +12044,9 @@ pub fn run() {
             }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Layout, paint_cpu);
             let t_scene_start = Instant::now();
+            let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
             let retained_damage_supported = backend.supports_retained_scene_damage();
             frame_builder.set_workspace_clip_supported(backend.supports_workspace_clip());
@@ -12151,6 +12172,7 @@ pub fn run() {
                 frame_paint
             };
             metrics.mark_scene(t_scene_start.elapsed());
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Scene, scene_cpu);
             // The selector queued semantic work and closed before this clean
             // scene was built. Execute screenshots here, before ownership of
             // the scene moves to the presentation thread; this is the only
@@ -12397,6 +12419,7 @@ pub fn run() {
                 .presentation_feedback
                 .composed(foreign::store(), feedback_output);
             let t_submit_start = Instant::now();
+            let submit_cpu = metrics.cpu_snapshot();
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
@@ -12460,6 +12483,9 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Submit, submit_cpu);
+            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Paint, paint_cpu);
+            metrics.mark_paint_wall(submit_done.saturating_duration_since(t_layout_start));
             if let Some(serial) = submitted_serial {
                 let presented = {
                     let mut keys = crate::compositor::key_latency::tracker();

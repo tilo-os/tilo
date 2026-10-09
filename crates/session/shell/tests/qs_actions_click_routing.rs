@@ -752,12 +752,14 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
                 ssid: "hallway-2g".into(),
                 signal: 71,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
             },
             WifiNetwork {
                 ssid: "studio-5g".into(),
                 signal: 92,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: true,
             },
         ];

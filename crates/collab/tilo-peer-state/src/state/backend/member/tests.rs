@@ -74,7 +74,7 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         .as_ref()
         .ok_or("room governance missing")?;
     let (_, owner, caps) = room::extract_governed_fields(room);
-    let identities = room::governance_of(Some(room)).3;
+    let identities = room::governance_of(Some(room)).identities;
     let policy = crate::cached_document::PolicyData {
         owner,
         caps,

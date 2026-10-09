@@ -290,9 +290,30 @@ pub type ClipboardManagerBridge = std::rc::Rc<
 /// Secret operations stay behind a narrow bridge to the certified personal
 /// fabric. This enum intentionally has no `Debug` implementation so a future
 /// diagnostic cannot accidentally format a passphrase.
+///
+/// Each carries the network's authentication mode as the last scan listed
+/// it, so the bridge never scans again on the compositor thread.
 pub enum WifiSecretAction {
-    Lookup { ssid: String },
-    Share { ssid: String, password: String },
+    Lookup {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+    },
+    Share {
+        ssid: String,
+        security: os_actions::WifiSecurity,
+        password: String,
+    },
+}
+
+/// The authentication mode the last Wi-Fi scan listed for `ssid`.
+fn scanned_wifi_security(
+    networks: &[crate::shell::quick_settings::WifiNetwork],
+    ssid: &str,
+) -> Option<os_actions::WifiSecurity> {
+    networks
+        .iter()
+        .find(|network| network.ssid == ssid)
+        .map(|network| network.security)
 }
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
@@ -9500,6 +9521,7 @@ impl ShellOverlayHost {
                 ssid: n.ssid,
                 signal: n.signal,
                 secure: n.secure,
+                security: n.security,
                 connected: n.connected,
             })
             .collect();
@@ -9524,13 +9546,18 @@ impl ShellOverlayHost {
                     network.connected = network.ssid == ssid;
                 }
                 st.quick_settings.wifi = true;
+                let security = scanned_wifi_security(&st.quick_settings.wifi_networks, &ssid);
                 let share_result = if shared_credential {
                     None
                 } else {
                     password.as_ref().and_then(|password| {
                         self.wifi_secret_bridge.as_ref().map(|bridge| {
+                            let security = security.ok_or_else(|| {
+                                "could not verify the connected Wi-Fi security mode".to_string()
+                            })?;
                             bridge(WifiSecretAction::Share {
                                 ssid: ssid.clone(),
+                                security,
                                 password: password.clone(),
                             })
                         })
@@ -12410,9 +12437,7 @@ impl ShellOverlayHost {
             };
             match edit {
                 tilo_desktop::text_entry::Edit::Cancel => {
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                 }
                 tilo_desktop::text_entry::Edit::Submit => {
                     let text = self
@@ -12421,9 +12446,7 @@ impl ShellOverlayHost {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let status = (!text.is_empty()).then_some(text);
-                    self.status_editing = false;
-                    self.status_draft.clear();
-                    self.status_selection = ui::text_selection::Selection::default();
+                    self.end_status_edit();
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().push_presence_request(
                             crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
@@ -14105,6 +14128,22 @@ impl ShellOverlayHost {
         if self.status_editing && matches!(event, WindowEvent::KeyboardInput { .. }) {
             return false;
         }
+        if self.status_editing
+            && let Some(selection) =
+                self.collaborators_overlay
+                    .status_pointer_selection(event, ctx, self.last_cursor)
+        {
+            self.status_selection = ui::text_selection::Selection {
+                anchor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.anchor,
+                ),
+                cursor: ui::text_selection::grapheme_boundary_at_or_before(
+                    &self.status_draft,
+                    selection.cursor,
+                ),
+            };
+        }
         let hit = self
             .collaborators_overlay
             .handle_event(event, ctx, open, self.last_cursor);
@@ -14119,7 +14158,37 @@ impl ShellOverlayHost {
         *ctx.handled
     }
 
+    fn begin_status_edit(&mut self) {
+        if self.status_editing {
+            return;
+        }
+        self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual) {
+            self.local_status.clone().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.status_selection = ui::text_selection::Selection::collapsed(self.status_draft.len());
+        self.status_editing = true;
+    }
+
+    /// A status draft belongs to the visible People editor. Ending it never
+    /// publishes or changes the participant's existing status.
+    fn end_status_edit(&mut self) {
+        self.status_editing = false;
+        self.status_draft.clear();
+        self.status_selection = ui::text_selection::Selection::default();
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
+        if matches!(
+            hit,
+            CollaboratorsHit::Dismiss
+                | CollaboratorsHit::Invite
+                | CollaboratorsHit::Join
+                | CollaboratorsHit::RoomActivity
+        ) {
+            self.end_status_edit();
+        }
         if matches!(
             hit,
             CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
@@ -14170,15 +14239,7 @@ impl ShellOverlayHost {
         }
         match hit {
             CollaboratorsHit::EditStatus => {
-                self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
-                {
-                    self.local_status.clone().unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                self.status_selection =
-                    ui::text_selection::Selection::collapsed(self.status_draft.len());
-                self.status_editing = true;
+                self.begin_status_edit();
                 *handled = true;
                 return;
             }
@@ -15791,7 +15852,7 @@ impl ShellOverlayHost {
                 (
                     QsField::Volume,
                     crate::shell::media_keys::commit_volume(
-                        &actions,
+                        &crate::shell::media_keys::DispatcherAudio(&actions),
                         bridge,
                         previous,
                         value_pct / 100.0,
@@ -18085,6 +18146,9 @@ impl Widget for ShellOverlayHost {
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         let st = self.chrome.as_ref()?.borrow();
+        if st.overlays.collaborators {
+            return self.collaborators_overlay.primary_vertical_scroll();
+        }
         if st.overlays.quick_settings
             && matches!(
                 st.quick_settings.current_level(),
@@ -18104,7 +18168,12 @@ impl Widget for ShellOverlayHost {
         if self.primary_vertical_scroll().is_none() {
             return ui::widget::PrimaryScrollResult::Unsupported;
         }
-        let result = self.notification_center.apply_reading_scroll(action);
+        let result = if self.overlay_flags().collaborators {
+            self.collaborators_overlay
+                .apply_primary_vertical_scroll(action)
+        } else {
+            self.notification_center.apply_reading_scroll(action)
+        };
         if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
             && let Some(chrome) = &self.chrome
         {
@@ -18128,6 +18197,9 @@ impl Widget for ShellOverlayHost {
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
         let people_open = self.overlay_flags().collaborators;
+        if !people_open {
+            self.end_status_edit();
+        }
         if self
             .collaborators_overlay
             .consume_sequence_edge(event, people_open)
@@ -20070,7 +20142,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 10] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 11] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20090,6 +20162,16 @@ impl ShellOverlayHost {
                 self.onboarding
                     .as_ref()
                     .and_then(Widget::next_wake_deadline),
+            ),
+            (
+                "people",
+                self.chrome.as_ref().and_then(|chrome| {
+                    if chrome.borrow().overlays.collaborators {
+                        self.collaborators_overlay.next_wake_deadline()
+                    } else {
+                        None
+                    }
+                }),
             ),
             ("content", self.content.next_wake_deadline()),
             (
@@ -20236,6 +20318,7 @@ impl ShellOverlayHost {
             || mirror_frame
             || markup_frame
             || notification_frame
+            || (self.overlay_flags().collaborators && self.collaborators_overlay.needs_animation_frame())
             || osd_frame
             || self.window_previews.changed()
     }
@@ -21431,11 +21514,13 @@ impl ShellOverlayHost {
                     ),
                     status_sharing: self.status_sharing,
                     status_editing: self.status_editing,
+                    status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
                 },
                 self.last_cursor,
             );
         } else {
+            self.end_status_edit();
             self.collaborators_overlay.clear();
         }
     }
@@ -25576,6 +25661,8 @@ impl ShellOverlayHost {
                     let detail = match status.phase {
                         TetheringPhase::Requesting => t("qs-devices-tether-requesting"),
                         TetheringPhase::ConsentRequired => t("qs-devices-tether-consent"),
+                        TetheringPhase::Preparing => t("qs-devices-tether-preparing"),
+                        TetheringPhase::Connecting => t("qs-devices-tether-connecting"),
                         TetheringPhase::Active => match status.direction {
                             TetheringDirection::Requester => t("qs-devices-tether-requester"),
                             TetheringDirection::Provider => t("qs-devices-tether-provider"),
@@ -26203,16 +26290,26 @@ impl ShellOverlayHost {
         else {
             return false;
         };
-        let Some(ssid) = chrome
-            .borrow()
-            .quick_settings
-            .wifi_password
-            .as_ref()
-            .map(|prompt| prompt.ssid.clone())
-        else {
+        let scanned = {
+            let state = chrome.borrow();
+            state
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .and_then(|prompt| {
+                    scanned_wifi_security(&state.quick_settings.wifi_networks, &prompt.ssid)
+                        .map(|security| (prompt.ssid.clone(), security))
+                })
+        };
+        // A network the last scan did not list has no known mode to match a
+        // shared secret against.
+        let Some((ssid, security)) = scanned else {
             return false;
         };
-        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup { ssid: ssid.clone() }) else {
+        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup {
+            ssid: ssid.clone(),
+            security,
+        }) else {
             return false;
         };
         if let Some(prompt) = chrome.borrow_mut().quick_settings.wifi_password.as_mut() {

@@ -2796,7 +2796,12 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm(_) => CaptureOutcome::Queued,
+                        ForeignCommitCapture::Shm(_) => {
+                            // SHM conversion is asynchronous, but this applied
+                            // non-null commit already maps the surface for input.
+                            store().note_buffer_committed(surface_id);
+                            CaptureOutcome::Queued
+                        }
                         ForeignCommitCapture::NoBuffer
                         | ForeignCommitCapture::Failed
                         | ForeignCommitCapture::Removed => {
