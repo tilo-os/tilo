@@ -7900,6 +7900,7 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "blake3",
+ "bounded-command",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
