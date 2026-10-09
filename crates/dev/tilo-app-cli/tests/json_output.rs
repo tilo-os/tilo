@@ -44,7 +44,7 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
     assert!(index.status.success(), "{index:?}");
     let index = document(&index);
     let topics = index["result"]["topics"].as_array().unwrap();
-    assert_eq!(topics.len(), 6);
+    assert_eq!(topics.len(), 7);
     for topic in topics {
         let id = topic["id"].as_str().unwrap();
         let human = run(&["guide", id]);
@@ -106,6 +106,7 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
         "start",
         "actions",
         "collaborate",
+        "permissions",
         "network",
         "verify",
         "publish",
@@ -115,6 +116,39 @@ fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
             "usage error suggests {topic}: {error}"
         );
     }
+}
+
+#[test]
+fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+            .args(args)
+            .current_dir(dir.path())
+            .env("PATH", dir.path())
+            .env("CARGO", dir.path().join("missing-cargo"))
+            .env_remove("TILO_UI_PATH")
+            .output()
+            .unwrap()
+    };
+    for alias in ["permissions", "roles", "access"] {
+        let output = run(&["guide", alias, "--json"]);
+        assert!(output.status.success(), "{alias}: {output:?}");
+        assert!(output.stderr.is_empty());
+        let guide = document(&output);
+        assert_eq!(guide["result"]["topic"], "permissions");
+        assert_eq!(
+            guide["result"]["source"],
+            "docs/developers/tasks/permissions.md"
+        );
+        let content = guide["result"]["content"].as_str().unwrap();
+        assert!(content.contains("PermissionRequirement::Admin"));
+        assert!(content.contains("set_role"));
+        assert!(content.contains("invoke"));
+        assert!(content.contains("outside the replicated resource"));
+        assert!(content.contains("host integration"));
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
 }
 
 #[test]
