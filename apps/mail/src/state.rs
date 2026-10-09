@@ -1106,6 +1106,9 @@ mod tests {
             id,
             CtxAction::Delete,
         );
+        // Deleting for good asks the person first.
+        let dispatcher = st.dispatcher.clone().expect("a dispatcher");
+        crate::resource::TestMail::confirm(&mut doc, &dispatcher);
         posts_nothing(&mut st);
         assert!(
             matches!(

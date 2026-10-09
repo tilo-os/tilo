@@ -928,6 +928,17 @@ impl TestMail {
         Self::change(doc, Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}));
     }
 
+    /// Apply what `dispatcher` asked the person to confirm, as the door
+    /// does once they agree.
+    pub(crate) fn confirm(doc: &mut tilo_resource::Doc, dispatcher: &Dispatcher<Mail>) {
+        let mut mail = tilo_resource::Replica::<Mail>::from_doc(doc.clone());
+        for action in dispatcher.take_asked().expect("what was asked builds") {
+            mail.apply_action(&action)
+                .expect("a confirmed change applies");
+        }
+        *doc = mail.doc().clone();
+    }
+
     /// Record how the delivery of the outbox message `id` settled, as the
     /// outbox drain does.
     pub(crate) fn settle_delivery(doc: &mut tilo_resource::Doc, id: &str, settled: &Settled) {

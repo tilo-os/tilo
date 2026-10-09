@@ -6156,6 +6156,17 @@ mod tests {
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            assert!(
+                TestMail::outbox(&doc).is_empty(),
+                "sending asks the person first"
+            );
+            let dispatcher = app
+                .shared
+                .borrow()
+                .dispatcher
+                .clone()
+                .expect("a dispatcher");
+            TestMail::confirm(&mut doc, &dispatcher);
             let outbox = TestMail::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
@@ -6221,6 +6232,7 @@ mod tests {
 
             // Sending it again replaces the refused one.
             app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            TestMail::confirm(&mut doc, &dispatcher);
             let outbox = TestMail::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
