@@ -250,6 +250,20 @@ impl ResourceApp for DbClientShell {
         let app = DbClientApp::new();
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open_item(app.opener());
+        // A catalogue hit — a relation, column, result, transaction or query
+        // of the open connection — runs what its row offers.
+        let (index, dispatcher) = (app.search_index(), cx.dispatcher());
+        cx.on_open(
+            move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
+                let effect = index.opened(anchor).ok_or_else(|| {
+                    ui::tilo_resource::Refusal::new(format!(
+                        "`{anchor}` is not in the open catalogue"
+                    ))
+                })?;
+                dispatcher.effect(&effect);
+                Ok(())
+            },
+        );
         cx.surface(app)
     }
 
