@@ -1533,6 +1533,18 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 }
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+    fn has_action_control_bindings(&self) -> bool {
+        // The default inventory contributes semantic bindings for this wrapper
+        // and action bindings from its exposed children. Preserve that scope
+        // while avoiding an allocation of the complete accessibility tree.
+        let mut found = false;
+        ui_core::widget::Widget::for_each_child(self, &mut |child| {
+            if !found {
+                found = ui_core::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
+    }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.take_attributed_control_invocation()
             .map(|(invocation, _)| invocation)
