@@ -99,6 +99,20 @@ pub enum Command {
     },
     /// Revoke sandbox capability `id` on the active workspace — same authority check as `grant`.
     Revoke { id: String },
+    /// Give `subject` (`person:<id>` / `app:<id>` / `agent:<id>`) `answer` (allow / ask / deny) for actions of `kinds` (read / undoable / outside) at `node`, a path below the room such as `app:so.tilo.notes`, on the active workspace, as the user at this session — through the room's governance, so a grantor who may not grant there is refused.
+    Allow {
+        subject: String,
+        node: String,
+        kinds: Vec<String>,
+        answer: String,
+        /// Stable grant id so a later `disallow` can name it; minted when omitted.
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Take back grant `id` on the active workspace — same authority check as `allow`.
+    Disallow { id: String },
+    /// Admit `person` to the active workspace with `role` (viewer / commenter / editor), as the user at this session.
+    Admit { person: String, role: String },
     /// Ask the room's policy what `actor` gets for `action` on `app`'s `resource`, an action of `kind` (read / undoable / outside), against the live workspace.
     CheckAction {
         actor: String,
@@ -607,6 +621,40 @@ pub trait ControlState {
         Err("no live workspace on this control state".to_string())
     }
 
+    /// Give a grant on the active workspace through its governance. Default impl refuses, as `grant_capability` does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the grant is not recorded.
+    fn allow(
+        &self,
+        _subject: &str,
+        _node: &str,
+        _kinds: &[String],
+        _answer: &str,
+        _id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Take back a grant on the active workspace through its governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever nothing is revoked.
+    fn disallow(&self, _id: &str) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Admit a person to the active workspace with a role, through its governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever nobody is admitted.
+    fn admit(&self, _person: &str, _role: &str) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
     /// Revoke a capability by id on the active workspace, via `Workspace::revoke_as`.
     ///
     /// # Errors
@@ -984,6 +1032,27 @@ pub fn dispatch_command<S: ControlState>(
         } => grant(state, subject, scope, access, id.as_deref()),
         Command::Revoke { id } => (
             answer_or_err(state.revoke_capability(id), "revoke_refused"),
+            Vec::new(),
+        ),
+        Command::Allow {
+            subject,
+            node,
+            kinds,
+            answer,
+            id,
+        } => (
+            answer_or_err(
+                state.allow(subject, node, kinds, answer, id.as_deref()),
+                "grant_refused",
+            ),
+            Vec::new(),
+        ),
+        Command::Disallow { id } => (
+            answer_or_err(state.disallow(id), "revoke_refused"),
+            Vec::new(),
+        ),
+        Command::Admit { person, role } => (
+            answer_or_err(state.admit(person, role), "admit_refused"),
             Vec::new(),
         ),
         Command::CheckAction {
@@ -1808,6 +1877,38 @@ pub fn parse_kind(s: &str) -> Result<tilo_action_policy::ActionKind, String> {
         "undoable" => Ok(ActionKind::Undoable),
         "outside" => Ok(ActionKind::Outside),
         _ => Err(format!("kind must be read / undoable / outside, got `{s}`")),
+    }
+}
+
+/// Parse a grant subject: `person:<id>`, `app:<id>` or `agent:<id>`.
+///
+/// # Errors
+///
+/// Returns a human-readable message for any other spelling.
+pub fn parse_policy_subject(s: &str) -> Result<tilo_action_policy::Subject, String> {
+    use tilo_action_policy::Subject;
+    match s.split_once(':') {
+        Some(("person", id)) => Ok(Subject::person(id)),
+        Some(("app", id)) => Ok(Subject::app(id)),
+        Some(("agent", id)) => Ok(Subject::agent(id)),
+        _ => Err(format!(
+            "subject must be person:<id>, app:<id> or agent:<id>, got `{s}`"
+        )),
+    }
+}
+
+/// Parse a grant's answer: allow / ask / deny.
+///
+/// # Errors
+///
+/// Returns a human-readable message for any other word.
+pub fn parse_answer(s: &str) -> Result<tilo_action_policy::Answer, String> {
+    use tilo_action_policy::Answer;
+    match s {
+        "allow" => Ok(Answer::Allow),
+        "ask" => Ok(Answer::Ask),
+        "deny" => Ok(Answer::Deny),
+        _ => Err(format!("answer must be allow / ask / deny, got `{s}`")),
     }
 }
 

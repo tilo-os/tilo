@@ -2856,6 +2856,106 @@ impl ControlState for FrameBuilderControlState<'_> {
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
     }
 
+    /// Give a grant on the active workspace through the room's governance,
+    /// as the user at this session.
+    fn allow(
+        &self,
+        subject: &str,
+        node: &str,
+        kinds: &[String],
+        answer: &str,
+        id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let subject = test_control::parse_policy_subject(subject)?;
+        let node: tilo_action_policy::TreePath = node
+            .parse()
+            .map_err(|error: tilo_action_policy::PathError| error.to_string())?;
+        let kinds = kinds
+            .iter()
+            .map(|kind| test_control::parse_kind(kind))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .fold(
+                tilo_action_policy::KindSet::NONE,
+                tilo_action_policy::KindSet::with,
+            );
+        let answer = test_control::parse_answer(answer)?;
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let (ws_id, room) = tree
+            .desktop
+            .active_workspace()
+            .map(|w| (w.id, w.node()))
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let grant = tilo_action_policy::Grant::new(
+            id.map_or_else(|| format!("grant:{}", uuid::Uuid::new_v4()), str::to_owned),
+            subject,
+            room.join(&node),
+            kinds,
+            answer,
+            tilo_action_policy::Subject::person(user.clone()),
+        );
+        let granted = tree
+            .grant_in_workspace(ws_id, &user, grant)
+            .ok_or_else(|| format!("{user} may not grant that in this workspace"))?;
+        drop(tree);
+        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Take back a grant on the active workspace through its governance.
+    fn disallow(&self, id: &str) -> Result<serde_json::Value, String> {
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let revoked = tree.revoke_in_workspace(ws_id, &user, &tilo_action_policy::GrantId::new(id));
+        drop(tree);
+        if revoked {
+            Ok(serde_json::json!({ "revoked": id, "revoker": user }))
+        } else {
+            Err(format!("{user} took back nothing named {id}"))
+        }
+    }
+
+    /// Admit a person with a role on the active workspace, as the user at
+    /// this session.
+    fn admit(&self, person: &str, role: &str) -> Result<serde_json::Value, String> {
+        let role = match role {
+            "viewer" => tilo_action_policy::Role::Viewer,
+            "commenter" => tilo_action_policy::Role::Commenter,
+            "editor" => tilo_action_policy::Role::Editor,
+            _ => {
+                return Err(format!(
+                    "role must be viewer / commenter / editor, got `{role}`"
+                ));
+            }
+        };
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
+        let ws_id = tree
+            .desktop
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let admitted = tree.admit_in_workspace(ws_id, &user, person, role);
+        drop(tree);
+        admitted
+            .map(|_| serde_json::json!({ "admitted": person, "admitter": user }))
+            .ok_or_else(|| format!("{user} may not admit {person} to this workspace"))
+    }
+
     /// Revoke on the active workspace through `Workspace::revoke_as` — same authority check as a grant.
     fn revoke_capability(&self, id: &str) -> Result<serde_json::Value, String> {
         let chrome = self.fb.chrome();
