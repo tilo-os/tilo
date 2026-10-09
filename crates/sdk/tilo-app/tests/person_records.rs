@@ -192,8 +192,8 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
     watched.invoke(&Watched::WATCH.with("second")).unwrap();
     app.harness().relayout();
 
-    // The record is published beside the app's resource, with the
-    // person's undo and redo.
+    // The record is published beside the app's resource, with its verbs
+    // and field edits and the person's undo and redo.
     let surface = app.agent_surface();
     let actions: Vec<&str> = surface
         .as_array()
@@ -202,7 +202,9 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
         .filter(|row| row["resource"] == "person:test.watched")
         .map(|row| row["action"].as_str().unwrap())
         .collect();
-    assert_eq!(actions, ["redo", "undo"]);
+    for expected in ["redo", "undo", "watch", "field-edit"] {
+        assert!(actions.contains(&expected), "{expected} in {actions:?}");
+    }
 
     let undone = app
         .call_on(

@@ -1693,6 +1693,28 @@ impl ActionSpec {
         self
     }
 
+    /// This document action, carried out on another document than the one
+    /// its resource's host holds (the person's own record, a settings
+    /// section): published as an effect operation of `operation_type` whose
+    /// value is `wrap` of the encoded action, which the host answering
+    /// `operation_type` applies to that document. Parameters, kind,
+    /// permission, risk and confirmation stay this action's. An effect or
+    /// view operation is returned as it is.
+    #[must_use]
+    pub fn routed(
+        self,
+        operation_type: &str,
+        wrap: impl Fn(EncodedAction) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        if self.kind != OperationKind::Document {
+            return self;
+        }
+        let mut spec = self.rewrapped(operation_type, wrap);
+        spec.kind = OperationKind::Effect;
+        spec.operation_type = Some(operation_type.to_owned());
+        spec
+    }
+
     /// What an invocation of this action must carry. Empty for the nullary
     /// majority.
     ///

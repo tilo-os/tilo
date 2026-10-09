@@ -303,6 +303,25 @@ A hand-written surface (`ResourceSurface`) submits the same typed values through
 its dispatcher: `Edit<R>` from paths, verb values from `ActionRef`s. No app
 writes an `ActionAddress`, an action id string or an argument map.
 
+A view edits another record than its app's own the same way. The person's
+own record (`cx.person::<P>()`) and a settings section that is a model
+(`#[derive(Model)]` with an empty `#[resource]`, read with `cx.settings::<T>()`)
+are records of their own: `cx.record(&record, |cx| ..)` builds a part of the
+view over it, whose controls bind its paths and verbs, and a surface submits
+through `cx.record_dispatcher(&record)`.
+
+```rust
+let display = cx.settings::<Display>();
+cx.record(&display, |cx| Box::new(cx.checkbox("High contrast", Display::paths().high_contrast)));
+```
+
+Each is published beside the app's resource (`person:<kind>`, `settings:<kind>`)
+with its field edits and verbs, so the palette and agents edit it by path too.
+Only its person changes it (or software acting for them), whatever their role
+in the room; its `check` holds on every way in; each change is recorded in the
+record's history (a person record's own history and undo, the settings
+document's log of what changed which setting and who).
+
 ### 3.2 Reactivity
 
 A path binding declares what the control reads. After a change, the framework

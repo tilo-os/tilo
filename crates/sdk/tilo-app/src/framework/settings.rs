@@ -2,11 +2,15 @@
 //! them: from their context, scoped to the app and the settings document its
 //! host gave it.
 
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use ui_core::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
+
+use super::record::{Held, RecordDoor};
 
 /// One typed settings value, kept current while the view lives: a write
 /// from this window, another window, the Settings app or another of the
@@ -14,8 +18,15 @@ use ui_core::storage::{AppStorage, Settings, SettingsRevision, SettingsSchema};
 /// reaches [`Self::state`] on the next frame.
 ///
 /// Bind controls to [`Self::state`] and write with [`Self::set`]. Settings
-/// are not the document: they are not undone, not in history and never
-/// seen by collaborators.
+/// are not the document: they are not undone and never seen by
+/// collaborators.
+///
+/// A section that is a resource model (`#[derive(Model)]` and an empty
+/// `#[resource]`) is also a record its views edit by path
+/// ([`ViewCx::record`](super::ViewCx::record)): its field edits and verbs
+/// are published as `settings:<kind>`, each change is checked by the
+/// model's invariants and recorded in the settings document with what made
+/// it and who.
 pub struct Setting<T> {
     settings: Settings<T>,
     value: LocalState<T>,
@@ -75,6 +86,21 @@ impl<T: SettingsSchema + Clone + PartialEq + Send + Sync> Setting<T> {
 
 type Refresh = Box<dyn FnMut()>;
 
+impl<T> super::record::sealed::Hold<T> for Setting<T>
+where
+    T: tilo_resource::Resource<State = T>
+        + tilo_resource::Fields
+        + SettingsSchema
+        + Clone
+        + PartialEq
+        + Send
+        + Sync,
+{
+    fn held(&self, storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<T>>> {
+        storage.0.section(&self.settings)
+    }
+}
+
 /// The app's storage and the settings its views follow. Shared by every
 /// scope of one root; the root refreshes it each sync.
 pub(crate) struct ViewStorage {
@@ -85,6 +111,10 @@ pub(crate) struct ViewStorage {
     person: Option<super::person::PersonState>,
     /// This device, in a live window.
     device: Option<String>,
+    /// The settings sections views edit as records, by type.
+    sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
+    /// Those sections, as the door reaches them.
+    section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -119,6 +149,8 @@ impl ViewStorage {
             followed: RefCell::default(),
             person: hosted.person,
             device: hosted.device,
+            sections: RefCell::default(),
+            section_doors: RefCell::default(),
         })
     }
 
@@ -147,12 +179,68 @@ impl ViewStorage {
         self.person.as_ref()?.open_shared::<P>()
     }
 
-    /// The person's records the views opened, as published resources.
-    pub(crate) fn person_resources(&self) -> Vec<tilo_actions::Resource> {
-        self.person
+    /// The records other than the app's own the views opened — the
+    /// person's records, settings sections — as published resources.
+    pub(crate) fn record_resources(&self) -> Vec<tilo_actions::Resource> {
+        let mut resources = self
+            .person
             .as_ref()
             .map(super::person::PersonState::resources)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        resources.extend(
+            self.section_doors
+                .borrow()
+                .iter()
+                .map(|door| door.publish()),
+        );
+        resources
+    }
+
+    /// Answer one published action of those records, invoked by someone
+    /// the window knows as `me`.
+    pub(crate) fn record_action(
+        &self,
+        me: Option<&str>,
+        payload: &[u8],
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let mut doors = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::doors)
+            .unwrap_or_default();
+        doors.extend(self.section_doors.borrow().iter().cloned());
+        let me = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::me)
+            .or(me);
+        super::record::answer(&doors, me, payload)
+    }
+
+    /// The settings section `T` held as a record, opened on first use.
+    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Option<Rc<Held<T>>>
+    where
+        T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
+    {
+        if let Some(open) = self.sections.borrow().get(&TypeId::of::<T>()) {
+            return Rc::clone(open).downcast::<Held<T>>().ok();
+        }
+        let held = super::record::section(settings.clone(), true)
+            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings section unavailable"))
+            .ok()?;
+        let held = Rc::new(held);
+        self.sections
+            .borrow_mut()
+            .insert(TypeId::of::<T>(), Rc::clone(&held) as Rc<dyn Any>);
+        self.section_doors
+            .borrow_mut()
+            .push(Rc::clone(&held) as Rc<dyn RecordDoor>);
+        Some(held)
+    }
+
+    /// Run `refresh` with every refresh while `alive` lives.
+    pub(crate) fn follow_with(&self, alive: Weak<()>, refresh: impl FnMut() + 'static) {
+        self.followed.borrow_mut().push((alive, Box::new(refresh)));
     }
 
     /// Answer an undo or redo of one of the person's records.

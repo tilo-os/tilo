@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+pub use settings_store::ChangeOrigin;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -207,9 +208,28 @@ impl SettingsDocument {
     ///
     /// When there is no document to write or the write fails.
     pub fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
-        let written = match self {
-            Self::Session => settings_store::update_section(name, values),
-            Self::File(path) => settings_store::update_section_at(path, name, values),
+        self.update_section_by(name, values, None)
+    }
+
+    /// [`Self::update_section`], recording who and what made the change
+    /// with every key it changes, where the document keeps a history of
+    /// its changes (the session's).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::update_section`].
+    pub fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: Option<&settings_store::ChangeOrigin>,
+    ) -> std::io::Result<()> {
+        let written = match (self, origin) {
+            (Self::Session, Some(origin)) => {
+                settings_store::update_section_by(name, values, origin)
+            }
+            (Self::Session, None) => settings_store::update_section(name, values),
+            (Self::File(path), _) => settings_store::update_section_at(path, name, values),
         };
         WRITES.fetch_add(1, Ordering::AcqRel);
         written
@@ -331,6 +351,20 @@ impl<T: SettingsSchema> Settings<T> {
     /// would outgrow what the device fabric carries, there is no document to
     /// write, or the write fails.
     pub fn set(&self, value: &T) -> std::io::Result<()> {
+        self.set_by(value, None)
+    }
+
+    /// [`Self::set`], recording `origin` — the action and who invoked it —
+    /// in the document's history of who changed which setting.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set`].
+    pub fn set_by(
+        &self,
+        value: &T,
+        origin: Option<&settings_store::ChangeOrigin>,
+    ) -> std::io::Result<()> {
         let Value::Object(values) = serde_json::to_value(value).map_err(std::io::Error::other)?
         else {
             return Err(std::io::Error::new(
@@ -339,7 +373,7 @@ impl<T: SettingsSchema> Settings<T> {
             ));
         };
         match T::SCOPE {
-            Scope::Shared(name) => self.document.update_section(name, values),
+            Scope::Shared(name) => self.document.update_section_by(name, values, origin),
             scope @ (Scope::Personal | Scope::DeviceLocal) => {
                 let mut object = self.stored();
                 object.extend(values);
@@ -360,7 +394,8 @@ impl<T: SettingsSchema> Settings<T> {
                 }
                 let mut entry = Map::new();
                 entry.insert(self.app_id.clone(), Value::Object(object));
-                self.document.update_section(scope.section(), entry)
+                self.document
+                    .update_section_by(scope.section(), entry, origin)
             }
         }
     }

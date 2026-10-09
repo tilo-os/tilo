@@ -574,7 +574,7 @@ impl<R: Resource> ResourceRoot<R> {
             withhold_document_actions(&mut resource, &unreadable.reason);
         }
         if children {
-            resource.children.extend(self.storage.person_resources());
+            resource.children.extend(self.storage.record_resources());
         }
         resource
     }
@@ -1247,6 +1247,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         );
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
+        handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
         if self.stages.opens() {
             handlers.insert(OPEN_TYPE.to_owned());
         }
@@ -1327,6 +1328,16 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == super::history::VIEW_TYPE
         {
             let output = super::history::answer(doc, request.payload)?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::record::RECORD_ACTION_TYPE
+        {
+            let output = self
+                .storage
+                .record_action(self.dispatch.me(), request.payload)?;
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));

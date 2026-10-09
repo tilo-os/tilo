@@ -771,6 +771,46 @@ impl<R: Resource> Dispatcher<R> {
         Ok(())
     }
 
+    /// The dispatcher of another record than this resource's — the
+    /// person's own record, a settings section — published at `id`: its
+    /// queued invocations go through the same door as this resource's, and
+    /// what it applies now `apply` applies to that record. The room's roles
+    /// do not reach it; only its person changes it.
+    pub(crate) fn for_record<C: Resource>(
+        &self,
+        id: &str,
+        read_only: bool,
+        apply: impl Fn(&C::Action) -> Result<(), ActionError> + 'static,
+    ) -> Dispatcher<C> {
+        Dispatcher {
+            app_id: self.app_id,
+            me: self.me.clone(),
+            custody: self.custody.clone(),
+            resource_id: Rc::from(id),
+            resource_label: LocalState::new(C::LABEL.to_owned()),
+            queue: Rc::clone(&self.queue),
+            group: Rc::default(),
+            read_only: LocalState::new(read_only || self.past),
+            permissions: Rc::default(),
+            permission_states: Rc::default(),
+            permission_of: Rc::new(|_: &C::Action| PermissionRequirement::Read),
+            refused: self.refused.clone(),
+            landed: self.landed.clone(),
+            unreadable: Rc::default(),
+            host: Rc::clone(&self.host),
+            submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
+            serial: Rc::default(),
+            last: Rc::default(),
+            continuing: Rc::default(),
+            applied: Rc::default(),
+            opened: Rc::default(),
+            past: self.past,
+            continuable: Rc::default(),
+            gesture: Rc::default(),
+            marker: std::marker::PhantomData,
+        }
+    }
+
     /// The dispatcher of a resource nested in this one at `id` — a note's
     /// rich-text body, a draft's SQL — whose every edit is this resource's
     /// action `wrap(edit)`.

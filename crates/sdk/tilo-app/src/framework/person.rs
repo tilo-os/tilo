@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
+
+use super::live::Live;
+use super::record::{Held, RecordDoor};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
@@ -50,6 +53,8 @@ struct Shared<P: Resource> {
     heads: RefCell<Vec<ChangeHash>>,
     state: LocalState<Rc<P::State>>,
     revision: Cell<u64>,
+    /// The record as views and the door edit it.
+    held: RefCell<Option<Rc<Held<P>>>>,
 }
 
 impl<P: Resource> Shared<P> {
@@ -103,6 +108,16 @@ impl<P: Resource> PersonRecord<P> {
     /// # Errors
     /// The action refused to apply, or the record is unavailable.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
+        self.apply_as(action, &ActionInvoker::actor(&self.shared.me))
+    }
+
+    /// [`Self::apply`] by `invoker`: the person, or software acting for
+    /// them.
+    pub(crate) fn apply_as(
+        &self,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<(), ActionError> {
         let shared = &self.shared;
         if let Some(owner) = shared.owner {
             return Err(ActionError::Refused(format!(
@@ -114,7 +129,7 @@ impl<P: Resource> PersonRecord<P> {
         let change = action.change_kind();
         let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
             .with_app(shared.app_id, shared.app_title)
-            .with_invoker(ActionInvoker::actor(&shared.me))
+            .with_invoker(invoker.clone())
             .with_change(change);
         shared
             .record
@@ -212,6 +227,8 @@ pub(crate) struct PersonState {
 struct Published {
     kind: &'static str,
     label: &'static str,
+    /// Its field edits and verbs, as the door reaches them.
+    door: Rc<dyn RecordDoor>,
     /// Take back (`true`) or redo (`false`) one of the person's steps.
     /// Whether there was one.
     step: Box<dyn Fn(bool) -> bool>,
@@ -375,7 +392,10 @@ impl PersonState {
             heads: RefCell::new(heads),
             state: LocalState::new(Rc::new(state)),
             revision: Cell::new(0),
+            held: RefCell::new(None),
         });
+        let held = Rc::new(held::<P>(&shared, edits)?);
+        *shared.held.borrow_mut() = Some(Rc::clone(&held));
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
@@ -390,6 +410,7 @@ impl PersonState {
         self.published.borrow_mut().push(Published {
             kind: P::KIND,
             label: P::LABEL,
+            door: held,
             step: Box::new(move |undo| {
                 weak.upgrade().is_some_and(|shared| {
                     let record = PersonRecord { shared };
@@ -419,15 +440,27 @@ impl PersonState {
             .borrow()
             .iter()
             .map(|published| {
-                tilo_actions::Resource::new(
-                    resource_id(published.kind),
-                    published.kind,
-                    format!("Your {}", published.label.to_lowercase()),
-                )
-                .with_action(history_spec(published.kind, published.label, true))
-                .with_action(history_spec(published.kind, published.label, false))
+                published
+                    .door
+                    .publish()
+                    .with_action(history_spec(published.kind, published.label, true))
+                    .with_action(history_spec(published.kind, published.label, false))
             })
             .collect()
+    }
+
+    /// The open records of the person's own, as the door changes them.
+    pub(crate) fn doors(&self) -> Vec<Rc<dyn RecordDoor>> {
+        self.published
+            .borrow()
+            .iter()
+            .map(|published| Rc::clone(&published.door))
+            .collect()
+    }
+
+    /// Who the records are of.
+    pub(crate) fn me(&self) -> &str {
+        &self.me
     }
 
     /// Answer an undo or redo of an open record: how many steps it took.
@@ -463,6 +496,46 @@ impl PersonState {
     /// The routes of the open records, which the runtime syncs.
     pub(crate) fn owners(&self) -> Vec<HistoryOwner> {
         self.owners.borrow().clone()
+    }
+}
+
+/// The record `shared` as views and the door edit it: read into a state of
+/// its own that follows the record, changed as the person.
+fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Option<Held<P>> {
+    let live = Live::new(
+        shared
+            .record
+            .read(tilo_resource::Reader::<P>::read)?
+            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unreadable"))
+            .ok()?,
+    );
+    let following = Rc::downgrade(shared);
+    let applying = Rc::downgrade(shared);
+    Some(Held::new(
+        resource_id(P::KIND),
+        format!("Your {}", P::LABEL.to_lowercase()),
+        edits,
+        live,
+        move |live: &Live<P>| {
+            let Some(shared) = following.upgrade() else {
+                return;
+            };
+            if let Some(Err(error)) = shared.record.read(|doc| live.sync(doc)) {
+                tracing::warn!(kind = P::KIND, %error, "person record unreadable");
+            }
+        },
+        move |action: &P::Action, invoker: &ActionInvoker| {
+            let shared = applying
+                .upgrade()
+                .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
+            PersonRecord { shared }.apply_as(action, invoker)
+        },
+    ))
+}
+
+impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
+    fn held(&self, _storage: super::record::sealed::Storage<'_>) -> Option<Rc<Held<P>>> {
+        self.shared.held.borrow().clone()
     }
 }
 

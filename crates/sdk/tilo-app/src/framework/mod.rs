@@ -325,6 +325,7 @@ mod preview;
 #[cfg(feature = "test-support")]
 pub mod profiling;
 mod reactive;
+mod record;
 mod root;
 mod rows;
 mod scenario;
@@ -361,6 +362,7 @@ pub use participant::Participant;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
+pub use record::OtherRecord;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
