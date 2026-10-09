@@ -239,28 +239,24 @@ impl Service {
                 if done {
                     return None;
                 }
-                let chunk = loop {
-                    break match tokio::time::timeout(Duration::from_secs(15), receiver.recv()).await
-                    {
-                        Err(_) => ": keep-alive\n\n".to_owned(),
-                        Ok(Ok(Event::Member(member))) => member_event(&member),
-                        // A refused admission concerns only the guest who asked.
-                        Ok(Ok(Event::Refused { .. })) => continue,
-                        Ok(
-                            Ok(Event::Expired)
-                            | Err(tokio::sync::broadcast::error::RecvError::Closed),
-                        ) => {
-                            return Some((
-                                Ok(Frame::data(Bytes::from_static(
-                                    b"event: expired\ndata: {}\n\n",
-                                ))),
-                                (receiver, true),
-                            ));
-                        }
-                        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                            ": lagged\n\n".to_owned()
-                        }
-                    };
+                let chunk = match tokio::time::timeout(Duration::from_secs(15), receiver.recv())
+                    .await
+                {
+                    Err(_) => ": keep-alive\n\n".to_owned(),
+                    Ok(Ok(Event::Member(member))) => member_event(&member),
+                    Ok(
+                        Ok(Event::Expired) | Err(tokio::sync::broadcast::error::RecvError::Closed),
+                    ) => {
+                        return Some((
+                            Ok(Frame::data(Bytes::from_static(
+                                b"event: expired\ndata: {}\n\n",
+                            ))),
+                            (receiver, true),
+                        ));
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        ": lagged\n\n".to_owned()
+                    }
                 };
                 Some((Ok(Frame::data(Bytes::from(chunk))), (receiver, false)))
             }
