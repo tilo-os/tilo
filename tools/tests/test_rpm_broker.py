@@ -145,6 +145,20 @@ class RpmBrokerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CLIENT.immutable_digest(file)
 
+    def test_published_provenance_binds_source_run_and_actual_signed_bytes(self):
+        published_request = self.response / 'tilo-rpm-signing-request-amd64.json'
+        published_request.write_bytes(self.request_path.read_bytes())
+        published_receipt = self.response / 'tilo-rpm-signing-receipt-amd64.json'
+        published_receipt.write_text(json.dumps(self.receipt))
+        (self.response / 'tilo-rpm-signing-key.fingerprint').write_text(PIN + '\n')
+        CLIENT.verify_published(self.response, 'amd64', '0.1.13', self.env)
+        with self.assertRaisesRegex(ValueError, 'another source or run'):
+            CLIENT.verify_published(self.response, 'amd64', '0.1.13', self.env | {'GITHUB_SHA': 'c' * 40})
+        file = next(self.response.glob('*.rpm'))
+        file.write_bytes(rpm_bytes(b'substituted signature'))
+        with self.assertRaisesRegex(ValueError, 'differs from qualified'):
+            CLIENT.verify_published(self.response, 'amd64', '0.1.13', self.env)
+
     def test_failed_qualification_never_replaces_install_tested_rpms(self):
         before = {f.name: f.read_bytes() for f in self.input.glob('*.rpm')}
         with patch.object(CLIENT, 'trusted_broker'), patch.object(CLIENT.subprocess, 'run'), \

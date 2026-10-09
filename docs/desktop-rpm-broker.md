@@ -63,7 +63,9 @@ artifact digests and unsigned/wrong-key RPMs. A fresh public-only GnuPG view and
 RPM keyring verify every signature. The original RPM lead, immutable header and
 payload must be byte-identical: only the aligned signature header may differ.
 All three copies qualify before replacing the install-tested RPMs. The public key,
-full fingerprint, checksum sidecars and per-architecture receipt are retained.
+full fingerprint, checksum sidecars and per-architecture request/receipt pairs are retained.
+The final release verifier checks their same-source/run binding and every signed
+RPM digest again before publication.
 No broker stderr is printed because it could contain an OIDC token.
 
 ## Exact separate live approval boundary

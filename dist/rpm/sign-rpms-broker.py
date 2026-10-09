@@ -170,6 +170,50 @@ def verify_response(request, request_path, response, work):
     return receipt
 
 
+def verify_published(directory, arch, version, env):
+    request_path = directory / f'tilo-rpm-signing-request-{arch}.json'
+    receipt_path = directory / f'tilo-rpm-signing-receipt-{arch}.json'
+    for path in (request_path, receipt_path):
+        regular(path)
+        if path.stat().st_size > 65536:
+            raise ValueError('unbounded published broker metadata')
+    request, receipt = (json.loads(path.read_text()) for path in (request_path, receipt_path))
+    expected = (directory / 'tilo-rpm-signing-key.fingerprint').read_text().strip()
+    if env.get('TILO_RPM_SIGNING_FINGERPRINT', expected).upper() != expected:
+        raise ValueError('published fingerprint differs from protected pin')
+    required = {'schema', 'repository', 'repository_id', 'ref', 'sha', 'run_id',
+                'run_attempt', 'arch', 'artifact', 'fingerprint', 'rpms'}
+    if set(request) != required or request['schema'] != 1:
+        raise ValueError('invalid published request schema')
+    if (request['repository'], request['repository_id'], request['ref'], request['arch'],
+        request['artifact'], request['fingerprint']) != (
+            'tilo/tilo', 23, f'refs/tags/desktop-v{version}', arch, f'fedora-44-{arch}', expected):
+        raise ValueError('published signing context mismatch')
+    if not re.fullmatch(r'[0-9a-f]{40}', request['sha']):
+        raise ValueError('invalid published source')
+    for name, field in (('GITHUB_SHA', 'sha'), ('GITHUB_RUN_ID', 'run_id'), ('GITHUB_RUN_ATTEMPT', 'run_attempt')):
+        if env.get(name) and env[name] != request[field]:
+            raise ValueError('published receipt belongs to another source or run')
+    if not all(re.fullmatch(r'[1-9][0-9]*', request[x]) for x in ('run_id', 'run_attempt')):
+        raise ValueError('invalid published run identity')
+    suffix = {'amd64': 'x86_64', 'arm64': 'aarch64'}[arch]
+    names = {f'{name}-{version}-1.fc44.{suffix}.rpm' for name in ('tilo-session', 'tilo-session-apps', 'tilo-session-devel')}
+    if len(request['rpms']) != 3 or {x['name'] for x in request['rpms']} != names:
+        raise ValueError('published request package mismatch')
+    if set(receipt) != {'schema', 'request_sha256', 'fingerprint', 'signed_sha256'}:
+        raise ValueError('invalid published receipt schema')
+    if (receipt['schema'], receipt['request_sha256'], receipt['fingerprint']) != (1, digest(request_path), expected):
+        raise ValueError('published receipt request binding mismatch')
+    if set(receipt['signed_sha256']) != names:
+        raise ValueError('published receipt package mismatch')
+    for rpm in request['rpms']:
+        if set(rpm) != {'name', 'sha256', 'immutable_sha256'} or not re.fullmatch(r'[0-9a-f]{64}', rpm['sha256']):
+            raise ValueError('invalid published RPM manifest')
+        file = directory / rpm['name']
+        if digest(file) != receipt['signed_sha256'][file.name] or immutable_digest(file) != rpm['immutable_sha256']:
+            raise ValueError('published signed RPM differs from qualified broker copy')
+
+
 def sign(directory, env):
     request = request_for(directory, env)
     trusted_broker(BROKER, env)
@@ -187,6 +231,7 @@ def sign(directory, env):
         for rpm in request['rpms']:
             shutil.copyfile(response / rpm['name'], directory / rpm['name'])
         arch = request['arch']
+        shutil.copyfile(request_path, directory / f'tilo-rpm-signing-request-{arch}.json')
         shutil.copyfile(response / 'receipt.json', directory / f'tilo-rpm-signing-receipt-{arch}.json')
         if arch == 'amd64':
             shutil.copyfile(response / 'tilo-rpm-signing-key.asc', directory / 'tilo-rpm-signing-key.asc')
@@ -198,9 +243,12 @@ def sign(directory, env):
 
 if __name__ == '__main__':
     try:
-        if len(sys.argv) != 2:
+        if len(sys.argv) == 5 and sys.argv[1] == '--verify-published':
+            verify_published(Path(sys.argv[2]).resolve(strict=True), sys.argv[3], sys.argv[4], os.environ)
+        elif len(sys.argv) == 2:
+            sign(Path(sys.argv[1]).resolve(strict=True), os.environ)
+        else:
             raise ValueError('usage: sign-rpms-broker.py RELEASE_DIR')
-        sign(Path(sys.argv[1]).resolve(strict=True), os.environ)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         # Never print broker subprocess stderr: it may contain an OIDC token.
         print(f'RPM broker qualification failed: {type(error).__name__}', file=sys.stderr)
