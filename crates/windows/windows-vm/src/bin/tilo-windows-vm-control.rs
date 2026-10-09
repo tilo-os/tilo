@@ -63,22 +63,17 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    // The reaper also runs before first provisioning. It still takes the
-    // controller lock and removes any stale public status left by a failed or
-    // replaced appliance, but it has no domain to query yet.
-    if action == "egress-reap" && !Path::new(UUID_FILE).exists() {
-        let _lock = acquire_controller_lock()?;
-        remove_egress_summary();
-        let _ = fs::remove_file(STATUS_SUMMARY);
-        return Ok(());
+    // The reaper also runs without a provisioned appliance, so it is
+    // dispatched before the domain identity is required.
+    if action == "egress-reap" {
+        return match rest.as_slice() {
+            [] => reap_pass().map(|_| ()),
+            [flag] if flag == "--until-idle" => reap_until_idle(),
+            _ => Err(usage()),
+        };
     }
 
-    require_regular_file(Path::new(UUID_FILE), "domain identity")?;
-    require_regular_file(Path::new(SYSTEM_DISK), "system disk")?;
-    let domain_uuid = fs::read_to_string(UUID_FILE)
-        .map_err(|error| format!("cannot read the protected domain identity: {error}"))?;
-    let config = ApplianceConfig::recommended(domain_uuid.trim(), SYSTEM_DISK, NVRAM);
-    let backend = LibvirtBackend::new(StdCommandRunner);
+    let (config, backend) = appliance()?;
 
     if !matches!(
         action.as_str(),
@@ -90,13 +85,13 @@ fn run() -> Result<(), String> {
 
     // All operations that inspect or mutate the live NIC/lease set share one
     // root-owned lock. This serialises concurrent pkexec requests with the
-    // timer reaper, so an old lease can never remove a newer NIC or summary.
+    // reaper (`reap_pass`), so an old lease can never remove a newer NIC or
+    // summary.
     let _controller_lock = matches!(
         action.as_str(),
         "egress-open"
             | "egress-close"
             | "egress-revoke"
-            | "egress-reap"
             | "start"
             | "shutdown"
             | "force-shutdown"
@@ -194,10 +189,9 @@ fn run() -> Result<(), String> {
                 Some(value) => value.parse::<u64>().map_err(|_| "invalid egress TTL".to_string())?,
             };
             if rest.len() > 2 { return Err(usage()); }
-            // The periodic timer is only a backstop. A user asking for a new
-            // connection should not be held hostage by an already-expired
-            // record for up to one timer interval; reap it transactionally
-            // while this controller lock is held.
+            // A user asking for a new connection should not wait for the
+            // reaper service to retire an already-expired record; reap it
+            // transactionally while this controller lock is held.
             reap_leases(&backend, &config)?;
             if active_lease()?.is_some() {
                 return Err("an egress lease is already active".to_string());
@@ -269,11 +263,6 @@ fn run() -> Result<(), String> {
             println!("{{\"schema_version\":1,\"result\":\"revoked\"}}");
             Ok(())
         }
-        "egress-reap" => {
-            if !rest.is_empty() { return Err(usage()); }
-            reap_leases(&backend, &config)?;
-            Ok(())
-        }
         _ => return Err(usage()),
     }
     .map_err(|error| format!("cannot manage the singleton appliance: {error}"))?;
@@ -283,7 +272,6 @@ fn run() -> Result<(), String> {
         "egress-open"
             | "egress-close"
             | "egress-revoke"
-            | "egress-reap"
             | "start"
             | "shutdown"
             | "force-shutdown"
@@ -298,7 +286,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: tilo-windows-vm-control {status|graphics-capabilities|graphics-attach|graphics-detach|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-revoke|egress-reap}".to_string()
+    "usage: tilo-windows-vm-control {status|graphics-capabilities|graphics-attach|graphics-detach|define|start|shutdown|force-shutdown|restart|suspend|resume|egress-open|egress-close|egress-revoke|egress-reap [--until-idle]}".to_string()
 }
 
 fn write_graphics_assignment(assignment: &GraphicsAssignment) -> Result<(), String> {
@@ -387,6 +375,17 @@ fn ensure_egress_runtime_root() -> Result<(), String> {
     let root = Path::new(EGRESS_RUNTIME_ROOT);
     fs::create_dir_all(root)
         .map_err(|error| format!("cannot create egress runtime root: {error}"))?;
+    // Repair only a wrong mode. The reaper service runs without
+    // CAP_FSETID and outside the directory's group, so its chmod would
+    // silently clear the setgid bit that tmpfiles set and later summaries
+    // would no longer be readable by the tilo-identity group.
+    let mode = fs::metadata(root)
+        .map_err(|error| format!("cannot inspect egress runtime root: {error}"))?
+        .permissions()
+        .mode();
+    if mode & 0o7777 == 0o2750 {
+        return Ok(());
+    }
     fs::set_permissions(root, fs::Permissions::from_mode(0o2750))
         .map_err(|error| format!("cannot secure egress runtime root: {error}"))
 }
@@ -487,7 +486,7 @@ fn remove_lease(id: &str) {
 
 /// Undo an attachment only when libvirt confirms that the live NIC is gone.
 /// On a transient detach failure the root-only lease record deliberately
-/// remains available to manual revoke and the periodic reaper.
+/// remains available to manual revoke and the lease reaper.
 fn rollback_attached_egress<R: VmBackend>(
     backend: &R,
     config: &ApplianceConfig,
@@ -557,70 +556,204 @@ fn active_lease() -> Result<Option<(String, EgressPurpose, u64)>, String> {
     Ok(active)
 }
 
-fn reap_leases<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> Result<(), String> {
-    let now = tilo_clock::try_unix_now()
-        .ok_or_else(|| "system clock is before the Unix epoch".to_string())?;
-    let entries = match fs::read_dir(LEASE_ROOT) {
+/// Retire every expired lease record and report the earliest Unix time at
+/// which one of the records that remain needs another pass.
+fn reap_leases<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> Result<Option<u64>, String> {
+    let now = unix_now()?;
+    let pass = reap_lease_records(backend, config, Path::new(LEASE_ROOT), now)?;
+    if pass.closed_any || active_lease()?.is_none() {
+        remove_egress_summary();
+    }
+    Ok(pass.next_attention)
+}
+
+/// How long a record whose NIC could not be detached, or which could not be
+/// read, waits before the reaper tries again.
+const REAP_RETRY_SECONDS: u64 = 5;
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct ReapPass {
+    closed_any: bool,
+    /// Earliest Unix time at which a remaining record needs another pass:
+    /// the expiry of a live lease, or a retry for a record that could not be
+    /// retired. `None` once no record remains.
+    next_attention: Option<u64>,
+}
+
+impl ReapPass {
+    fn attend_at(&mut self, unix_seconds: u64) {
+        self.next_attention = Some(
+            self.next_attention
+                .map_or(unix_seconds, |current| current.min(unix_seconds)),
+        );
+    }
+}
+
+fn reap_lease_records<R: VmBackend>(
+    backend: &R,
+    config: &ApplianceConfig,
+    root: &Path,
+    now: u64,
+) -> Result<ReapPass, String> {
+    let mut pass = ReapPass::default();
+    let retry = now.saturating_add(REAP_RETRY_SECONDS);
+    let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_egress_summary();
-            return Ok(());
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(pass),
         Err(error) => return Err(format!("cannot inspect egress leases: {error}")),
     };
     for entry in entries {
         let entry = entry.map_err(|error| format!("cannot inspect egress lease: {error}"))?;
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+        // A record that cannot be read or parsed may still stand for a live
+        // NIC; keep it scheduled rather than forgetting it. Any other entry
+        // is kept scheduled too: the path unit that starts the reaper fires
+        // while the directory is not empty, so a reaper that went idle here
+        // would only be started again at once.
+        let Some(lease) = (path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+            .then(|| fs::read_to_string(&path).ok())
+            .flatten()
+            .and_then(|source| parse_lease_record(&source))
+        else {
+            pass.attend_at(retry);
+            continue;
+        };
+        if lease.expires_unix_seconds > now {
+            pass.attend_at(lease.expires_unix_seconds);
             continue;
         }
-        let Ok(source) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Some(id) = source
-            .split("\"id\":\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-        else {
-            continue;
-        };
-        let Some(purpose) = source
-            .split("\"purpose\":\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-        else {
-            continue;
-        };
-        let Some(expiry) = source
-            .split("\"expires_unix_seconds\":")
-            .nth(1)
-            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
-            .and_then(|v| v.parse::<u64>().ok())
-        else {
-            continue;
-        };
-        if expiry > now {
-            continue;
-        }
-        let purpose = match purpose {
-            "activation" => EgressPurpose::Activation,
-            "windows_update" => EgressPurpose::WindowsUpdate,
-            _ => continue,
-        };
-        let lease = EgressLease {
-            id: id.to_string(),
-            purpose,
-            expires_unix_seconds: expiry,
-        };
         if backend.close_egress(config, &lease).is_ok() {
             let _ = fs::remove_file(path);
-            remove_egress_summary();
+            pass.closed_any = true;
+        } else {
+            pass.attend_at(retry);
         }
     }
-    if active_lease()?.is_none() {
+    Ok(pass)
+}
+
+/// Parse a controller-written lease record leniently, so one malformed field
+/// elsewhere cannot stop the reaper from closing the NIC it describes.
+fn parse_lease_record(source: &str) -> Option<EgressLease> {
+    let id = source
+        .split("\"id\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())?;
+    let purpose = match source
+        .split("\"purpose\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())?
+    {
+        "activation" => EgressPurpose::Activation,
+        "windows_update" => EgressPurpose::WindowsUpdate,
+        _ => return None,
+    };
+    let expires_unix_seconds = source
+        .split("\"expires_unix_seconds\":")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|value| value.parse::<u64>().ok())?;
+    Some(EgressLease {
+        id: id.to_string(),
+        purpose,
+        expires_unix_seconds,
+    })
+}
+
+fn unix_now() -> Result<u64, String> {
+    tilo_clock::try_unix_now().ok_or_else(|| "system clock is before the Unix epoch".to_string())
+}
+
+fn appliance() -> Result<(ApplianceConfig, LibvirtBackend<StdCommandRunner>), String> {
+    require_regular_file(Path::new(UUID_FILE), "domain identity")?;
+    require_regular_file(Path::new(SYSTEM_DISK), "system disk")?;
+    let domain_uuid = fs::read_to_string(UUID_FILE)
+        .map_err(|error| format!("cannot read the protected domain identity: {error}"))?;
+    Ok((
+        ApplianceConfig::recommended(domain_uuid.trim(), SYSTEM_DISK, NVRAM),
+        LibvirtBackend::new(StdCommandRunner),
+    ))
+}
+
+/// One locked reaper pass: retire expired leases and refresh the public
+/// status summary. Returns when the remaining lease records next need a pass.
+fn reap_pass() -> Result<Option<u64>, String> {
+    let _lock = acquire_controller_lock()?;
+    if !Path::new(UUID_FILE).exists() {
+        // Without an appliance there is no domain to query; drop any public
+        // status a failed or replaced appliance left behind. A lease record
+        // cannot be retired without its domain, so keep it scheduled.
         remove_egress_summary();
+        let _ = fs::remove_file(STATUS_SUMMARY);
+        return if lease_records_exist()? {
+            Ok(Some(unix_now()?.saturating_add(REAP_RETRY_SECONDS)))
+        } else {
+            Ok(None)
+        };
+    }
+    let (config, backend) = appliance()?;
+    let next_attention = reap_leases(&backend, &config)?;
+    write_status_summary(&backend, &config)?;
+    Ok(next_attention)
+}
+
+/// The status summary is refreshed at least this often while a lease keeps
+/// the reaper running, matching the persistent timer's period.
+const STATUS_REFRESH_SECONDS: u64 = 30;
+
+/// Run while any lease record exists, waking at each lease's expiry. The
+/// `tilo-windows-vm-egress-lease.path` unit starts this as soon as a record
+/// is written, which is before its NIC is attached, so revocation never
+/// waits for a polling interval. The process does not exit while a record
+/// remains: the path unit would only start it again at once.
+fn reap_until_idle() -> Result<(), String> {
+    loop {
+        let next_attention = match reap_pass() {
+            Ok(next_attention) => next_attention,
+            Err(error) => {
+                if !lease_records_exist()? {
+                    return Err(error);
+                }
+                eprintln!("tilo-windows-vm-control: egress reaper pass failed, retrying: {error}");
+                Some(unix_now()?.saturating_add(REAP_RETRY_SECONDS))
+            }
+        };
+        let Some(next_attention) = next_attention else {
+            return Ok(());
+        };
+        let refresh = unix_now()?.saturating_add(STATUS_REFRESH_SECONDS);
+        sleep_until_unix(next_attention.min(refresh))?;
+    }
+}
+
+/// Longest single sleep. A monotonic sleep stops counting while the machine
+/// is suspended but a lease's wall-clock expiry does not, so the wall clock
+/// is re-read at least this often: an expiry that passed during suspend is
+/// acted on within this bound after resume.
+const MAX_SLEEP_SECONDS: u64 = 5;
+
+fn sleep_until_unix(deadline: u64) -> Result<(), String> {
+    while let Some(step) = sleep_step(unix_now()?, deadline) {
+        std::thread::sleep(step);
     }
     Ok(())
+}
+
+fn sleep_step(now: u64, deadline: u64) -> Option<std::time::Duration> {
+    let remaining = deadline
+        .checked_sub(now)
+        .filter(|remaining| *remaining > 0)?;
+    Some(std::time::Duration::from_secs(
+        remaining.min(MAX_SLEEP_SECONDS),
+    ))
+}
+
+fn lease_records_exist() -> Result<bool, String> {
+    match fs::read_dir(LEASE_ROOT) {
+        Ok(mut entries) => Ok(entries.next().is_some()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("cannot inspect egress leases: {error}")),
+    }
 }
 
 fn close_all_leases<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> Result<(), String> {
@@ -682,5 +815,176 @@ mod tests {
         ));
         drop(first);
         drop(FileLock::try_open(&path, LockMode::Exclusive).unwrap());
+    }
+
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use windows_vm::{
+        ApplianceConfig, DomainState, EgressLease, EgressPurpose, VmBackend, VmBackendError,
+    };
+
+    use super::{
+        MAX_SLEEP_SECONDS, REAP_RETRY_SECONDS, ReapPass, parse_lease_record, reap_lease_records,
+        sleep_step,
+    };
+
+    /// Records which leases the reaper detached; detaching fails on demand.
+    #[derive(Default)]
+    struct EgressBackend {
+        detach_fails: bool,
+        closed: Mutex<Vec<String>>,
+    }
+
+    impl VmBackend for EgressBackend {
+        fn ensure_singleton(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn state(&self, _: &ApplianceConfig) -> Result<DomainState, VmBackendError> {
+            Ok(DomainState::Running)
+        }
+        fn start(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn retire_installation_media(&self, _: &ApplianceConfig) -> Result<(), VmBackendError> {
+            Ok(())
+        }
+        fn close_egress(
+            &self,
+            _: &ApplianceConfig,
+            lease: &EgressLease,
+        ) -> Result<(), VmBackendError> {
+            if self.detach_fails {
+                return Err(VmBackendError::UnsupportedAction("close_egress"));
+            }
+            self.closed.lock().unwrap().push(lease.id.clone());
+            Ok(())
+        }
+    }
+
+    fn config() -> ApplianceConfig {
+        ApplianceConfig::recommended(
+            "00000000-0000-4000-8000-000000000001",
+            "/var/lib/tilo/windows/system.qcow2",
+            "/var/lib/tilo/windows/nvram.fd",
+        )
+    }
+
+    fn write_record(root: &std::path::Path, id: &str, expires: u64) {
+        std::fs::write(
+            root.join(format!("{id}.json")),
+            format!(
+                "{{\"schema_version\":1,\"id\":\"{id}\",\"purpose\":\"windows_update\",\"expires_unix_seconds\":{expires}}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn reaper_sleeps_until_a_live_lease_expires_instead_of_polling() {
+        let root = tempfile::tempdir().unwrap();
+        write_record(root.path(), "egress-windows_update-1000", 1_600);
+        let backend = EgressBackend::default();
+
+        let pass = reap_lease_records(&backend, &config(), root.path(), 1_000).unwrap();
+
+        assert_eq!(
+            pass,
+            ReapPass {
+                closed_any: false,
+                next_attention: Some(1_600),
+            }
+        );
+        assert!(backend.closed.lock().unwrap().is_empty());
+        assert!(root.path().join("egress-windows_update-1000.json").exists());
+    }
+
+    #[test]
+    fn reaper_detaches_an_expired_lease_and_goes_idle() {
+        let root = tempfile::tempdir().unwrap();
+        write_record(root.path(), "egress-windows_update-1000", 1_600);
+        let backend = EgressBackend::default();
+
+        let pass = reap_lease_records(&backend, &config(), root.path(), 1_600).unwrap();
+
+        assert_eq!(
+            pass,
+            ReapPass {
+                closed_any: true,
+                next_attention: None,
+            }
+        );
+        assert_eq!(
+            *backend.closed.lock().unwrap(),
+            ["egress-windows_update-1000"]
+        );
+        assert!(!root.path().join("egress-windows_update-1000.json").exists());
+    }
+
+    #[test]
+    fn reaper_retries_a_lease_whose_detach_failed() {
+        let root = tempfile::tempdir().unwrap();
+        write_record(root.path(), "egress-windows_update-1000", 1_600);
+        let backend = EgressBackend {
+            detach_fails: true,
+            ..EgressBackend::default()
+        };
+
+        let pass = reap_lease_records(&backend, &config(), root.path(), 2_000).unwrap();
+
+        assert_eq!(pass.next_attention, Some(2_000 + REAP_RETRY_SECONDS));
+        assert!(!pass.closed_any);
+        assert!(root.path().join("egress-windows_update-1000.json").exists());
+    }
+
+    #[test]
+    fn reaper_keeps_an_unreadable_record_scheduled() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("egress-torn.json"),
+            "{\"schema_version\":1",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("stray"), "").unwrap();
+        let backend = EgressBackend::default();
+
+        let pass = reap_lease_records(&backend, &config(), root.path(), 1_000).unwrap();
+
+        assert_eq!(pass.next_attention, Some(1_000 + REAP_RETRY_SECONDS));
+        assert!(backend.closed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reaper_is_idle_without_a_lease_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = EgressBackend::default();
+
+        let pass =
+            reap_lease_records(&backend, &config(), &root.path().join("leases"), 1_000).unwrap();
+
+        assert_eq!(pass, ReapPass::default());
+    }
+
+    #[test]
+    fn lease_record_parses_what_egress_open_writes() {
+        let lease = parse_lease_record(
+            "{\"schema_version\":1,\"id\":\"egress-activation-7\",\"purpose\":\"activation\",\"expires_unix_seconds\":907}\n",
+        )
+        .unwrap();
+        assert_eq!(lease.id, "egress-activation-7");
+        assert_eq!(lease.purpose, EgressPurpose::Activation);
+        assert_eq!(lease.expires_unix_seconds, 907);
+        assert!(parse_lease_record("{\"id\":\"egress-x\",\"purpose\":\"other\"}").is_none());
+    }
+
+    #[test]
+    fn sleeps_are_bounded_so_an_expiry_passed_in_suspend_is_seen() {
+        assert_eq!(sleep_step(1_000, 1_000), None);
+        assert_eq!(sleep_step(1_001, 1_000), None);
+        assert_eq!(sleep_step(1_000, 1_002), Some(Duration::from_secs(2)));
+        assert_eq!(
+            sleep_step(1_000, 1_600),
+            Some(Duration::from_secs(MAX_SLEEP_SECONDS))
+        );
     }
 }
