@@ -82,6 +82,18 @@ impl Runtime {
         language: &str,
         vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
     ) -> Result<Self, RuntimeError> {
+        Self::spawn_with_vocabulary(Self::image_command(), language, vocabulary)
+    }
+    /// Field policy comes only from the compositor's original active target.
+    /// It grants neither microphone consent nor a different insertion target.
+    pub(super) fn start_for_field(
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+        multiline: bool,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn_for_field(Self::image_command(), language, vocabulary, multiline)
+    }
+    fn image_command() -> Command {
         let mut command = Command::new("/usr/bin/tilo-speech-worker");
         command.env_clear();
         // These select the same per-user store as the model manager; trust
@@ -93,16 +105,24 @@ impl Runtime {
                 command.env(key, value);
             }
         }
-        Self::spawn_with_vocabulary(command, language, vocabulary)
+        command
     }
     #[cfg(test)]
     fn spawn(command: Command, language: &str) -> Result<Self, RuntimeError> {
         Self::spawn_with_vocabulary(command, language, None)
     }
     fn spawn_with_vocabulary(
+        command: Command,
+        language: &str,
+        vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn_for_field(command, language, vocabulary, false)
+    }
+    fn spawn_for_field(
         mut command: Command,
         language: &str,
         vocabulary: Option<Arc<dyn settings_store::personal_dictionary::Vocabulary>>,
+        multiline: bool,
     ) -> Result<Self, RuntimeError> {
         if language.is_empty()
             || language.len() > 16
@@ -138,7 +158,10 @@ impl Runtime {
                     };
                     let bytes = serde_json::to_vec(&config).map_err(|_| RuntimeError::Protocol)?;
                     drop(config);
-                    let mut config = Zeroizing::new(bytes);
+                    let mut config = Configuration {
+                        bytes: Zeroizing::new(bytes),
+                        multiline,
+                    };
                     run(
                         &mut command,
                         &mut config,
@@ -208,6 +231,7 @@ impl Drop for Process {
 }
 
 struct Pipe {
+    multiline: bool,
     queue: VecDeque<Zeroizing<Vec<u8>>>,
     offset: usize,
     queued: usize,
@@ -216,8 +240,9 @@ struct Pipe {
     waiting: Option<(RequestKind, u64)>,
 }
 impl Pipe {
-    fn new() -> Self {
+    fn new(multiline: bool) -> Self {
         Self {
+            multiline,
             queue: VecDeque::new(),
             offset: 0,
             queued: 0,
@@ -352,11 +377,13 @@ impl Pipe {
             SpeechReply::Draft {
                 sequence: got,
                 text,
-            } => kind == RequestKind::Draft && *got == sequence && valid_text(text),
+            } => kind == RequestKind::Draft && *got == sequence && valid_text(text, self.multiline),
             SpeechReply::Done {
                 sequence: got,
                 text,
-            } => kind == RequestKind::Finish && *got == sequence && valid_text(text),
+            } => {
+                kind == RequestKind::Finish && *got == sequence && valid_text(text, self.multiline)
+            }
             SpeechReply::Error { error, .. } => return Err(RuntimeError::Worker(*error)),
         };
         if !matches {
@@ -366,8 +393,11 @@ impl Pipe {
         Ok(())
     }
 }
-fn valid_text(text: &str) -> bool {
-    text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control)
+fn valid_text(text: &str, multiline: bool) -> bool {
+    text.len() <= MAX_TEXT_BYTES
+        && !text
+            .chars()
+            .any(|character| character.is_control() && !(multiline && character == '\n'))
 }
 fn nonblocking(fd: std::os::fd::RawFd) -> Result<(), RuntimeError> {
     // SAFETY: caller owns this live pipe and F_GETFL/F_SETFL use integer args.
@@ -443,9 +473,14 @@ fn event(sender: &EventSender, event: RuntimeEvent) -> Result<(), RuntimeError> 
             .map_err(|_| RuntimeError::Protocol),
     }
 }
+struct Configuration {
+    bytes: Zeroizing<Vec<u8>>,
+    // Local original-field metadata, never a model-supplied configuration key.
+    multiline: bool,
+}
 fn run(
     command: &mut Command,
-    config: &mut Zeroizing<Vec<u8>>,
+    config: &mut Configuration,
     controls: &Receiver<Control>,
     events: &EventSender,
     cancel: &AtomicBool,
@@ -462,9 +497,9 @@ fn run(
         let mut output = worker.0.stdin.take().ok_or(RuntimeError::Protocol)?;
         nonblocking(input.as_raw_fd())?;
         nonblocking(output.as_raw_fd())?;
-        let mut pipe = Pipe::new();
-        pipe.enqueue(RequestKind::Configure, config)?;
-        config.zeroize();
+        let mut pipe = Pipe::new(config.multiline);
+        pipe.enqueue(RequestKind::Configure, &config.bytes)?;
+        config.bytes.zeroize();
         result = pump_io(
             &mut pipe,
             &mut ActorIo {
@@ -701,7 +736,8 @@ if sys.argv[1] in ('repeated', 'repair', 'dictionary_repeated') or sys.argv[1].s
         assert time.monotonic() < deadline
         time.sleep(0.005)
 repairs={'repair':'Let me grab two, uh, no, three of these','repair_de':'TiLo braucht zwei, äh, nein, drei Stück.','repair_fr':'Prendre deux, euh, non, trois exemplaires.','repair_es':'TiLo necesita dos, eh, no, tres unidades.'}
-reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in repairs else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
+paragraphs={'paragraph':'First paragraph.\n\nSecond paragraph.','paragraph_cr':'First\rSecond','paragraph_escape':'First\x1bSecond','paragraph_nul':'First\0Second'}
+reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in repairs else paragraphs[sys.argv[1]] if sys.argv[1] in paragraphs else 'unsafe\n' if sys.argv[1] == 'control' else 'Corrected 👋'))
 ";
 
     pub(super) fn peer_command(mode: &str, pid: &std::path::Path) -> Command {
@@ -845,7 +881,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         let mut input = child.0.stdout.take().unwrap();
         nonblocking(input.as_raw_fd()).unwrap();
         nonblocking(output.as_raw_fd()).unwrap();
-        let mut pipe = Pipe::new();
+        let mut pipe = Pipe::new(false);
         pipe.enqueue(RequestKind::Configure, br#"{"language":"en"}"#)
             .unwrap();
         let deadline = later(Duration::from_secs(10));
@@ -929,6 +965,38 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
                 next(&runtime),
                 RuntimeEvent::Stopped(RuntimeError::Protocol)
             ));
+            reaped(&mut runtime, &pid);
+        }
+    }
+
+    #[test]
+    fn actual_pipe_actor_accepts_only_field_bound_paragraphs_without_opening_a_microphone() {
+        let directory = tempfile::tempdir().unwrap();
+        for (index, (mode, multiline, accepted)) in [
+            ("paragraph", false, false),
+            ("paragraph", true, true),
+            ("paragraph_cr", true, false),
+            ("paragraph_escape", true, false),
+            ("paragraph_nul", true, false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let pid = directory.path().join(index.to_string());
+            let mut runtime =
+                Runtime::spawn_for_field(peer_command(mode, &pid), "en", None, multiline).unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Ready));
+            runtime.finish().unwrap();
+            assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
+            if accepted {
+                assert!(matches!(next(&runtime), RuntimeEvent::Done(text)
+                    if text == "First paragraph.\n\nSecond paragraph."));
+            } else {
+                assert!(matches!(
+                    next(&runtime),
+                    RuntimeEvent::Stopped(RuntimeError::Protocol)
+                ));
+            }
             reaped(&mut runtime, &pid);
         }
     }

@@ -541,6 +541,69 @@ fn dictation_streams_and_corrects_without_editing_until_one_utf8_commit() {
 }
 
 #[test]
+fn dictation_paragraphs_reach_an_explicit_multiline_field_once_without_keys() {
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Normal,
+    )));
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "First draft.\nAnother draft.".into(), now)
+        .unwrap();
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+    let final_text = "First paragraph.\n\nDeuxième paragraphe. 世界 👋";
+    h.state
+        .update_dictation(id, final_text.into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some(final_text.into())]);
+    assert!(h.peer(&field).keys.is_empty());
+    assert!(h.state.finish_dictation(id, now).is_err());
+}
+
+#[test]
+fn dictation_paragraphs_cannot_survive_multiline_policy_changes_or_enter_a_terminal() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let now = Instant::now();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Normal,
+    )));
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "First.\nSecond.".into(), now)
+        .unwrap();
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Normal,
+    );
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.finish_dictation(id, now),
+        Err(DictationError::TargetChanged)
+    );
+    assert!(h.peer(&field).committed.is_empty());
+    let terminal = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    )));
+    assert_eq!(
+        h.state.begin_dictation(now),
+        Err(DictationError::UnsupportedField)
+    );
+    assert!(h.peer(&terminal).committed.is_empty());
+    assert!(h.peer(&terminal).keys.is_empty());
+}
+
+#[test]
 fn public_aot_transcripts_reach_foreign_fields_without_committing_hallucinated_drafts() {
     for row in super::input_method_wire::public_aot_transcripts() {
         assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);

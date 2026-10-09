@@ -75,9 +75,15 @@ is for the trusted local speech service; it is not an unprivileged socket operat
   would lose atomic selected-range replacement and undo. Native final delivery
   drains the existing IME bridge and dispatches it in the same compositor turn,
   before another edit can move the selection. An incomplete delivery disconnects
-  that bridge instead of retrying after a focus or selection change. Control characters,
-  including line breaks, are rejected in this first boundary. Spoken paragraph
-  commands require a field-aware extension; they must never submit a terminal.
+  that bridge instead of retrying after a focus or selection change. Line feeds
+  are accepted only when the original field explicitly committed the Wayland
+  Multiline content hint. The owned worker pipe carries that captured policy as
+  local metadata; recognition results cannot enable it. Changing the field's
+  content hint invalidates the session. Single-line fields reject line feeds;
+  every field rejects carriage returns, tabs, escapes, NUL and other controls.
+  Native and browser field metadata still need to propagate multiline intent
+  before their paragraph journeys can be qualified. Spoken paragraph commands
+  remain unbuilt; multiline never makes a Terminal-purpose field eligible.
 - Oversized finals remain under their original session ID in zeroizing memory
   for ten minutes. The local controls visibly offer Copy transcript and Discard
   transcript. Copy explicitly exports the complete text to the system clipboard;
@@ -154,8 +160,9 @@ hold-to-talk interaction remain unbuilt.
 
 [Wispr's terminal guidance](https://docs.wisprflow.ai/articles/6478598909-using-flow-with-linux-wsl-and-terminal-applications)
 describes clipboard recovery and cautions that contextual formatting can change
-commands. Tilo keeps insertion on the original trusted IME connection and excludes
-control characters. Dictation refuses the text-input protocol's Terminal purpose:
+commands. Tilo keeps insertion on the original trusted IME connection and permits
+line feeds only under that field's captured multiline policy. Dictation refuses
+the text-input protocol's Terminal purpose:
 process input does not identify an inner program's editable, command or secret
 mode. A caret, terminal epoch or private delivery receipt alone cannot establish
 that eligibility. The refusal applies at activation and every session revalidation,
@@ -197,6 +204,15 @@ terminal or sensitive-field refusal and drops the preparation rather than waitin
 until timeout. Only a field that is still enabling may remain pending. The wire
 regression changes content purpose while warm-up is outstanding and verifies
 refusal without a Start or Final operation; no microphone or model is involved.
+
+The paragraph boundary's real Wayland regressions verify that an explicitly
+multiline field receives one Unicode final containing two paragraphs, with no
+draft edits or synthesized keys, and that a changed hint or Terminal purpose
+refuses delivery. The owned worker-pipe regression independently accepts LF
+only under the captured field policy, rejects CR/ESC/NUL and single-line LF,
+and observes every child being reaped. Four focused actor tests and seventeen
+dictation wire tests passed on 2026-10-09. These synthetic peers do not establish
+recognizer-generated paragraph commands or native/browser multiline propagation.
 
 The bookmarks behind this research were identified on 2026-10-07 from the
 owner's X bookmarks (research comment on issue #3543). The candidates below are
