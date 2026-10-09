@@ -154,6 +154,15 @@ impl Harness {
 }
 
 fn wire_buffer(h: &mut Harness, bytes: &[u8]) -> (wl_shm_pool::WlShmPool, client_buffer::WlBuffer) {
+    wire_buffer_in(h, bytes, wl_shm::Format::Argb8888)
+}
+
+/// A 64×64 SHM buffer of `format` holding `bytes`.
+fn wire_buffer_in(
+    h: &mut Harness,
+    bytes: &[u8],
+    format: wl_shm::Format,
+) -> (wl_shm_pool::WlShmPool, client_buffer::WlBuffer) {
     let mut file = tempfile::tempfile().expect("SHM buffer backing file");
     file.write_all(bytes).unwrap();
     let qh = h.queue.handle();
@@ -163,9 +172,66 @@ fn wire_buffer(h: &mut Harness, bytes: &[u8]) -> (wl_shm_pool::WlShmPool, client
         .as_ref()
         .unwrap()
         .create_pool(file.as_fd(), 16_384, &qh, ());
-    let buffer = pool.create_buffer(0, 64, 64, 256, wl_shm::Format::Argb8888, &qh, ());
+    let buffer = pool.create_buffer(0, 64, 64, 256, format, &qh, ());
     h.roundtrip();
     (pool, buffer)
+}
+
+/// A damaged commit whose buffer has another format than the last one is
+/// copied whole: the old `Xrgb8888` pixels were forced opaque, and laying
+/// the new `Argb8888` damage over them would leave the rest opaque.
+#[test]
+fn a_damaged_commit_in_another_format_is_copied_whole() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let surface = h.peer.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let role = h
+        .peer
+        .desktop
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = role.get_toplevel(&qh, ());
+    toplevel.set_app_id("damage-format".into());
+    surface.commit();
+    h.roundtrip();
+    let server = h.client.object_from_protocol_id::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>(
+        &h.display.handle(), surface.id().protocol_id()).unwrap();
+    let id = shell::compositor::state::surface_id(&server);
+    // Wire bytes are [B, G, R, A]; the X byte of an Xrgb8888 buffer is ignored.
+    let bytes = [0, 0, 0x80, 0x80].repeat(4096);
+    let (pool, opaque) = wire_buffer_in(&mut h, &bytes, wl_shm::Format::Xrgb8888);
+    surface.attach(Some(&opaque), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
+    surface.commit();
+    let previous = h.wait_frame(id, 0);
+    let first = store().snapshot(id).unwrap().rgba;
+    assert!(
+        first
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0x80, 0, 0, 0xff])
+    );
+    let (translucent_pool, translucent) = wire_buffer_in(&mut h, &bytes, wl_shm::Format::Argb8888);
+    surface.attach(Some(&translucent), 0, 0);
+    surface.damage_buffer(10, 10, 4, 4);
+    surface.commit();
+    h.wait_frame(id, previous);
+    let frame = store().snapshot(id).unwrap().rgba;
+    assert!(
+        frame
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0x80, 0, 0, 0x80]),
+        "every pixel takes the new format's alpha"
+    );
+    store().forget(id);
+    toplevel.destroy();
+    role.destroy();
+    surface.destroy();
+    translucent.destroy();
+    translucent_pool.destroy();
+    opaque.destroy();
+    pool.destroy();
+    h.roundtrip();
 }
 
 #[test]
@@ -231,6 +297,129 @@ fn committed_buffer_damage_stays_bound_to_actual_worker_pixels() {
     changed.destroy();
     changed_pool.destroy();
     first.destroy();
+    pool.destroy();
+    h.roundtrip();
+}
+
+/// Only what a commit damages is copied out of the client's pool: pixels the
+/// client changed outside its damage keep what the previous frame showed,
+/// which `wl_surface.damage_buffer` promises they still are. A commit with
+/// no damage is copied whole.
+#[test]
+fn a_damaged_shm_commit_copies_only_its_damage() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let surface = h.peer.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let role = h
+        .peer
+        .desktop
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = role.get_toplevel(&qh, ());
+    toplevel.set_app_id("damage-copy".into());
+    surface.commit();
+    h.roundtrip();
+    let server = h.client.object_from_protocol_id::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>(
+        &h.display.handle(), surface.id().protocol_id()).unwrap();
+    let id = shell::compositor::state::surface_id(&server);
+    // Wire bytes are [B, G, R, A].
+    let (pool, red) = wire_buffer(&mut h, &[0, 0, 255, 255].repeat(4096));
+    surface.attach(Some(&red), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
+    surface.commit();
+    let previous = h.wait_frame(id, 0);
+    let (blue_pool, blue) = wire_buffer(&mut h, &[255, 0, 0, 255].repeat(4096));
+    surface.attach(Some(&blue), 0, 0);
+    surface.damage_buffer(10, 10, 4, 4);
+    surface.commit();
+    let current = h.wait_frame(id, previous);
+    let frame = store().snapshot(id).unwrap();
+    assert_eq!((frame.width, frame.height), (64, 64));
+    for (index, pixel) in frame.rgba.chunks_exact(4).enumerate() {
+        let (x, y) = (index % 64, index / 64);
+        let damaged = (10..14).contains(&x) && (10..14).contains(&y);
+        let expected: &[u8] = if damaged {
+            &[0, 0, 255, 255]
+        } else {
+            &[255, 0, 0, 255]
+        };
+        assert_eq!(pixel, expected, "pixel ({x}, {y})");
+    }
+    surface.attach(Some(&blue), 0, 0);
+    surface.commit();
+    h.wait_frame(id, current);
+    let whole = store().snapshot(id).unwrap().rgba;
+    assert!(
+        whole.chunks_exact(4).all(|pixel| pixel == [0, 0, 255, 255]),
+        "a commit without damage is copied whole"
+    );
+    store().forget(id);
+    toplevel.destroy();
+    role.destroy();
+    surface.destroy();
+    blue.destroy();
+    blue_pool.destroy();
+    red.destroy();
+    pool.destroy();
+    h.roundtrip();
+}
+
+/// After an unmap the next buffer's damage is relative to nothing: a remap
+/// that damages a few pixels still shows its whole buffer, never the frame
+/// from before the unmap nor zeros around the damage.
+#[test]
+fn a_damaged_remap_after_an_unmap_shows_its_whole_buffer() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let surface = h.peer.compositor.as_ref().unwrap().create_surface(&qh, ());
+    let role = h
+        .peer
+        .desktop
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = role.get_toplevel(&qh, ());
+    toplevel.set_app_id("damage-remap".into());
+    surface.commit();
+    h.roundtrip();
+    let server = h.client.object_from_protocol_id::<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>(
+        &h.display.handle(), surface.id().protocol_id()).unwrap();
+    let id = shell::compositor::state::surface_id(&server);
+    // Wire bytes are [B, G, R, A].
+    let (pool, red) = wire_buffer(&mut h, &[0, 0, 255, 255].repeat(4096));
+    surface.attach(Some(&red), 0, 0);
+    surface.damage_buffer(0, 0, 64, 64);
+    surface.commit();
+    let mapped = h.wait_frame(id, 0);
+    surface.attach(None, 0, 0);
+    surface.commit();
+    let unmapped = h.wait_frame(id, mapped);
+    assert!(store().snapshot(id).is_none(), "the unmap drops the frame");
+    // An unmapped xdg surface maps again through a fresh initial commit.
+    surface.commit();
+    h.roundtrip();
+    let (blue_pool, blue) = wire_buffer(&mut h, &[255, 0, 0, 255].repeat(4096));
+    surface.attach(Some(&blue), 0, 0);
+    surface.damage_buffer(10, 10, 4, 4);
+    surface.commit();
+    h.wait_frame(id, unmapped);
+    let frame = store().snapshot(id).expect("remapped frame");
+    assert_eq!((frame.width, frame.height), (64, 64));
+    assert!(
+        frame
+            .rgba
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 255, 255]),
+        "the remap is copied whole"
+    );
+    store().forget(id);
+    toplevel.destroy();
+    role.destroy();
+    surface.destroy();
+    blue.destroy();
+    blue_pool.destroy();
+    red.destroy();
     pool.destroy();
     h.roundtrip();
 }
