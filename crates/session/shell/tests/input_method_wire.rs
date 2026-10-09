@@ -758,6 +758,100 @@ pub(super) fn public_aot_transcripts() -> Vec<PublicAotTranscript> {
     ledger.results
 }
 
+pub(super) fn public_image_transcripts() -> Vec<PublicAotTranscript> {
+    let rows = image_transcripts(
+        include_str!("../../../../docs/architecture/dictation-whistle-aot-image.json"),
+        1,
+    );
+    assert_eq!(
+        rows.iter().map(|row| row.case.as_str()).collect::<Vec<_>>(),
+        ["de_de-0", "en_us-0", "es_419-0", "fr_fr-0"]
+    );
+    rows
+}
+
+pub(super) fn public_long_image_transcripts() -> Vec<PublicAotTranscript> {
+    let rows = image_transcripts(
+        include_str!("../../../../docs/architecture/dictation-whistle-aot-image-120s.json"),
+        11,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].case, "fr_fr-0");
+    rows
+}
+
+fn image_transcripts(source: &str, repetitions: usize) -> Vec<PublicAotTranscript> {
+    #[derive(serde::Deserialize)]
+    struct Ledger {
+        qualification_only: bool,
+        production_activation: bool,
+        production_source_handler: bool,
+        results: Vec<ResultRow>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ResultRow {
+        case: String,
+        mode: String,
+        exit: i32,
+        repeat_audio: usize,
+        submitted_seconds: f64,
+        replies: Vec<Reply>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        kind: String,
+        text: Option<String>,
+    }
+    let ledger: Ledger = serde_json::from_str(source)
+        .expect("actual production-handler public qualification ledger");
+    assert!(ledger.qualification_only && !ledger.production_activation);
+    assert!(ledger.production_source_handler);
+    let mut rows = Vec::new();
+    for result in ledger.results {
+        if result.mode != "complete" || result.exit != 0 || result.repeat_audio != repetitions {
+            continue;
+        }
+        assert!(result.submitted_seconds <= 120.0);
+        if repetitions == 11 {
+            assert_eq!(result.submitted_seconds, 120.0);
+        }
+        let mut drafts = Vec::new();
+        let mut finals = Vec::new();
+        for reply in result.replies {
+            if reply.kind == "draft" {
+                drafts.push(PublicAotDraft {
+                    text: reply.text.expect("literal recorded draft"),
+                });
+            } else if reply.kind == "done" {
+                finals.push(reply.text.expect("literal recorded final"));
+            }
+        }
+        assert_eq!(finals.len(), 1, "one observed production final per case");
+        assert!(!drafts.is_empty());
+        rows.push(PublicAotTranscript {
+            case: result.case,
+            raw_final: finals.remove(0),
+            all_drafts: drafts,
+        });
+    }
+    rows.sort_by(|a, b| a.case.cmp(&b.case));
+    rows
+}
+
+#[test]
+fn public_image_transcripts_reach_native_notes_with_selection_undo_and_redo() {
+    for row in public_image_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_full_session_reaches_native_notes_with_owned_undo() {
+    for row in public_long_image_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
 #[test]
 fn public_aot_transcripts_reach_native_notes_with_selection_undo_and_redo() {
     for row in public_aot_transcripts() {

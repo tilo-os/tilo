@@ -37,7 +37,9 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--case', choices=scope.PUBLIC_CASES, default='fr_fr-0')
     parser.add_argument('--mode', choices=('complete', 'silence', 'eof', 'reject-image'), default='complete')
-    parser.add_argument('--repeat-audio', type=int, choices=(1, 4), default=1)
+    parser.add_argument('--repeat-audio', type=int, choices=(1, 4, 11), default=1)
+    parser.add_argument('--pad-to-session-limit', action='store_true',
+                        help='Append silence to a complete public recording to exercise exactly 120 seconds')
     args = parser.parse_args()
     if os.getuid() == 0 or os.geteuid() != os.getuid():
         parser.error('unprivileged host preparation required')
@@ -59,9 +61,16 @@ def main():
         raw = bytes(3 * 32000)
     elif args.mode == 'eof':
         raw = raw[:3 * 32000]
+    unpadded_bytes = len(raw)
+    if args.pad_to_session_limit:
+        if args.mode != 'complete' or not 0 < len(raw) < 120 * 32000:
+            raise RuntimeError('padding requires a complete recording shorter than the session cap')
+        raw += bytes(120 * 32000 - len(raw))
     if not 0 < len(raw) <= 120 * 32000:
         raise RuntimeError('production session bound required')
     stem = args.case + '-' + args.mode + '-' + str(args.repeat_audio)
+    if args.pad_to_session_limit:
+        stem += '-120s'
     result_path = root / (stem + '-result.json')
     if result_path.exists():
         raise RuntimeError('fresh qualification output required')
@@ -94,6 +103,7 @@ def main():
     result = probe.observe(command, cpus, (identity.st_dev, identity.st_ino),
                            max_threads=2, capture_lines=True)
     result.update(case=args.case, mode=args.mode, repeat_audio=args.repeat_audio,
+                  appended_silence_seconds=(len(raw) - unpadded_bytes) / 32000,
                   fixture_sha256=sha, fixture_pcm_sha256=pcm_sha,
                   submitted_pcm_sha256=hashlib.sha256(raw).hexdigest(),
                   submitted_seconds=len(raw) / 32000, original_seconds=seconds,
