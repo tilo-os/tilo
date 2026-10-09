@@ -105,6 +105,7 @@ pub mod surface_outputs;
 #[cfg(target_os = "linux")]
 pub mod surface_readback;
 pub mod switch_control;
+pub mod switch_latency;
 pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;

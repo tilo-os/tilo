@@ -9447,6 +9447,13 @@ pub fn run() {
             for sample in keys {
                 eprintln!("{sample}");
             }
+            if let Some(switch) = frame_builder
+                .host_mut()
+                .workspace_switch_latency_mut()
+                .frames_retired(serial, shown_at)
+            {
+                eprintln!("{switch}");
+            }
             if serial > frame_clock_retired_serial {
                 // A vblank-paced presenter re-anchors the grid on the vblank,
                 // one lead before the next. Otherwise a virtual present can
@@ -12672,6 +12679,24 @@ pub fn run() {
                 };
                 for sample in presented {
                     eprintln!("{sample}");
+                }
+            }
+            // A synchronous presenter has shown the frame already; an
+            // asynchronous one dates it when it retires that serial. A lost
+            // render thread queued nothing.
+            if !async_present || submitted_serial.is_some() {
+                let holding = frame_builder.host().workspace_switch_holding();
+                if let Some(switch) = frame_builder
+                    .host_mut()
+                    .workspace_switch_latency_mut()
+                    .frame_queued(
+                        submitted_serial,
+                        submit_done,
+                        frame_clock.interval(),
+                        holding,
+                    )
+                {
+                    eprintln!("{switch}");
                 }
             }
             // An asynchronous presenter advances the cadence only when its
