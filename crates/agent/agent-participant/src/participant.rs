@@ -3,13 +3,14 @@
 //!
 //! [`AgentParticipant`] holds a certified relay session under the agent's own
 //! device key and joins the room's durable and live planes. It holds the
-//! records it works in as replicas of their resources ([`Replica`]), acts
+//! records it works in as replicas of their resources, each in its own
+//! confined app worker ([`ConfinedReplica`]), acts
 //! only through the operations they publish, and commits each resulting
 //! change through the session, so the host orders it with everyone else's
 //! and every browser receives it as an ordinary durable change attributed to
 //! the agent. Around each action it publishes presence — the record it
 //! focuses, where in it the action left it (the record's own item and
-//! position, [`Replica::presence`]), and a [`LiveParticipant`] of kind agent
+//! position, [`ConfinedReplica::presence`]), and a [`LiveParticipant`] of kind agent
 //! with its label, colour and activity — so every participant's window
 //! draws it there as it draws any collaborator. Other participants'
 //! presence arrives the same way and is readable through
@@ -23,9 +24,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::apps::{AppCatalogue, Seed};
 use crate::control::{AgentControl, AgentIdentity};
 use crate::planner::{PlanContext, Planner, Step, StepAction};
+use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_browser_peer::{
@@ -95,7 +97,7 @@ pub struct AgentParticipant {
     workspace_id: u64,
     catalogue: AppCatalogue,
     planner: Box<dyn Planner>,
-    apps: BTreeMap<DocumentRoute, Replica>,
+    apps: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// Records the agent has not mounted, each merged as it changes.
     unopened: unopened::Unopened,
     live: LiveState,
@@ -453,11 +455,15 @@ impl AgentParticipant {
     /// Commit whatever the open records changed since the last commit.
     fn publish_changes(&mut self) {
         for (route, app) in &mut self.apps {
-            if let Some(mutation) = app.take_mutation() {
-                self.generation = self.generation.wrapping_add(1);
-                if let Err(error) = self.peer.publish(route.clone(), &mutation) {
-                    tracing::warn!(%error, "agent: a change could not be committed");
+            match app.take_mutation() {
+                Ok(Some(mutation)) => {
+                    self.generation = self.generation.wrapping_add(1);
+                    if let Err(error) = self.peer.publish(route.clone(), &mutation) {
+                        tracing::warn!(%error, "agent: a change could not be committed");
+                    }
                 }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "agent: a change was not admitted"),
             }
         }
     }
@@ -521,7 +527,7 @@ impl AgentParticipant {
             }
             None => (Seed::New, None),
         };
-        let mut app = Replica::open(
+        let app = ConfinedReplica::open(
             &self.catalogue,
             app_id,
             &self.room,
@@ -534,7 +540,7 @@ impl AgentParticipant {
             self.unopened.forget(seeded);
         }
         let route = route(app.wire_record());
-        if let Some(mutation) = app.take_mutation() {
+        if let Some(mutation) = app.take_mutation().map_err(|error| error.to_string())? {
             self.peer.publish(route.clone(), &mutation)?;
         }
         self.apps.insert(route.clone(), app);
@@ -553,7 +559,7 @@ impl AgentParticipant {
     pub fn survey(&self, route: &DocumentRoute) -> Vec<ActionDescriptor> {
         self.apps
             .get(route)
-            .map(Replica::survey)
+            .map(ConfinedReplica::survey)
             .unwrap_or_default()
     }
 
@@ -615,7 +621,10 @@ impl AgentParticipant {
         let output = app
             .invoke(address, arguments, confirmed)
             .map_err(Refusal::Door)?;
-        if let Some(mutation) = app.take_mutation() {
+        if let Some(mutation) = app
+            .take_mutation()
+            .map_err(|error| Refusal::Agent(error.to_string()))?
+        {
             self.generation = self.generation.wrapping_add(1);
             self.peer
                 .publish(route.clone(), &mutation)
@@ -633,7 +642,7 @@ impl AgentParticipant {
 
     /// The record held at `route`.
     #[must_use]
-    pub fn app(&self, route: &DocumentRoute) -> Option<&Replica> {
+    pub fn app(&self, route: &DocumentRoute) -> Option<&ConfinedReplica> {
         self.apps.get(route)
     }
 
