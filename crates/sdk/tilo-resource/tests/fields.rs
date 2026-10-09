@@ -247,3 +247,43 @@ fn a_flattened_struct_is_the_verbs_parameters() {
     let state = board.state().unwrap();
     assert_eq!((state.title.as_str(), state.cards), ("Sprint", 3));
 }
+
+#[test]
+fn a_derived_place_offers_an_edit_that_asks_for_its_value() {
+    let place = Derived::<Board>::new("Sprint board").with_edit_asking(
+        "rename",
+        "Rename the board",
+        "title",
+        "The new name",
+        |title: String| Board::paths().title.replace(title),
+    );
+    let published = place.publish();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == "rename")
+        .expect("the edit is offered on the place");
+    let params: Vec<(String, tilo_actions::ParamType)> = spec
+        .params()
+        .iter()
+        .map(|param| (param.name.to_string(), param.ty))
+        .collect();
+    assert_eq!(
+        params,
+        [("title".to_owned(), tilo_actions::ParamType::Text)]
+    );
+
+    let encoded = spec
+        .build_json(
+            &serde_json::json!({ "title": "Sprint 12" })
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+    let action: <Board as tilo_resource::Resource>::Action =
+        serde_json::from_slice(&encoded.payload).unwrap();
+    let mut board = Replica::<Board>::new();
+    board.apply_action(&action).unwrap();
+    assert_eq!(board.state().unwrap().title, "Sprint 12");
+}
