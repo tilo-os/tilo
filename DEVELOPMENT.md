@@ -236,7 +236,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
@@ -382,6 +382,50 @@ bytes = 4194304
 ```
 
 When the runtime shrinks, both gates print the lower budget to commit.
+
+## OS image size
+
+Every install downloads the OS image and every update pulls its changed
+layers, so its size is a KPI too (TIL-609). `tools/perf/image_size.py`
+measures one image without a container engine: it streams each layer from
+the registry, checks it against its digest and replays the layers with their
+whiteouts. It reports, in bytes:
+
+- `compressed`: the layer blobs a full pull downloads;
+- `unique_content`: the merged root's regular files with identical files
+  counted once, which is what composefs stores after install;
+- `redundant_payload`: bytes the layers carry beyond one copy of each distinct
+  file (the same file in two layers or at two paths, or one a later layer
+  replaced). composefs dedupes these on disk, but every pull still downloads
+  them.
+
+It also breaks the image down by layer (with the instruction that made it),
+by directory, by file and by installed package (from the image's own rpmdb).
+`--why PACKAGE` prints the chain of requires and recommends that pulls a
+package in:
+
+```bash
+python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+  --arch x86_64 --markdown image.md --json image.json --why python3-botocore
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-x86_64 --markdown image.md
+```
+
+`--dev-base` measures the production-layout `tilo-ci` image that a dev image
+names as its base. Pull requests that touch the image publish
+`tilo-ci:<ref>-<sha7>-<arch>` (Build / OS dev), so measure a branch with
+`--image` before merging. Perf / scheduled (footprint group, nightly)
+measures main's newest image for both architectures and records
+`footprint.image.{compressed_bytes,unique_content_bytes,redundant_payload_bytes}.<arch>`.
+`tools/perf/kpi-budgets.toml` holds them to two rules:
+
+- **Growth.** More than 5 % above the median of the last five nights fails on
+  the second night running. To land intended growth, dispatch Perf / scheduled
+  on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
+- **Ceiling.** Compressed bytes and unique content are held to an enforced
+  ceiling. It may only be lowered, except by a change that says why in the
+  same pull request. The KPI targets (3.5 GB compressed, 7 GB of content for
+  x86_64) are written beside the ceilings. Windows compatibility is most of
+  the gap; TIL-711 moves it to a downloaded system extension.
 
 ## Fast checks before assembly
 

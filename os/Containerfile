@@ -961,11 +961,7 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
-    fi \
-    && fonts="/usr/lib/tilo-runtime/$(cat /out/runtime-version)/lib/fonts" \
-    && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
-    && python3 /build/tools/font-catalog.py stage "$fonts" \
-        "/usr/share/tilo/font-catalogs/$catalog" --scope product
+    fi
 
 # ---- The browser engine runtime ---------------------------------------------
 # The Chromium engine is its own signed runtime bundle, apart from the Browser
@@ -1048,9 +1044,45 @@ RUN --mount=type=bind,from=env-runtime,source=/,target=/tilo-env-runtime,ro \
 # where its individual files were previously copied.
 FROM scratch AS native-builder-payload
 COPY --from=builder /out/ /out/
-COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=builder /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+
+# ---- One copy of the font catalog -------------------------------------------
+# The catalog's faces have three readers, each at its own path: the signed
+# runtime bundle's lib/fonts (mounted into app sandboxes as /run/tilo-fonts),
+# /usr/share/fonts/tilo (fontconfig, the image's own processes, sandboxes that
+# bind /usr/share/fonts, Flatpak's /run/host/fonts) and
+# /usr/share/tilo/font-catalogs/<manifest sha256> (the catalog a binary from a
+# newer userspace looks up by its own manifest). Copied separately they put
+# the same ~55 MB of fonts into three OCI layers (TIL-609). Here the two later
+# names are hard links to the runtime's files in the one tree the rootfs
+# copies in one COPY, so every pull carries the bytes once; symlinks would
+# dangle under Flatpak and Landlock. The OS catalog's one face the product
+# catalog leaves out (NewCM10-Regular, GPL) comes from os-fonts.
+FROM ${BASE_REF} AS os-fonts
+RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
+    --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
+    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    python3 /tilo-src/tools/font-catalog.py prepare \
+        /tilo-src/crates/sdk/ui-core/assets/fonts /out/fonts --scope os \
+        --cache /var/cache/tilo-font-artifacts
+
+FROM ${BASE_REF} AS runtime-image-payload
+RUN --network=none \
+    --mount=type=bind,from=builder,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
+    --mount=type=bind,from=builder,source=/out/runtime-version,target=/tilo-runtime-version,ro \
+    --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
+    --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
+    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
+    mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
+    && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
+    && fonts="/image/usr/lib/tilo-runtime/$(cat /tilo-runtime-version)/lib/fonts" \
+    && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
+    && python3 /tilo-src/tools/font-catalog.py link "$fonts" \
+        "/image/usr/share/tilo/font-catalogs/$catalog" --scope product \
+    && python3 /tilo-src/tools/font-catalog.py link "$fonts" /image/usr/share/fonts/tilo \
+        --scope os --extra /tilo-os-fonts \
+    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
+    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"
 
 # The browser engine runtime as the registry package that offers it
 # (`so.tilo.runtime.chromium`), for a publication to submit: the thin package
@@ -1639,34 +1671,23 @@ RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
     grep -q '^input:x:104:.*greetd' /etc/group
 
 # Fonts. Tilo's pinned font catalog is the system's one copy of its Noto
-# faces: staged here once, verified file by file against its manifest, and
-# found by fontconfig, the UI toolkit and the PDF helper (which reads it
-# through a read-only Landlock grant) alike. Fedora's static Noto packages
+# faces, found by fontconfig, the UI toolkit and the PDF helper (which reads
+# it through a read-only Landlock grant) alike. Its files arrive at
+# /usr/share/fonts/tilo with the runtime bundle (runtime-image-payload), as hard
+# links to the runtime's own copy, so the bytes ship once; the rootfs checks
+# fontconfig resolves them after that copy. Fedora's static Noto packages
 # would ship the same families a second time, several times larger, so the
-# snippet installed with the catalog gives it their generic-family defaults.
+# snippet installed here gives the catalog their generic-family defaults.
 # Adwaita Sans is not a product font of the catalog, so it stays a package.
-# `fontconfig` is named because this step indexes the catalog with it.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifacts \
-    --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
-    --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/usr/share/fontconfig/conf.avail/57-tilo-fonts.conf,target=/tilo-src/57-tilo-fonts.conf,ro \
     dnf install -y --setopt=reposdir=/repo \
         fontconfig \
         adwaita-sans-fonts \
     && dnf clean all && ${FINALIZE_RPMDB} \
-    && python3 /tilo-src/tools/font-catalog.py prepare \
-        /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope os \
-        --cache /var/cache/tilo-font-artifacts \
     && install -D -m 0644 /tilo-src/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf \
     && ln -s ../../../usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /etc/fonts/conf.d/57-tilo-fonts.conf \
     && fc-cache -s \
-    && for generic in 'Noto Sans CJK SC' serif monospace emoji; do \
-           case "$(fc-match -f '%{file}' "$generic")" in \
-               /usr/share/fonts/tilo/*) ;; \
-               *) echo "fontconfig does not resolve $generic from the catalog" >&2; exit 1 ;; \
-           esac; \
-       done \
     && /usr/libexec/tilo/clean-dnf-layer-state
 
 # The frozen snapshot already resolves these development specs and their exact
@@ -1780,8 +1801,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # every boot (var-lib-nfs-rpc_pipefs.mount: "unknown filesystem type
 # 'rpc_pipefs'"). Remove the packages rather than their units; rpm -e without
 # --nodeps fails the build if anything else comes to need them.
+#
+# The base also ships the AWS SDK for Python: sos (the support-report tool)
+# only *recommends* python3-boto3, for uploading a report to S3, and boto3
+# brings s3transfer, jmespath and python3-botocore, whose bundled API data is
+# 123 MB of the root (TIL-609; `tools/perf/image_size.py --why
+# python3-botocore` traces the chain). sos stays; nothing requires the SDK.
 RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils \
         nfs-common-utils rpcbind \
+        python3-boto3 python3-s3transfer python3-botocore python3-jmespath \
     && ${FINALIZE_RPMDB}
 
 # Keep encrypted-root unlock in the same visual path as the UKI splash.
@@ -1804,9 +1832,16 @@ COPY \
 # Retain the base's openssh and openssh-clients: virt-viewer requires them later,
 # and the frozen RPM transaction assumes dependencies already in the base remain
 # installed. The SSH server remains forbidden by the runtime crypto policy.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+# The splash text is set in the catalog's Noto Sans, mounted for this step
+# only: the catalog's files reach the rootfs later, with the runtime bundle.
+# A user cache of that scan goes to the throwaway /tmp; the rootfs's final
+# `fc-cache -s -f` rewrites the system cache once the files are in place.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=os-fonts,source=/out/fonts,target=/usr/share/fonts/tilo,ro \
+    --mount=type=tmpfs,target=/tmp \
+    dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
-    && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
+    && XDG_CACHE_HOME=/tmp/fontconfig-cache python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
     && plymouth-set-default-theme tilo \
     && test "$(plymouth-set-default-theme)" = tilo \
     && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
@@ -2940,7 +2975,9 @@ COPY --from=component-files /image/windows/ /
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
-COPY --from=native-builder-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+# The same tree carries the font catalog's two other names, hard links to the
+# runtime's fonts, so the bytes are in this one layer (runtime-image-payload).
+COPY --from=runtime-image-payload /image/usr/ /usr/
 # registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
 # registry offers. An app installed or updated from the Store is linked against
 # the release runtime build, which is rarely this image's own bake, and the
@@ -2969,7 +3006,6 @@ COPY --from=native-builder-payload \
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=native-builder-payload /usr/share/tilo/font-catalogs/ /usr/share/tilo/font-catalogs/
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG CHROMIUM_RUNTIME_VERSION
@@ -3094,6 +3130,14 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
+    # The generic families resolve from the catalog (57-tilo-fonts.conf), which
+    # arrived with the runtime bundle.
+    && for generic in 'Noto Sans CJK SC' serif monospace emoji; do \
+           case "$(fc-match -f '%{file}' "$generic")" in \
+               /usr/share/fonts/tilo/*) ;; \
+               *) echo "fontconfig does not resolve $generic from the catalog" >&2; exit 1 ;; \
+           esac; \
+       done \
     # The linker cache is current as built; ldconfig.service rebuilds it only
     # if it goes missing (its drop-in). The hardware database lives in /usr
     # with none in /etc, so systemd-hwdb-update.service has nothing to do on

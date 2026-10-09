@@ -142,7 +142,12 @@ containerfile="$repo/os/Containerfile"
 # profile and pinned Cosign. Its staged-trust and verified-update helpers move
 # from direct rootfs COPY to that component at the same installed paths and
 # executable mode; the component installer tests cover their staged sources.
-expected_contract=01e3f452f1160b9a99aeb6135d8e0ca32fea63ab2fbaa0463f8ebf805f574489
+# The baked runtime, /usr/share/fonts/tilo and the font-catalogs tree arrive
+# in one COPY of the runtime-image-payload tree (hard links carry the font
+# catalog's bytes once, TIL-609): that row replaces the runtime's and the font
+# catalogs' native-builder-payload rows; every installed path is unchanged and
+# /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
+expected_contract=750b422f513e0a3274d8fa644c65e590cb7d6c2a8a491cfd2f7947dee0ee9c6a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -153,8 +158,15 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # A unique destination makes the sorted contract sufficient: no later COPY can
 # mask an earlier payload at the same path. Directory-content copies remain
 # single-source entries and were intentionally not consolidated.
+# Two directory-content copies share /usr/ as their destination, with disjoint
+# trees: the Windows provider's (provider.json; on ARM also the FEX payload
+# and the x86 guest under /usr/lib/tilo/windows-runners), and the assembled
+# runtime tree
+# (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
+# which must be one COPY so its hard links stay one layer's.
 duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
-  awk -F '\t' '{ count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
+  awk -F '\t' '$1 == "runtime-image-payload" && $2 == "/image/usr/" && $3 == "/usr/" { next }
+    { count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
 [ -z "$duplicates" ] || {
   printf 'rootfs copy destinations are no longer unique:\n%s\n' "$duplicates" >&2
   exit 1
