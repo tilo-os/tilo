@@ -612,12 +612,29 @@ fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
         if moved && resolved_after {
             let _ = app.action_registry_mut();
         }
+        // Publish the directory as the app does, then resolve the published
+        // `bump` with no revision, as the broker asks for a caller naming
+        // none.
+        let resources = app.publication_resources();
+        let counter = resources
+            .iter()
+            .find(|resource| resource.actions.iter().any(|action| action.id == "bump"))
+            .expect("the counter publishes bump")
+            .id
+            .as_str()
+            .to_owned();
+        let descriptors = tilo_actions::door::survey(&resources);
+        app.capture_action_directory_snapshot(&resources, &descriptors);
+        let resolution = app.resolve_action_directory("", &counter, "bump");
         let runtime_collab::ActionDirectoryResolution::Found {
             revision: Some(resolved),
             ..
-        } = app.resolve_action_directory("", "test.counter", "bump")
+        } = resolution.clone()
         else {
-            panic!("an empty revision resolves the directory as it is now, and names it");
+            panic!(
+                "an empty revision resolves the directory as it is now, and names it: \
+                 {resolution:?}"
+            );
         };
         assert_eq!(resolved, app.action_directory_revision());
         // What the broker admits: the revision the resolution named.
@@ -641,7 +658,7 @@ fn revisionless_directory_invoke_is_bound_to_the_resolved_revision() {
         deliver_remote(&mut app, &request);
         assert_eq!(
             owned_count(&store, &checkout),
-            i64::from(!(moved && !resolved_after)),
+            i64::from(!moved || resolved_after),
             "case {case}: a directory that moved after a revisionless resolution must refuse \
              before mutation; an unchanged one, or one resolved after the change, must run"
         );
