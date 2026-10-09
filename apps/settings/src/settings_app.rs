@@ -876,13 +876,7 @@ impl Widget for SettingsApp {
     ) {
         // `taffy.layout(...)` only errors for a `NodeId` from a different
         // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
             && let Some(&shell_node) = children.first()
