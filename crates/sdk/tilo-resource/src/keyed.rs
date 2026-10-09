@@ -10,6 +10,7 @@
 //! [`Identified::order`]), so code that works with a vector keeps working.
 
 use std::cmp::Ordering;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 use automerge::transaction::Transactable;
@@ -21,8 +22,8 @@ use crate::delta::Delta;
 use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key};
 use crate::path::{Edit, EditOp, Path, Segment};
 
-/// An item of a [`Keyed`]: what it is stored under, and how items sort in
-/// memory beyond that.
+/// An item of a [`Keyed`] or an [`Ordered`](crate::Ordered): what it is
+/// stored under, and how items sort in memory beyond that.
 pub trait Identified {
     /// The item's identity: the key it is stored under.
     fn id(&self) -> Id;
@@ -35,46 +36,159 @@ pub trait Identified {
     }
 }
 
-/// Items stored under the ids they carry. See the module docs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Keyed<T> {
+/// Items that carry their own ids, held as a plain `Vec<T>` in memory and
+/// stored the way `S` says: [`Keyed`] under their ids alone, in their own
+/// order; [`Ordered`](crate::Ordered) as someone arranged them.
+pub struct Items<T, S> {
     items: Vec<T>,
+    storage: PhantomData<fn() -> S>,
 }
 
-impl<T> Default for Keyed<T> {
-    fn default() -> Self {
-        Self { items: Vec::new() }
+/// Items stored under the ids they carry. See the module docs.
+pub type Keyed<T> = Items<T, ById>;
+
+/// How [`Items`] are stored: the parts of their [`Model`] that differ.
+pub trait ItemStorage: 'static {
+    /// Whether the items keep an order someone arranged.
+    const ARRANGED: bool;
+    /// What a stored value that is not of this storage is called in errors.
+    const NAME: &'static str;
+
+    /// The items stored in the map `map`.
+    ///
+    /// # Errors
+    /// Returns an item that does not read.
+    fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError>;
+
+    /// Write `items` into `slot`.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn store<T: Model + Identified>(
+        items: &[T],
+        doc: &mut Doc,
+        slot: Slot<'_>,
+    ) -> Result<(), ModelError>;
+
+    /// Bring `items` up to date after `delta`; the default reads them again.
+    ///
+    /// # Errors
+    /// Returns an item that does not read.
+    fn refresh<T: Model + Identified>(
+        items: &mut Vec<T>,
+        doc: &Doc,
+        map: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        if delta.touches(map) {
+            *items = Self::load(doc, map)?;
+        }
+        Ok(())
+    }
+
+    /// Apply `op` at `rest` inside the stored item `id` of `map`.
+    ///
+    /// # Errors
+    /// Returns why there is no such item, or the item's own error.
+    fn edit_item<T: Model>(
+        doc: &mut Doc,
+        map: &ObjId,
+        id: &Id,
+        rest: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError>;
+
+    /// Store the new `item` with id `id` at position `at`.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    fn insert<T: Model>(
+        doc: &mut Doc,
+        map: &ObjId,
+        id: &Id,
+        at: usize,
+        item: &T,
+    ) -> Result<(), ModelError>;
+
+    /// Move the item `id` to position `at`, where there is an order.
+    ///
+    /// # Errors
+    /// Returns why the items cannot move.
+    fn move_to(doc: &mut Doc, map: &ObjId, id: &Id, at: usize) -> Result<(), ModelError> {
+        let _ = (doc, map, at);
+        Err(ModelError::invalid(format!(
+            "`{id}` cannot move: these items order themselves"
+        )))
+    }
+
+    /// The edits that turn `before` into `after`, below `path`.
+    fn diff<T: Model + Identified, R>(
+        before: &[T],
+        after: &[T],
+        path: &[Segment],
+        out: &mut Vec<Edit<R>>,
+    );
+}
+
+/// [`Keyed`] storage: each item under its id, in memory by id and then
+/// [`Identified::order`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ById;
+
+impl<T: Clone, S> Clone for Items<T, S> {
+    fn clone(&self) -> Self {
+        Self::from(self.items.clone())
     }
 }
 
-impl<T> Deref for Keyed<T> {
+impl<T: std::fmt::Debug, S> std::fmt::Debug for Items<T, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.items.fmt(f)
+    }
+}
+
+impl<T: PartialEq, S> PartialEq for Items<T, S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+    }
+}
+
+impl<T, S> Default for Items<T, S> {
+    fn default() -> Self {
+        Self::from(Vec::new())
+    }
+}
+
+impl<T, S> Deref for Items<T, S> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
         &self.items
     }
 }
 
-impl<T> DerefMut for Keyed<T> {
+impl<T, S> DerefMut for Items<T, S> {
     fn deref_mut(&mut self) -> &mut Vec<T> {
         &mut self.items
     }
 }
 
-impl<T> From<Vec<T>> for Keyed<T> {
+impl<T, S> From<Vec<T>> for Items<T, S> {
     fn from(items: Vec<T>) -> Self {
-        Self { items }
-    }
-}
-
-impl<T> FromIterator<T> for Keyed<T> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self {
-            items: iter.into_iter().collect(),
+            items,
+            storage: PhantomData,
         }
     }
 }
 
-impl<T> IntoIterator for Keyed<T> {
+impl<T, S> FromIterator<T> for Items<T, S> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from(iter.into_iter().collect::<Vec<_>>())
+    }
+}
+
+impl<T, S> IntoIterator for Items<T, S> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -82,7 +196,7 @@ impl<T> IntoIterator for Keyed<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a Keyed<T> {
+impl<'a, T, S> IntoIterator for &'a Items<T, S> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -90,7 +204,7 @@ impl<'a, T> IntoIterator for &'a Keyed<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a mut Keyed<T> {
+impl<'a, T, S> IntoIterator for &'a mut Items<T, S> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -98,28 +212,33 @@ impl<'a, T> IntoIterator for &'a mut Keyed<T> {
     }
 }
 
-impl<T: serde::Serialize> serde::Serialize for Keyed<T> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl<T: serde::Serialize, S> serde::Serialize for Items<T, S> {
+    fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
         self.items.serialize(serializer)
     }
 }
 
-impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Keyed<T> {
+impl<'de, T: serde::Deserialize<'de>, S> serde::Deserialize<'de> for Items<T, S> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(|items| Self { items })
+        Vec::<T>::deserialize(deserializer).map(Self::from)
     }
 }
 
-impl<T: crate::JsonSchema> crate::JsonSchema for Keyed<T> {
+impl<T: crate::JsonSchema, S> crate::JsonSchema for Items<T, S> {
     fn json_schema() -> serde_json::Value {
         crate::schema::array(T::json_schema())
     }
 }
 
-impl<T: Identified> Keyed<T> {
+impl<T: Identified, S> Items<T, S> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Where the item `id` is.
+    pub fn position_of(&self, id: &Id) -> Option<usize> {
+        self.items.iter().position(|item| &item.id() == id)
     }
 
     /// The item `id`.
@@ -134,19 +253,24 @@ impl<T: Identified> Keyed<T> {
 
     /// Remove the item `id`.
     pub fn take(&mut self, id: &Id) -> Option<T> {
-        let at = self.items.iter().position(|item| &item.id() == id)?;
+        let at = self.position_of(id)?;
         Some(self.items.remove(at))
-    }
-
-    /// Sort as a read from the document does: by id, then [`Identified::order`].
-    pub fn settle(&mut self) {
-        self.items
-            .sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
-        self.items.sort_by(T::order);
     }
 }
 
-impl<R, T: Model + Identified> Path<R, Keyed<T>> {
+impl<T: Identified> Keyed<T> {
+    /// Sort as a read from the document does: by id, then [`Identified::order`].
+    pub fn settle(&mut self) {
+        settle(&mut self.items);
+    }
+}
+
+fn settle<T: Identified>(items: &mut [T]) {
+    items.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
+    items.sort_by(T::order);
+}
+
+impl<R, T: Model + Identified, S> Path<R, Items<T, S>> {
     /// The item `id`, its own paths rooted here.
     #[must_use]
     pub fn item(&self, id: &Id) -> T::Paths<R> {
@@ -159,6 +283,14 @@ impl<R, T: Model + Identified> Path<R, Keyed<T>> {
         self.child(Segment::Item(id.clone()))
     }
 
+    /// Remove the item `id`.
+    #[must_use]
+    pub fn remove(&self, id: &Id) -> Edit<R> {
+        self.edit(EditOp::RemoveItem { id: id.clone() })
+    }
+}
+
+impl<R, T: Model + Identified> Path<R, Keyed<T>> {
     /// The edits that make the item `after` what it is: added when `before`
     /// is `None`, else changed field by field from `before`.
     #[must_use]
@@ -178,25 +310,157 @@ impl<R, T: Model + Identified> Path<R, Keyed<T>> {
             value: item.to_json(),
         })
     }
+}
 
-    /// Remove the item `id`.
-    #[must_use]
-    pub fn remove(&self, id: &Id) -> Edit<R> {
-        self.edit(EditOp::RemoveItem { id: id.clone() })
+impl ItemStorage for ById {
+    const ARRANGED: bool = false;
+    const NAME: &'static str = "keyed items";
+
+    fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
+        let mut items = doc
+            .keys(map)
+            .map(|key| read_key::<T>(doc, map, &key))
+            .collect::<Result<Vec<_>, _>>()?;
+        items.sort_by(T::order);
+        Ok(items)
+    }
+
+    fn store<T: Model + Identified>(
+        items: &[T],
+        doc: &mut Doc,
+        slot: Slot<'_>,
+    ) -> Result<(), ModelError> {
+        let map = slot.object(doc, ObjType::Map)?;
+        let keys: std::collections::HashSet<String> = items
+            .iter()
+            .map(|item| item.id().as_str().to_owned())
+            .collect();
+        let stale: Vec<String> = doc.keys(&map).filter(|key| !keys.contains(key)).collect();
+        for key in stale {
+            doc.delete(&map, key.as_str())?;
+        }
+        for item in items {
+            let id = item.id();
+            item.store(doc, Slot::Key(&map, id.as_str()))
+                .map_err(|error| error.at(id.as_str()))?;
+        }
+        Ok(())
+    }
+
+    fn refresh<T: Model + Identified>(
+        items: &mut Vec<T>,
+        doc: &Doc,
+        map: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        let touched = delta.under(map);
+        if touched.is_all() {
+            *items = Self::load(doc, map)?;
+            return Ok(());
+        }
+        let mut changed = false;
+        for key in touched.keys() {
+            let at = items.iter().position(|item| item.id().as_str() == key);
+            match (doc.get(map, key)?, at) {
+                (None, Some(at)) => {
+                    items.remove(at);
+                    changed = true;
+                }
+                (None, None) => {}
+                (Some(_), Some(at)) => {
+                    if let Some(item) = items.get_mut(at) {
+                        refresh_key(item, doc, map, key, delta)?;
+                    }
+                    changed = true;
+                }
+                (Some(_), None) => {
+                    items.push(read_key(doc, map, key)?);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            settle(items);
+        }
+        Ok(())
+    }
+
+    fn edit_item<T: Model>(
+        doc: &mut Doc,
+        map: &ObjId,
+        id: &Id,
+        rest: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        if doc.get(map, id.as_str())?.is_none() {
+            return Err(ModelError::invalid(format!("no item `{id}`")));
+        }
+        T::edit(doc, Slot::Key(map, id.as_str()), rest, op, cx)
+    }
+
+    fn insert<T: Model>(
+        doc: &mut Doc,
+        map: &ObjId,
+        id: &Id,
+        _at: usize,
+        item: &T,
+    ) -> Result<(), ModelError> {
+        item.store(doc, Slot::Key(map, id.as_str()))
+    }
+
+    fn diff<T: Model + Identified, R>(
+        before: &[T],
+        after: &[T],
+        path: &[Segment],
+        out: &mut Vec<Edit<R>>,
+    ) {
+        removed_and_changed(before, after, path, out);
+        for item in after {
+            let id = item.id();
+            if !before.iter().any(|candidate| candidate.id() == id) {
+                out.push(Edit::new(
+                    path.to_vec(),
+                    EditOp::InsertItem {
+                        id: Some(id),
+                        at: 0,
+                        value: item.to_json(),
+                    },
+                ));
+            }
+        }
     }
 }
 
-fn entries<T: Model>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError> {
-    doc.keys(map)
-        .map(|key| read_key::<T>(doc, map, &key))
-        .collect()
+/// The edits removing what `after` lacks and changing what both hold.
+pub(crate) fn removed_and_changed<T: Model + Identified, R>(
+    before: &[T],
+    after: &[T],
+    path: &[Segment],
+    out: &mut Vec<Edit<R>>,
+) {
+    for item in before {
+        let id = item.id();
+        match after.iter().find(|candidate| candidate.id() == id) {
+            Some(next) => {
+                let mut at = path.to_vec();
+                at.push(Segment::Item(id));
+                item.diff(next, &at, out);
+            }
+            None => out.push(Edit::new(path.to_vec(), EditOp::RemoveItem { id })),
+        }
+    }
 }
 
-impl<T: Model + Identified> Model for Keyed<T> {
+impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
     }
-    const SHAPE: crate::Shape = crate::Shape::Keyed(&T::SHAPE);
+    const SHAPE: crate::Shape = if S::ARRANGED {
+        crate::Shape::Collection(&T::SHAPE)
+    } else {
+        crate::Shape::Keyed(&T::SHAPE)
+    };
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
 
@@ -210,7 +474,7 @@ impl<T: Model + Identified> Model for Keyed<T> {
                 .iter()
                 .map(T::from_json)
                 .collect::<Result<Vec<_>, _>>()
-                .map(|items| Self { items }),
+                .map(Self::from),
             serde_json::Value::Null => Ok(Self::default()),
             _ => Err(ModelError::shape("a list of items")),
         }
@@ -218,13 +482,9 @@ impl<T: Model + Identified> Model for Keyed<T> {
 
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
-            return Err(ModelError::shape("keyed items"));
+            return Err(ModelError::shape(S::NAME));
         }
-        let mut items = Self {
-            items: entries(doc, id)?,
-        };
-        items.items.sort_by(T::order);
-        Ok(items)
+        S::load(doc, id).map(Self::from)
     }
 
     fn missing() -> Result<Self, ModelError> {
@@ -232,22 +492,7 @@ impl<T: Model + Identified> Model for Keyed<T> {
     }
 
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        let keys: std::collections::HashSet<String> = self
-            .items
-            .iter()
-            .map(|item| item.id().as_str().to_owned())
-            .collect();
-        let stale: Vec<String> = doc.keys(&map).filter(|key| !keys.contains(key)).collect();
-        for key in stale {
-            doc.delete(&map, key.as_str())?;
-        }
-        for item in &self.items {
-            let id = item.id();
-            item.store(doc, Slot::Key(&map, id.as_str()))
-                .map_err(|error| error.at(id.as_str()))?;
-        }
-        Ok(())
+        S::store(&self.items, doc, slot)
     }
 
     fn refresh(
@@ -257,38 +502,11 @@ impl<T: Model + Identified> Model for Keyed<T> {
         id: &ObjId,
         delta: &Delta,
     ) -> Result<(), ModelError> {
-        let touched = delta.under(id);
-        if touched.is_all() {
+        if !matches!(value, Value::Object(ObjType::Map)) {
             *self = Self::load(doc, value, id)?;
             return Ok(());
         }
-        let mut changed = false;
-        for key in touched.keys() {
-            let at = self.items.iter().position(|item| item.id().as_str() == key);
-            match (doc.get(id, key)?, at) {
-                (None, Some(at)) => {
-                    self.items.remove(at);
-                    changed = true;
-                }
-                (None, None) => {}
-                (Some(_), Some(at)) => {
-                    if let Some(item) = self.items.get_mut(at) {
-                        refresh_key(item, doc, id, key, delta)?;
-                    }
-                    changed = true;
-                }
-                (Some(_), None) => {
-                    self.items.push(read_key(doc, id, key)?);
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            self.items
-                .sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
-            self.items.sort_by(T::order);
-        }
-        Ok(())
+        S::refresh(&mut self.items, doc, id, delta)
     }
 
     fn edit(
@@ -298,66 +516,40 @@ impl<T: Model + Identified> Model for Keyed<T> {
         op: &EditOp,
         cx: &mut ActionCx,
     ) -> Result<(), ModelError> {
-        match path.split_first() {
-            Some((Segment::Item(id), rest)) => {
+        match (path.split_first(), op) {
+            (Some((Segment::Item(id), rest)), _) => {
+                let map = slot.object(doc, ObjType::Map)?;
+                S::edit_item::<T>(doc, &map, id, rest, op, cx)
+                    .map_err(|error| error.at(id.as_str()))
+            }
+            (None, EditOp::InsertItem { at, value, .. }) => {
+                let item = T::from_json(value)?;
+                item.check().map_err(ModelError::refused)?;
+                let map = slot.object(doc, ObjType::Map)?;
+                let id = item.id();
+                if doc.get(&map, id.as_str())?.is_some() {
+                    return Err(ModelError::invalid(format!("an item `{id}` exists")));
+                }
+                S::insert(doc, &map, &id, *at, &item).map_err(|error| error.at(id.as_str()))
+            }
+            (None, EditOp::RemoveItem { id }) => {
                 let map = slot.object(doc, ObjType::Map)?;
                 if doc.get(&map, id.as_str())?.is_none() {
                     return Err(ModelError::invalid(format!("no item `{id}`")));
                 }
-                T::edit(doc, Slot::Key(&map, id.as_str()), rest, op, cx)
-                    .map_err(|error| error.at(id.as_str()))
+                doc.delete(&map, id.as_str())?;
+                Ok(())
             }
-            Some(_) => edit_whole::<Self>(doc, slot, path, op),
-            None => match op {
-                EditOp::InsertItem { value, .. } => {
-                    let item = T::from_json(value)?;
-                    item.check().map_err(ModelError::refused)?;
-                    let map = slot.object(doc, ObjType::Map)?;
-                    let id = item.id();
-                    if doc.get(&map, id.as_str())?.is_some() {
-                        return Err(ModelError::invalid(format!("an item `{id}` exists")));
-                    }
-                    item.store(doc, Slot::Key(&map, id.as_str()))
-                        .map_err(|error| error.at(id.as_str()))
-                }
-                EditOp::RemoveItem { id } => {
-                    let map = slot.object(doc, ObjType::Map)?;
-                    if doc.get(&map, id.as_str())?.is_none() {
-                        return Err(ModelError::invalid(format!("no item `{id}`")));
-                    }
-                    doc.delete(&map, id.as_str())?;
-                    Ok(())
-                }
-                _ => edit_whole::<Self>(doc, slot, path, op),
-            },
+            (None, EditOp::MoveTo { id, at }) if S::ARRANGED => {
+                let map = slot.object(doc, ObjType::Map)?;
+                S::move_to(doc, &map, id, *at)
+            }
+            _ => edit_whole::<Self>(doc, slot, path, op),
         }
     }
 
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<Edit<R>>) {
-        for item in &self.items {
-            let id = item.id();
-            match after.items.iter().find(|candidate| candidate.id() == id) {
-                Some(next) => {
-                    let mut at = path.to_vec();
-                    at.push(Segment::Item(id));
-                    item.diff(next, &at, out);
-                }
-                None => out.push(Edit::new(path.to_vec(), EditOp::RemoveItem { id })),
-            }
-        }
-        for item in &after.items {
-            let id = item.id();
-            if !self.items.iter().any(|candidate| candidate.id() == id) {
-                out.push(Edit::new(
-                    path.to_vec(),
-                    EditOp::InsertItem {
-                        id: Some(id),
-                        at: 0,
-                        value: item.to_json(),
-                    },
-                ));
-            }
-        }
+        S::diff(&self.items, &after.items, path, out);
     }
 
     fn check(&self) -> Result<(), Refusal> {
@@ -373,11 +565,7 @@ impl<T: Model + Identified> Model for Keyed<T> {
     {
         match path.split_first() {
             None => Some(self),
-            Some((Segment::Item(id), rest)) => self
-                .items
-                .iter()
-                .find(|item| &item.id() == id)?
-                .get_at(rest),
+            Some((Segment::Item(id), rest)) => self.find(id)?.get_at(rest),
             Some(_) => None,
         }
     }
@@ -409,11 +597,7 @@ impl<T: Model + Identified> Model for Keyed<T> {
 
     fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
         match path.split_first() {
-            Some((Segment::Item(id), rest)) => self
-                .items
-                .iter()
-                .find(|item| &item.id() == id)?
-                .op_lands(rest, op),
+            Some((Segment::Item(id), rest)) => self.find(id)?.op_lands(rest, op),
             _ => None,
         }
     }

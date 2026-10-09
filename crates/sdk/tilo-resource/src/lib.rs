@@ -144,13 +144,13 @@ pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
-pub use keyed::{Identified, Keyed};
+pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
     write_key_changed,
 };
-pub use ordered::Ordered;
+pub use ordered::{Arranged, Ordered};
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
