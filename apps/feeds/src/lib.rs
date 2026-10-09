@@ -1,8 +1,7 @@
 //! Feeds — a CRDT-native RSS/Atom/Gemini reader for Tilo.
 //!
-//! Architecture (mirrors the notes app):
-//!   * [`model`]  — pure data + the in-memory [`model::Store`].
-//!   * [`doc`]    — Automerge mapping; converging state lives here.
+//! Architecture:
+//!   * [`model`]  — the library's model ([`model::Library`]) and its queries.
 //!   * [`sample`] — bundled offline fixture used only by `--shots` and tests.
 //!   * [`fetch`]  — HTTP (`tilo_net` + feed-rs) and gemini (TLS) on the app runtime.
 //!   * [`html`] / [`gemtext`] — body → renderable [`model::ContentBlock`]s.
@@ -10,7 +9,7 @@
 //!   * [`app`]    — the root [`app::FeedsApp`]: the window shell around the
 //!     sidebar of places, the article list and the reader.
 //!
-//!   * [`resource`] — the resource, its effects and the framework app.
+//!   * [`resource`] — the library's verbs, its effects and the framework app.
 //!
 //! [`FeedsShell`] is the single integration point: the live window, `--shots`
 //! and every host that mounts the app run it through the framework.
@@ -39,10 +38,8 @@
     )
 )]
 
-pub mod actions;
 pub mod app;
 mod chrome;
-pub mod doc;
 pub mod fetch;
 pub mod gemtext;
 pub mod html;
@@ -57,11 +54,11 @@ pub mod sample;
 mod sidebar;
 
 pub use app::FeedsApp;
-pub use model::{Article, Feed, FeedKind, Filter, Folder, Store};
+pub use model::{Article, Feed, FeedKind, Filter, Folder, Library};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<FeedsShell>()
 }
 
-pub use resource::{Feeds, FeedsEffect, FeedsShell};
+pub use resource::{FeedsEffect, FeedsShell};
