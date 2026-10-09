@@ -85,6 +85,7 @@ pub mod present;
 #[cfg(target_os = "linux")]
 pub mod presentation;
 pub mod projection_capture;
+pub mod published_room;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
