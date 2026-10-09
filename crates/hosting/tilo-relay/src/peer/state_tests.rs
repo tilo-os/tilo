@@ -2107,6 +2107,55 @@ async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
     }
 }
 
+/// A device re-dials (its shell follows a changed pin) and drops the old
+/// connection. The old connection's teardown releases its slot while the new
+/// subscription's replay is still running; the new one must take the slot, not
+/// be closed as if it had lost authorization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
+    let fixture = Arc::new(Fixture::new());
+    let device = fixture.recipient.device_public_key;
+    let (earlier, _earlier_rx) = mpsc::channel(32);
+    fixture.workspace.lock().await.add_subscriber(Subscriber {
+        device_public_key: device,
+        role: PeerRole::Device,
+        tx: earlier.clone(),
+        disconnect: fixture.recipient_disconnect.clone(),
+    });
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
+    let subscribing = fixture.clone();
+    let task = tokio::spawn(async move { subscribing.subscribe_result().await });
+    reached.await.unwrap();
+
+    // The earlier connection's teardown: it removes only its own slot.
+    fixture
+        .workspace
+        .lock()
+        .await
+        .remove_subscriber_session(&device, &earlier);
+    drop(release);
+
+    let result = tilo_test_env::within("task to complete", task)
+        .await
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "the re-dialled subscription was refused after its earlier connection ended: {:?}",
+        result.err()
+    );
+    assert!(
+        fixture
+            .workspace
+            .lock()
+            .await
+            .subscribers
+            .get(&device)
+            .is_some_and(|current| current.tx.same_channel(&fixture.recipient_tx)),
+        "the re-dialled subscription holds the device's slot"
+    );
+}
+
 #[test]
 fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
     let metrics = crate::metrics::Metrics::default();

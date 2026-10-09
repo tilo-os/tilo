@@ -2091,7 +2091,13 @@ async fn handle_subscribe(
                 let unchanged = match (expected.as_ref(), current) {
                     (Some(expected), Some(current)) => expected.same_channel(&current.tx),
                     (None, None) => true,
-                    _ => false,
+                    // The device's earlier connection held the slot when this
+                    // one subscribed, and its teardown has since released it.
+                    // This subscription would have displaced it anyway, so it
+                    // takes the slot. Only this connection's own slot
+                    // vanishing is a loss of authorization.
+                    (Some(expected), None) => !expected.same_channel(&source.tx),
+                    (None, Some(_)) => false,
                 };
                 if !source.alive() || !source.cert(&source.peer) || !state_member(&wr, &source.peer)
                 {
