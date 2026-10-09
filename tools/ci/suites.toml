@@ -396,7 +396,11 @@ suites = [
 
 [[group]]
 name = "perf-tools"
-inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
+inputs = [
+  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs.
+  "crates/system/fs/tests/performance_gate.rs",
+]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
@@ -420,6 +424,10 @@ suites = [
   "scripts/perf/settings_effects_test.py",
   "scripts/perf/word_processor_effects_test.py",
   "scripts/perf/worker_handoff_test.py",
+  "tools/perf/test_adapters.py",
+  "tools/perf/test_compare.py",
+  "tools/perf/test_record.py",
+  "tools/perf/test_store.py",
 ]
 
 [[group]]
