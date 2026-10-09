@@ -3006,9 +3006,13 @@ mod tests {
     #[test]
     fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        app.call(
+            "open",
+            serde_json::json!({
+                "anchor": crate::effects::pane_row_id(crate::categories::Category::Displays)
+            }),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().device_displays =
                 vec![settings_store::device_displays::DeviceDisplay {
@@ -3078,9 +3082,12 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
             .expect("settings opens headlessly");
         app.settle();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .expect("Displays opens through its declared operation");
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .expect("Displays opens through its declared operation");
         app.settle();
         let surface = app.agent_surface();
         let rows = surface.as_array().expect("published actions");
@@ -3226,9 +3233,12 @@ mod tests {
         for role in [ui::Role::Viewer, ui::Role::Editor] {
             let mut app =
                 ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(role).unwrap();
-            let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-            app.call_on(&open.resource, &open.action, serde_json::json!({}))
-                .unwrap();
+            let open = crate::categories::Category::Displays;
+            app.effect_on(
+                &crate::effects::pane_row_id(open),
+                &crate::effects::open_pane(open),
+            )
+            .unwrap();
             app.settle();
             let audit = app.harness().native_app_audit();
             assert!(

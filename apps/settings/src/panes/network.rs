@@ -3442,9 +3442,7 @@ mod tests {
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .expect("read-only Settings opens");
         mount_network(&mut app, observed).expect("the ordinary mounted network model");
-        let open = crate::effects::open_pane_address(crate::categories::Category::Network);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Network);
         app.settle();
         let before = app
             .call("inspect-network-state", serde_json::json!({}))

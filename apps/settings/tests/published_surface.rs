@@ -6,8 +6,9 @@
 
 use settings::SettingsShell;
 use settings::categories::Category;
-use settings::effects::open_pane_address;
+use settings::effects::{open_pane, pane_row_id};
 use ui::framework::testing::TestApp;
+use ui::tilo_resource::Effect as _;
 
 #[test]
 fn every_pane_publishes_a_surface_that_passes_contract_validation() {
@@ -19,8 +20,7 @@ fn every_pane_publishes_a_surface_that_passes_contract_validation() {
         failures.push(format!("on open: {violations:#?}"));
     }
     for category in Category::ALL.iter().copied() {
-        let open = open_pane_address(category);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
+        app.effect_on(&pane_row_id(category), &open_pane(category))
             .unwrap_or_else(|error| panic!("{} opens: {error:?}", category.slug()));
         app.settle();
         let violations = app.harness().component_contract_violations();
@@ -70,14 +70,14 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
             ui::widget::controls::control_action_bindings(&*settings)
         })
         .expect("the settings surface is mounted");
-    let open = open_pane_address(Category::Bluetooth);
+    let open = open_pane(Category::Bluetooth);
     let navigation = bindings
         .iter()
         .filter(|binding| {
             matches!(
                 &binding.kind,
                 ui::widget::ControlBindingKind::Action(address)
-                    if address.resource == "settings.root" && address.action == open.action
+                    if address.resource == "settings.root" && address.action == open.id()
             )
         })
         .collect::<Vec<_>>();

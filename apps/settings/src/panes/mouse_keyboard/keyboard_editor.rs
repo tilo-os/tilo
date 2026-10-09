@@ -1020,9 +1020,12 @@ mod tests {
         })
         .unwrap();
         app.harness().resize(viewport).unwrap();
-        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-        app.call_on(&address.resource, &address.action, serde_json::json!({}))
-            .unwrap();
+        let address = crate::categories::Category::MouseKeyboard;
+        app.effect_on(
+            &crate::effects::pane_row_id(address),
+            &crate::effects::open_pane(address),
+        )
+        .unwrap();
         app.settle();
         app
     }

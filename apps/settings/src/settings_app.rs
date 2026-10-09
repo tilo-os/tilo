@@ -240,6 +240,16 @@ impl SettingsApp {
         self.sidebar_selection.set(Some(category));
     }
 
+    /// Open the pane a search hit or an agent's `open` names by its row.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let selection = self.sidebar_selection.clone();
+        move |anchor| {
+            if let Some(category) = crate::effects::pane_of_row(anchor) {
+                selection.set(Some(category));
+            }
+        }
+    }
+
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
     /// nav + content, and (on a narrow layout) navigates from the list screen
     /// to the selected category's content screen.

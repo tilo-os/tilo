@@ -2901,9 +2901,12 @@ mod tests {
             .model()
             .borrow_mut()
             .follow_local_profile = false;
-        let open = crate::effects::open_pane_address(crate::categories::Category::AgentModels);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::AgentModels;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.settle();
         let resource = format!(
             "settings.agent-provider-model:{}:{}",

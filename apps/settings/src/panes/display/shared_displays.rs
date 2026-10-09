@@ -451,9 +451,12 @@ mod tests {
     #[test]
     fn shared_display_operations_use_the_mounted_exact_resource_door() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });
@@ -582,9 +585,12 @@ mod tests {
         let mut app =
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });

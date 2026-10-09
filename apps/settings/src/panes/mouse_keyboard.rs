@@ -2832,9 +2832,12 @@ mod tests {
         let mut host =
             ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
         app.harness().resize((1200, 2200)).unwrap();
-        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-        app.call_on(&address.resource, &address.action, serde_json::json!({}))
-            .unwrap();
+        let address = crate::categories::Category::MouseKeyboard;
+        app.effect_on(
+            &crate::effects::pane_row_id(address),
+            &crate::effects::open_pane(address),
+        )
+        .unwrap();
         app.settle();
         app.harness().click_named("dictionary.word").unwrap();
         app.harness().type_text("Tilo");
@@ -2951,9 +2954,12 @@ mod tests {
     }
 
     pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
-        let address = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-        app.call_on(&address.resource, &address.action, serde_json::json!({}))
-            .unwrap();
+        let address = crate::categories::Category::MouseKeyboard;
+        app.effect_on(
+            &crate::effects::pane_row_id(address),
+            &crate::effects::open_pane(address),
+        )
+        .unwrap();
         app.settle();
         app.harness().click_named("input.sources.add").unwrap();
         app.settle();
@@ -2997,10 +3003,12 @@ mod tests {
             let mut app = TestApp::<SettingsShell>::new().unwrap();
             app.harness().resize(viewport).unwrap();
             app.harness().set_theme(theme);
-            let address =
-                crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-            app.call_on(&address.resource, &address.action, serde_json::json!({}))
-                .unwrap();
+            let address = crate::categories::Category::MouseKeyboard;
+            app.effect_on(
+                &crate::effects::pane_row_id(address),
+                &crate::effects::open_pane(address),
+            )
+            .unwrap();
             app.settle();
             assert_eq!(
                 spelling_language_value(&app.harness().inspection().root),
@@ -3491,9 +3499,12 @@ mod tests {
             .unwrap()
             .unwrap()
         };
-        let open = crate::effects::open_pane_address(crate::categories::Category::MouseKeyboard);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::MouseKeyboard;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         assert!(set(
             &mut app,
             InputEffect::PreviewLayout {
@@ -3563,9 +3574,12 @@ mod tests {
         let blurred = read(&mut app);
         assert_eq!(blurred["foreground"], false);
         assert_eq!(blurred["pressed_physical_keys"], serde_json::json!([]));
-        let about = crate::effects::open_pane_address(crate::categories::Category::About);
-        app.call_on(&about.resource, &about.action, serde_json::json!({}))
-            .unwrap();
+        let about = crate::categories::Category::About;
+        app.effect_on(
+            &crate::effects::pane_row_id(about),
+            &crate::effects::open_pane(about),
+        )
+        .unwrap();
         let off_page = read(&mut app);
         assert_eq!(off_page["page_visible"], false);
         assert_eq!(off_page["selected_symbols"], serde_json::json!([]));

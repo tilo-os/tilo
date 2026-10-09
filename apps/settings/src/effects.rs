@@ -215,14 +215,29 @@ pub fn pane_row_id(category: Category) -> String {
     format!("settings.section:{}", category.slug())
 }
 
-/// What opens `category`'s pane, for search, agents and accessibility: its
-/// row's [`NavigationEffect::OpenPane`].
+/// What opens `category`'s pane, offered on its row ([`pane_row_id`]).
 #[must_use]
-pub fn open_pane_address(category: Category) -> tilo_actions::ActionAddress {
-    let open = NavigationEffect::OpenPane {
+pub fn open_pane(category: Category) -> SettingsEffect {
+    NavigationEffect::OpenPane {
         pane: category.slug().to_owned(),
-    };
-    tilo_actions::ActionAddress::new(pane_row_id(category), open.id())
+    }
+    .into()
+}
+
+/// Open `category`'s pane in `app` through its row, as the sidebar does.
+#[cfg(test)]
+pub(crate) fn show_pane(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    category: Category,
+) {
+    app.effect_on(&pane_row_id(category), &open_pane(category))
+        .expect("the pane opens");
+}
+
+/// The pane whose live row is `row` ([`pane_row_id`]).
+#[must_use]
+pub fn pane_of_row(row: &str) -> Option<Category> {
+    Category::from_slug(row.strip_prefix("settings.section:")?)
 }
 
 /// One row per pane, each opening it.
@@ -235,12 +250,7 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
                 "settings.section",
                 category.label(),
             )
-            .operation(
-                SettingsEffect::from(NavigationEffect::OpenPane {
-                    pane: category.slug().to_owned(),
-                })
-                .bound(),
-            )
+            .operation(open_pane(*category).bound())
         })
         .collect()
 }

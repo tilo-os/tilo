@@ -103,7 +103,10 @@ impl ResourceApp for SettingsShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
-        cx.surface(SettingsApp::new())
+        let app = SettingsApp::new();
+        // A pane search hit, or an agent's `open`, shows the pane it names.
+        cx.on_open(app.opener());
+        cx.surface(app)
     }
 
     /// `settings://models/<id>` opens Agent Models at that model's card and
