@@ -58,11 +58,13 @@ fn with_action_gate<R>(
     // Visibility is an inert snapshot, not mutation authority. Do not retain
     // the membership read lock while callbacks recheck certified admission:
     // a queued writer can make a nested read wait on our own outer guard.
+    // The copy is the policy only: the gate reads ownership and capabilities,
+    // never strips, tasks or the receipts every effect appends.
     let workspace = {
         let tree = chrome.tree();
         tree.desktop
             .active_workspace()
-            .cloned()
+            .map(crate::shell::state::Workspace::policy_view)
             .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?
     };
     let actor_id = chrome.local_user_for_room(&workspace.room);
@@ -2563,6 +2565,93 @@ impl FrameBuilderControlState<'_> {
         drop(chrome);
         displays
     }
+
+    /// The action listing for `query` through the *same* provider registry
+    /// that feeds the Ctrl+K palette — but rendering nothing. With `page`,
+    /// that page of it ([`test_control::ListingRequest`]); without, all of it.
+    /// Only the answered rows become JSON: describing every row of a large
+    /// catalogue cost more than building it.
+    fn listing(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+        page: Option<&test_control::ListingRequest>,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
+        let (doc, root) = self.doc.ok_or_else(|| {
+            test_control::ActionRefusal::listing_failed("control state has no live document")
+        })?;
+        let chrome_handle = self.fb.chrome_handle();
+        // The borrow lives only for the closure; `ActionCatalog` owns its results
+        // outright, so the catalogue outlives the guards it was built through.
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog_query(
+                &crate::shell::search::QueryArgs {
+                    needle: query,
+                    scope: crate::shell::chrome_state::SearchScope::All,
+                    active_provider_id: None,
+                    wanted_kinds: &[],
+                    chrome,
+                    doc,
+                    doc_root: root,
+                },
+                gate,
+                include_programmatic,
+            )
+        })
+        .map_err(test_control::ActionRefusal::listing_failed)?;
+        let window = page
+            .map(|page| {
+                page.window(
+                    catalog.len(),
+                    test_control::listing_fingerprint(catalog.addresses()),
+                )
+            })
+            .transpose()?;
+        let compact = page.is_some_and(|page| !page.detail.is_full());
+        let rows = window
+            .as_ref()
+            .map_or(0..catalog.len(), |window| window.rows.clone());
+        let actions: Vec<serde_json::Value> = catalog
+            .enumerate_rows(rows)
+            .into_iter()
+            .map(|a| {
+                let hierarchy = a.hierarchy.as_ref();
+                let mut row = serde_json::json!({
+                    "provider": a.resource.provider,
+                    "id": a.resource.id,
+                    "kind": a.kind.id(),
+                    "operation_kind": a.operation_kind,
+                    "title": a.title,
+                    "subtitle": a.subtitle,
+                    "score": a.score,
+                    // What to pass; empty for the nullary majority. A parameter list describes
+                    // an invocation, it is not one, so enumeration stays side-effect-free.
+                    "params": params_json(&a.params),
+                    "contract": a.contract,
+                    // The provider resolves identity from its authenticated source;
+                    // opaque invocation IDs and presentation labels stay independent.
+                    "application": hierarchy.map(|value| &value.application),
+                    "room": hierarchy.map(|value| &value.room),
+                    "record": hierarchy.map(|value| &value.record),
+                    "resource": hierarchy.map(|value| &value.resource),
+                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
+                    "operation": hierarchy.map(|value| &value.operation),
+                });
+                if compact && let Some(row) = row.as_object_mut() {
+                    row.remove("contract");
+                }
+                row
+            })
+            .collect();
+        let mut answer = serde_json::Map::new();
+        answer.insert("query".into(), query.into());
+        answer.insert("count".into(), actions.len().into());
+        answer.insert("actions".into(), actions.into());
+        if let Some(window) = window {
+            window.describe(&mut answer);
+        }
+        Ok(serde_json::Value::Object(answer))
+    }
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -2672,11 +2761,26 @@ impl ControlState for FrameBuilderControlState<'_> {
         })
     }
 
-    fn workspace_tree_json(&self) -> serde_json::Value {
+    /// Serialised straight to JSON text: building a `serde_json::Value` of
+    /// the whole tree first cost several times the serialisation. Without
+    /// `include_history` the workspaces' append-only history stays out, so
+    /// the dump costs the desktop as it is, not every action ever taken.
+    fn workspace_tree_json(&self, include_history: bool) -> test_control::RawJson {
         let chrome = self.fb.chrome();
-        // `unwrap_or(Null)`: the derived `Serialize` is infallible in practice, but
-        // `expect` here would crash the compositor on a hypothetical bad write.
-        serde_json::to_value(&*chrome.tree()).unwrap_or(serde_json::Value::Null)
+        let tree = chrome.tree();
+        if include_history {
+            test_control::RawJson::of(&*tree)
+        } else {
+            tilo_desktop_model::history::without_history(|| test_control::RawJson::of(&*tree))
+        }
+    }
+
+    fn windows_json(&self) -> Result<serde_json::Value, String> {
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        Ok(serde_json::Value::Array(test_control::window_rows(
+            &tree.desktop,
+        )))
     }
 
     /// Report the compositor's own frame bookkeeping for every foreign toplevel.
@@ -2869,69 +2973,19 @@ impl ControlState for FrameBuilderControlState<'_> {
 
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
+    /// The whole listing, unpaged.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
-        self.enumerate_actions_with_programmatic(query, false)
+        self.listing(query, false, None)
+            .map_err(|refusal| refusal.message)
     }
 
     fn enumerate_actions_with_programmatic(
         &self,
         query: &str,
         include_programmatic: bool,
-    ) -> Result<serde_json::Value, String> {
-        let (doc, root) = self
-            .doc
-            .ok_or_else(|| "control state has no live document".to_string())?;
-        let chrome_handle = self.fb.chrome_handle();
-        // The borrow lives only for the closure; `ActionCatalog` owns its results
-        // outright, so the catalogue outlives the guards it was built through.
-        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb.host().action_catalog_query(
-                &crate::shell::search::QueryArgs {
-                    needle: query,
-                    scope: crate::shell::chrome_state::SearchScope::All,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome,
-                    doc,
-                    doc_root: root,
-                },
-                gate,
-                include_programmatic,
-            )
-        })?;
-        let actions: Vec<serde_json::Value> = catalog
-            .enumerate()
-            .into_iter()
-            .map(|a| {
-                let hierarchy = a.hierarchy.as_ref();
-                serde_json::json!({
-                    "provider": a.resource.provider,
-                    "id": a.resource.id,
-                    "kind": a.kind.id(),
-                    "operation_kind": a.operation_kind,
-                    "title": a.title,
-                    "subtitle": a.subtitle,
-                    "score": a.score,
-                    // What to pass; empty for the nullary majority. A parameter list describes
-                    // an invocation, it is not one, so enumeration stays side-effect-free.
-                    "params": params_json(&a.params),
-                    "contract": a.contract,
-                    // The provider resolves identity from its authenticated source;
-                    // opaque invocation IDs and presentation labels stay independent.
-                    "application": hierarchy.map(|value| &value.application),
-                    "room": hierarchy.map(|value| &value.room),
-                    "record": hierarchy.map(|value| &value.record),
-                    "resource": hierarchy.map(|value| &value.resource),
-                    "semantic_identity": hierarchy.and_then(|value| value.semantic_identity.as_ref()),
-                    "operation": hierarchy.map(|value| &value.operation),
-                })
-            })
-            .collect();
-        Ok(serde_json::json!({
-            "query": query,
-            "count": actions.len(),
-            "actions": actions,
-        }))
+        page: &test_control::ListingRequest,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
+        self.listing(query, include_programmatic, Some(page))
     }
 
     /// Resolve one `(provider, id)` address against a fresh catalogue,
@@ -16846,7 +16900,9 @@ mod tests {
         let mut state = State::new(event_loop.handle(), display.handle());
         let lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
         let (response, actions) = dispatch_control_command(
-            test_control::Command::StateDump,
+            test_control::Command::StateDump {
+                include_history: false,
+            },
             &fb,
             &mut ctx,
             &mut state,
@@ -17145,7 +17201,7 @@ mod tests {
                 seat: None,
                 resolved: None,
             };
-            let tree = state.workspace_tree_json();
+            let tree = state.workspace_tree_json(false).to_value();
             let workspaces = tree
                 .get("workspaces")
                 .and_then(|v| v.as_array())
@@ -17170,8 +17226,12 @@ mod tests {
                 seat: None,
                 resolved: None,
             };
-            let (resp, actions) =
-                test_control::dispatch_command(&test_control::Command::StateDump, &state);
+            let (resp, actions) = test_control::dispatch_command(
+                &test_control::Command::StateDump {
+                    include_history: false,
+                },
+                &state,
+            );
             assert!(actions.is_empty());
             let test_control::Response::State {
                 workspace_tree,
@@ -17184,11 +17244,157 @@ mod tests {
             };
             // Sanity: both blobs are non-null and shaped like objects.
             assert!(
-                workspace_tree.is_object(),
+                workspace_tree.to_value().is_object(),
                 "workspace_tree should be an object"
             );
             assert!(chrome.is_object(), "chrome should be an object");
         }
+    }
+
+    /// A page of the live listing is a slice of the whole one, in its order,
+    /// and following `next_cursor` walks all of it.
+    #[test]
+    fn the_live_listing_pages_through_every_row_once() {
+        let fb = FrameBuilder::new((1600, 900));
+        let doc = AutoCommit::new();
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: Some((&doc, &automerge::ROOT)),
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+        };
+        let whole = state.enumerate_actions("").expect("the whole listing");
+        let ids = |answer: &serde_json::Value| -> Vec<String> {
+            answer["actions"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .map(|row| format!("{}:{}", row["provider"], row["id"]))
+                .collect()
+        };
+        let expected = ids(&whole);
+        assert!(expected.len() > 3, "the demo desktop exports actions");
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = state
+                .enumerate_actions_with_programmatic(
+                    "",
+                    false,
+                    &test_control::ListingRequest {
+                        limit: Some(3),
+                        cursor: cursor.take(),
+                        detail: test_control::ListingDetail::Compact,
+                    },
+                )
+                .expect("a page");
+            assert_eq!(page["total"], expected.len());
+            assert!(page["actions"].as_array().expect("rows").len() <= 3);
+            assert!(
+                page["actions"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .all(|row| row.get("contract").is_none() && row.get("params").is_some())
+            );
+            seen.extend(ids(&page));
+            match page["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, expected);
+    }
+
+    /// The state dump is the desktop as it is: its size does not grow with
+    /// the effect receipts every action appends, which stay one explicit
+    /// `include_history` away. `windows` reads the same live tree.
+    #[test]
+    fn state_dump_leaves_history_out_unless_asked_and_windows_reads_the_live_tree() {
+        let fb = FrameBuilder::new((1600, 900));
+        let record_receipts = |count: u128| {
+            let chrome = fb.chrome();
+            let tree_handle = chrome.tree_handle();
+            drop(chrome);
+            let mut tree = tree_handle.write();
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
+            workspace.effect_receipts = (0..count)
+                .map(|n| crate::shell::state::WorkspaceEffectReceipt {
+                    invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(n)),
+                    actor: "owner".into(),
+                    context: tilo_actions::ActionContext::default(),
+                    status: tilo_actions::EffectReceiptStatus::Succeeded,
+                    completed_at: 42,
+                })
+                .collect();
+        };
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+        };
+        // The tree as the reply carries it; the chrome beside it is not history.
+        let dump = |include_history| {
+            let (resp, _) = test_control::dispatch_command(
+                &test_control::Command::StateDump { include_history },
+                &state,
+            );
+            let test_control::Response::State { workspace_tree, .. } = resp else {
+                panic!("state_dump answers state");
+            };
+            workspace_tree.get().to_owned()
+        };
+        record_receipts(0);
+        let before = dump(false);
+        record_receipts(10_000);
+        let after = dump(false);
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "the default dump must not grow with history"
+        );
+        assert!(!after.contains("effect_receipts"), "{after}");
+        let full = serde_json::json!({
+            "state": { "workspace_tree": serde_json::from_str::<serde_json::Value>(&dump(true)).unwrap() }
+        });
+        let receipts = full["state"]["workspace_tree"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|workspace| workspace["effect_receipts"].as_array())
+            .map(Vec::len)
+            .sum::<usize>();
+        assert_eq!(receipts, 10_000, "include_history keeps every receipt");
+
+        let (resp, actions) =
+            test_control::dispatch_command(&test_control::Command::Windows, &state);
+        assert!(actions.is_empty());
+        let test_control::Response::Answer(answer) = resp else {
+            panic!("windows answers rows");
+        };
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let tabs = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .map(|group| group.tabs.len())
+            .sum::<usize>();
+        assert_eq!(answer["windows"].as_array().unwrap().len(), tabs);
+        assert_eq!(
+            answer["windows"],
+            serde_json::Value::Array(test_control::window_rows(&tree.desktop))
+        );
     }
 
     #[test]
@@ -17228,7 +17434,7 @@ mod tests {
                 seat: None,
                 resolved: None,
             };
-            let tree = state.workspace_tree_json();
+            let tree = state.workspace_tree_json(false).to_value();
             let found = tree
                 .get("workspaces")
                 .and_then(|v| v.as_array())
