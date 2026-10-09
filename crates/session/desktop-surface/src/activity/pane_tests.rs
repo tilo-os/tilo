@@ -234,6 +234,67 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let reads = || {
+            (
+                ROOM_CHANGE_READS.with(Cell::get),
+                crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
+            )
+        };
+        for n in 0..12 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            let (diffs, forks) = reads();
+            pane.refresh(&mut tree);
+            let (diffs_after, forks_after) = reads();
+            // Each switch is one change: re-reading the room's whole history
+            // made a switch's first frame O(history).
+            assert_eq!(
+                diffs_after - diffs,
+                1,
+                "switch {n} diffs only its own change"
+            );
+            // The first visit to "Second" also checkpoints the change that
+            // created it; after that a switch forks for its own entry alone.
+            if n >= 1 {
+                assert!(
+                    forks_after - forks <= 1,
+                    "switch {n} forks the document at most for its own checkpoint"
+                );
+            }
+        }
+
+        // What the incremental refreshes derived is what one refresh of the
+        // whole history derives.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(
+            format!("{:?}", pane.derived),
+            format!("{:?}", fresh.derived),
+            "the feed rows and their workspaces"
+        );
+        let frames = |pane: &RoomActivityPane| {
+            pane.replay_frames
+                .iter()
+                .map(|frame| {
+                    format!(
+                        "{:?} {} {:?}",
+                        frame.entry_id, frame.summary, frame.workspaces
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    #[test]
     fn workspace_switch_summary_fits_the_chrome_activity_line() {
         let summary = PatchCounts {
             active_switched: true,
