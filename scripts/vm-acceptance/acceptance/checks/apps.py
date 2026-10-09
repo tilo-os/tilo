@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
+from ..action_jobs import invoke
 from ..vm import VmError, wait_until
 
 AREA = "apps"
@@ -268,21 +269,54 @@ def _app_check(app_id, label, foreign=True):
     return body
 
 
+# How long Terminal may take, from its window, to a shell ready for input. A
+# guest's first start builds its root from the environment's images.
+SHELL_READY_S = 60
+
+
+def _inspect_terminal(ctx) -> dict | None:
+    """Terminal's own account of its session (the `inspect-session` action): its
+    lifecycle, whether input reaches a process, and why not."""
+    rows = [r for r in ctx.vm.actions()
+            if r.get("application") == "so.tilo.terminal" and r.get("operation") == "inspect-session"]
+    if not rows:
+        return None
+    out = ctx.out / "data"
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        return invoke(ctx.vm, rows[0], None, out, "A01-inspect", require_job=False)
+    except VmError as exc:
+        return {"error": str(exc)[:300]}
+
+
 @check("A01", AREA, "Terminal opens with a live shell and closes cleanly")
 def terminal(ctx, res):
     gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
+    started = time.monotonic()
+    timeline = []
+
+    def ready():
+        info = _inspect_terminal(ctx) or {}
+        seen = {k: info.get(k) for k in ("lifecycle", "input_available", "startup_reason",
+                                         "transport_reason", "error")}
+        if not timeline or timeline[-1][1] != seen:
+            timeline.append((round(time.monotonic() - started, 1), seen))
+        return info.get("lifecycle") == "open" and info.get("input_available") is True or None
+
+    live = wait_until(ready, SHELL_READY_S, 1.0)
+    res.metrics["seconds_to_live_shell"] = round(time.monotonic() - started, 1) if live else None
+    res.metrics["session_timeline"] = timeline
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")
     ctx.vm.control("key", "Enter")
-    found = wait_until(lambda: [l for l in ctx.vm.exec(
-        f'find "$HOME" /tmp -maxdepth 4 -name {probe} 2>/dev/null; true').splitlines() if l.strip()], 8, 1)
+    found = wait_until(lambda: core.terminal_probe(ctx, probe), 8, 1)
     ctx.shot("A01-terminal-command")
     res.metrics["shell_ran_command"] = bool(found)
-    has_shell = any(c.exe in ("bash", "sh", "zsh", "fish") for c in procs.values())
-    res.metrics["shell_process"] = has_shell
-    expect(found, "a command typed into Terminal (control-socket type + Enter) never ran"
-           + (" although a shell process is running: the keys did not reach it (see W17)"
-              if has_shell else ", and no shell process was started"))
+    if not (live and found):
+        ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
+    expect(live, f"Terminal's session never became live within {SHELL_READY_S} s "
+                 f"(its own account over time: {timeline})")
+    expect(found, "a command typed into a live Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
 
 

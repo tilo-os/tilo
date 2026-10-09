@@ -634,3 +634,55 @@ def app_cgroup(table: dict, app_id: str) -> dict:
     return {"pids": sorted(p["pid"] for p in mine), "cgroups": paths,
             "shared_with": {k: v for k, v in strangers.items() if v},
             "anon_rss_mb": round(sum(p["anon_rss_mb"] or 0 for p in mine), 1)}
+
+
+# -- Terminal: where its shell writes, and what its runtime is doing -----------
+
+# Terminal's shell runs in a `tilo-ush` guest whose `~` is the environment's own
+# home in the ush store, not the session's $HOME (docs/app-model/ush.md, "Storage").
+# A host shell (foot, a legacy terminal) writes to $HOME itself.
+_TERMINAL_HOMES = ('"$HOME" "${XDG_DATA_HOME:-$HOME/.local/share}"/ush/environments/*/home '
+                   '"${XDG_DATA_HOME:-$HOME/.local/share}"/ush/sessions/*/home')
+
+
+def terminal_probe(ctx, name: str) -> list[str]:
+    """Paths of `name` in any home a terminal's `~` can be: the session's and every
+    ush environment's (persistent) or session's (ephemeral)."""
+    out = ctx.vm.exec(f"for h in {_TERMINAL_HOMES}; do [ -e \"$h/{name}\" ] && echo \"$h/{name}\"; "
+                      "done; true")
+    return [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
+
+
+_USH_DIAGNOSTICS = r'''set +e
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+echo "== units"
+systemctl --user status --no-pager -l tilo-ush.socket tilo-ush.service 2>&1 | head -40
+echo "== journal"
+journalctl --user -u tilo-ush.service -u tilo-ush.socket --no-pager -o short-precise -n 300 2>&1 | cut -c1-400
+echo "== processes"
+ps -u "$(id -u)" -o pid,ppid,etimes,time,pcpu,stat,wchan:24,args --forest 2>&1 | cut -c1-300
+for round in 1 2; do
+  echo "== tilo-ush threads (round $round): tid comm utime stime state"
+  for p in $(pgrep -u "$(id -u)" -x tilo-ush); do
+    echo "-- $p $(tr '\0' ' ' < /proc/$p/cmdline | cut -c1-200)"
+    for t in /proc/$p/task/*; do
+      printf '%s %s %s\n' "${t##*/}" "$(cat $t/comm)" "$(sed 's/.*) //' $t/stat | cut -d' ' -f1,12,13)"
+    done
+  done
+  [ $round = 2 ] || sleep 5
+done
+echo "== store"
+ls -la "$data/ush" "$data/ush/environments" "$data/ush/sessions" 2>&1 | head -40
+echo "== session logs mentioning ush or terminal"
+grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null \
+  | grep -v APP-STARTUP | tail -80 | cut -c1-400
+'''
+
+
+def ush_diagnostics(ctx) -> str:
+    """The shell runtime's units, journal, process tree, per-thread CPU over 5 s,
+    store layout and the session log's lines about it."""
+    try:
+        return ctx.vm.exec(_USH_DIAGNOSTICS, timeout=90, check=False)
+    except VmError as exc:
+        return f"diagnostics unavailable: {exc}"
