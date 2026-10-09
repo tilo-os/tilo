@@ -261,7 +261,6 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
 /// A paste and a row added answer with the blocks they made, so the caller
 /// fills them without reading the document again.
 #[test]
-#[ignore = "an edit effect answers before its edit applies, a verb has no answer: GAPS 'edit effects answer with what they changed', 'answer'"]
 fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<WordProcessorApp>::new().unwrap();
@@ -288,10 +287,16 @@ fn pasting_a_table_and_adding_a_row_answer_with_the_blocks_they_made() {
         "{pasted}"
     );
     app.harness().relayout();
-    let appended = invoke(&mut app, "add-row", &serde_json::json!({}));
+    let table = pasted
+        .split_once("{#table ")
+        .and_then(|(_, tagged)| tagged.split_once('}'))
+        .map(|(id, _)| id.to_owned())
+        .expect("the paste answers with the table's id");
+    let appended = invoke(&mut app, "add-row", &serde_json::json!({ "table": table }));
+    // A verb answers with what it changed, beside the ids it minted.
     let appended = appended
         .as_ref()
-        .and_then(|value| value.as_str())
+        .and_then(|value| value["changed"].as_str())
         .unwrap_or_default();
     assert_eq!(
         without_ids(appended),

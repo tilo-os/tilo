@@ -1732,9 +1732,14 @@ impl WordProcessorWidget {
         // changed, once the door applied it.
         if answers_later(effect) {
             return Some(cx.when_landed(|_, landed, _| {
-                Ok(ui::framework::Effected::value(
-                    landed.answer.unwrap_or_default(),
-                ))
+                // The blocks it changed; the ids it minted are among them.
+                let answer = match landed.answer {
+                    Some(serde_json::Value::Object(mut fields)) => {
+                        fields.remove("changed").unwrap_or_default()
+                    }
+                    other => other.unwrap_or_default(),
+                };
+                Ok(ui::framework::Effected::value(answer))
             }));
         }
         Some(Ok(ui::framework::Effected::done()))
