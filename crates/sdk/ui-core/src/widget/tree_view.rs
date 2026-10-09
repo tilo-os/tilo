@@ -4386,12 +4386,12 @@ fn paint_row_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use taffy::TaffyTree;
     use taffy::prelude::TaffyMaxContent;
-    use winit::event::Modifiers;
 
     fn sample_tree() -> TreeNode<()> {
         TreeNode::branch(
@@ -5111,51 +5111,16 @@ mod tests {
         ))
     }
 
-    fn dispatch(view: &mut TreeView<()>, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        view.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
-
     pub(super) fn dispatch_laid_out<T: 'static, M: TreeModel + 'static>(
         view: &mut TreeView<T, M>,
         event: &WindowEvent,
         taffy: &TaffyTree<()>,
         node: taffy::NodeId,
     ) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        view.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy,
-            },
-        );
-        handled
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(view, event)
+            .handled
     }
 
     #[test]

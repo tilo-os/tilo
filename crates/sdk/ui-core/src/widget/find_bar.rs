@@ -1469,7 +1469,7 @@ impl Widget for FindScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     /// A text a find runs over: case-folding and whole-word aware, keeping
     /// what it found and which match is current.
@@ -1651,23 +1651,11 @@ mod tests {
             )
             .unwrap();
         scope.apply_layout(&taffy, node, Point::ZERO);
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        scope.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        focus
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(&taffy, node)
+            .send(scope, event)
+            .focus_target
     }
 
     #[test]
@@ -1853,7 +1841,7 @@ mod tests {
 #[cfg(test)]
 mod host_driven_tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     /// Lines that grow under an open bar, found case-insensitively.
     #[derive(Default)]
@@ -2117,22 +2105,7 @@ mod host_driven_tests {
                 event: ev,
                 is_synthetic: false,
             };
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.leaf_node(Style::default());
-            let mut handled = false;
-            scope.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::from(modifiers),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            Dispatch::new().modifiers(modifiers).send(scope, &event);
         };
         use winit::keyboard::ModifiersState;
         let mut terminal = FindScope::new(Box::new(Page(Log::default())))

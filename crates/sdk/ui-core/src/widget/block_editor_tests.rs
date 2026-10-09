@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use automerge::transaction::Transactable as _;
 
 #[test]
@@ -400,8 +401,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         editor.focus_block(0, CursorPlacement::Start);
-        let mut doc = AutoCommit::new();
-        let tree = TaffyTree::new();
         let event = crate::synthetic_input::key_event(
             Key::Character("x".into()),
             Some("x".into()),
@@ -414,20 +413,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         };
         editor.begin_edit();
         for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
-            let mut handled = false;
-            editor.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: NodeId::new(0),
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut editor, &event);
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
         }
@@ -443,19 +429,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             is_synthetic: false,
         };
         editor.begin_edit();
-        editor.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut false,
-                focus_target: &mut None,
-                node_id: NodeId::new(0),
-                taffy: &tree,
-            },
-        );
+        dispatch(&mut editor, &event);
         assert_eq!(
             editor.blocks[0].text(),
             "",
@@ -630,26 +604,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             button: MouseButton::Left,
         };
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mods = Modifiers::default();
         for ev in [&moved, &click] {
-            let mut handled = false;
-            let mut focus_target = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
+            dispatch(&mut e, ev);
         }
         assert_eq!(
             e.focused,
@@ -659,7 +615,6 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     }
 
     fn ctrl_shift_arrow_extends_selection_across_blocks() {
-        use winit::event::{Modifiers, WindowEvent};
         use winit::keyboard::{ModifiersState, NamedKey};
 
         use crate::synthetic_input::named_key;
@@ -672,31 +627,11 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         ]);
         e.focus_block(0, CursorPlacement::Byte(2)); // caret after "he"
 
-        let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
-
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mut send = |e: &mut BlockEditor, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut ft = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &ctrl_shift,
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-        };
+        let mut ctrl_shift =
+            Dispatch::new().modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT);
 
         // Down once: selects the tail of block 0 ("llo"), caret into block 1.
-        send(&mut e, &named_key(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
         assert_eq!(
             e.blocks()[0].line.selection_range(),
@@ -705,7 +640,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Down again: block 1 fully selected too.
-        send(&mut e, &named_key(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(2));
         assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
         assert_eq!(
@@ -715,7 +650,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Retreat up: block 2 cleared, block 1 selected to its end.
-        send(&mut e, &named_key(NamedKey::ArrowUp));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowUp));
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(
             e.blocks()[2].line.selection_range(),
@@ -741,26 +676,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         editor.focus_block(0, CursorPlacement::End);
         editor.open_slash_menu_for_test();
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::<()>::new();
-        let mut send = |editor: &mut BlockEditor, event: &WindowEvent| {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
+        let send = |editor: &mut BlockEditor, event: &WindowEvent| {
+            assert!(dispatch(editor, event));
         };
 
         send(
@@ -1055,7 +972,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
     }
 
     fn ctrl_a_then_typing_replaces_the_document_through_the_real_event_path() {
-        use winit::event::{ElementState, Modifiers, WindowEvent};
+        use winit::event::{ElementState, WindowEvent};
         use winit::keyboard::{Key, ModifiersState};
 
         fn character(key: &str, text: Option<&str>) -> WindowEvent {
@@ -1071,31 +988,6 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             }
         }
 
-        fn dispatch(
-            editor: &mut BlockEditor,
-            state: &mut AutoCommit,
-            taffy: &TaffyTree<()>,
-            event: &WindowEvent,
-            modifiers: Modifiers,
-        ) {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(state),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy,
-                },
-            );
-            assert!(handled);
-        }
-
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![
             Block::paragraph("alpha"),
@@ -1103,27 +995,18 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             Block::paragraph("omega"),
         ]);
         editor.focus_block(1, CursorPlacement::Byte(3));
-        let mut state = AutoCommit::new();
-        let taffy = TaffyTree::new();
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("a", None),
-            Modifiers::from(ModifiersState::CONTROL),
+        assert!(
+            Dispatch::new()
+                .modifiers(ModifiersState::CONTROL)
+                .send(&mut editor, &character("a", None))
+                .handled
         );
         assert_eq!(
             editor.selected_text().as_deref(),
             Some("alpha\nmiddle\nomega")
         );
 
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("X", Some("X")),
-            Modifiers::default(),
-        );
+        assert!(dispatch(&mut editor, &character("X", Some("X"))));
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
@@ -2465,19 +2348,9 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     editor.set_focus(true);
     layout_and_draw_editor(&mut editor, &Theme::dark());
     editor.mark_drawn();
-    let mut handled = false;
-    editor.handle_event(
+    let handled = dispatch(
+        &mut editor,
         &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
     );
     assert!(handled);
     assert!(

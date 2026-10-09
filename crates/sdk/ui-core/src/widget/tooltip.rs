@@ -797,32 +797,13 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
     fn feed(t: &mut Tooltip, p: Point) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
         let ev = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: (p.x, p.y).into(),
         };
-        t.handle_event(
-            &ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::testing::dispatch(t, &ev);
     }
 
     #[test]

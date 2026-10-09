@@ -2283,8 +2283,8 @@ impl<'a> DropdownFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
-    use winit::event::Modifiers;
 
     fn opts() -> Vec<String> {
         ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]
@@ -2613,24 +2613,7 @@ mod tests {
 
     /// Drive a key through a focused dropdown with a throwaway taffy node.
     fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        dd.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).path(root).send(dd, ev).handled
     }
 
     #[test]

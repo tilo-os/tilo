@@ -4760,6 +4760,7 @@ mod tier_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::time::Duration;
     use crate::widget::Button;
     use automerge::AutoCommit;
@@ -5467,7 +5468,6 @@ mod tests {
             // proving the callback path takes precedence (rows stay put).
             t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
 
             // Header band is y ∈ [0, 28). Name column starts at x=0. Click (20, 10).
             dispatch(
@@ -5478,7 +5478,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, 10.0).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -5489,7 +5488,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
 
             assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
@@ -5540,7 +5538,6 @@ mod tests {
             // host's row "a", which is its row 1.
             let _ = lay_out(&mut table);
             let (tree, node) = lay_out(&mut table);
-            let modifiers = winit::event::Modifiers::default();
             dispatch(
                 &mut table,
                 &tree,
@@ -5549,7 +5546,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
-                modifiers,
             );
             for _ in 0..2 {
                 for state in [ElementState::Pressed, ElementState::Released] {
@@ -5562,7 +5558,6 @@ mod tests {
                             state,
                             button: MouseButton::Left,
                         },
-                        modifiers,
                     );
                 }
             }
@@ -5915,7 +5910,6 @@ mod tests {
     /// host scrolls windows its rows, keeps no bar and leaves the wheel.
     #[test]
     fn row_actions_reveal_under_the_pointer_and_a_host_scrolls_the_rows() {
-        let modifiers = winit::event::Modifiers::default();
         let move_to = |table: &mut DataTable<R>, tree: &TaffyTree<()>, node, y: f64| {
             dispatch(
                 table,
@@ -5925,7 +5919,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (150.0, y).into(),
                 },
-                modifiers,
             );
         };
         // Case `actions_mount_for_the_hovered_row_only`.
@@ -5995,26 +5988,17 @@ mod tests {
                 Some(100),
                 "rows hit where they are painted"
             );
-            let mut handled = false;
-            let mut doc = AutoCommit::new();
-            let mut focus = None;
-            table.handle_event(
-                &WindowEvent::MouseWheel {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                    phase: TouchPhase::Moved,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = Dispatch::new()
+                .layout(&tree, node)
+                .send(
+                    &mut table,
+                    &WindowEvent::MouseWheel {
+                        device_id: winit::event::DeviceId::dummy(),
+                        delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                        phase: TouchPhase::Moved,
+                    },
+                )
+                .handled;
             assert!(!handled, "the wheel is the host's");
         }
     }
@@ -6034,7 +6018,6 @@ mod tests {
             // retained cell controls against those exact column rectangles.
             let _ = lay_out(&mut table);
             let (tree, node) = lay_out(&mut table);
-            let modifiers = winit::event::Modifiers::default();
             dispatch(
                 &mut table,
                 &tree,
@@ -6043,7 +6026,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (20.0, HEADER_HEIGHT + 12.0).into(),
                 },
-                modifiers,
             );
             dispatch(
                 &mut table,
@@ -6054,7 +6036,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                modifiers,
             );
             dispatch(
                 &mut table,
@@ -6065,7 +6046,6 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                modifiers,
             );
 
             assert_eq!(clicks.get(), 1, "real cell button receives activation");
@@ -6086,7 +6066,6 @@ mod tests {
             };
             t.set_rows(rows4());
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
 
             // The middle of row 2, under the header.
             dispatch(
@@ -6097,7 +6076,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -6108,7 +6086,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
 
             assert!(t.selection().is_selected(2), "row 2 selected");
@@ -6120,7 +6097,6 @@ mod tests {
             let mut t = DataTable::<R>::new(sample_cols()); // selectable defaults false
             t.set_rows(rows4());
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
             dispatch(
                 &mut t,
                 &tree,
@@ -6129,7 +6105,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (50.0, 85.0).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -6140,7 +6115,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(
                 t.selection().is_empty(),
@@ -6154,7 +6128,6 @@ mod tests {
             t.set_rows(rows4());
             t.set_focus(true);
             let (tree, node) = lay_out(&mut t);
-            let mods = winit::event::Modifiers::default();
             let key = |named| {
                 crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
                     winit::keyboard::Key::Named(named),
@@ -6162,8 +6135,8 @@ mod tests {
                     ElementState::Pressed,
                 ))
             };
-            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 0
-            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown), mods); // → 1
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown)); // → 0
+            dispatch(&mut t, &tree, node, &key(NamedKey::ArrowDown)); // → 1
             assert_eq!(t.selection().primary(), Some(1));
             assert!(t.selection().is_selected(1));
         }
@@ -6209,30 +6182,8 @@ mod tests {
         aligned_columns_place_their_controls_under_the_header();
     }
 
-    fn dispatch(
-        t: &mut DataTable<R>,
-        tree: &TaffyTree<()>,
-        node: NodeId,
-        ev: &WindowEvent,
-        mods: winit::event::Modifiers,
-    ) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+    fn dispatch(t: &mut DataTable<R>, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
+        Dispatch::new().layout(tree, node).send(t, ev);
     }
 
     #[test]
@@ -6354,14 +6305,13 @@ mod tests {
 
         fn wheel_scrolls_in_internal_mode() {
             let (mut t, tree, node) = scrolling_table();
-            let mods = winit::event::Modifiers::default();
             assert_eq!(t.scroll_y(), 0.0);
             let wheel = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             };
-            dispatch(&mut t, &tree, node, &wheel, mods);
+            dispatch(&mut t, &tree, node, &wheel);
             assert!(
                 t.scroll_y() > 0.0,
                 "wheel down increases scroll_y: {}",
@@ -6492,7 +6442,6 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let mid_y = thumb.y0.midpoint(thumb.y1);
-            let mods = winit::event::Modifiers::default();
 
             dispatch(
                 &mut t,
@@ -6502,7 +6451,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -6513,7 +6461,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
             assert!(t.wants_pointer_capture(), "drag captures the pointer");
@@ -6528,7 +6475,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y + 50.0).into(),
                 },
-                mods,
             );
             assert!(
                 t.scroll_y() > 0.0,
@@ -6547,7 +6493,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y - 50.0).into(),
                 },
-                mods,
             );
             assert!(t.scroll_y() < after, "drag up decreases scroll_y");
 
@@ -6560,7 +6505,6 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(!t.vbar.is_dragging(), "release ends the drag");
         }
@@ -6570,7 +6514,6 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let below_y = thumb.y1 + 5.0;
-            let mods = winit::event::Modifiers::default();
 
             dispatch(
                 &mut t,
@@ -6580,7 +6523,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (x, below_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -6591,7 +6533,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
@@ -6609,7 +6550,6 @@ mod tests {
             let thumb = t.scrollbar_thumb().unwrap();
             let x = bar_x(&t);
             let mid_y = thumb.y0.midpoint(thumb.y1);
-            let mods = winit::event::Modifiers::default();
             dispatch(
                 &mut t,
                 &tree,
@@ -6618,7 +6558,6 @@ mod tests {
                     device_id: winit::event::DeviceId::dummy(),
                     position: (x, mid_y).into(),
                 },
-                mods,
             );
             dispatch(
                 &mut t,
@@ -6629,7 +6568,6 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                mods,
             );
             assert!(
                 t.selection().is_empty(),
@@ -6649,7 +6587,6 @@ mod tests {
     fn body_drag_scrolls_with_or_without_motion_decay() {
         fn body_drag_scrolls_table_without_selecting_but_click_still_selects() {
             let (mut table, tree, node) = scrolling_table();
-            let modifiers = winit::event::Modifiers::default();
             let body_top = table.get_rect().y0 + table.header_h;
             let move_cursor = |y| WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
@@ -6661,35 +6598,11 @@ mod tests {
                 button: MouseButton::Left,
             };
 
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 100.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Pressed),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 100.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
             assert!(table.wants_pointer_capture());
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 40.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Released),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 40.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Released));
             assert_eq!(table.scroll_y(), 60.0);
             assert!(
                 table.selection().is_empty(),
@@ -6697,27 +6610,9 @@ mod tests {
             );
 
             table.set_scroll_y(0.0);
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &move_cursor(body_top + 10.0),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Pressed),
-                modifiers,
-            );
-            dispatch(
-                &mut table,
-                &tree,
-                node,
-                &button(ElementState::Released),
-                modifiers,
-            );
+            dispatch(&mut table, &tree, node, &move_cursor(body_top + 10.0));
+            dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
+            dispatch(&mut table, &tree, node, &button(ElementState::Released));
             assert!(table.selection().is_selected(0));
         }
 
@@ -6962,28 +6857,16 @@ mod content_edge_tests {
         ev: &WindowEvent,
         shift: bool,
     ) -> bool {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
         let mods = if shift {
-            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+            winit::keyboard::ModifiersState::SHIFT
         } else {
-            winit::event::Modifiers::default()
+            winit::keyboard::ModifiersState::empty()
         };
-        table.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-        handled
+        crate::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(tree, node)
+            .send(table, ev)
+            .handled
     }
 
     fn at(x: f64, y: f64) -> WindowEvent {

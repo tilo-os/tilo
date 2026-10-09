@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::Dispatch;
 use automerge::ROOT;
 
 #[test]
@@ -125,24 +126,17 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
         },
         ElementState::Pressed,
     );
-    let mut handled = false;
-    editor.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        },
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(doc),
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let handled = Dispatch::new()
+        .doc(doc)
+        .send(
+            editor,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            },
+        )
+        .handled;
     assert!(handled);
     editor.sync(doc, &ROOT);
 }

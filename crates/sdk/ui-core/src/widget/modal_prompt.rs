@@ -360,8 +360,8 @@ impl Widget for PromptBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::widget::ModalDialog;
-    use automerge::AutoCommit;
     use vello::kurbo::Point;
     use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
@@ -428,28 +428,6 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_press;
-
-    fn dispatch(d: &mut ModalDialog<PromptBody>, event: &WindowEvent) {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        d.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-    }
 
     #[test]
     fn wrapped_prompt_help_leaves_the_editable_field_below_all_lines() {

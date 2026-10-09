@@ -1571,39 +1571,13 @@ fn mark_kind(segment: &MarkSegment) -> Option<crate::text_render::TextKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::widget::marks::Mark;
-    use winit::event::Modifiers;
     use winit::keyboard::{ModifiersKeyState, ModifiersState, NamedKey};
 
     use crate::synthetic_input::named_key;
 
     use crate::synthetic_input::char_key;
-
-    fn dispatch(line: &mut RichTextLine, event: &WindowEvent) {
-        dispatch_with_mods(line, event, Modifiers::default());
-    }
-
-    fn dispatch_with_mods(line: &mut RichTextLine, event: &WindowEvent, modifiers: Modifiers) {
-        let mut state = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus_target = None;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let fake_node = NodeId::new(0);
-        line.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: fake_node,
-                taffy: &taffy,
-            },
-        );
-    }
 
     fn layout_and_draw(line: &mut RichTextLine, theme: &Theme, width: f32) -> Scene {
         let mut taffy = TaffyTree::<()>::new();
@@ -1819,24 +1793,9 @@ mod tests {
             line.set_focus(true);
 
             // Type against OUR doc, not the throwaway one `dispatch` would make.
-            let taffy: TaffyTree<()> = TaffyTree::new();
+            let mut on_doc = Dispatch::new().doc(&mut doc);
             for c in ["h", "i"] {
-                let ev = char_key(c);
-                let mut handled = false;
-                let mut focus_target = None;
-                line.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: NodeId::new(0),
-                        taffy: &taffy,
-                    },
-                );
+                on_doc.send(&mut line, &char_key(c));
             }
 
             assert_eq!(line.value(), "hi");
@@ -2165,14 +2124,18 @@ mod tests {
                     line.set_focus(true);
                     line.inner_mut().set_selection(0, 6);
                     line.set_inline_formatting(false);
-                    dispatch_with_mods(&mut line, &char_key(shortcut), Modifiers::from(modifier));
+                    Dispatch::new()
+                        .modifiers(modifier)
+                        .send(&mut line, &char_key(shortcut));
                     assert_eq!(line.value(), "source");
                     assert!(line.marks().is_empty());
                     assert!(line.pending_marks().is_empty());
                     assert!(line.take_dirty().is_none());
 
                     line.set_inline_formatting(true);
-                    dispatch_with_mods(&mut line, &char_key(shortcut), Modifiers::from(modifier));
+                    Dispatch::new()
+                        .modifiers(modifier)
+                        .send(&mut line, &char_key(shortcut));
                     assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
                 }
             }
@@ -2182,11 +2145,9 @@ mod tests {
         {
             let mut line = RichTextLine::new();
             line.set_focus(true);
-            dispatch_with_mods(
-                &mut line,
-                &char_key("b"),
-                Modifiers::from(ModifiersState::CONTROL),
-            );
+            Dispatch::new()
+                .modifiers(ModifiersState::CONTROL)
+                .send(&mut line, &char_key("b"));
             assert_eq!(line.pending_marks(), &[Mark::Bold]);
             line.set_inline_formatting(false);
             dispatch(&mut line, &char_key("["));

@@ -1073,7 +1073,7 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
 
     fn ctx_event(
         field: &mut SearchField,
@@ -1081,24 +1081,8 @@ mod tests {
         node: NodeId,
         event: &WindowEvent,
     ) -> (bool, Option<NodeId>) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let mods = winit::event::Modifiers::default();
-        field.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy,
-            },
-        );
-        (handled, focus)
+        let sent = Dispatch::new().layout(taffy, node).send(field, event);
+        (sent.handled, sent.focus_target)
     }
 
     fn move_to(point: Point) -> WindowEvent {
