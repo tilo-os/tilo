@@ -2991,6 +2991,53 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What an idle frame cost the roster before it was gated (deriving it
+    /// every frame) against what it costs now, in a room naming 30 people.
+    /// Printed for the record; asserted only in the direction that cannot
+    /// flake, since one side takes the replica and parses 30 endpoint ids
+    /// and the other loads three counters.
+    #[test]
+    fn an_idle_frame_costs_the_roster_a_fraction_of_deriving_it() {
+        const FRAMES: u32 = 2_000;
+        let people = (0..30_u8)
+            .map(|seed| (peer_id(100 + seed), format!("Person {seed}")))
+            .collect::<Vec<_>>();
+        let named = people
+            .iter()
+            .map(|(peer, name)| (peer.as_str(), name.as_str()))
+            .collect::<Vec<_>>();
+        let (mut host_tree, _room) = host_naming(&named);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-cost-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, _host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &peer_id(99));
+        let quiet = PresenceCtx::default();
+        assert!(host.refresh_roster(&quiet));
+        assert_eq!(roster_of(&host_handle).len(), 30);
+
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            let (changed, _, _) = host
+                .derive_roster(&quiet, host.roster_tree.generation())
+                .expect("the replica");
+            assert!(!changed);
+        }
+        let derived = started.elapsed();
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            assert!(!host.refresh_roster(&quiet));
+        }
+        let gated = started.elapsed();
+        eprintln!(
+            "TIL-136 roster per idle frame, 30 named peers: derived every frame {:?}, gated {:?}",
+            derived / FRAMES,
+            gated / FRAMES,
+        );
+        assert!(gated < derived, "gated {gated:?} vs derived {derived:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn peer_colours_are_applied_when_one_changes_not_every_frame() {
         let guest_peer = peer_id(81);
