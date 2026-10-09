@@ -1099,14 +1099,19 @@ RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
-COPY os/usr/libexec/tilo-session /tilo-components/usr/libexec/
+COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
+    os/usr/libexec/tilo-verified-update os/usr/libexec/tilo-board-successor.py \
+    /tilo-components/usr/libexec/
+COPY os/dev/hardware_profile.py /tilo-components/dev/
+COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
     /tilo-components/usr/lib/systemd/user/
 COPY os/usr/share/licenses/tilo-speech-worker/LICENSE /tilo-components/usr/share/licenses/tilo-speech-worker/
 RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
-    python3 /tilo-components/install-components.py \
+    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    TILO_GITHUB_ASSET_CACHE=/tilo-assets python3 /tilo-components/install-components.py \
       --manifest /tilo-components/components.toml \
       --from /out \
       --dest /image --by-layer --all
@@ -2321,10 +2326,6 @@ COPY --chmod=0755 \
 # order wrong — keys enrolled, signing hook missing — is what leaves a machine
 # refusing its own kernel.
 COPY os/usr/libexec/tilo-secureboot /usr/libexec/tilo-secureboot
-COPY --chmod=0755 \
-    os/usr/libexec/tilo-image-trust-staged \
-    os/usr/libexec/tilo-verified-update \
-    /usr/libexec/
 COPY \
     os/usr/lib/systemd/system/tilo-secureboot-sign.service \
     os/usr/lib/systemd/system/tilo-secureboot-sign.timer \
