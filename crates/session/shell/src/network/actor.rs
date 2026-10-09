@@ -948,7 +948,8 @@ impl WireTally {
             .counts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *counts.entry(kind).or_default() += 1;
+        let count = counts.entry(kind).or_default();
+        *count = count.saturating_add(1);
     }
 
     /// The counts so far, by message kind.
@@ -1022,7 +1023,7 @@ struct PeerMembership {
 impl PeerMembership {
     fn new(epoch: MembershipEpoch, now: Instant) -> Self {
         Self {
-            expires: Some(now + PEER_TIMEOUT),
+            expires: Some(later(now, PEER_TIMEOUT)),
             epoch,
             identity_advert: None,
             caps_advert: None,
@@ -1033,7 +1034,7 @@ impl PeerMembership {
     /// only by its traffic stays a member for [`PEER_TIMEOUT`] after it.
     fn heard(&mut self, now: Instant) {
         if let Some(expires) = &mut self.expires {
-            *expires = (*expires).max(now + PEER_TIMEOUT);
+            *expires = (*expires).max(later(now, PEER_TIMEOUT));
         }
     }
 
@@ -1131,7 +1132,7 @@ impl ActorState {
         let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) else {
             return;
         };
-        membership.expires = (!up).then_some(now + DEPARTURE_GRACE);
+        membership.expires = (!up).then_some(later(now, DEPARTURE_GRACE));
     }
 
     /// The soonest a membership lapses, if any can.
@@ -2741,17 +2742,7 @@ impl ActorState {
             Ok(session) => {
                 tracing::info!(ws, host = %peer, "workspace host session started");
                 let session = Arc::new(session);
-                if let Some(hello) = self.identity_hello(ws) {
-                    Self::announce_identity_to_host(ws, &hello, &session);
-                    // What the host holds now is what a change is judged by.
-                    if let (Some(topic), Ok(bytes)) =
-                        (self.topics.get_mut(&ws), postcard::to_allocvec(&hello))
-                    {
-                        topic
-                            .identity_sent
-                            .get_or_insert(message_fingerprint(&bytes));
-                    }
-                }
+                self.announce_identity_to_new_host(ws, &session);
                 for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
                     if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
                         tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
@@ -3046,7 +3037,12 @@ impl ActorState {
     async fn legacy_beat(&mut self, ws: WorkspaceId) {
         self.announce_identity(ws).await;
         self.announce_media_caps(ws).await;
-        self.compat_beats = self.compat_beats % (NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1) + 1;
+        self.compat_beats =
+            if self.compat_beats >= NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT.saturating_sub(1) {
+                1
+            } else {
+                self.compat_beats.saturating_add(1)
+            };
         let beat = NeighbourMsg::Heartbeat {
             peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
             ts: self.compat_beats,
@@ -3240,6 +3236,22 @@ impl ActorState {
                 ws,
                 "collaboration state held for the workspace host overflowed; the oldest is dropped"
             );
+        }
+    }
+
+    /// Tell a workspace host session of `ws` that just started who this
+    /// device is; what the host holds then is what a later change is judged
+    /// by ([`Self::announce_identity_if_changed`]).
+    fn announce_identity_to_new_host(&mut self, ws: WorkspaceId, session: &RelayCoeditSession) {
+        let Some(hello) = self.identity_hello(ws) else {
+            return;
+        };
+        Self::announce_identity_to_host(ws, &hello, session);
+        if let (Some(topic), Ok(bytes)) = (self.topics.get_mut(&ws), postcard::to_allocvec(&hello))
+        {
+            topic
+                .identity_sent
+                .get_or_insert_with(|| message_fingerprint(&bytes));
         }
     }
 
@@ -3756,6 +3768,11 @@ async fn run(
         task.abort();
     }
     let _ = router.shutdown().await;
+}
+
+/// `span` after `now`; `now` itself in the unreachable case that overflows.
+fn later(now: Instant, span: Duration) -> Instant {
+    now.checked_add(span).unwrap_or(now)
 }
 
 /// Sleep until `at`, or forever when nothing can lapse.
@@ -4297,6 +4314,31 @@ const HOST_PING_AFTER: Duration = Duration::from_secs(15);
 /// it was last heard.
 const HOST_SILENCE_LIMIT: Duration = Duration::from_secs(25);
 
+/// Wait until host `session` is due a keep-alive check, then make it: a
+/// host silent for [`HOST_PING_AFTER`] is pinged once (`pinged` notes it),
+/// and one silent for [`HOST_SILENCE_LIMIT`] is not worth keeping (`false`).
+async fn host_keepalive(session: &RelayCoeditSession, pinged: &mut bool) -> bool {
+    let silent = session.silent_for();
+    if silent < HOST_PING_AFTER {
+        *pinged = false;
+    }
+    let check = if *pinged {
+        HOST_SILENCE_LIMIT.saturating_sub(silent)
+    } else {
+        HOST_PING_AFTER.saturating_sub(silent)
+    };
+    tokio::time::sleep(check).await;
+    let silent = session.silent_for();
+    if silent >= HOST_SILENCE_LIMIT {
+        return false;
+    }
+    if silent >= HOST_PING_AFTER && !*pinged {
+        let _ = session.ping();
+        *pinged = true;
+    }
+    true
+}
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -4310,26 +4352,12 @@ fn spawn_host_pump(
         // Whether this silence was already answered with a ping.
         let mut pinged = false;
         loop {
-            let silent = session.silent_for();
-            if silent < HOST_PING_AFTER {
-                pinged = false;
-            }
-            let check = if pinged {
-                HOST_SILENCE_LIMIT.saturating_sub(silent)
-            } else {
-                HOST_PING_AFTER.saturating_sub(silent)
-            };
             let inbound = tokio::select! {
                 inbound = session.recv() => inbound,
-                () = tokio::time::sleep(check) => {
-                    let silent = session.silent_for();
-                    if silent >= HOST_SILENCE_LIMIT {
+                alive = host_keepalive(&session, &mut pinged) => {
+                    if !alive {
                         tracing::warn!(ws, host = %host, "workspace host stopped answering; reconnecting");
                         break;
-                    }
-                    if silent >= HOST_PING_AFTER && !pinged {
-                        let _ = session.ping();
-                        pinged = true;
                     }
                     continue;
                 }

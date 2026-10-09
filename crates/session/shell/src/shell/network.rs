@@ -6196,13 +6196,12 @@ impl ShellNetwork {
         let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
             let due = next.is_none_or(|at| now >= at);
             if due {
-                *next = Some(
-                    now + if redeeming {
-                        SYNC_REPAIR_DELAY
-                    } else {
-                        SYNC_SAFETY_INTERVAL
-                    },
-                );
+                let wait = if redeeming {
+                    SYNC_REPAIR_DELAY
+                } else {
+                    SYNC_SAFETY_INTERVAL
+                };
+                *next = Some(now.checked_add(wait).unwrap_or(now));
             }
             due
         });
@@ -6214,7 +6213,8 @@ impl ShellNetwork {
     /// A room changed: pull [`SYNC_REPAIR_DELAY`] from now, unless a pull is
     /// due sooner.
     fn schedule_repair_pull(&self) {
-        let due = std::time::Instant::now() + SYNC_REPAIR_DELAY;
+        let now = std::time::Instant::now();
+        let due = now.checked_add(SYNC_REPAIR_DELAY).unwrap_or(now);
         if let Ok(mut next) = self.next_sync_pull.lock()
             && let Some(at) = *next
             && at > due
@@ -8163,6 +8163,10 @@ impl Drop for ShellNetwork {
 /// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
 /// the broker's own tests can drive the inbound side of the peer bridge too.
 #[cfg(test)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture spells out every field of `ShellNetwork` in one literal, as `spawn_with` does"
+)]
 pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
     local_peer_hash: u64,

@@ -105,7 +105,7 @@ impl Desktop {
     fn frame(&mut self) {
         self.net.tick();
         if self.presence.frame(&mut self.ctx, &self.desk, &self.tree) {
-            self.repaints += 1;
+            self.repaints = self.repaints.saturating_add(1);
         }
     }
 }
@@ -127,7 +127,8 @@ fn run(
     span: Duration,
     mut done: impl FnMut(&[&mut Desktop]) -> bool,
 ) -> bool {
-    let deadline = Instant::now() + span;
+    let started = Instant::now();
+    let deadline = started.checked_add(span).unwrap_or(started);
     loop {
         for desktop in desktops.iter_mut() {
             desktop.frame();
@@ -172,11 +173,14 @@ fn room_change_count(tree: &WorkspaceTreeHandle, room: RoomId) -> usize {
 /// What `room`'s document gained on `tree` since it held `before` changes:
 /// the newest few, so a report names what an idle desktop keeps writing.
 fn newest_room_changes(tree: &WorkspaceTreeHandle, room: RoomId, before: usize) -> String {
-    let mut tree = tree.write();
-    let Some(doc) = tree.room_docs.get_mut(&room) else {
+    let Some(changes) = tree
+        .write()
+        .room_docs
+        .get_mut(&room)
+        .map(|doc| doc.get_changes(&[]))
+    else {
         return "none".into();
     };
-    let changes = doc.get_changes(&[]);
     let mut out = format!(
         "{} changes while idle",
         changes.len().saturating_sub(before)
