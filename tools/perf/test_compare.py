@@ -138,6 +138,16 @@ class Synthetic(unittest.TestCase):
         self.assertEqual((failed.status, failed.failing), ("regression", True))
 
 
+    def test_synthetic_rows_say_so(self):
+        current = [make(10, 6)]
+        compare.inject(current, "check-1", 1.25)
+        [row] = compare.compare(current, history(10, 10), NO_BUDGETS, set(), set())
+        self.assertIn("synthetic series check-1: values x1.25, never a real baseline", row.note)
+        self.assertIn("synthetic series check-1", compare.summary([row]))
+        [real] = compare.compare([make(10, 6)], history(10, 10), NO_BUDGETS, set(), set())
+        self.assertNotIn("synthetic", real.note)
+
+
 class Budgets(unittest.TestCase):
     def budgets(self, enforce: bool) -> compare.Budgets:
         return compare.Budgets(dict(compare.DEFAULTS), {"render.frame_ms.4k": {

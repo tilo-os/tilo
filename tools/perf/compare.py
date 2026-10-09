@@ -142,6 +142,9 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
     previous = (own[-1].verdict or {}).get("status") if own else None
     status = "new"
     notes = []
+    if series(item) is not None:
+        factor = item.meta.get("synthetic_factor", "?")
+        notes.append(f"synthetic series {series(item)}: values x{factor}, never a real baseline")
     min_runs = int(budgets.setting(item.kpi, "baseline_min_runs"))
     if base and not comparable(base, min_runs):
         verdict.update(baseline_n=len(base))
