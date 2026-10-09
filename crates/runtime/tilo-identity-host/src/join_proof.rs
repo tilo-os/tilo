@@ -326,7 +326,7 @@ pub fn trusted_current_join_proof(room: &str) -> io::Result<CurrentDeviceJoinPro
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
@@ -337,18 +337,18 @@ mod tests {
 
     /// A provisioned identity the environment points at, every file of it
     /// dated back as it is a few seconds after its last write.
-    struct Fixture {
+    pub(crate) struct Fixture {
         identity_dir: PathBuf,
         paths: IdentityPaths,
-        identity_id: String,
-        user_public_key: [u8; 32],
-        room: String,
+        pub(crate) identity_id: String,
+        pub(crate) user_public_key: [u8; 32],
+        pub(crate) room: String,
         _env: tilo_test_env::ScopedEnv,
         _root: tempfile::TempDir,
     }
 
     impl Fixture {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let temp = tempfile::tempdir().expect("temp root");
             let xdg = temp.path().join("config");
             let system_root = temp.path().join("system");
@@ -391,7 +391,7 @@ mod tests {
             self.paths.device_cert_for_user(&self.user_public_key)
         }
 
-        fn settle(&self) {
+        pub(crate) fn settle(&self) {
             for path in [
                 self.identity_dir.clone(),
                 IdentityRegistryStore::at(&self.identity_dir)
@@ -405,13 +405,13 @@ mod tests {
             }
         }
 
-        fn store(&self) -> DeviceFleetStore {
+        pub(crate) fn store(&self) -> DeviceFleetStore {
             DeviceFleetStore::at(&self.identity_dir, self.paths.clone())
         }
     }
 
     /// Proofs minted from disk on this thread by `run`.
-    fn mints(run: impl FnOnce()) -> usize {
+    pub(crate) fn mints(run: impl FnOnce()) -> usize {
         let before = mints_on_this_thread();
         run();
         mints_on_this_thread().saturating_sub(before)
@@ -433,7 +433,7 @@ mod tests {
             .expect("date identity file back");
     }
 
-    fn proof_issued_at(fixture: &Fixture) -> u64 {
+    pub(crate) fn proof_issued_at(fixture: &Fixture) -> u64 {
         trusted_current_join_proof(&fixture.room)
             .expect("trusted device")
             .certificate

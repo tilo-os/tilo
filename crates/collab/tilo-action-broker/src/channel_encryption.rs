@@ -25,6 +25,15 @@
 //! Every change registers the channel's plaintext gate and head epoch with
 //! the broker, which refuses plaintext and stale-epoch content for the
 //! channel on every ingress path. The broker itself never holds a key.
+//!
+//! Every change is also announced ([`ChannelKeyProvider::channel_changed`]):
+//! an application endpoint holding a route's keys waits on that signal and
+//! asks the identity service again only when it fires, rather than on a
+//! timer. A key rotation, an invite, a removal, a role change that ends
+//! reading and a device's enrolment or revocation each become a commit the
+//! steward makes within [`RECONCILE_INTERVAL`] of the policy change; the
+//! commit is announced on the steward the moment it is made and on a member
+//! the moment its frame arrives, and the endpoint asks for keys at once.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -199,6 +208,10 @@ pub struct ChannelEncryption {
     last_reconcile: Option<Instant>,
     delivery: u64,
     generation: u64,
+    /// The [`Self::generation`] each channel last changed at.
+    changed: HashMap<ChannelId, u64>,
+    /// [`Self::generation`], announced to whoever waits for a change.
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 impl ChannelEncryption {
@@ -225,6 +238,8 @@ impl ChannelEncryption {
             last_reconcile: None,
             delivery: 0,
             generation: 0,
+            changed: HashMap::new(),
+            changes: tokio::sync::watch::Sender::new(0),
         };
         for room_dir in std::fs::read_dir(&service.config.root)? {
             let room_dir = room_dir?.path();
@@ -257,6 +272,12 @@ impl ChannelEncryption {
     /// Increases whenever any channel's keys or access change.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The [`Self::generation`] at which `channel`'s keys or access last
+    /// changed; 0 while they never did in this service.
+    pub fn channel_change(&self, channel: ChannelId) -> u64 {
+        self.changed.get(&channel).copied().unwrap_or(0)
     }
 
     /// What an endpoint of this device may do with `channel` in `room`.
@@ -405,7 +426,7 @@ impl ChannelEncryption {
         let gate = entry.member.journal().gate();
         self.register_gate(channel, gate);
         if changed {
-            self.bump();
+            self.bump(channel);
         }
     }
 
@@ -502,7 +523,7 @@ impl ChannelEncryption {
             }
             let gate = entry.steward.journal().gate();
             self.register_gate(channel, gate);
-            self.bump();
+            self.bump(channel);
         }
     }
 
@@ -635,7 +656,7 @@ impl ChannelEncryption {
             },
         );
         self.register_gate(channel, gate);
-        self.bump();
+        self.bump(channel);
         Ok(())
     }
 
@@ -679,8 +700,11 @@ impl ChannelEncryption {
         }
     }
 
-    fn bump(&mut self) {
+    /// Record that `channel`'s keys or access changed, and announce it.
+    fn bump(&mut self, channel: ChannelId) {
         self.generation = self.generation.wrapping_add(1);
+        self.changed.insert(channel, self.generation);
+        self.changes.send_replace(self.generation);
     }
 }
 
@@ -858,6 +882,22 @@ impl ChannelKeyAccess {
     pub fn generation(&self) -> u64 {
         self.inner.lock().map_or(0, |service| service.generation())
     }
+
+    /// See [`ChannelEncryption::channel_change`].
+    pub fn channel_change(&self, channel: ChannelId) -> u64 {
+        self.inner
+            .lock()
+            .map_or(0, |service| service.channel_change(channel))
+    }
+
+    /// Wakes whenever any channel's keys or access change; `None` when the
+    /// service is unavailable after a poisoned lock.
+    fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.inner
+            .lock()
+            .ok()
+            .map(|service| service.changes.subscribe())
+    }
 }
 
 /// Where the identity service finds this session's channel encryption
@@ -866,6 +906,8 @@ impl ChannelKeyAccess {
 #[derive(Clone, Default)]
 pub struct ChannelKeyProvider {
     slot: Arc<Mutex<Option<ChannelKeyAccess>>>,
+    /// Counts [`Self::set`] calls, for whoever waits on the service.
+    installed: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl ChannelKeyProvider {
@@ -881,11 +923,59 @@ impl ChannelKeyProvider {
         if let Ok(mut slot) = self.slot.lock() {
             *slot = access;
         }
+        self.installed
+            .send_modify(|count| *count = count.wrapping_add(1));
     }
 
     /// The current service, if a broker with one is running.
     pub fn get(&self) -> Option<ChannelKeyAccess> {
         self.slot.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Wait until `channel`'s keys or this device's access to them may have
+    /// changed since `after`, the value the previous wait returned (0 at
+    /// first), and return the value to wait from next.
+    ///
+    /// Resolves at once when the channel changed since `after`; otherwise
+    /// when it next changes, or when the service is installed, replaced or
+    /// goes away. It reports only that this one channel changed, nothing
+    /// about its keys or any other channel: the endpoint then asks the
+    /// identity service, which checks the device's trust and the person's
+    /// role on every answer. Costs no wakeup while nothing changes.
+    pub async fn channel_changed(&self, channel: ChannelId, after: u64) -> u64 {
+        // Subscribed before looking, so an installation between the two is
+        // still seen.
+        let mut installed = self.installed.subscribe();
+        let current = |provider: &Self| {
+            provider
+                .get()
+                .map_or(0, |access| access.channel_change(channel))
+        };
+        let Some((access, mut changes)) = self
+            .get()
+            .and_then(|access| access.changes().map(|changes| (access, changes)))
+        else {
+            // No service: nothing changes until one is installed. The
+            // installation counter lives as long as `self`.
+            let _ = installed.changed().await;
+            return current(self);
+        };
+        loop {
+            let change = access.channel_change(channel);
+            if change != after {
+                return change;
+            }
+            tokio::select! {
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        // The service was dropped: whatever replaces it
+                        // answers differently.
+                        return change.wrapping_add(1);
+                    }
+                }
+                _ = installed.changed() => return current(self),
+            }
+        }
     }
 }
 
@@ -1280,6 +1370,91 @@ mod tests {
         run(&mut [&mut owner, &mut laptop], &mut now, 3);
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
+            ChannelAccess::Removed
+        ));
+    }
+
+    /// TIL-598: an app endpoint waiting on its route's channel hears of its
+    /// admission and its removal the moment this device's service records
+    /// them, and of nothing that happens to another channel.
+    #[test]
+    fn a_route_hears_of_its_own_channel_changes_and_only_those() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let (channel, other) = (ChannelId::new(), ChannelId::new());
+        let policy = Policy::default();
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
+        let Device {
+            service, endpoint, ..
+        } = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
+        let keys = ChannelKeyProvider::default();
+        keys.set(Some(ChannelKeyAccess::new(service)));
+        let laptop = keys.get().unwrap();
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        assert!(matches!(
+            laptop.access(room_id, channel).0,
+            ChannelAccess::Waiting
+        ));
+        let mut pump = |rounds: usize| {
+            for _ in 0..rounds {
+                now = now.checked_add(Duration::from_millis(250)).unwrap();
+                owner.service.pump(&owner.endpoint, now, 1_000);
+                laptop.pump(&endpoint);
+            }
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // A wait, already parked on the service when this returns.
+        let wait = |after: u64| {
+            let keys = keys.clone();
+            let waiting = runtime.spawn(async move { keys.channel_changed(channel, after).await });
+            runtime.block_on(tokio::time::sleep(Duration::from_millis(20)));
+            assert!(!waiting.is_finished(), "nothing changed since {after}");
+            waiting
+        };
+        let resolved = |waiting: tokio::task::JoinHandle<u64>| {
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(200), waiting)
+                    .await
+                    .ok()
+                    .map(Result::unwrap)
+            })
+        };
+
+        let before = laptop.channel_change(channel);
+        let waiting = wait(before);
+        pump(8);
+        runtime.block_on(tokio::time::sleep(Duration::from_millis(20)));
+        assert!(!waiting.is_finished(), "not admitted, nothing changed");
+
+        policy.allowed.lock().unwrap().insert(public(2));
+        pump(8);
+        let admitted = resolved(waiting).expect("admission is announced");
+        assert_ne!(admitted, before);
+        assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
+
+        let waiting = wait(admitted);
+        assert!(matches!(
+            laptop.access(room_id, other).0,
+            ChannelAccess::Waiting
+        ));
+        pump(8);
+        assert!(ready_epoch(&laptop.access(room_id, other).0).is_some());
+        assert_ne!(laptop.channel_change(other), 0, "the other channel changed");
+        let waiting = match resolved(waiting) {
+            None => wait(admitted),
+            Some(change) => panic!("woken by another channel's change ({change})"),
+        };
+
+        policy.allowed.lock().unwrap().clear();
+        pump(8);
+        assert!(resolved(waiting).is_some(), "removal is announced");
+        assert!(matches!(
+            laptop.access(room_id, channel).0,
             ChannelAccess::Removed
         ));
     }

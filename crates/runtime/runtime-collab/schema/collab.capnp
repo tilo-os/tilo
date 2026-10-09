@@ -407,6 +407,15 @@ interface ChannelHandle {
   # Unsupported brokers refuse; clients must not fall back to raw execution.
   approvedCheck @58 (request :Data) -> (receipt :Data);
 
+  # Resolves once this route's channel keys, or this device's access to
+  # them, may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It says only that this route's own channel
+  # changed; the endpoint then asks the workspace identity service for the
+  # keys, which checks the device and the person's role on every answer. An
+  # endpoint holding current keys keeps one call pending instead of asking on
+  # a timer. A host without a channel service answers unimplemented, and the
+  # endpoint asks on a timer as before.
+  channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
 
 }
 
