@@ -888,6 +888,24 @@ impl BrowserWidget {
             .collect()
     }
 
+    /// Document edits bound to the row `row`: the page's row turns tracker
+    /// protection on or off for the site it shows.
+    pub(crate) fn row_declarations(
+        &self,
+        row: &str,
+    ) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
+        if row != "browser.page" {
+            return Vec::new();
+        }
+        let Some(origin) = crate::site_controls::origin(&self.current_uri) else {
+            return Vec::new();
+        };
+        let protected = !self.site_exceptions.contains(&origin);
+        Browser::site_switch(&origin, protected)
+            .into_iter()
+            .collect()
+    }
+
     /// Stage the window for a screenshot scenario: the chrome state each one
     /// shows, as the engine, the network and the person would leave it.
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {

@@ -16,7 +16,8 @@ use ui::framework::{
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Collection, Id, Invoke, Model, Refusal, ScopeDecl, Set, resource,
+    self, ActionCx, ActionDecl, Collection, Derived, Id, Invoke, Model, Refusal, ScopeDecl, Set,
+    resource,
 };
 use ui::widget::Element;
 
@@ -53,7 +54,8 @@ pub struct Browser {
     kind = "browser.application",
     label = "Browser",
     initialize = Browser::default,
-    scopes = Browser::scopes
+    scopes = Browser::scopes,
+    children = Browser::sites
 )]
 impl Browser {
     /// Bookmark a page.
@@ -130,6 +132,42 @@ impl Browser {
             ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
             ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
         ]
+    }
+
+    /// Each site tracker protection is off for, as a place that turns it
+    /// back on.
+    fn sites(&self) -> Vec<Derived<Self>> {
+        self.site_exceptions
+            .iter()
+            .map(|origin| {
+                let params = browser::SetSiteProtection::paths();
+                Derived::new(origin.clone())
+                    .of_kind("site")
+                    .identified(format!("site:{origin}"))
+                    .with(
+                        Self::SET_SITE_PROTECTION
+                            .bind(params.origin, origin.clone())
+                            .and(params.enabled, true),
+                    )
+            })
+            .collect()
+    }
+
+    /// Turning tracker protection for `origin` to the other state from
+    /// `protected`, as the row of a page on that site offers it.
+    pub(crate) fn site_switch(origin: &str, protected: bool) -> Option<ActionDecl<Self>> {
+        let params = browser::SetSiteProtection::paths();
+        Self::SET_SITE_PROTECTION
+            .bind(params.origin, origin.to_owned())
+            .and(params.enabled, !protected)
+            .declaration(
+                "set-site-protection",
+                if protected {
+                    "Turn tracker protection off for this site"
+                } else {
+                    "Turn tracker protection on for this site"
+                },
+            )
     }
 
     /// The origins tracker protection is off for.
@@ -331,6 +369,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
         self.page().page_declarations()
     }
 
+    /// The page row turns tracker protection on or off for its site.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Browser>> {
+        self.page().row_declarations(row)
+    }
+
     fn live_rows(&self) -> Vec<LiveRow> {
         self.page().live_rows()
     }
@@ -417,10 +460,11 @@ mod tests {
         ] {
             let live = find(&published, id).unwrap();
             assert!(
-                live.actions
-                    .iter()
-                    .all(|action| action.kind != OperationKind::Document),
-                "{id} is what this window does, never a document edit"
+                live.actions.iter().all(|action| {
+                    action.kind != OperationKind::Document
+                        || (id == "browser.page" && action.id == "set-site-protection")
+                }),
+                "{id} is what this window does; only the page's site switch is a document edit"
             );
         }
 
@@ -478,13 +522,47 @@ mod tests {
             vec!["https://tracker.example".to_string()],
             "a site exception is kept by its exact origin"
         );
-        app.call(
+        let published = app.harness().resources();
+        let site = find(
+            &published,
+            "browser.application/derived/site:https://tracker.example",
+        )
+        .expect("a site without protection is a place");
+        let protect = site
+            .actions
+            .iter()
+            .find(|action| action.id == "set-site-protection")
+            .expect("the place turns protection back on");
+        assert!(
+            protect.params().is_empty(),
+            "the site and the switch are bound"
+        );
+        app.call_on(
+            "browser.application/derived/site:https://tracker.example",
             "set-site-protection",
-            serde_json::json!({"origin": "https://tracker.example", "enabled": true}),
+            serde_json::json!({}),
         )
         .unwrap();
         app.settle();
         assert!(app.state().site_exceptions.is_empty());
+
+        let page = find(&app.harness().resources(), "browser.page")
+            .unwrap()
+            .clone();
+        let switch = page
+            .actions
+            .iter()
+            .find(|action| action.id == "set-site-protection")
+            .expect("the page row switches protection for its site");
+        assert!(switch.params().is_empty());
+        app.call_on("browser.page", "set-site-protection", serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.state().exceptions().into_iter().collect::<Vec<_>>(),
+            ["https://example.org"],
+            "the page's own site"
+        );
     }
 
     #[test]
