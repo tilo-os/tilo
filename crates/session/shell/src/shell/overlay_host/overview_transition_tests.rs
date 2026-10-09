@@ -198,8 +198,44 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
     reduced_motion_snaps_overview_to_each_target();
 }
 
+/// The overview drawn into a tracked section, as the frame builder draws it,
+/// with the parts the retained-damage producer compares.
+fn overview_section(
+    host: &mut ShellOverlayHost,
+    renderer: &mut TextRenderer,
+    theme: &Theme,
+    open: bool,
+) -> (Scene, ui::scene_parts::SectionParts) {
+    let mut scene = Scene::new();
+    let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+        host.draw_overview_overlay(scene, Affine::IDENTITY, renderer, theme, open);
+    });
+    (scene, parts.expect("the overview's parts are well nested"))
+}
+
+/// The damage between two overview frames: what the producer hands the
+/// presenter. A dense frame (no proof) fails here.
+fn overview_damage(
+    previous: &(Scene, ui::scene_parts::SectionParts),
+    current: &(Scene, ui::scene_parts::SectionParts),
+) -> Vec<Rect> {
+    ui::scene_parts::damage(&previous.0, &previous.1, &current.0, &current.1)
+        .unwrap_or_else(|why| panic!("an overview frame must stay sparse, not dense: {why:?}"))
+}
+
+/// Damage that repaints the display the overview dims, and not the other.
+fn on_first_display(damage: &[Rect], sample: &str) {
+    assert!(!damage.is_empty(), "{sample}: the fade repaints something");
+    for rect in damage {
+        assert!(
+            rect.x1 <= 1920.0,
+            "{sample}: {rect:?} reaches past the first display into the other one"
+        );
+    }
+}
+
 #[test]
-fn overview_transition_uploads_the_panel_not_both_outputs() {
+fn overview_transition_damages_one_display_not_both() {
     // Each draw samples the wall clock, so pin the fade halfway just before it.
     fn mid_fade(host: &mut ShellOverlayHost) {
         host.tick_overview_transition(1.0, false);
@@ -216,40 +252,28 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
         OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
         OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
     ]);
-    mid_fade(&mut host);
     let theme = Theme::dark();
     let mut renderer = TextRenderer::new();
-    let mut scene = Scene::new();
-    host.draw_overview_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &theme, true);
-    let patch = host
-        .overview_fast_patch()
-        .expect("a mid-fade overview publishes a panel patch");
-    let desktop = host.rect.width() * host.rect.height();
-    let panel = f64::from(patch.panel.width) * f64::from(patch.panel.height);
+    let closed = overview_section(&mut host, &mut renderer, &theme, false);
     assert!(
-        panel * 4.0 < desktop,
-        "the uploaded region is {panel} px on a {desktop} px desktop — that is both outputs, not the panel"
+        closed.0.encoding().draw_tags.is_empty(),
+        "a settled closed overview draws nothing"
     );
-    assert!(
-        patch.panel.width < 1920,
-        "the upload is one panel ({} px wide), not a 1920 or 3200 px scanout",
-        patch.panel.width
-    );
+    mid_fade(&mut host);
+    let opening = overview_section(&mut host, &mut renderer, &theme, true);
+    on_first_display(&overview_damage(&closed, &opening), "mid-open");
     let fills = host.overview_panel_cache_fills();
     assert_eq!(fills, 1, "the first fade frame records the panel once");
-    let mut again = Scene::new();
     mid_fade(&mut host);
-    host.draw_overview_overlay(&mut again, Affine::IDENTITY, &mut renderer, &theme, true);
+    let again = overview_section(&mut host, &mut renderer, &theme, true);
     assert_eq!(
         host.overview_panel_cache_fills(),
         fills,
         "the next fade frame reuses the panel recording"
     );
-    assert!(
-        host.overview_fast_patch()
-            .is_some_and(|patch| patch.draw_panel),
-        "a mid-fade frame still draws the panel"
-    );
+    for rect in overview_damage(&opening, &again) {
+        assert!(rect.x1 <= 1920.0, "a later fade frame stays on one display");
+    }
 
     host.tick_overview_transition(0.0, false);
     let started = host
@@ -260,24 +284,61 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
             .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS + 1))
             .expect("the clock is older than the transition"),
     );
-    let mut closing = Scene::new();
-    host.draw_overview_overlay(&mut closing, Affine::IDENTITY, &mut renderer, &theme, false);
-    let restore = host
-        .overview_fast_patch()
-        .expect("the frame that finishes the close restores the panel clip");
+    let finished = overview_section(&mut host, &mut renderer, &theme, false);
+    on_first_display(&overview_damage(&again, &finished), "finished close");
+    let settled = overview_section(&mut host, &mut renderer, &theme, false);
     assert!(
-        !restore.draw_panel,
-        "the closing frame puts the desktop back without rendering the panel"
+        overview_damage(&finished, &settled).is_empty(),
+        "a settled closed overview repaints nothing"
     );
+}
+
+#[test]
+fn both_overview_directions_damage_only_the_overview_display() {
+    let mut host = host();
+    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
+    host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
+    ]);
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+    let closed = overview_section(&mut host, &mut renderer, &theme, false);
+
+    // The open's first sample is still the millisecond the chord landed, so
+    // progress is 0: it paints nothing yet, and is no dense frame either.
+    host.tick_overview_transition(1.0, false);
+    host.overview_t = 0.0;
+    host.transition_from = 0.0;
+    host.overview_target = 1.0;
+    host.transition_started = Some(std::time::Instant::now());
+    let first = overview_section(&mut host, &mut renderer, &theme, true);
     assert!(
-        restore.panel.width < 1920,
-        "the restore stays inside the panel clip"
+        overview_damage(&closed, &first).is_empty(),
+        "the chord's own sample changes no pixel"
     );
-    let mut settled = Scene::new();
-    host.draw_overview_overlay(&mut settled, Affine::IDENTITY, &mut renderer, &theme, false);
+
+    // Open and settled, then halfway through the close: one display.
+    host.overview_t = 1.0;
+    host.overview_target = 1.0;
+    host.transition_from = 1.0;
+    host.transition_started = None;
+    let open = overview_section(&mut host, &mut renderer, &theme, true);
+    on_first_display(&overview_damage(&first, &open), "open");
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+            .expect("half a transition fits in the clock"),
+    );
+    let closing = overview_section(&mut host, &mut renderer, &theme, false);
+    on_first_display(&overview_damage(&open, &closing), "mid-close");
     assert!(
-        host.overview_fast_patch().is_none(),
-        "a settled closed overview stops replacing the desktop"
+        !closing.0.encoding().draw_tags.is_empty(),
+        "a mid-close frame still draws the panel"
     );
 }
 
@@ -312,69 +373,6 @@ fn a_full_presenter_does_not_finish_the_transition() {
     assert!(
         host.workspace_switch_holding(),
         "a workspace switch stays pending while the presenter is full"
-    );
-}
-
-#[test]
-fn both_overview_directions_stay_on_the_panel_clip() {
-    fn panel_is_not_both_outputs(host: &ShellOverlayHost) {
-        let patch = host
-            .overview_fast_patch()
-            .expect("this sample publishes a panel patch");
-        let desktop = host.rect.width() * host.rect.height();
-        let panel = f64::from(patch.panel.width) * f64::from(patch.panel.height);
-        assert!(
-            panel * 4.0 < desktop,
-            "the uploaded region is {panel} px on a {desktop} px desktop"
-        );
-        assert!(
-            patch.panel.width < 1920,
-            "the upload is one panel ({} px wide), not a scanout",
-            patch.panel.width
-        );
-    }
-
-    let mut host = host();
-    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
-    host.set_output_geometry(&[
-        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
-        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
-    ]);
-    let theme = Theme::dark();
-    let mut renderer = TextRenderer::new();
-
-    // The open's first sample is still the millisecond the chord landed, so
-    // progress is 0. That frame must clip to the panel, same as the close.
-    host.tick_overview_transition(1.0, false);
-    host.overview_t = 0.0;
-    host.transition_from = 0.0;
-    host.overview_target = 1.0;
-    host.transition_started = Some(std::time::Instant::now());
-    let mut opening = Scene::new();
-    host.draw_overview_overlay(&mut opening, Affine::IDENTITY, &mut renderer, &theme, true);
-    panel_is_not_both_outputs(&host);
-
-    // Halfway through the close, still the panel, not both outputs.
-    host.overview_t = 1.0;
-    host.overview_target = 1.0;
-    host.transition_from = 1.0;
-    host.transition_started = None;
-    host.tick_overview_transition(0.0, false);
-    let started = host
-        .transition_started
-        .expect("closing latches a transition");
-    host.transition_started = Some(
-        started
-            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
-            .expect("half a transition fits in the clock"),
-    );
-    let mut closing = Scene::new();
-    host.draw_overview_overlay(&mut closing, Affine::IDENTITY, &mut renderer, &theme, false);
-    panel_is_not_both_outputs(&host);
-    assert!(
-        host.overview_fast_patch()
-            .is_some_and(|patch| patch.draw_panel),
-        "a mid-close frame still draws the panel"
     );
 }
 

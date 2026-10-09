@@ -28,7 +28,6 @@ pub mod session;
 mod tablet;
 mod xrgb_history;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,11 +65,6 @@ pub struct DrmBackend {
     /// True between a session pause and matching resume, for the inline path. Distinct from
     /// `blanked` ("screen should be off") — `paused` means these CRTCs belong to another session right now; presenting under either is wrong.
     paused: bool,
-    /// Some powered output presented through the combined readback in the
-    /// latest frame. Only that readback replays retained workspace pixels, so
-    /// clip-only transition frames are requested only while it is in use.
-    /// Shared with the presenter, which updates it after every frame.
-    readback_presenting: Arc<AtomicBool>,
     /// Signalling reports to the loop thread, held while scanouts are inline.
     signal_reports: Option<Sender<SignalReport>>,
 }
@@ -113,7 +107,6 @@ impl DrmBackend {
             refresh,
             commands,
             paused: false,
-            readback_presenting: Arc::new(AtomicBool::new(true)),
             signal_reports,
         })
     }
@@ -161,7 +154,6 @@ impl DrmBackend {
             frame,
             None,
         );
-        publish_readback_presenting(&self.inner.scanouts, &self.readback_presenting);
         report_signal_status(&mut self.inner.scanouts, self.signal_reports.as_ref());
     }
 }
@@ -207,8 +199,6 @@ pub struct DrmPresenter {
     /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
     /// record every two seconds is cheap enough for production and survives a hard reset.
     phase_window: PhaseWindow,
-    /// See [`DrmBackend::readback_presenting`].
-    readback_presenting: Arc<AtomicBool>,
     /// Signalling facts learned while presenting, for the loop thread.
     signal_reports: Option<Sender<SignalReport>>,
     /// Vblanks of the page flips retired during the current frame, by card and CRTC.
@@ -256,7 +246,6 @@ struct PresenterParts {
     commands: Option<Receiver<ScanoutCommand>>,
     present_gate: Option<Arc<Mutex<()>>>,
     profile_phases: bool,
-    readback_presenting: Arc<AtomicBool>,
     signal_reports: Option<Sender<SignalReport>>,
 }
 
@@ -275,7 +264,6 @@ impl DrmPresenter {
             commands,
             present_gate,
             profile_phases,
-            readback_presenting,
             signal_reports,
         } = parts;
         Self {
@@ -293,7 +281,6 @@ impl DrmPresenter {
             profile_seq: 0,
             frame_phases: None,
             phase_window: PhaseWindow::default(),
-            readback_presenting,
             signal_reports,
             flip_vblanks: Vec::new(),
             display_timing: crate::shell::present::DisplayTiming::default(),
@@ -349,14 +336,6 @@ impl DrmPresenter {
             flip_queued_at,
         }
     }
-}
-
-/// Publish whether any powered output presents through the combined readback.
-fn publish_readback_presenting(scanouts: &[ScanoutEntry], flag: &AtomicBool) {
-    flag.store(
-        scanouts.iter().any(|entry| entry.present_by_readback),
-        Ordering::Relaxed,
-    );
 }
 
 /// Send the loop thread every output's signalling status that changed since
@@ -1059,7 +1038,6 @@ impl DrmPresenter {
             frame,
             Some(&mut self.phase_window),
         );
-        publish_readback_presenting(&self.scanouts, &self.readback_presenting);
         let flip_queued_at = sample.direct_queued.then(Instant::now);
         let retirement_started = self.profile_phases.then(Instant::now);
         let retirement_attempted = sample.direct_queued
@@ -1484,10 +1462,6 @@ struct ScanoutFrame<'a> {
     scene: &'a Scene,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
-    overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
-    workspace_id: Option<u64>,
-    workspace_hold: bool,
-    workspace_clip: Option<vello::FineDamageRect>,
     /// What the scene's floating surfaces are drawn over.
     backdrop: Option<&'a std::sync::Arc<ui::backdrop::BackdropFrame>>,
 }
@@ -1501,10 +1475,6 @@ impl<'a> ScanoutFrame<'a> {
             scene,
             damage: None,
             hdr_layers: &[],
-            overview: None,
-            workspace_id: None,
-            workspace_hold: false,
-            workspace_clip: None,
             backdrop: None,
         }
     }
@@ -1522,10 +1492,6 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
                 regions: frame.damage_regions.as_deref(),
             }),
             hdr_layers: &frame.hdr_layers,
-            overview: frame.overview_patch.as_ref(),
-            workspace_id: frame.workspace_id,
-            workspace_hold: frame.workspace_hold,
-            workspace_clip: frame.workspace_clip,
             backdrop: frame.backdrop.as_ref(),
         }
     }
@@ -1540,104 +1506,6 @@ fn quiesce_presentations(gate: Option<&Arc<Mutex<()>>>) -> Option<std::sync::Mut
         gate.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     })
-}
-
-/// An unchanged frame, or an overview fade that carries its own panel patch,
-/// must not read the combined framebuffer back from the GPU.
-pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -> bool {
-    unchanged || overview
-}
-
-/// One head of a multi-output present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PresentedHead {
-    /// A real connector page-flips. A virtual head publishes a clip.
-    pub pageflip: bool,
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// The clip a virtual head publishes from an already-encoded frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PublishedClip {
-    pub head: usize,
-    pub scene_x: u32,
-    pub scene_y: u32,
-    pub local_x: u16,
-    pub local_y: u16,
-    pub width: u16,
-    pub height: u16,
-}
-
-/// Bytes copied onto scanouts for these clips.
-pub(crate) fn encoded_clip_bytes(clips: &[PublishedClip]) -> u64 {
-    clips.iter().fold(0_u64, |bytes, clip| {
-        bytes.saturating_add(
-            u64::from(clip.width)
-                .saturating_mul(u64::from(clip.height))
-                .saturating_mul(4),
-        )
-    })
-}
-
-/// Clips a two-head virtual present publishes.
-///
-/// `None` keeps the combined readback, which is what a real connector
-/// page-flips. An empty `clips` list still publishes only the first head:
-/// the other scanout's buffer is already showing its encoded frame.
-pub(crate) fn virtual_encoded_clips(
-    heads: &[PresentedHead],
-    clips: &[vello::FineDamageRect],
-) -> Option<Vec<PublishedClip>> {
-    if heads.len() < 2 || heads.iter().any(|head| head.pageflip) {
-        return None;
-    }
-    let boxes: Vec<(i32, i32, u32, u32)> = heads
-        .iter()
-        .map(|head| (head.x, head.y, head.width, head.height))
-        .collect();
-    let mut regions = Vec::new();
-    if clips.is_empty() {
-        let head = heads.first()?;
-        regions.push(vello::FineDamageRect {
-            x: u32::try_from(head.x.max(0)).ok()?,
-            y: u32::try_from(head.y.max(0)).ok()?,
-            width: head.width,
-            height: head.height,
-        });
-    } else {
-        regions.extend_from_slice(clips);
-    }
-    let mut published = Vec::with_capacity(regions.len());
-    for clip in regions {
-        let clip = if close_frame_spares_other_scanouts(clip, &boxes) {
-            clip
-        } else {
-            clip_to_primary_scanout(clip, &boxes)?
-        };
-        if !close_frame_spares_other_scanouts(clip, &boxes) {
-            return None;
-        }
-        let head = boxes.iter().position(|&(x, y, width, height)| {
-            output_local_clip(x, y, (width, height), clip).is_some()
-        })?;
-        let (x, y, width, height) = boxes.get(head).copied()?;
-        let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
-        let scene_x = u32::try_from(i64::from(x).saturating_add(i64::from(local_x))).ok()?;
-        let scene_y = u32::try_from(i64::from(y).saturating_add(i64::from(local_y))).ok()?;
-        published.push(PublishedClip {
-            head,
-            scene_x,
-            scene_y,
-            local_x,
-            local_y,
-            width: local_w,
-            height: local_h,
-        });
-    }
-    (!published.is_empty()).then_some(published)
 }
 
 /// Swizzle one already-encoded clip into an XRGB scanout. Pixels outside
@@ -1697,54 +1565,6 @@ pub(crate) fn write_encoded_clip_xrgb(
             }
         }
     }
-}
-
-/// How a workspace-switch frame reaches the scanouts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WorkspaceUpload {
-    /// GPU-render the combined scene and flush both outputs.
-    Render,
-    /// Put a workspace this bridge already rendered back on the scanouts.
-    Replay,
-    /// The held return: adopt the snapshot and upload only the workspace clip.
-    Clip,
-    /// Intermediate frame of the switch: leave both scanouts alone.
-    Skip,
-}
-
-/// The frame run after a workspace switch. Every held sample, including the
-/// first visit, stays on one display's clip. A settled return may still
-/// replay. Later samples of either direction skip the upload.
-pub(crate) fn workspace_frame_upload(
-    changed: bool,
-    has_snapshot: bool,
-    hold: bool,
-) -> WorkspaceUpload {
-    if hold && changed {
-        WorkspaceUpload::Clip
-    } else if hold {
-        WorkspaceUpload::Skip
-    } else if changed && has_snapshot {
-        WorkspaceUpload::Replay
-    } else {
-        WorkspaceUpload::Render
-    }
-}
-
-/// The close may upload the one display it is painting. A clip that also
-/// meets another scanout is the two-output flush this frame run must not do.
-pub(crate) fn close_frame_spares_other_scanouts(
-    clip: vello::FineDamageRect,
-    outputs: &[(i32, i32, u32, u32)],
-) -> bool {
-    if clip.width == 0 || clip.height == 0 {
-        return false;
-    }
-    let covered = outputs
-        .iter()
-        .filter(|&&(x, y, width, height)| output_local_clip(x, y, (width, height), clip).is_some())
-        .count();
-    covered == 1
 }
 
 /// Construct the vello bridge on the calling thread if there is none. Returns whether one exists.
@@ -1823,16 +1643,6 @@ fn paint_scanouts(
         ..
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
-        return PaintScanoutSample::default();
-    }
-    // Reconfiguration is drained before a queued frame is presented. An older
-    // multi-output clip may therefore arrive after hot-unplug to one output.
-    // It has no scene to rasterise: preserve the shown pixels until the next
-    // complete producer frame rather than clearing the new scanout to black.
-    if frame.workspace_hold
-        && scene.encoding().is_empty()
-        && (scanouts.len() == 1 || cpu_present::cpu_render_reason().is_some())
-    {
         return PaintScanoutSample::default();
     }
     let combined = combined_geometry(outputs);
@@ -2040,12 +1850,7 @@ fn paint_scanouts(
             outputs,
             bridge,
             pointer,
-            &CombinedUpload {
-                scene,
-                hdr_layers,
-                workspace_id: frame.workspace_id,
-                note_workspace: frame.overview.is_none(),
-            },
+            &CombinedUpload { scene, hdr_layers },
         )
     } else {
         render_combined_readback(scanouts, outputs, paint, pointer, frame)
@@ -2336,18 +2141,6 @@ fn present_direct(
     let Some(targets) = entry.direct_targets.as_mut() else {
         return DirectOutcome::Readback;
     };
-    // A clip-only transition frame carries no scene: only the readback can replay
-    // retained workspace pixels, so a direct output keeps what it shows until the
-    // next complete frame, whose damage is relative to the last one it rendered.
-    if frame.scene.encoding().is_empty() {
-        // Targets that have not shown a frame leave the dumb front on the CRTC, and
-        // the readback is what can replay it.
-        return if targets.presented() {
-            DirectOutcome::Kept
-        } else {
-            DirectOutcome::Readback
-        };
-    }
     let own_pixels = sharing.owns_pixels(bridge, view);
     if keeps_shown_image(bridge, view, frame, targets.presented(), sharing) {
         return DirectOutcome::Kept;
@@ -2622,6 +2415,10 @@ fn present_single_xrgb(
 /// (or, for an HDR output, PQ-encode) each output's sub-rect into its own
 /// scanout's dumb buffer in a single pass per output.
 ///
+/// An unchanged frame presents nothing, and a sparse one repairs only its
+/// damage ([`present_sparse_combined`]); anything else renders and reads
+/// back the combined desktop.
+///
 /// While an output is driven in HDR, `hdr_layers` are composited on the CPU
 /// at full precision: into the PQ signal of HDR outputs and tone-mapped for
 /// SDR ones.
@@ -2636,173 +2433,107 @@ fn render_combined_readback(
         scene,
         damage,
         hdr_layers,
-        overview,
-        workspace_id,
-        workspace_hold,
-        workspace_clip,
         backdrop: _,
     } = frame;
-    let unchanged = damage.is_some_and(|damage| {
-        damage
-            .regions
-            .is_some_and(<[vello::FineDamageRect]>::is_empty)
-    });
-    if hdr_layers.is_empty()
-        && let Some(patch) = overview
-        && let Some(sample) = present_overview_patch(scanouts, outputs, paint, pointer, patch)
-    {
-        return sample;
-    }
-    if overview.is_none()
-        && hdr_layers.is_empty()
-        && let Some(handled) = present_workspace_hold(
-            scanouts,
-            outputs,
-            paint,
-            pointer,
-            &WorkspacePresent {
-                id: workspace_id,
-                hold: workspace_hold,
-                clip: workspace_clip,
-            },
-        )
-    {
-        return handled;
-    }
-    if overview.is_none()
-        && skips_full_framebuffer_readback(unchanged, false)
-        && paint
-            .as_ref()
-            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
-    {
-        // The pixels already on the scanout are the scene. Remember which
-        // workspace that image is, so the close can replay it instead of
-        // reading both outputs back.
-        if let Some(id) = workspace_id
-            && let Some(bridge) = paint.as_mut()
-        {
-            bridge.note_shown_workspace(id);
-        }
-        return PaintScanoutSample::default();
-    }
-    if hdr_layers.is_empty()
-        && let Some(sample) = publish_already_encoded_clips(
-            scanouts,
-            outputs,
-            paint,
-            &EncodedClipPresent {
-                scene,
-                regions: damage.and_then(|damage| damage.regions).unwrap_or(&[]),
-                pointer,
-                workspace_id,
-            },
-        )
-    {
-        return sample;
-    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
+    let regions = damage.and_then(|damage| damage.regions);
+    if bridge.has_complete_readback() {
+        match regions {
+            // The pixels already on the scanouts are the scene.
+            Some([]) => return PaintScanoutSample::default(),
+            // HDR layers are composited over the whole readback on the CPU.
+            Some(regions) if hdr_layers.is_empty() => {
+                if let Some(sample) =
+                    present_sparse_combined(scanouts, outputs, bridge, pointer, scene, regions)
+                {
+                    return sample;
+                }
+            }
+            _ => {}
+        }
+    }
     upload_combined_scene(
         scanouts,
         outputs,
         bridge,
         pointer,
-        &CombinedUpload {
-            scene,
-            hdr_layers,
-            workspace_id,
-            note_workspace: overview.is_none(),
-        },
+        &CombinedUpload { scene, hdr_layers },
     )
 }
 
-struct EncodedClipPresent<'a> {
-    scene: &'a Scene,
-    regions: &'a [vello::FineDamageRect],
-    pointer: (f64, f64),
-    workspace_id: Option<u64>,
-}
-
-fn presented_heads(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<PresentedHead> {
-    scanouts
-        .iter()
-        .filter(|entry| entry.present_by_readback)
-        .map(|entry| {
-            let size = outputs
-                .iter()
-                .find(|output| output.id == entry.id)
-                .map_or_else(|| entry.scanout.size(), |output| output.size);
-            PresentedHead {
-                pageflip: entry.scanout.event_pageflips_available(),
-                x: entry.position.0,
-                y: entry.position.1,
-                width: size.0,
-                height: size.1,
-            }
-        })
-        .collect()
-}
-
-/// Publish clips from the desktop image this bridge already encoded.
+/// Present a sparse frame through the combined readback: render the scene once
+/// inside its damage, read back only the damage into the encoded desktop, and
+/// copy only the damage onto the scanouts it meets.
 ///
-/// A missing image, or a clip the GPU cannot refresh, falls through to the
-/// combined readback. That path is also how a real connector page-flips.
-fn publish_already_encoded_clips(
+/// `None` when the damage cannot be repaired in place (a region outside the
+/// desktop, a failed render or copy); the caller then uploads the whole scene.
+fn present_sparse_combined(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
-    paint: &mut Option<paint::VelloDrmBridge>,
-    present: &EncodedClipPresent<'_>,
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    scene: &Scene,
+    regions: &[vello::FineDamageRect],
 ) -> Option<PaintScanoutSample> {
-    let published = virtual_encoded_clips(&presented_heads(scanouts, outputs), present.regions)?;
-    tracing::trace!(
-        bytes = encoded_clip_bytes(&published),
-        heads = published.len(),
-        "virtual present publishes the encoded clip"
-    );
-    let bridge = paint.as_mut()?;
-    if !bridge.has_complete_readback() {
+    let bridge_started = Instant::now();
+    if let Err(error) = bridge.refresh_encoded_regions(scene, regions) {
+        tracing::debug!(%error, "DRM backend: sparse combined frame falls back to a full upload");
         return None;
     }
-    for clip in &published {
-        let rect = vello::FineDamageRect {
-            x: clip.scene_x,
-            y: clip.scene_y,
-            width: u32::from(clip.width),
-            height: u32::from(clip.height),
-        };
-        if bridge.refresh_encoded_clip(present.scene, rect).is_err() {
-            return None;
-        }
-    }
-    let started = Instant::now();
-    {
-        let rgba = bridge.encoded_rgba()?;
-        for clip in &published {
-            let rect = vello::FineDamageRect {
-                x: clip.scene_x,
-                y: clip.scene_y,
-                width: u32::from(clip.width),
-                height: u32::from(clip.height),
-            };
-            present_composed_readback(scanouts, outputs, present.pointer, rgba, Some(rect));
-        }
-    }
-    if let Some(id) = present.workspace_id {
-        bridge.note_shown_workspace(id);
-    }
+    let bridge_us = bridge_started.elapsed().as_micros();
+    let bounds = damage_bounds(regions)?;
+    // Damage is in scene pixels. A head that rotates or scales its part of the
+    // scene maps it to other scanout pixels, so every head copies whole there.
+    let copied = scanouts
+        .iter()
+        .filter(|entry| entry.present_by_readback)
+        .all(|entry| {
+            entry.transform == settings_store::hardware::OutputTransform::Normal
+                && outputs
+                    .iter()
+                    .find(|output| output.id == entry.id)
+                    .is_some_and(|output| output.size == entry.scanout.size())
+        })
+        .then_some(bounds);
+    let rgba = bridge.encoded_rgba()?;
+    let sample = present_composed_readback(scanouts, outputs, pointer, rgba, copied);
     Some(PaintScanoutSample {
-        legacy_attempted: true,
-        scanout_us: started.elapsed().as_micros(),
-        ..PaintScanoutSample::default()
+        bridge_us,
+        ..sample
+    })
+}
+
+/// The smallest rectangle holding every region, or `None` for no regions.
+fn damage_bounds(regions: &[vello::FineDamageRect]) -> Option<vello::FineDamageRect> {
+    let edges = |rect: &vello::FineDamageRect| {
+        (
+            rect.x,
+            rect.y,
+            rect.x.saturating_add(rect.width),
+            rect.y.saturating_add(rect.height),
+        )
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = edges(regions.first()?);
+    for rect in regions {
+        let (left, top, right, bottom) = edges(rect);
+        x0 = x0.min(left);
+        y0 = y0.min(top);
+        x1 = x1.max(right);
+        y1 = y1.max(bottom);
+    }
+    Some(vello::FineDamageRect {
+        x: x0,
+        y: y0,
+        width: x1.saturating_sub(x0),
+        height: y1.saturating_sub(y0),
     })
 }
 
 struct CombinedUpload<'a> {
     scene: &'a Scene,
     hdr_layers: &'a [HdrLayer],
-    workspace_id: Option<u64>,
-    note_workspace: bool,
 }
 
 /// Paint the combined scene and copy it onto every powered scanout.
@@ -2815,8 +2546,6 @@ fn upload_combined_scene(
 ) -> PaintScanoutSample {
     let scene = upload.scene;
     let hdr_layers = upload.hdr_layers;
-    let workspace_id = upload.workspace_id;
-    let note_workspace = upload.note_workspace;
     let bridge_started = Instant::now();
     let composite = !hdr_layers.is_empty()
         && scanouts
@@ -2860,153 +2589,12 @@ fn upload_combined_scene(
     {
         paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, hdr, None);
     }
-    if note_workspace && let Some(id) = workspace_id {
-        bridge.note_shown_workspace(id);
-    }
     PaintScanoutSample {
         legacy_attempted: true,
         bridge_us,
         scanout_us: scanout_started.elapsed().as_micros(),
         ..PaintScanoutSample::default()
     }
-}
-
-struct WorkspacePresent {
-    id: Option<u64>,
-    hold: bool,
-    clip: Option<vello::FineDamageRect>,
-}
-
-fn present_workspace_hold(
-    scanouts: &mut [ScanoutEntry],
-    outputs: &[Output],
-    paint: &mut Option<paint::VelloDrmBridge>,
-    pointer: (f64, f64),
-    workspace: &WorkspacePresent,
-) -> Option<PaintScanoutSample> {
-    let bridge = paint.as_mut()?;
-    let changed = workspace
-        .id
-        .is_some_and(|id| bridge.shown_workspace() != Some(id));
-    let has_snapshot = workspace
-        .id
-        .is_some_and(|id| bridge.has_workspace_snapshot(id));
-    match workspace_frame_upload(changed, has_snapshot, workspace.hold) {
-        WorkspaceUpload::Skip => Some(PaintScanoutSample::default()),
-        WorkspaceUpload::Clip => Some(present_workspace_clip(
-            scanouts, outputs, bridge, pointer, workspace,
-        )),
-        WorkspaceUpload::Replay => {
-            let id = workspace.id?;
-            let bytes = bridge.replay_workspace(id)?;
-            let clip = virtual_encoded_clips(&presented_heads(scanouts, outputs), &[])
-                .and_then(|clips| clips.first().copied())
-                .map(|clip| vello::FineDamageRect {
-                    x: clip.scene_x,
-                    y: clip.scene_y,
-                    width: u32::from(clip.width),
-                    height: u32::from(clip.height),
-                });
-            Some(present_composed_readback(
-                scanouts, outputs, pointer, &bytes, clip,
-            ))
-        }
-        WorkspaceUpload::Render => {
-            if changed {
-                bridge.retain_shown_workspace();
-            }
-            None
-        }
-    }
-}
-
-/// Adopt the workspace the close is returning to and upload only the clip.
-/// A clip that also meets another scanout is cut back to the first display.
-/// Leaving it whole, or skipping the upload, made a later frame flush both.
-fn present_workspace_clip(
-    scanouts: &mut [ScanoutEntry],
-    outputs: &[Output],
-    bridge: &mut paint::VelloDrmBridge,
-    pointer: (f64, f64),
-    workspace: &WorkspacePresent,
-) -> PaintScanoutSample {
-    let Some(id) = workspace.id else {
-        return PaintScanoutSample::default();
-    };
-    let boxes = scanout_boxes(scanouts, outputs);
-    let Some(clip) = workspace
-        .clip
-        .and_then(|clip| clip_to_primary_scanout(clip, &boxes))
-    else {
-        return PaintScanoutSample::default();
-    };
-    if !close_frame_spares_other_scanouts(clip, &boxes) {
-        return PaintScanoutSample::default();
-    }
-    let Some(bytes) = bridge.replay_workspace(id) else {
-        return PaintScanoutSample::default();
-    };
-    present_composed_readback(scanouts, outputs, pointer, &bytes, Some(clip))
-}
-
-/// Composite the overview fade onto the desktop already in memory.
-///
-/// `None` means there is no bridge to composite with. A missing desktop
-/// image skips the frame: seeding a combined readback here is the stall
-/// that finishes the fade before a single present.
-fn present_overview_patch(
-    scanouts: &mut [ScanoutEntry],
-    outputs: &[Output],
-    paint: &mut Option<paint::VelloDrmBridge>,
-    pointer: (f64, f64),
-    patch: &crate::shell::overlay_host::OverviewFastPatch,
-) -> Option<PaintScanoutSample> {
-    let bridge = paint.as_mut()?;
-    match bridge.composite_overview_frame(patch) {
-        Ok(composed) => Some(present_composed_readback(
-            scanouts,
-            outputs,
-            pointer,
-            &composed,
-            Some(patch.panel),
-        )),
-        Err(_) => Some(PaintScanoutSample::default()),
-    }
-}
-
-/// The part of `clip` that lies on the first scanout, in scene pixels.
-/// A close whose clip was the combined desktop uploads that display only.
-pub(crate) fn clip_to_primary_scanout(
-    clip: vello::FineDamageRect,
-    outputs: &[(i32, i32, u32, u32)],
-) -> Option<vello::FineDamageRect> {
-    let &(x, y, width, height) = outputs.first()?;
-    let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
-    let scene_x = i64::from(x).saturating_add(i64::from(local_x));
-    let scene_y = i64::from(y).saturating_add(i64::from(local_y));
-    if scene_x < 0 || scene_y < 0 {
-        return None;
-    }
-    Some(vello::FineDamageRect {
-        x: u32::try_from(scene_x).ok()?,
-        y: u32::try_from(scene_y).ok()?,
-        width: u32::from(local_w),
-        height: u32::from(local_h),
-    })
-}
-
-fn scanout_boxes(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<(i32, i32, u32, u32)> {
-    scanouts
-        .iter()
-        .filter(|entry| entry.present_by_readback)
-        .map(|entry| {
-            let size = outputs
-                .iter()
-                .find(|output| output.id == entry.id)
-                .map_or_else(|| entry.scanout.size(), |output| output.size);
-            (entry.position.0, entry.position.1, size.0, size.1)
-        })
-        .collect()
 }
 
 fn present_composed_readback(
@@ -3390,15 +2978,6 @@ impl Backend for DrmBackend {
         self.submit_inline(ScanoutFrame::scene_only(scene));
     }
 
-    fn supports_workspace_clip(&self) -> bool {
-        // Only combined GPU readback implements workspace replay. Direct
-        // outputs, the single-output XRGB path and the CPU renderer consume
-        // complete scenes; a clip frame reaching a direct output keeps its image.
-        self.outputs.len() > 1
-            && cpu_present::cpu_render_reason().is_none()
-            && self.readback_presenting.load(Ordering::Relaxed)
-    }
-
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, _output: OutputId) {
         self.submit_inline(frame.into());
     }
@@ -3473,7 +3052,6 @@ impl Backend for DrmBackend {
             present_gate: self.inner.dispatch.present_gate.clone(),
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some()
                 || std::env::var_os("TILO_PROFILE_GPU_STAGES").is_some_and(|value| value == "1"),
-            readback_presenting: Arc::clone(&self.readback_presenting),
             signal_reports: self.signal_reports.take(),
         })))
     }
@@ -3559,66 +3137,54 @@ impl Backend for DrmBackend {
 
 #[cfg(test)]
 mod tests {
+    /// A sparse combined frame copies the box around its damage, and each
+    /// scanout copies only its own part of it: damage on one display leaves
+    /// the other alone, and damage across both reaches both.
     #[test]
-    fn an_overview_patch_or_unchanged_frame_skips_the_full_readback() {
-        assert!(super::skips_full_framebuffer_readback(true, false));
-        assert!(super::skips_full_framebuffer_readback(false, true));
-        assert!(!super::skips_full_framebuffer_readback(false, false));
-    }
-
-    #[test]
-    fn two_head_virtual_present_publishes_the_encoded_clip_not_both_outputs() {
-        let heads = [
-            super::PresentedHead {
-                pageflip: false,
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            },
-            super::PresentedHead {
-                pageflip: false,
-                x: 1920,
-                y: 0,
-                width: 1280,
-                height: 800,
-            },
-        ];
-        let clip = vello::FineDamageRect {
-            x: 80,
-            y: 40,
-            width: 300,
+    fn sparse_combined_damage_reaches_only_the_scanouts_it_meets() {
+        let panel = vello::FineDamageRect {
+            x: 320,
+            y: 96,
+            width: 1280,
+            height: 880,
+        };
+        let shadow = vello::FineDamageRect {
+            x: 304,
+            y: 960,
+            width: 64,
+            height: 32,
+        };
+        let bounds = super::damage_bounds(&[panel, shadow]).expect("two regions have bounds");
+        assert_eq!(
+            bounds,
+            vello::FineDamageRect {
+                x: 304,
+                y: 96,
+                width: 1296,
+                height: 896,
+            }
+        );
+        assert!(super::damage_bounds(&[]).is_none());
+        let (first, second) = ((0, 0, (1920, 1080)), (1920, 0, (1280, 800)));
+        let local =
+            |(x, y, size): (i32, i32, (u32, u32)), rect| super::output_local_clip(x, y, size, rect);
+        assert_eq!(local(first, bounds), Some((304, 96, 1296, 896)));
+        assert_eq!(
+            local(second, bounds),
+            None,
+            "damage on the first display is not copied onto the second"
+        );
+        let across = vello::FineDamageRect {
+            x: 1800,
+            y: 0,
+            width: 400,
             height: 48,
         };
-        let published = super::virtual_encoded_clips(&heads, &[clip])
-            .expect("a virtual pair publishes the encoded clip");
-        assert_eq!(published.len(), 1, "the other scanout is not copied");
-        assert_eq!(published[0].head, 0);
-        let bytes = super::encoded_clip_bytes(&published);
-        assert_eq!(bytes, 300 * 48 * 4);
-        let both_outputs = (1920 * 1080 + 1280 * 800) * 4;
-        assert!(
-            bytes < both_outputs,
-            "the clip publish is not a combined framebuffer copy"
-        );
-        let primary = super::virtual_encoded_clips(&heads, &[])
-            .expect("without a smaller clip the first head is the publish");
-        assert_eq!(primary.len(), 1, "the second scanout is not copied");
-        assert_eq!(primary[0].head, 0);
-        assert_eq!(super::encoded_clip_bytes(&primary), 1920 * 1080 * 4);
-        assert!(
-            super::virtual_encoded_clips(
-                &[
-                    super::PresentedHead {
-                        pageflip: true,
-                        ..heads[0]
-                    },
-                    heads[1],
-                ],
-                &[clip],
-            )
-            .is_none(),
-            "a real connector stays on the combined present and page-flips"
+        assert_eq!(local(first, across), Some((1800, 0, 120, 48)));
+        assert_eq!(
+            local(second, across),
+            Some((0, 0, 280, 48)),
+            "the second display repairs its own part of damage across both"
         );
     }
 
@@ -3656,73 +3222,6 @@ mod tests {
                     pixel == clip_pixel || bytes.iter().all(|byte| *byte == 7)
                 }),
             "pixels outside the clip, including the other output, stay put"
-        );
-    }
-
-    #[test]
-    fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
-        use super::WorkspaceUpload::{Clip, Render, Replay, Skip};
-        // A held switch stays on one display's clip, including the first
-        // visit. Rendering here is the combined two-output readback.
-        assert_eq!(super::workspace_frame_upload(true, false, true), Clip);
-        assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
-        // The held return stays on the clip. A settled return may still replay.
-        assert_eq!(super::workspace_frame_upload(true, true, true), Clip);
-        assert_eq!(super::workspace_frame_upload(false, true, true), Skip);
-        assert_eq!(super::workspace_frame_upload(true, true, false), Replay);
-        // A settled desktop still renders when its pixels actually change.
-        assert_eq!(super::workspace_frame_upload(false, true, false), Render);
-    }
-
-    #[test]
-    fn workspace_switch_close_clip_does_not_cover_the_other_scanout() {
-        let clip = vello::FineDamageRect {
-            x: 313,
-            y: 0,
-            width: 1607,
-            height: 1080,
-        };
-        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
-        assert!(
-            super::close_frame_spares_other_scanouts(clip, &outputs),
-            "the content column meets the first display only"
-        );
-        let both = vello::FineDamageRect {
-            x: 0,
-            y: 0,
-            width: 3200,
-            height: 1080,
-        };
-        assert!(
-            !super::close_frame_spares_other_scanouts(both, &outputs),
-            "a combined clip is the two-output flush"
-        );
-        assert!(
-            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
-            "the second scanout is outside the close clip"
-        );
-    }
-
-    #[test]
-    fn a_combined_close_clip_uploads_only_the_first_display() {
-        let both = vello::FineDamageRect {
-            x: 0,
-            y: 0,
-            width: 3200,
-            height: 1080,
-        };
-        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
-        let clip = super::clip_to_primary_scanout(both, &outputs)
-            .expect("the close still has the first display");
-        assert_eq!(clip.x, 0);
-        assert_eq!(clip.width, 1920);
-        assert!(
-            super::close_frame_spares_other_scanouts(clip, &outputs),
-            "cutting the clip back to the first display leaves the other scanout alone"
-        );
-        assert!(
-            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
-            "the second scanout is outside the cut clip"
         );
     }
 
@@ -3882,7 +3381,6 @@ mod tests {
             commands: Some(receiver),
             present_gate: Some(Arc::new(Mutex::new(()))),
             profile_phases: false,
-            readback_presenting: Arc::new(AtomicBool::new(true)),
             signal_reports: None,
         });
         assert!(
@@ -3914,7 +3412,6 @@ mod tests {
                 commands: Some(receiver),
                 present_gate: Some(Arc::new(Mutex::new(()))),
                 profile_phases: false,
-                readback_presenting: Arc::new(AtomicBool::new(false)),
                 signal_reports: None,
             });
             assert!(!presenter.vblank_paced());
@@ -3962,7 +3459,6 @@ mod tests {
                 commands: Some(receiver),
                 present_gate: Some(Arc::clone(&gate)),
                 profile_phases: false,
-                readback_presenting: Arc::new(AtomicBool::new(false)),
                 signal_reports: None,
             });
             commands
