@@ -62,3 +62,8 @@ pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
+
+// Unit tests admit peer bytes through the Automerge isolate, whose workers
+// are this test binary started again.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();

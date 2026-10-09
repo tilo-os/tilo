@@ -41,7 +41,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 pub mod actions;
 mod unopened;
 
-pub(crate) use unopened::{desktop_records, desktop_route};
+pub(crate) use unopened::{SharedDesktop, desktop_route};
 
 /// Presence is repeated this often while nothing changes, so late joiners
 /// and lossy carriers still show the agent.
@@ -202,6 +202,9 @@ impl AgentParticipant {
         for event in self.events.drain() {
             self.receive(event, now);
         }
+        // What arrived for the shared desktop is admitted through the
+        // isolate in one batch, before any plan reads it.
+        self.unopened.settle();
         if self.left {
             return Next::WhenWoken;
         }

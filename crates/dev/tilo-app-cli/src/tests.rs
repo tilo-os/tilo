@@ -4103,6 +4103,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination.join("src/lib.rs"),
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -4137,6 +4138,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination,
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,

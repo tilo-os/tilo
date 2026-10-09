@@ -3,10 +3,11 @@
 //! Nothing reads such a record until the agent opens it, except the shared
 //! desktop, whose tabs say which records people have open. So:
 //!
-//! - **The shared desktop** is held as its live Automerge document, each
-//!   change merged as it arrives; the planner reads its tabs from the
-//!   current value, and only when it changed since the last plan. No plan
-//!   replays its history.
+//! - **The shared desktop** is held as its live Automerge document
+//!   ([`SharedDesktop`]): the changes that arrived are admitted together
+//!   once the session's events are taken in ([`Unopened::settle`]), and the
+//!   planner reads its tabs from the current value, and only when it
+//!   changed since the last plan. No plan replays its history.
 //! - **Every other record** is held packed: its document as last saved,
 //!   and the changes that arrived since, in host order. Taking a change is
 //!   a push; once the changes since outweigh the saved document (or
@@ -15,21 +16,30 @@
 //!   cost the agent's thread work in proportion to the record's history for
 //!   every change someone makes, in records it may never open.
 //!
+//! **Admission.** Every byte here comes from the room's members, and this
+//! is the host's process, beside its device key. So none of it reaches
+//! Automerge here before a `tilo-automerge-isolate` worker has made the
+//! same call on it ([`admit`]): changes go to the isolate in batches, as
+//! one load into a blank document where they can. A change the isolate
+//! refuses is dropped, as an open record's replica drops it, and holds back
+//! no other. When the isolate cannot be asked at all nothing is decoded
+//! here instead: the changes are kept, and the record does not open until
+//! they can be admitted.
+//!
 //! **Retention.** Per unopened record the agent keeps the record's
 //! document with its whole history, each change once — what its replica
 //! would hold had the agent opened it, and what a later concurrent change
 //! or an undo may still build on — plus, packed, at most the size of that
 //! document (or [`TAIL_FLOOR`]) of changes not yet merged. A change the host
 //! delivers again (a reconnect replays the room) merges into what is held
-//! and adds nothing. Nothing is dropped: a change waiting for one it builds
-//! on stays unmerged until that one arrives, and a change that does not
-//! load is merged on its own, as before, so it holds back no other. Opening
-//! a record seeds its replica from this document ([`Unopened::seed`]).
+//! and adds nothing. A change waiting for one it builds on stays unmerged
+//! until that one arrives. Opening a record seeds its replica from this
+//! document ([`Unopened::seed`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use automerge::{AutoCommit, LoadOptions, OnPartialLoad, ReadDoc as _};
-use tilo_automerge::ApplyIncoming as _;
+use automerge::{AutoCommit, ReadDoc as _};
+use tilo_automerge_isolate::{Dependencies, Rejected};
 use tilo_browser_peer::DocumentRoute;
 
 /// The route of a room's shared browser desktop (`tilo-browser-runtime`'s
@@ -39,6 +49,13 @@ const DESKTOP_RECORD: &str = "desktop";
 
 /// Change bytes a record may hold unmerged however small its document.
 const TAIL_FLOOR: usize = 64 * 1024;
+
+/// Most bytes of changes admitted in one isolate request: well under its
+/// input ceiling, so a long history is admitted in parts.
+const BATCH_BYTES: usize = 8 * 1024 * 1024;
+/// Most changes admitted in one isolate request: well under its chunk
+/// ceiling for changes of a few chunks each.
+const BATCH_CHANGES: usize = 4096;
 
 /// The shared desktop's route in `room`.
 pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
@@ -51,7 +68,7 @@ pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
 
 /// The records bound to a tab of a shared desktop `doc`: what people have
 /// open. Reads its current value only.
-pub(crate) fn desktop_records(doc: &impl automerge::ReadDoc) -> HashSet<String> {
+fn desktop_records(doc: &impl automerge::ReadDoc) -> HashSet<String> {
     let Ok(Some((automerge::Value::Scalar(value), _))) = doc.get(automerge::ROOT, "desktop") else {
         return HashSet::new();
     };
@@ -84,27 +101,80 @@ fn people_first(
     known
 }
 
-/// Merge `bytes` into `doc`; the first failure is why the record refuses
-/// to open, as it was when its changes were merged only then.
-fn merge(doc: &mut AutoCommit, bytes: &[u8], refused: &mut Option<String>) {
-    if let Err(error) = doc.load_incoming(bytes)
-        && refused.is_none()
-    {
-        *refused = Some(error.to_string());
+/// Admit untrusted `changes` (documents or changes), in order, to `doc`
+/// through the isolate, in as few requests as their size allows. A batch
+/// the isolate refuses is halved until each refused change stands alone;
+/// it is dropped and holds back no other. Changes waiting for a dependency
+/// stay in `doc`'s queue. Returns the indices of the refused changes.
+///
+/// # Errors
+///
+/// Why the isolate could not be asked. Nothing is decoded in this process
+/// instead; `doc` holds what was admitted before.
+fn admit(doc: &mut AutoCommit, changes: &[&[u8]]) -> Result<Vec<usize>, String> {
+    let mut refused = Vec::new();
+    let mut rest = changes;
+    let mut first = 0_usize;
+    while !rest.is_empty() {
+        let mut count = 0_usize;
+        let mut bytes = 0_usize;
+        for change in rest.iter().take(BATCH_CHANGES) {
+            if count > 0 && bytes.saturating_add(change.len()) > BATCH_BYTES {
+                break;
+            }
+            bytes = bytes.saturating_add(change.len());
+            count = count.saturating_add(1);
+        }
+        let (batch, after) = rest.split_at(count.min(rest.len()));
+        admit_run(doc, batch, first, &mut refused)?;
+        first = first.saturating_add(batch.len());
+        rest = after;
     }
+    Ok(refused)
+}
+
+/// [`admit`] one batch, `run`, whose first change has index `first`.
+fn admit_run(
+    doc: &mut AutoCommit,
+    run: &[&[u8]],
+    first: usize,
+    refused: &mut Vec<usize>,
+) -> Result<(), String> {
+    if run.iter().all(|change| change.is_empty()) {
+        return Ok(());
+    }
+    match tilo_automerge_isolate::apply(doc, &run.concat(), Dependencies::RetainOrphans) {
+        Ok(_) => Ok(()),
+        Err(Rejected::Unavailable(reason)) => Err(reason),
+        Err(error) if run.len() == 1 => {
+            tracing::warn!(%error, "agent: a change of an unopened record was not admitted");
+            refused.push(first);
+            Ok(())
+        }
+        Err(_) => {
+            let (left, right) = run.split_at(run.len() / 2);
+            admit_run(doc, left, first, refused)?;
+            admit_run(doc, right, first.saturating_add(left.len()), refused)
+        }
+    }
+}
+
+/// Why a record cannot be opened yet: its changes wait for the isolate.
+fn not_admitted(reason: String) -> String {
+    crate::apps::AppError::Merge(reason).to_string()
 }
 
 /// A record nothing reads until it is opened.
 #[derive(Default)]
 struct Packed {
-    /// The document as last merged (`AutoCommit::save`); empty before.
+    /// The document as last merged (`AutoCommit::save` of a document built
+    /// only through the isolate); empty before.
     saved: Vec<u8>,
     /// Changes since, in host order, and their bytes.
     tail: Vec<Vec<u8>>,
     tail_bytes: usize,
     /// Tail bytes past which the tail is merged.
     limit: usize,
-    refused: Option<String>,
 }
 
 impl Packed {
@@ -116,49 +186,55 @@ impl Packed {
         }
     }
 
-    /// The document: the saved one with the tail merged.
-    fn document(&mut self) -> AutoCommit {
-        let mut all = Vec::with_capacity(self.saved.len().saturating_add(self.tail_bytes));
-        all.extend_from_slice(&self.saved);
-        for bytes in &self.tail {
-            all.extend_from_slice(bytes);
-        }
-        // One load merges the whole tail at about the cost of one change.
-        let strict = LoadOptions::new().on_partial_load(OnPartialLoad::Error);
-        if let Ok(doc) = AutoCommit::load_with_options(&all, strict) {
-            return doc;
-        }
-        // A change that does not load, or waits for one not yet here:
-        // merge them one by one, as they arrived.
+    /// The document: the saved one with the tail merged, admitted together
+    /// through the isolate. Into a blank document that is one load, which
+    /// merges the whole tail at about the cost of one change. Changes the
+    /// isolate refuses leave the tail.
+    ///
+    /// # Errors
+    ///
+    /// The isolate could not be asked; the tail is kept.
+    fn document(&mut self) -> Result<AutoCommit, String> {
+        let saved = (!self.saved.is_empty()).then_some(self.saved.as_slice());
+        let changes: Vec<&[u8]> = saved
+            .into_iter()
+            .chain(self.tail.iter().map(Vec::as_slice))
+            .collect();
         let mut doc = AutoCommit::new();
-        merge(&mut doc, &self.saved, &mut self.refused);
-        for bytes in &self.tail {
-            merge(&mut doc, bytes, &mut self.refused);
+        let refused = admit(&mut doc, &changes)?;
+        if !refused.is_empty() {
+            let offset = usize::from(saved.is_some());
+            let mut index = offset;
+            self.tail.retain(|_| {
+                let keep = !refused.contains(&index);
+                index = index.saturating_add(1);
+                keep
+            });
+            self.tail_bytes = self.tail.iter().map(Vec::len).sum();
         }
-        doc
+        Ok(doc)
     }
 
     /// Merge the tail into the saved document, unless a change in it waits
-    /// for one not yet here (saving would drop it) or the record refuses.
+    /// for one not yet here (saving would drop it) or the isolate cannot be
+    /// asked.
     fn compact(&mut self) {
-        let mut doc = self.document();
-        if self.refused.is_none() && doc.get_missing_deps(&[]).is_empty() {
-            self.saved = doc.save();
-            self.tail = Vec::new();
-            self.tail_bytes = 0;
-            self.limit = self.saved.len();
-        } else {
+        match self.document() {
+            Ok(mut doc) if doc.get_missing_deps(&[]).is_empty() => {
+                self.saved = doc.save();
+                self.tail = Vec::new();
+                self.tail_bytes = 0;
+                self.limit = self.saved.len();
+            }
             // Try again once the tail has doubled.
-            self.limit = self.tail_bytes.saturating_mul(2);
+            _ => self.limit = self.tail_bytes.saturating_mul(2),
         }
     }
 
     fn seed(&mut self) -> Result<Vec<u8>, String> {
-        let mut doc = self.document();
-        match &self.refused {
-            Some(reason) => Err(crate::apps::AppError::Merge(reason.clone()).to_string()),
-            None => Ok(doc.save()),
-        }
+        self.document()
+            .map(|mut doc| doc.save())
+            .map_err(not_admitted)
     }
 
     /// Bytes held.
@@ -168,41 +244,67 @@ impl Packed {
     }
 }
 
-/// The shared desktop, kept merged.
-struct Live {
+/// A room's shared desktop, kept merged: which records people have open.
+/// What it takes is admitted through the isolate, a batch per
+/// [`SharedDesktop::admit`].
+pub(crate) struct SharedDesktop {
     doc: AutoCommit,
+    /// Changes taken and not yet admitted, in order.
+    waiting: Vec<Vec<u8>>,
     /// Change bytes merged since the document was last reloaded, and past
     /// how many it is reloaded: a document built change by change holds
     /// each change's bytes besides its state, a reloaded one only the
     /// state.
     since: usize,
     limit: usize,
-    refused: Option<String>,
+    /// Why the isolate could not be asked, while changes wait for it.
+    unavailable: Option<String>,
     /// The tabs' records as of the last change; `None` until read after it.
     tabs: Option<HashSet<String>>,
 }
 
-impl Live {
-    fn new() -> Self {
+impl SharedDesktop {
+    pub(crate) fn new() -> Self {
         Self {
             doc: AutoCommit::new(),
+            waiting: Vec::new(),
             since: 0,
             limit: 0,
-            refused: None,
+            unavailable: None,
             tabs: None,
         }
     }
 
-    fn receive(&mut self, bytes: &[u8]) {
-        merge(&mut self.doc, bytes, &mut self.refused);
+    /// Take one change, in host order, for the next [`Self::admit`].
+    pub(crate) fn receive(&mut self, bytes: Vec<u8>) {
+        self.waiting.push(bytes);
         self.tabs = None;
-        self.since = self.since.saturating_add(bytes.len());
-        if self.since > self.limit.max(TAIL_FLOOR)
-            && self.refused.is_none()
-            && self.doc.get_missing_deps(&[]).is_empty()
-        {
+    }
+
+    /// Admit every change taken since the last call through the isolate.
+    /// When the isolate cannot be asked they wait for the next call.
+    pub(crate) fn admit(&mut self) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        let waiting = std::mem::take(&mut self.waiting);
+        let changes: Vec<&[u8]> = waiting.iter().map(Vec::as_slice).collect();
+        let admitted = admit(&mut self.doc, &changes);
+        drop(changes);
+        self.tabs = None;
+        if let Err(reason) = admitted {
+            tracing::warn!(%reason, "agent: the shared desktop's changes wait for the isolate");
+            self.unavailable = Some(reason);
+            // Those admitted before it merge again then, adding nothing.
+            self.waiting = waiting;
+            return;
+        }
+        self.unavailable = None;
+        let bytes: usize = waiting.iter().map(Vec::len).sum();
+        self.since = self.since.saturating_add(bytes);
+        if self.since > self.limit.max(TAIL_FLOOR) && self.doc.get_missing_deps(&[]).is_empty() {
             let saved = self.doc.save();
-            if let Ok(doc) = AutoCommit::load(&saved) {
+            if let Ok(doc) = tilo_automerge_isolate::load(&saved) {
                 self.doc = doc;
             }
             self.since = 0;
@@ -210,13 +312,16 @@ impl Live {
         }
     }
 
-    fn tabs(&mut self) -> &HashSet<String> {
+    /// The records bound to the desktop's tabs, admitting what waits first.
+    pub(crate) fn tabs(&mut self) -> &HashSet<String> {
+        self.admit();
         self.tabs.get_or_insert_with(|| desktop_records(&self.doc))
     }
 
     fn seed(&mut self) -> Result<Vec<u8>, String> {
-        match &self.refused {
-            Some(reason) => Err(crate::apps::AppError::Merge(reason.clone()).to_string()),
+        self.admit();
+        match &self.unavailable {
+            Some(reason) => Err(not_admitted(reason.clone())),
             None => Ok(self.doc.save()),
         }
     }
@@ -225,7 +330,7 @@ impl Live {
 /// Every record of one room the agent has seen but not opened.
 pub(super) struct Unopened {
     desktop_route: DocumentRoute,
-    desktop: Option<Live>,
+    desktop: Option<SharedDesktop>,
     held: BTreeMap<DocumentRoute, Packed>,
     /// When each record last changed, as a count of changes seen.
     arrived: HashMap<DocumentRoute, u64>,
@@ -248,9 +353,20 @@ impl Unopened {
         self.changes_seen = self.changes_seen.wrapping_add(1);
         self.arrived.insert(route.clone(), self.changes_seen);
         if route == self.desktop_route {
-            self.desktop.get_or_insert_with(Live::new).receive(&bytes);
+            self.desktop
+                .get_or_insert_with(SharedDesktop::new)
+                .receive(bytes);
         } else {
             self.held.entry(route).or_default().receive(bytes);
+        }
+    }
+
+    /// Admit the shared desktop's changes taken since the last call, in one
+    /// batch. Called once the session's events are taken in, so a plan
+    /// finds them admitted.
+    pub(super) fn settle(&mut self) {
+        if let Some(desktop) = &mut self.desktop {
+            desktop.admit();
         }
     }
 
@@ -260,7 +376,7 @@ impl Unopened {
     pub(super) fn people_first(&mut self) -> Vec<DocumentRoute> {
         let known = self.routes();
         let none = HashSet::new();
-        let on_desktop = self.desktop.as_mut().map_or(&none, Live::tabs);
+        let on_desktop = self.desktop.as_mut().map_or(&none, SharedDesktop::tabs);
         people_first(known, on_desktop, &self.arrived)
     }
 
@@ -279,11 +395,11 @@ impl Unopened {
     }
 
     /// What a replica of `route` is seeded from: its document, saved.
-    /// `None` when the room has no such record; `Err` when one of its
-    /// changes did not merge.
+    /// `None` when the room has no such record; `Err` when the isolate
+    /// could not be asked to admit its changes.
     pub(super) fn seed(&mut self, route: &DocumentRoute) -> Option<Result<Vec<u8>, String>> {
         if *route == self.desktop_route {
-            return self.desktop.as_mut().map(Live::seed);
+            return self.desktop.as_mut().map(SharedDesktop::seed);
         }
         self.held.get_mut(route).map(Packed::seed)
     }
@@ -515,5 +631,92 @@ mod tests {
         }
         let seed = unopened.seed(&notes).unwrap().unwrap();
         assert_seeds(&seed, &mut doc);
+    }
+
+    /// A checksum-valid document whose op actor index is past its actor
+    /// table: stock Automerge panics on it (`tilo-automerge-isolate`'s
+    /// decoder cases).
+    #[cfg(target_os = "linux")]
+    const DECODER_CRASH: &str = "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801";
+
+    /// Feed `hostile` among a record's changes and the shared desktop's,
+    /// through every path that merges them: the record's compactions and
+    /// its seed, the desktop's settle, tabs and seed, and room actions'
+    /// desktop holder on its own. Each hostile input is refused and
+    /// dropped; what the valid changes make is intact.
+    fn hostile_changes_are_dropped(hostile: &[Vec<u8>]) {
+        let (changes, mut doc) = history(3_000);
+        let notes = route("so.tilo.notes", "rec-notes");
+        let desktop_route = route(DESKTOP_APP, DESKTOP_RECORD);
+        let mut desktop = Desktop::default();
+        let mut unopened = Unopened::new("room");
+        for (index, change) in changes.iter().enumerate() {
+            if index % 1_000 == 10 {
+                for bytes in hostile {
+                    unopened.receive(notes.clone(), bytes.clone());
+                    unopened.receive(desktop_route.clone(), bytes.clone());
+                }
+            }
+            unopened.receive(notes.clone(), change.clone());
+            if index % 100 == 0 {
+                let last = format!("tab-{index}");
+                unopened.receive(desktop_route.clone(), desktop.change(&last));
+                unopened.settle();
+            }
+        }
+        assert!(
+            !unopened.held[&notes].saved.is_empty(),
+            "the record compacted around the hostile changes"
+        );
+        let seed = unopened.seed(&notes).unwrap().unwrap();
+        assert_seeds(&seed, &mut doc);
+        assert!(
+            !unopened.held[&notes]
+                .tail
+                .iter()
+                .any(|change| hostile.contains(change)),
+            "a refused change is not kept"
+        );
+        let tabs = unopened.desktop.as_mut().unwrap().tabs();
+        assert!(tabs.contains("tab-2900"), "{tabs:?}");
+        let seed = unopened.seed(&desktop_route).unwrap().unwrap();
+        assert_seeds(&seed, &mut desktop.doc);
+
+        // Room actions' holder of a room's desktop.
+        let mut shared = SharedDesktop::new();
+        let mut desktop = Desktop::default();
+        shared.receive(desktop.change("first"));
+        for bytes in hostile {
+            shared.receive(bytes.clone());
+        }
+        shared.receive(desktop.change("open"));
+        assert!(shared.tabs().contains("open"));
+        assert_seeds(&shared.seed().unwrap(), &mut desktop.doc);
+    }
+
+    /// Input whose framing is not Automerge — a chunk declaring a body of
+    /// 2^40 bytes that never arrives, and bytes that are no chunk at all —
+    /// is refused before any decode and holds back no other change.
+    #[test]
+    fn malformed_changes_are_refused_and_dropped() {
+        let mut huge = vec![0x85, 0x6f, 0x4a, 0x83, 0, 0, 0, 0, 1];
+        huge.extend([0x80, 0x80, 0x80, 0x80, 0x80, 0x20]);
+        huge.extend([0xff; 16]);
+        hostile_changes_are_dropped(&[huge, b"not automerge".to_vec()]);
+    }
+
+    /// Room members' bytes reach Automerge only in an isolate worker: input
+    /// that panics stock Automerge costs a worker, and would panic this
+    /// test had any path decoded it here. Linux only, as the isolate's
+    /// workers are: elsewhere it decodes in the calling process by design.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn changes_that_crash_automerge_are_decoded_only_in_the_isolate() {
+        let crash = hex::decode(DECODER_CRASH).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| AutoCommit::load(&crash)).is_err(),
+            "the input must panic Automerge in process, or this test proves nothing"
+        );
+        hostile_changes_are_dropped(&[crash]);
     }
 }

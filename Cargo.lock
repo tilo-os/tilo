@@ -16049,6 +16049,7 @@ name = "tilo-app-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "clap",
  "fluent",
  "fluent-syntax",
@@ -16061,6 +16062,7 @@ dependencies = [
  "quote",
  "registry-client",
  "registry-types",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "serde_yaml",

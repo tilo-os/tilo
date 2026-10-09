@@ -124,8 +124,12 @@ record is held in its own app worker (`crates/agent/agent-participant/src/worker
   supervisor's own copy of the record through `tilo-automerge-isolate`
   before they are signed: a whole document must load, an increment must
   apply on top of the record with nothing missing. Incoming changes are
-  admitted the same way before a worker sees them. A worker that dies is
-  replaced from that copy, at most twice per record.
+  admitted the same way before a worker sees them, and so are the changes
+  of records no worker holds: an agent's unopened records and the room's
+  shared desktop, whose tabs agents and room actions read
+  (`participant/unopened.rs`). With no isolate those changes wait and the
+  record does not open; nothing decodes them in the host instead. A worker
+  that dies is replaced from that copy, at most twice per record.
 
 Still in the host process: the app catalogue is linked statically (each
 app's `definition()` builds there), and agents' device keys are kept in
@@ -310,6 +314,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 ## Encryption
 
 - Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication.
+- **A cross-device action is signed by the device that sends it, not vouched for by the host that routes it.** Device certificates are public, so a workspace host — including a hosted server operated for the user — could otherwise name any member it has seen as the source of an action it invented. The sending device signs the exact action and its issue time; the target broker refuses any effect without that signature, outside a 60-second freshness window, or already admitted, and still checks the certificate against the room's current authority. Payloads are not hidden from the host. See `docs/architecture/collaboration.md`, "Private actions are signed by their source device".
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
@@ -329,6 +334,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
 | Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature, never from a first answer; one admission for every receiver | `crates/collab/tilo-peer-state/src/room/admit.rs::admit_room_changes` |
+| Action forged by the workspace host | Source-device signature over the exact action + freshness window + replay window at the target broker | `tilo-delivery-protocol/src/peer_actions/signed.rs`, `tilo-action-broker/src/peer_action_broker.rs` |
 | Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |
