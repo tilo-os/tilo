@@ -1,0 +1,190 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "remote.connection-list"
+label = "Remote connections"
+version = 1
+
+[[resources.fields]]
+owner = "remote"
+path = "connections"
+stored = "collection"
+title = "Saved connections"
+type = "Collection<Connection>"
+
+[[resources.fields]]
+label = true
+owner = "connection"
+path = "connections.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.host"
+stored = "value"
+title = "Host"
+type = "Atom"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.port"
+stored = "value"
+title = "Port"
+type = "u16"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.user"
+stored = "value"
+title = "User"
+type = "Atom"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.kind"
+stored = "value"
+title = "Protocol"
+type = "ConnectionKind"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.auth"
+stored = "value"
+title = "Authentication"
+type = "AuthMethod"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.last_used_ms"
+readonly = true
+stored = "value"
+title = "Last used"
+type = "Option<i64>"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.group"
+stored = "value"
+title = "Group"
+type = "Atom"
+
+[[resources.fields]]
+owner = "connection"
+path = "connections.*.favorite"
+stored = "value"
+title = "Pinned"
+type = "bool"
+
+[[resources.verbs]]
+description = "Save a new connection to another machine. It signs in the protocol's first way; its authentication and group are field edits."
+id = "add-connection"
+kind = "undoable"
+label = "Save a new connection to another machine. It signs in the"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "host"
+required = true
+
+[resources.verbs.params.schema]
+description = "Host, or a Tilo endpoint id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "kind"
+required = true
+
+[resources.verbs.params.schema]
+description = "ssh, vnc or tilo"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "ssh"
+description = "Secure shell — an interactive terminal session."
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "vnc"
+description = "Virtual Network Computing — a streamed remote framebuffer."
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "rdp"
+description = "Remote Desktop Protocol — a streamed remote desktop."
+type = "string"
+
+[[resources.verbs.params.schema.oneOf]]
+const = "tilo"
+description = "A peer Tilo device reached through the canonical device mesh. The shell requires an authenticated exact-target route while reusing the target's consented surface stream and input firewall."
+type = "string"
+
+[[resources.verbs.params]]
+name = "port"
+required = false
+
+[resources.verbs.params.schema]
+description = "Port; the protocol's own when none"
+maximum = 65535
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "user"
+required = false
+
+[resources.verbs.params.schema]
+description = "User"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Remove a saved connection from every device."
+destructive = true
+id = "delete-connection"
+kind = "undoable"
+label = "Remove a saved connection from every device"
+
+[[resources.verbs.params]]
+name = "connection"
+required = true
+
+[resources.verbs.params.schema]
+description = "Connection"
+type = "string"
+
+[[resources.verbs]]
+description = "Record that a session to the connection was opened at `at_ms` (milliseconds since the Unix epoch). The later of two concurrent records wins on every replica; nobody takes it back."
+id = "mark-used"
+kind = "undoable"
+label = "Record that a session to the connection was opened at `at_ms`"
+
+[[resources.verbs.params]]
+name = "connection"
+required = true
+
+[resources.verbs.params.schema]
+description = "Connection"
+type = "string"
+
+[[resources.verbs.params]]
+name = "at_ms"
+required = true
+
+[resources.verbs.params.schema]
+description = "When the session was opened, in milliseconds since the Unix epoch"
+type = "integer"

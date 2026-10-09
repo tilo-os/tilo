@@ -12594,6 +12594,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-callstream",
+ "tilo-history",
  "tilo-paths",
  "tilo-test-env",
  "tilo-vello",

@@ -2,9 +2,9 @@
 //! VNC/RDP remote desktops, and Tilo-to-Tilo relay sessions.
 //!
 //! The app is built on the CRDT-native `ui` toolkit. Its durable state —
-//! the list of saved connections — lives in the shared Automerge document
-//! ([`doc`]), so a machine list edited on one device converges on every
-//! device the document is shared with. View state (which screen you're
+//! the list of saved connections — is a typed model ([`model::Remote`])
+//! stored in the shared document, so a machine list edited on one device
+//! converges on every device the document is shared with. View state (which screen you're
 //! on, the in-progress add/edit form, the active session) is per-peer, so
 //! collaborators can browse the same list while each looking at a
 //! different machine.
@@ -70,7 +70,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod model;
 pub mod resource;
 pub mod rfb;
