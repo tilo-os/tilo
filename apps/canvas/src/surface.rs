@@ -11,6 +11,7 @@
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
 )]
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -142,6 +143,20 @@ struct PointEdit {
     active: Option<PointRef>,
 }
 
+/// Keep the view busy only while the framework owns its finder completion.
+/// Cancellation and retirement drop the callback without calling it.
+struct Finding {
+    active: Rc<Cell<bool>>,
+    notice: ui::LocalState<Option<String>>,
+}
+
+impl Drop for Finding {
+    fn drop(&mut self) {
+        self.active.set(false);
+        self.notice.set(None);
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "permission, focus, a held space key and a hand-moved view are independent states"
@@ -164,7 +179,7 @@ pub struct CanvasSurface {
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
     pictures: crate::background::Pictures,
-    finding: bool,
+    finding: Rc<Cell<bool>>,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -229,7 +244,7 @@ impl CanvasSurface {
             motion_reduced: false,
             look_text: None,
             pictures: crate::background::Pictures::default(),
-            finding: false,
+            finding: Rc::default(),
             tools,
             tool,
             drag: None,
@@ -2304,7 +2319,7 @@ impl CanvasSurface {
         if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
             return Err("image area finding needs background threads on this platform".into());
         }
-        if self.finding {
+        if self.finding.get() {
             return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
         }
         if select.subject != Some(true) && select.refine.is_none() {
@@ -2331,16 +2346,19 @@ impl CanvasSurface {
         } else {
             "canvas-refining-edge"
         });
-        self.finding = true;
+        self.finding.set(true);
         self.tools.notice.set(Some(phase.clone()));
+        let finding = Finding {
+            active: Rc::clone(&self.finding),
+            notice: self.tools.notice.clone(),
+        };
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
                 pictures.prepare(&sampled, content, &request)?.finish()
             },
-            move |surface, result, cx| {
-                surface.finding = false;
-                surface.tools.notice.set(None);
+            move |_surface, result, cx| {
+                drop(finding);
                 let (area, matte, found) = result?;
                 if cx.live().with(|current| current != &art) {
                     return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
@@ -3373,7 +3391,7 @@ impl Widget for CanvasSurface {
         // Still captures must await the requested image and paint work;
         // asking for frames alone does not declare an unfinished placeholder.
         let renderer = self.tools.renderer.borrow();
-        self.finding
+        self.finding.get()
             || renderer.pictures.decoding()
             || renderer.detail_pending()
             || renderer.settling()
@@ -3388,7 +3406,7 @@ impl Widget for CanvasSurface {
         self.zoom_motion.is_some()
             || self.wet().is_some()
             || self.tools.picking.borrow().is_some()
-            || self.finding
+            || self.finding.get()
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
             || self.tools.renderer.borrow().settling()
