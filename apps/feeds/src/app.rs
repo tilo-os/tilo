@@ -682,6 +682,7 @@ impl Core {
                     feed_id: f.id,
                     url: f.url.clone(),
                     kind: f.kind,
+                    certificate_pin: f.certificate_pin.clone(),
                 })
             })
             .collect();
@@ -722,6 +723,7 @@ impl Core {
             folder,
             order,
             kind: actions::guess_kind(&url),
+            certificate_pin: None,
         };
         self.store.upsert_feed(feed);
         self.perform_action(
@@ -1165,15 +1167,23 @@ impl Core {
                     feed_id,
                     title,
                     articles,
+                    certificate_pin,
                 } => {
                     let mut feed_changed = false;
-                    if let Some(t) = title
-                        && !t.is_empty()
-                        && let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id)
-                        && f.title != t
-                    {
-                        f.title = t;
-                        feed_changed = true;
+                    if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
+                        if let Some(t) = title
+                            && !t.is_empty()
+                            && f.title != t
+                        {
+                            f.title = t;
+                            feed_changed = true;
+                        }
+                        // Trust on first use: a feed added without a fetch
+                        // (OPML import, an action) pins what it first sees.
+                        if f.certificate_pin.is_none() && certificate_pin.is_some() {
+                            f.certificate_pin = certificate_pin;
+                            feed_changed = true;
+                        }
                     }
                     let mut added = 0;
                     for a in articles {
