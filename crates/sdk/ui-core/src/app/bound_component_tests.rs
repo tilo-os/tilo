@@ -1294,9 +1294,18 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             });
         assert_eq!(second.rows.len(), 1);
         assert_ne!(first.rows[0].resource, second.rows[0].resource);
-        assert_eq!(first.rows[0].visibility_action.as_deref(), Some("view"));
         assert_eq!(
-            second.rows[0].visibility_action.as_deref(),
+            first.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
+            Some("view")
+        );
+        assert_eq!(
+            second.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
             Some("follow-up")
         );
         let eager = fixture.app.publication_resources();
