@@ -336,6 +336,16 @@ def idle_empty(ctx, res):
     if m["shell_cpu_pct"] is not None:
         _record_idle(ctx, m, m["guest_ram_used_mib"])
     problems = _budget_problems(m, ctx.config["budgets"], "idle")
+    # The compositor's own memory with no window open: R03's figure less this one is
+    # what four windows cost.
+    try:
+        smaps = core.shell_memory(ctx, m["compositor_pid"])
+    except core.Unobservable as e:
+        problems.append(str(e))
+    else:
+        ctx.write("R01-shell-smaps.json", json.dumps(smaps, indent=1))
+        res.metrics["shell_anon_rss_mib"] = smaps["anon_rss_mib"]
+        ctx.record("memory.shell_anon_mib.empty", "MiB", [smaps["anon_rss_mib"]])
     expect(not problems, "; ".join(problems))
 
 
@@ -384,6 +394,10 @@ def mem(ctx, res):
     b = ctx.config["budgets"]
     expect(m["shell"], "no compositor process found")
     problems, unobserved = [], []
+    try:
+        ctx.write("R03-shell-smaps.json", json.dumps(core.shell_memory(ctx, m["shell"]["pid"]), indent=1))
+    except core.Unobservable as e:
+        unobserved.append(str(e))
     if m["shell"]["anon_rss_mb"] > b["shell_anon_mb"]:
         problems.append(f"compositor anonymous RSS {m['shell']['anon_rss_mb']} MB > {b['shell_anon_mb']} MB")
     big = [p for p in m["procs"] if p["comm"] != "shell" and (p["anon_rss_mb"] or 0) > b["process_anon_mb"]]
