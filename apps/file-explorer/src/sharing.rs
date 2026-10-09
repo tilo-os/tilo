@@ -5,8 +5,9 @@
 
 use std::path::Path;
 
-use collab_types::{
-    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, SHARE_CONTROL_FRAMING,
+use collab_types::Ed25519PublicKey;
+use fs_protocol::{
+    FilePermission, FileRecordId, NamedGrantMetadataV1, SHARE_CONTROL_FRAMING,
     SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
     ShareControlResultV1,
 };
@@ -409,7 +410,7 @@ mod tests {
                         permission: FilePermission::View,
                         expires_at_ms: None,
                         issuer: Ed25519PublicKey::from_bytes([5; 32]),
-                        delivery: collab_types::NamedShareDeliveryStateV1::Pending,
+                        delivery: fs_protocol::NamedShareDeliveryStateV1::Pending,
                     }),
                 };
                 let bytes = collab_types::canonical_bytes(&response).unwrap();

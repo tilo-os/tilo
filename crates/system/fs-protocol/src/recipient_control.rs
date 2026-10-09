@@ -176,9 +176,9 @@ mod tests {
                 operation: RecipientControlOperationV1::AdmitV2 { uri: secret.into() },
             };
             assert!(!format!("{request:?}").contains(secret));
-            let bytes = crate::canonical_bytes(&request).unwrap();
+            let bytes = collab_types::canonical_bytes(&request).unwrap();
             let decoded: RecipientControlRequestV1 =
-                crate::canonical::from_canonical_bytes(&bytes).unwrap();
+                collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(decoded, request);
         }
     }

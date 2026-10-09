@@ -87,9 +87,9 @@ struct VersionMetadataDigest {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VersionSnapshot {
-    record_id: collab_types::FileRecordId,
-    content_hash: Option<collab_types::ContentHash>,
-    metadata_hash: collab_types::ContentHash,
+    record_id: fs_protocol::FileRecordId,
+    content_hash: Option<fs_protocol::ContentHash>,
+    metadata_hash: fs_protocol::ContentHash,
     byte_len: u64,
     kind: FileType,
 }
@@ -97,10 +97,10 @@ struct VersionSnapshot {
 fn keep_both_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: collab_types::FileRecordId,
+    source_record: fs_protocol::FileRecordId,
     conflict_id: uuid::Uuid,
-    selected_version: collab_types::FileVersionId,
-    actor: collab_types::FileActor,
+    selected_version: fs_protocol::FileVersionId,
+    actor: fs_protocol::FileActor,
 ) -> uuid::Uuid {
     let mut hash = blake3::Hasher::new();
     hash.update(b"tilo.collaborative-fs.keep-both.v2\0");
@@ -121,10 +121,10 @@ fn keep_both_uuid(
 fn merge_uuid(
     domain: &[u8],
     workspace_id: uuid::Uuid,
-    source_record: collab_types::FileRecordId,
+    source_record: fs_protocol::FileRecordId,
     conflict_id: uuid::Uuid,
-    versions: &[collab_types::FileVersionId],
-    actor: collab_types::FileActor,
+    versions: &[fs_protocol::FileVersionId],
+    actor: fs_protocol::FileActor,
 ) -> uuid::Uuid {
     let mut versions = versions.to_vec();
     versions.sort_unstable();
@@ -148,12 +148,12 @@ fn merge_uuid(
 
 fn keep_both_name(
     source_name: impl AsRef<[u8]>,
-    target_record: collab_types::FileRecordId,
-) -> collab_types::FileNameV1 {
+    target_record: fs_protocol::FileRecordId,
+) -> fs_protocol::FileNameV1 {
     let source_name = source_name.as_ref();
     let simple = target_record.0.simple().to_string();
     let suffix = format!(".keep-both-{}", simple.get(..12).unwrap_or(&simple));
-    let max_prefix = collab_types::files::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
+    let max_prefix = fs_protocol::files::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
     let prefix_len = source_name.len().min(max_prefix);
     let mut name = source_name
         .get(..prefix_len)
@@ -169,15 +169,15 @@ mod exact_conflict_name_tests {
 
     #[test]
     fn keep_both_suffix_preserves_invalid_utf8_and_bounds_the_result() {
-        let record = collab_types::FileRecordId(uuid::Uuid::from_u128(7));
+        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(7));
         let original = [b'f', 0xff, b'o'];
         let name = keep_both_name(original, record);
         assert!(name.as_bytes().starts_with(&original));
         assert!(name.as_bytes().ends_with(b".keep-both-000000000000"));
-        assert!(name.as_bytes().len() <= collab_types::MAX_FILE_NAME_BYTES);
+        assert!(name.as_bytes().len() <= fs_protocol::MAX_FILE_NAME_BYTES);
 
-        let long = keep_both_name(vec![0xfe; collab_types::MAX_FILE_NAME_BYTES * 2], record);
-        assert_eq!(long.as_bytes().len(), collab_types::MAX_FILE_NAME_BYTES);
+        let long = keep_both_name(vec![0xfe; fs_protocol::MAX_FILE_NAME_BYTES * 2], record);
+        assert_eq!(long.as_bytes().len(), fs_protocol::MAX_FILE_NAME_BYTES);
         assert!(long.as_bytes().ends_with(b".keep-both-000000000000"));
     }
 }
@@ -347,7 +347,7 @@ fn unsaved_copy_name_for(name: &[u8], digest: &blake3::Hash) -> Vec<u8> {
     .concat();
     let prefix_len = name
         .len()
-        .min(collab_types::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len()));
+        .min(fs_protocol::MAX_FILE_NAME_BYTES.saturating_sub(suffix.len()));
     let mut out = name.get(..prefix_len).unwrap_or(name).to_vec();
     out.extend_from_slice(&suffix);
     out
@@ -424,10 +424,10 @@ enum PinnedProbe {
 
 #[derive(Clone)]
 struct PinnedCandidate {
-    record_id: collab_types::FileRecordId,
-    parent: Option<collab_types::FileRecordId>,
+    record_id: fs_protocol::FileRecordId,
+    parent: Option<fs_protocol::FileRecordId>,
     kind: RecordKind,
-    version: Option<collab_types::FileVersionId>,
+    version: Option<fs_protocol::FileVersionId>,
     hash: Option<Hash>,
     size: u64,
     path: String,
@@ -452,11 +452,11 @@ struct AclVisibleRecordIndex {
     acl_revision: u64,
     revision: String,
     records: Vec<crate::syncstate::RecordIndexEntryV1>,
-    by_id: HashMap<collab_types::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
+    by_id: HashMap<fs_protocol::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
     /// Rows this authority may not see, with the path they were judged at.
     /// With `by_id` it lets the next refresh under the same ACL revision
     /// re-evaluate only rows whose path changed.
-    hidden: HashMap<collab_types::FileRecordId, String>,
+    hidden: HashMap<fs_protocol::FileRecordId, String>,
     /// ACL evaluations made building this view.
     #[cfg(test)]
     acl_evaluations: usize,
@@ -466,7 +466,7 @@ impl AclVisibleRecordIndex {
     /// The visibility this view already decided for `record_id` at `path`,
     /// if it judged that exact row. Visibility is a function of the ACL
     /// revision and the path alone, so the verdict holds for the same pair.
-    fn verdict(&self, record_id: collab_types::FileRecordId, path: &str) -> Option<bool> {
+    fn verdict(&self, record_id: fs_protocol::FileRecordId, path: &str) -> Option<bool> {
         if self
             .by_id
             .get(&record_id)
@@ -531,8 +531,8 @@ pub struct QuickFS {
     /// Replicated peers consume these facts without hydrating the payload.
     rich_metadata: Mutex<
         HashMap<
-            collab_types::FileRecordId,
-            (collab_types::ContentHash, collab_types::FilePropertiesV1),
+            fs_protocol::FileRecordId,
+            (fs_protocol::ContentHash, fs_protocol::FilePropertiesV1),
         >,
     >,
     /// The workspace ACL and the identity it is evaluated as — the authoritative
@@ -561,7 +561,7 @@ pub struct QuickFS {
     /// actor attributed to mutations made through this mount.
     history: Option<(
         Arc<crate::history::FileHistoryStore>,
-        collab_types::FileActor,
+        fs_protocol::FileActor,
     )>,
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
@@ -746,7 +746,7 @@ impl QuickFS {
         self
     }
 
-    fn unsaved_key(&self, ino: u64) -> (String, Option<collab_types::FileRecordId>) {
+    fn unsaved_key(&self, ino: u64) -> (String, Option<fs_protocol::FileRecordId>) {
         let record_id = self.ns().record_id_for(ino);
         let key = record_id.map_or_else(|| format!("ino-{ino}"), |id| id.0.to_string());
         (key, record_id)
@@ -1783,12 +1783,12 @@ impl QuickFS {
         let content = self
             .write_content_blocking(data)
             .map_err(|error| commit_errno(&error))?
-            .map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+            .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         // The version's metadata finds these facts by its content id.
         self.remember_rich_metadata_as(
             ino,
             data,
-            content.unwrap_or_else(|| collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+            content.unwrap_or_else(|| fs_protocol::ContentHash(*blake3::hash(data).as_bytes())),
         );
         // import_document validates before replacing; an invalid input
         // leaves the previous content intact and returns false.
@@ -1806,7 +1806,7 @@ impl QuickFS {
             return Err(EINVAL);
         }
         self.publish(delta);
-        self.record_version(ino, collab_types::FileProvenance::Edit, content);
+        self.record_version(ino, fs_protocol::FileProvenance::Edit, content);
         Ok(())
     }
 
@@ -1840,7 +1840,7 @@ impl QuickFS {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(
                     record_id,
-                    (collab_types::ContentHash(*hash.as_bytes()), properties),
+                    (fs_protocol::ContentHash(*hash.as_bytes()), properties),
                 );
         }
     }
@@ -1849,8 +1849,8 @@ impl QuickFS {
         &self,
         ino: u64,
         bytes: &[u8],
-    ) -> Option<collab_types::FilePropertiesV1> {
-        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
+    ) -> Option<fs_protocol::FilePropertiesV1> {
+        let hash = fs_protocol::ContentHash(*blake3::hash(bytes).as_bytes());
         self.remember_rich_metadata_as(ino, bytes, hash)
     }
 
@@ -1860,8 +1860,8 @@ impl QuickFS {
         &self,
         ino: u64,
         bytes: &[u8],
-        hash: collab_types::ContentHash,
-    ) -> Option<collab_types::FilePropertiesV1> {
+        hash: fs_protocol::ContentHash,
+    ) -> Option<fs_protocol::FilePropertiesV1> {
         let (record_id, name) = {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
@@ -2084,7 +2084,7 @@ impl QuickFS {
     pub fn with_history(
         mut self,
         history: Arc<crate::history::FileHistoryStore>,
-        actor: collab_types::FileActor,
+        actor: fs_protocol::FileActor,
     ) -> Result<Self, crate::history::HistoryError> {
         self.history = Some((history, actor));
         if self.allow_legacy_record_migration {
@@ -2191,7 +2191,7 @@ impl QuickFS {
                 metadata
                     .previews
                     .iter()
-                    .filter(|preview| preview.status == collab_types::PreviewStatus::Ready)
+                    .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
                     .filter_map(|preview| {
                         preview
                             .hash
@@ -2288,7 +2288,7 @@ impl QuickFS {
                 continue;
             };
             if history.snapshot(snapshot.record_id).is_none() {
-                self.append_version(snapshot, collab_types::FileProvenance::Create, now_ms())?;
+                self.append_version(snapshot, fs_protocol::FileProvenance::Create, now_ms())?;
             }
         }
         Ok(())
@@ -2333,7 +2333,7 @@ impl QuickFS {
         &self,
         ino: u64,
         deleted: bool,
-        content_override: Option<collab_types::ContentHash>,
+        content_override: Option<fs_protocol::ContentHash>,
     ) -> Option<VersionSnapshot> {
         let namespace = self.ns();
         Self::version_snapshot_locked(&namespace, ino, deleted, content_override, None)
@@ -2343,7 +2343,7 @@ impl QuickFS {
         namespace: &Namespace,
         ino: u64,
         deleted: bool,
-        content_override: Option<collab_types::ContentHash>,
+        content_override: Option<fs_protocol::ContentHash>,
         byte_len_override: Option<u64>,
     ) -> Option<VersionSnapshot> {
         let record_id = namespace.record_id_for(ino)?;
@@ -2351,7 +2351,7 @@ impl QuickFS {
         let content_hash = content_override.or_else(|| {
             namespace
                 .hash_for(ino)
-                .map(|hash| collab_types::ContentHash(*hash.as_bytes()))
+                .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
         });
         let byte_len = byte_len_override.unwrap_or(attr.size);
         let metadata = VersionMetadataDigest {
@@ -2368,7 +2368,7 @@ impl QuickFS {
         Some(VersionSnapshot {
             record_id,
             content_hash,
-            metadata_hash: collab_types::ContentHash(*blake3::hash(&bytes).as_bytes()),
+            metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
             byte_len,
             kind: attr.kind,
         })
@@ -2378,8 +2378,8 @@ impl QuickFS {
         &self,
         snapshot: &VersionSnapshot,
         observed_at_ms: u64,
-        actor: collab_types::FileActor,
-    ) -> collab_types::FileMetadataV1 {
+        actor: fs_protocol::FileActor,
+    ) -> fs_protocol::FileMetadataV1 {
         let properties = self
             .rich_metadata
             .lock()
@@ -2398,8 +2398,8 @@ impl QuickFS {
                     .then_some(metadata.properties)
                     .flatten()
             });
-        collab_types::FileMetadataV1 {
-            schema_version: collab_types::files::FILE_METADATA_VERSION,
+        fs_protocol::FileMetadataV1 {
+            schema_version: fs_protocol::files::FILE_METADATA_VERSION,
             record_id: snapshot.record_id,
             content_hash: snapshot.content_hash,
             byte_len: snapshot.byte_len,
@@ -2407,7 +2407,7 @@ impl QuickFS {
             previews: Vec::new(),
             latest_actor: Some(actor),
             observed_at_ms,
-            index_status: collab_types::IndexStatus::Pending,
+            index_status: fs_protocol::IndexStatus::Pending,
             properties,
         }
     }
@@ -2454,8 +2454,8 @@ impl QuickFS {
         let bytes = postcard::to_allocvec(&metadata).ok()?;
         Some(VersionSnapshot {
             record_id,
-            content_hash: content_hash.map(|hash| collab_types::ContentHash(*hash.as_bytes())),
-            metadata_hash: collab_types::ContentHash(*blake3::hash(&bytes).as_bytes()),
+            content_hash: content_hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
+            metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
             byte_len,
             kind: attr.kind,
         })
@@ -2464,9 +2464,9 @@ impl QuickFS {
     fn append_version(
         &self,
         snapshot: VersionSnapshot,
-        provenance: collab_types::FileProvenance,
+        provenance: fs_protocol::FileProvenance,
         timestamp_ms: u64,
-    ) -> Result<collab_types::FileVersionId, crate::history::HistoryError> {
+    ) -> Result<fs_protocol::FileVersionId, crate::history::HistoryError> {
         self.append_version_at(snapshot, provenance, timestamp_ms, timestamp_ms)
     }
 
@@ -2476,18 +2476,18 @@ impl QuickFS {
     fn append_version_at(
         &self,
         snapshot: VersionSnapshot,
-        provenance: collab_types::FileProvenance,
+        provenance: fs_protocol::FileProvenance,
         timestamp_ms: u64,
         observed_at_ms: u64,
-    ) -> Result<collab_types::FileVersionId, crate::history::HistoryError> {
+    ) -> Result<fs_protocol::FileVersionId, crate::history::HistoryError> {
         let Some((history, actor)) = &self.history else {
-            return Ok(collab_types::FileVersionId::new());
+            return Ok(fs_protocol::FileVersionId::new());
         };
         let parents = history
             .snapshot(snapshot.record_id)
             .map_or_else(Vec::new, |history| history.heads);
-        let id = collab_types::FileVersionId::new();
-        let version = collab_types::FileVersionV1 {
+        let id = fs_protocol::FileVersionId::new();
+        let version = fs_protocol::FileVersionV1 {
             id,
             record_id: snapshot.record_id,
             parents,
@@ -2534,8 +2534,8 @@ impl QuickFS {
     fn record_version(
         &self,
         ino: u64,
-        provenance: collab_types::FileProvenance,
-        content_override: Option<collab_types::ContentHash>,
+        provenance: fs_protocol::FileProvenance,
+        content_override: Option<fs_protocol::ContentHash>,
     ) {
         if self.history.is_none() {
             return;
@@ -2941,7 +2941,7 @@ impl QuickFS {
         (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn record_index_by_id_v2(&self, record_id: collab_types::FileRecordId) -> Option<Vec<u8>> {
+    fn record_index_by_id_v2(&self, record_id: fs_protocol::FileRecordId) -> Option<Vec<u8>> {
         let index = self.acl_visible_record_index()?;
         let entry = index.by_id.get(&record_id)?.clone();
         let projection = crate::syncstate::RecordIndexExactV2 {
@@ -2954,11 +2954,7 @@ impl QuickFS {
         (bytes.len() <= crate::syncstate::MAX_RECORD_INDEX_PAGE_BYTES).then_some(bytes)
     }
 
-    fn restore_version(
-        &self,
-        ino: u64,
-        version_id: collab_types::FileVersionId,
-    ) -> Result<(), i32> {
+    fn restore_version(&self, ino: u64, version_id: fs_protocol::FileVersionId) -> Result<(), i32> {
         self.check_access(ino, Access::Write)?;
         if self
             .write_buffers
@@ -2971,7 +2967,7 @@ impl QuickFS {
         // A namespace-held document needs a codec-aware CRDT checkout rather
         // than replacing its exported bytes as if it were a plain file.
         let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
-            collab_types::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
+            fs_protocol::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
             _ => ENOENT,
         })?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
@@ -3025,7 +3021,7 @@ impl QuickFS {
             .ok_or(EIO)?;
         self.append_version(
             snapshot,
-            collab_types::FileProvenance::Restore { from: version_id },
+            fs_protocol::FileProvenance::Restore { from: version_id },
             now_ms(),
         )
         .map_err(|_| EIO)?;
@@ -3067,7 +3063,7 @@ impl QuickFS {
     fn history_version_preview(
         &self,
         ino: u64,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, i32> {
         self.check_access(ino, Access::Read)?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
@@ -3086,7 +3082,7 @@ impl QuickFS {
         };
         let hydrator = self.hydrator.clone();
         let runtime = hydrator.runtime_handle.clone();
-        let limit = u64::try_from(collab_types::MAX_HISTORY_PREVIEW_BYTES)
+        let limit = u64::try_from(fs_protocol::MAX_HISTORY_PREVIEW_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_add(1);
         let bytes = tokio::task::block_in_place(|| {
@@ -3094,7 +3090,7 @@ impl QuickFS {
                 .block_on(async move { hydrator.read(Hash::from(content_hash.0), 0, limit).await })
         })
         .map_err(|_| EIO)?;
-        if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
+        if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
             return Err(libc::E2BIG);
         }
         Ok(bytes)
@@ -3134,8 +3130,7 @@ impl QuickFS {
             .iter()
             .find(|conflict| conflict.id == conflict_id)
             .filter(|conflict| {
-                conflict.status == collab_types::ConflictStatus::Open
-                    && conflict.versions.len() == 2
+                conflict.status == fs_protocol::ConflictStatus::Open && conflict.versions.len() == 2
             })
             .ok_or(EINVAL)?;
         let load = |version_id| -> Result<Vec<u8>, i32> {
@@ -3205,8 +3200,8 @@ impl QuickFS {
                     .to_string(),
             ),
         };
-        let projection = collab_types::MergePreflightProjectionV1 {
-            schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+        let projection = fs_protocol::MergePreflightProjectionV1 {
+            schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
             conflict_id,
             safe,
             explanation,
@@ -3214,7 +3209,7 @@ impl QuickFS {
         };
         projection.validate().map_err(|_| EIO)?;
         let bytes = serde_json::to_vec(&projection).map_err(|_| EIO)?;
-        if bytes.len() > collab_types::MAX_MERGE_PREFLIGHT_BYTES {
+        if bytes.len() > fs_protocol::MAX_MERGE_PREFLIGHT_BYTES {
             return Err(libc::E2BIG);
         }
         Ok(bytes)
@@ -3234,8 +3229,8 @@ impl QuickFS {
         &self,
         ino: u64,
         conflict_id: uuid::Uuid,
-        strategy: collab_types::ConflictStrategy,
-        version_id: collab_types::FileVersionId,
+        strategy: fs_protocol::ConflictStrategy,
+        version_id: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         self.check_access(ino, Access::Write)?;
         if self
@@ -3249,15 +3244,15 @@ impl QuickFS {
         if self.is_document(ino) {
             return Err(libc::ENOTSUP);
         }
-        if strategy == collab_types::ConflictStrategy::Merge {
+        if strategy == fs_protocol::ConflictStrategy::Merge {
             return self.resolve_conflict_merge(ino, conflict_id, version_id);
         }
-        if strategy == collab_types::ConflictStrategy::KeepBoth {
+        if strategy == fs_protocol::ConflictStrategy::KeepBoth {
             return self.resolve_conflict_keep_both(ino, conflict_id, version_id);
         }
         if !matches!(
             strategy,
-            collab_types::ConflictStrategy::KeepCurrent | collab_types::ConflictStrategy::UseOther
+            fs_protocol::ConflictStrategy::KeepCurrent | fs_protocol::ConflictStrategy::UseOther
         ) {
             // KeepBoth needs a signed two-record transaction and Merge needs a
             // codec-produced result. Neither can be represented truthfully by
@@ -3283,18 +3278,18 @@ impl QuickFS {
             .find(|conflict| conflict.id == conflict_id)
             .cloned()
             .ok_or(EINVAL)?;
-        if conflict.status != collab_types::ConflictStatus::Open
+        if conflict.status != fs_protocol::ConflictStatus::Open
             || !conflict.versions.contains(&version_id)
         {
             return Err(EINVAL);
         }
         match strategy {
-            collab_types::ConflictStrategy::KeepCurrent
+            fs_protocol::ConflictStrategy::KeepCurrent
                 if version_id != expected_revision.version_id =>
             {
                 return Err(EBUSY);
             }
-            collab_types::ConflictStrategy::UseOther
+            fs_protocol::ConflictStrategy::UseOther
                 if version_id == expected_revision.version_id =>
             {
                 return Err(EINVAL);
@@ -3335,28 +3330,28 @@ impl QuickFS {
         parents.extend(conflict.versions.iter().copied());
         parents.sort_unstable();
         parents.dedup();
-        if parents.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(libc::ENOTSUP);
         }
         let timestamp_ms = now_ms();
-        let result_version = collab_types::FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+        let result_version = fs_protocol::FileVersionV1 {
+            id: fs_protocol::FileVersionId::new(),
             record_id,
             parents,
             actor: *actor,
             timestamp_ms,
             content_hash: result_snapshot.content_hash,
             metadata_hash: result_snapshot.metadata_hash,
-            provenance: collab_types::FileProvenance::ConflictResolution,
+            provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
-        let resolution = collab_types::ConflictResolution {
+        let resolution = fs_protocol::ConflictResolution {
             strategy,
             result: result_version.id,
             actor: *actor,
             timestamp_ms,
         };
         let mut resolved = conflict;
-        resolved.status = collab_types::ConflictStatus::Resolved;
+        resolved.status = fs_protocol::ConflictStatus::Resolved;
         resolved.resolution = Some(resolution.clone());
 
         // Publish the immutable result and resolution before exposing its
@@ -3414,7 +3409,7 @@ impl QuickFS {
         &self,
         ino: u64,
         conflict_id: uuid::Uuid,
-        selected_version: collab_types::FileVersionId,
+        selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
@@ -3449,7 +3444,7 @@ impl QuickFS {
             .iter()
             .find(|conflict| conflict.id == conflict_id)
             .ok_or(EINVAL)?;
-        let result_id = collab_types::FileVersionId(merge_uuid(
+        let result_id = fs_protocol::FileVersionId(merge_uuid(
             b"result",
             publisher.workspace_id(),
             record_id,
@@ -3458,7 +3453,7 @@ impl QuickFS {
             *actor,
         ));
         if let Some(resolution) = &conflict.resolution {
-            return if resolution.strategy == collab_types::ConflictStrategy::Merge
+            return if resolution.strategy == fs_protocol::ConflictStrategy::Merge
                 && resolution.result == result_id
                 && current_revision.version_id == result_id
             {
@@ -3467,7 +3462,7 @@ impl QuickFS {
                 Err(EBUSY)
             };
         }
-        if conflict.status != collab_types::ConflictStatus::Open
+        if conflict.status != fs_protocol::ConflictStatus::Open
             || conflict.versions.len() != 2
             || !conflict.versions.contains(&selected_version)
             || !conflict.versions.contains(&current_revision.version_id)
@@ -3553,10 +3548,10 @@ impl QuickFS {
         parents.extend(conflict.versions.iter().copied());
         parents.sort_unstable();
         parents.dedup();
-        if parents.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(libc::ENOTSUP);
         }
-        let proposed_version = collab_types::FileVersionV1 {
+        let proposed_version = fs_protocol::FileVersionV1 {
             id: result_id,
             record_id,
             parents,
@@ -3564,24 +3559,24 @@ impl QuickFS {
             timestamp_ms,
             content_hash: snapshot.content_hash,
             metadata_hash: snapshot.metadata_hash,
-            provenance: collab_types::FileProvenance::ConflictResolution,
+            provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
-        let mut participant = collab_types::FileMutationParticipant {
+        let mut participant = fs_protocol::FileMutationParticipant {
             record_id,
-            role: collab_types::FileMutationParticipantRole::MergeSource,
+            role: fs_protocol::FileMutationParticipantRole::MergeSource,
             expected_version: current_revision.version_id,
-            proposed_binding: collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            proposed_binding: fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id,
                 parent: Some(parent_record),
                 name: source_name.clone(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor: *actor,
                 observed_at_ms: timestamp_ms,
             },
-            proposed_content_revision: Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
                 version_id: result_id,
                 content_hash: snapshot.content_hash,
@@ -3589,19 +3584,19 @@ impl QuickFS {
                 metadata_hash: snapshot.metadata_hash,
             }),
             proposed_version,
-            projection_hash: collab_types::ContentHash([0; 32]),
+            projection_hash: fs_protocol::ContentHash([0; 32]),
         };
         participant.projection_hash = participant.computed_projection_hash().map_err(|_| EIO)?;
         let codec = match merged.codec {
             crate::conflict_merge::DeterministicMergeCodec::QdocAutomergeV1 => {
-                collab_types::ConflictMergeCodecV1::QdocAutomergeV1
+                fs_protocol::ConflictMergeCodecV1::QdocAutomergeV1
             }
             crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1 => {
-                collab_types::ConflictMergeCodecV1::PlainUtf8ThreeWayV1
+                fs_protocol::ConflictMergeCodecV1::PlainUtf8ThreeWayV1
             }
         };
-        let manifest = collab_types::FileMutationTransactionManifest {
-            schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
+        let manifest = fs_protocol::FileMutationTransactionManifest {
+            schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id: merge_uuid(
                 b"transaction",
                 publisher.workspace_id(),
@@ -3613,7 +3608,7 @@ impl QuickFS {
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperation::MergeContentConflict {
+            operation: fs_protocol::FileMutationOperation::MergeContentConflict {
                 source_record: record_id,
                 parent_record,
                 source_name,
@@ -3656,7 +3651,7 @@ impl QuickFS {
         &self,
         ino: u64,
         conflict_id: uuid::Uuid,
-        selected_version: collab_types::FileVersionId,
+        selected_version: fs_protocol::FileVersionId,
     ) -> Result<(), i32> {
         let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
@@ -3690,9 +3685,9 @@ impl QuickFS {
                 *actor,
             )
         };
-        let target_record = collab_types::FileRecordId(derive(b"target-record"));
-        let target_version_id = collab_types::FileVersionId(derive(b"target-version"));
-        let result_version_id = collab_types::FileVersionId(derive(b"source-result"));
+        let target_record = fs_protocol::FileRecordId(derive(b"target-record"));
+        let target_version_id = fs_protocol::FileVersionId(derive(b"target-version"));
+        let result_version_id = fs_protocol::FileVersionId(derive(b"source-result"));
         let transaction_id = derive(b"transaction");
         let state = history.snapshot(source_record).ok_or(EINVAL)?;
         let conflict = state
@@ -3701,7 +3696,7 @@ impl QuickFS {
             .find(|conflict| conflict.id == conflict_id)
             .ok_or(EINVAL)?;
         if let Some(resolution) = &conflict.resolution {
-            return if resolution.strategy == collab_types::ConflictStrategy::KeepBoth
+            return if resolution.strategy == fs_protocol::ConflictStrategy::KeepBoth
                 && resolution.result == result_version_id
                 && self.ns().ensure_ino_for_record_id(target_record).is_some()
             {
@@ -3710,7 +3705,7 @@ impl QuickFS {
                 Err(EBUSY)
             };
         }
-        if conflict.status != collab_types::ConflictStatus::Open
+        if conflict.status != fs_protocol::ConflictStatus::Open
             || conflict.versions.len() != 2
             || !conflict.versions.contains(&current_revision.version_id)
             || !conflict.versions.contains(&selected_version)
@@ -3775,7 +3770,7 @@ impl QuickFS {
                 deleted: false,
             })
             .map_err(|_| EIO)?;
-            Ok(collab_types::ContentHash(*blake3::hash(&bytes).as_bytes()))
+            Ok(fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()))
         };
         let source_metadata_hash = metadata_hash(source_path, current_revision.byte_len)?;
         let target_metadata_hash = metadata_hash(target_path, selected_data.len() as u64)?;
@@ -3783,10 +3778,10 @@ impl QuickFS {
         parents.extend(conflict.versions.iter().copied());
         parents.sort_unstable();
         parents.dedup();
-        if parents.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if parents.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(libc::ENOTSUP);
         }
-        let source_version = collab_types::FileVersionV1 {
+        let source_version = fs_protocol::FileVersionV1 {
             id: result_version_id,
             record_id: source_record,
             parents,
@@ -3794,9 +3789,9 @@ impl QuickFS {
             timestamp_ms,
             content_hash: current.content_hash,
             metadata_hash: source_metadata_hash,
-            provenance: collab_types::FileProvenance::ConflictResolution,
+            provenance: fs_protocol::FileProvenance::ConflictResolution,
         };
-        let target_version = collab_types::FileVersionV1 {
+        let target_version = fs_protocol::FileVersionV1 {
             id: target_version_id,
             record_id: target_record,
             parents: Vec::new(),
@@ -3804,24 +3799,24 @@ impl QuickFS {
             timestamp_ms,
             content_hash: selected.content_hash,
             metadata_hash: target_metadata_hash,
-            provenance: collab_types::FileProvenance::Create,
+            provenance: fs_protocol::FileProvenance::Create,
         };
-        let mut source_participant = collab_types::FileMutationParticipant {
+        let mut source_participant = fs_protocol::FileMutationParticipant {
             record_id: source_record,
-            role: collab_types::FileMutationParticipantRole::KeepBothSource,
+            role: fs_protocol::FileMutationParticipantRole::KeepBothSource,
             expected_version: current_revision.version_id,
-            proposed_binding: collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            proposed_binding: fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: source_record,
                 parent: Some(parent_record),
                 name: source_name.clone(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor: *actor,
                 observed_at_ms: timestamp_ms,
             },
-            proposed_content_revision: Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: source_record,
                 version_id: result_version_id,
                 content_hash: current.content_hash,
@@ -3829,27 +3824,27 @@ impl QuickFS {
                 metadata_hash: source_metadata_hash,
             }),
             proposed_version: source_version,
-            projection_hash: collab_types::ContentHash([0; 32]),
+            projection_hash: fs_protocol::ContentHash([0; 32]),
         };
         source_participant.projection_hash = source_participant
             .computed_projection_hash()
             .map_err(|_| EIO)?;
-        let mut sibling_participant = collab_types::FileMutationParticipant {
+        let mut sibling_participant = fs_protocol::FileMutationParticipant {
             record_id: target_record,
-            role: collab_types::FileMutationParticipantRole::KeepBothSibling,
+            role: fs_protocol::FileMutationParticipantRole::KeepBothSibling,
             expected_version: selected_version,
-            proposed_binding: collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            proposed_binding: fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: target_record,
                 parent: Some(parent_record),
                 name: target_name.clone(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor: *actor,
                 observed_at_ms: timestamp_ms,
             },
-            proposed_content_revision: Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            proposed_content_revision: Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: target_record,
                 version_id: target_version_id,
                 content_hash: selected.content_hash,
@@ -3857,20 +3852,20 @@ impl QuickFS {
                 metadata_hash: target_metadata_hash,
             }),
             proposed_version: target_version,
-            projection_hash: collab_types::ContentHash([0; 32]),
+            projection_hash: fs_protocol::ContentHash([0; 32]),
         };
         sibling_participant.projection_hash = sibling_participant
             .computed_projection_hash()
             .map_err(|_| EIO)?;
         let mut participants = vec![source_participant, sibling_participant];
         participants.sort_by_key(|participant| participant.record_id);
-        let manifest = collab_types::FileMutationTransactionManifest {
-            schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
+        let manifest = fs_protocol::FileMutationTransactionManifest {
+            schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
             transaction_id,
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperation::KeepBothContentConflict {
+            operation: fs_protocol::FileMutationOperation::KeepBothContentConflict {
                 source_record,
                 sibling_record: target_record,
                 parent_record,
@@ -4166,7 +4161,7 @@ impl QuickFS {
 
     fn prepare_eviction_request(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         mode: EvictionMode,
         existing_request: Option<EvictionRequestId>,
     ) -> Result<EvictionRequestId, i32> {
@@ -4184,7 +4179,7 @@ impl QuickFS {
 
     fn spawn_eviction_observer(
         &self,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
         request_id: EvictionRequestId,
     ) -> Result<(), i32> {
         self.eviction_coordinator()?
@@ -4321,15 +4316,15 @@ impl QuickFS {
                 let published = (|| {
                     let snapshot = publisher.snapshot(record_id).ok()??;
                     let revision = snapshot.content_revision?;
-                    if revision.content_hash != Some(collab_types::ContentHash(ch)) {
+                    if revision.content_hash != Some(fs_protocol::ContentHash(ch)) {
                         return None;
                     }
                     let mut metadata = snapshot.metadata?;
                     metadata.previews.retain(|preview| preview.max_edge != 256);
-                    metadata.previews.push(collab_types::PreviewVariant {
+                    metadata.previews.push(fs_protocol::PreviewVariant {
                         max_edge: 256,
-                        hash: Some(collab_types::ContentHash(*tbh.as_bytes())),
-                        status: collab_types::PreviewStatus::Ready,
+                        hash: Some(fs_protocol::ContentHash(*tbh.as_bytes())),
+                        status: fs_protocol::PreviewStatus::Ready,
                     });
                     metadata.latest_actor = Some(publisher.actor());
                     if properties.is_some() {
@@ -4344,7 +4339,7 @@ impl QuickFS {
                         .metadata?
                         .previews
                         .into_iter()
-                        .filter(|preview| preview.status == collab_types::PreviewStatus::Ready)
+                        .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
                         .filter_map(|preview| preview.hash.map(|hash| (preview.max_edge, hash)))
                         .max_by_key(|(max_edge, _)| *max_edge)
                         .map(|(_, hash)| hash)
@@ -4530,7 +4525,7 @@ impl QuickFS {
     /// The entries of `ino` that belong in the view, as `readdir` would
     /// report them. `None` when `ino` is not a directory in the view. `.`
     /// and `..` always survive — both are reached through this directory.
-    fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, collab_types::FileNameV1)>> {
+    fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
         let (entries, dir_path) = {
             let mut ns = self.ns();
             (ns.readdir(ino), ns.path_for(ino))
@@ -4829,19 +4824,14 @@ impl QuickFS {
         let snapshot = self
             .replacement_snapshot(ino, hash, byte_len)
             .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
-        self.append_version_at(
-            snapshot,
-            collab_types::FileProvenance::Edit,
-            now_ms(),
-            stamp,
-        )
-        .map_err(|error| match error {
-            crate::history::HistoryError::CapacityExhausted(detail) => {
-                eprintln!("inode {ino}: {detail}");
-                io::Error::from_raw_os_error(EDQUOT)
-            }
-            error => io::Error::other(error.to_string()),
-        })?;
+        self.append_version_at(snapshot, fs_protocol::FileProvenance::Edit, now_ms(), stamp)
+            .map_err(|error| match error {
+                crate::history::HistoryError::CapacityExhausted(detail) => {
+                    eprintln!("inode {ino}: {detail}");
+                    io::Error::from_raw_os_error(EDQUOT)
+                }
+                error => io::Error::other(error.to_string()),
+            })?;
         let revision = match &self.record_publisher {
             Some(publisher) => publisher
                 .snapshot(snapshot.record_id)
@@ -4921,7 +4911,7 @@ impl QuickFS {
     ) -> Result<(u64, Vec<u8>), i32> {
         let name: &[u8] = name.as_ref();
         let byte_len = if content.is_some() { byte_len } else { 0 };
-        let content_hash = content.map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+        let content_hash = content.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         let timestamp_ms = now_ms();
         if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
             let path = {
@@ -4932,26 +4922,26 @@ impl QuickFS {
                 let parent_path = namespace.path_for(parent).ok_or(ENOENT)?;
                 child_path(&parent_path, name)
             };
-            let record_id = collab_types::FileRecordId::new();
+            let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
                 path: Some(path),
                 kind: 2,
                 byte_len,
                 deleted: false,
             };
-            let metadata_hash = collab_types::ContentHash(
+            let metadata_hash = fs_protocol::ContentHash(
                 *blake3::hash(&postcard::to_allocvec(&metadata_digest).map_err(|_| EIO)?)
                     .as_bytes(),
             );
-            let version = collab_types::FileVersionV1 {
-                id: collab_types::FileVersionId::new(),
+            let version = fs_protocol::FileVersionV1 {
+                id: fs_protocol::FileVersionId::new(),
                 record_id,
                 parents: Vec::new(),
                 actor: *actor,
                 timestamp_ms,
                 content_hash,
                 metadata_hash,
-                provenance: collab_types::FileProvenance::Create,
+                provenance: fs_protocol::FileProvenance::Create,
             };
             let snapshot = VersionSnapshot {
                 record_id,
@@ -4962,12 +4952,12 @@ impl QuickFS {
             };
             let parent_record = self.ns().record_id_for(parent).ok_or(EIO)?;
             publisher
-                .publish_binding(&collab_types::FileBindingV1 {
-                    schema_version: collab_types::FILE_BINDING_VERSION,
+                .publish_binding(&fs_protocol::FileBindingV1 {
+                    schema_version: fs_protocol::FILE_BINDING_VERSION,
                     record_id,
                     parent: Some(parent_record),
                     name: name.to_vec().into(),
-                    kind: collab_types::FileNodeKind::File,
+                    kind: fs_protocol::FileNodeKind::File,
                     tombstoned: false,
                     actor: *actor,
                     observed_at_ms,
@@ -5030,34 +5020,34 @@ impl QuickFS {
                 let parent_path = namespace.path_for(parent).ok_or(ENOENT)?;
                 (parent_record, child_path(&parent_path, name))
             };
-            let record_id = collab_types::FileRecordId::new();
+            let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
                 path: Some(path),
                 kind: 1,
                 byte_len: 0,
                 deleted: false,
             };
-            let metadata_hash = collab_types::ContentHash(
+            let metadata_hash = fs_protocol::ContentHash(
                 *blake3::hash(&postcard::to_allocvec(&metadata_digest).map_err(|_| EIO)?)
                     .as_bytes(),
             );
-            let version = collab_types::FileVersionV1 {
-                id: collab_types::FileVersionId::new(),
+            let version = fs_protocol::FileVersionV1 {
+                id: fs_protocol::FileVersionId::new(),
                 record_id,
                 parents: Vec::new(),
                 actor: *actor,
                 timestamp_ms,
                 content_hash: None,
                 metadata_hash,
-                provenance: collab_types::FileProvenance::Create,
+                provenance: fs_protocol::FileProvenance::Create,
             };
             publisher
-                .publish_binding(&collab_types::FileBindingV1 {
-                    schema_version: collab_types::FILE_BINDING_VERSION,
+                .publish_binding(&fs_protocol::FileBindingV1 {
+                    schema_version: fs_protocol::FILE_BINDING_VERSION,
                     record_id,
                     parent: Some(parent_record),
                     name: name.to_vec().into(),
-                    kind: collab_types::FileNodeKind::Directory,
+                    kind: fs_protocol::FileNodeKind::Directory,
                     tombstoned: false,
                     actor: *actor,
                     observed_at_ms: timestamp_ms,
@@ -5130,7 +5120,7 @@ impl QuickFS {
         if self
             .append_version(
                 deleted_snapshot,
-                collab_types::FileProvenance::Delete,
+                fs_protocol::FileProvenance::Delete,
                 timestamp_ms,
             )
             .is_err()
@@ -5244,26 +5234,26 @@ impl QuickFS {
                 deleted: true,
             };
             let source_proposed = VersionSnapshot {
-                metadata_hash: collab_types::ContentHash(
+                metadata_hash: fs_protocol::ContentHash(
                     *blake3::hash(&postcard::to_allocvec(&source_metadata).map_err(|_| EIO)?)
                         .as_bytes(),
                 ),
                 ..source_current
             };
             let victim_proposed = VersionSnapshot {
-                metadata_hash: collab_types::ContentHash(
+                metadata_hash: fs_protocol::ContentHash(
                     *blake3::hash(&postcard::to_allocvec(&victim_metadata).map_err(|_| EIO)?)
                         .as_bytes(),
                 ),
                 ..victim_current
             };
             let node_kind = if source_attr.kind == FileType::Directory {
-                collab_types::FileNodeKind::Directory
+                fs_protocol::FileNodeKind::Directory
             } else {
-                collab_types::FileNodeKind::File
+                fs_protocol::FileNodeKind::File
             };
-            let source_binding = collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            let source_binding = fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: source_current.record_id,
                 parent: Some(destination_parent_record),
                 name: new_name.to_vec().into(),
@@ -5272,8 +5262,8 @@ impl QuickFS {
                 actor: *actor,
                 observed_at_ms: timestamp_ms,
             };
-            let victim_binding = collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            let victim_binding = fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: victim_current.record_id,
                 parent: Some(destination_parent_record),
                 name: new_name.to_vec().into(),
@@ -5301,12 +5291,12 @@ impl QuickFS {
             return Err(EBUSY);
         };
         let participant = |snapshot: VersionSnapshot,
-                           binding: collab_types::FileBindingV1,
-                           expected: collab_types::FileVersionId,
-                           role: collab_types::FileMutationParticipantRole,
-                           provenance: collab_types::FileProvenance| {
-            let version = collab_types::FileVersionV1 {
-                id: collab_types::FileVersionId::new(),
+                           binding: fs_protocol::FileBindingV1,
+                           expected: fs_protocol::FileVersionId,
+                           role: fs_protocol::FileMutationParticipantRole,
+                           provenance: fs_protocol::FileProvenance| {
+            let version = fs_protocol::FileVersionV1 {
+                id: fs_protocol::FileVersionId::new(),
                 record_id: snapshot.record_id,
                 parents: vec![expected],
                 actor: *actor,
@@ -5316,8 +5306,8 @@ impl QuickFS {
                 provenance,
             };
             let proposed_content_revision = (snapshot.kind == FileType::RegularFile).then_some(
-                collab_types::ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
+                fs_protocol::ContentRevisionV1 {
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                     record_id: snapshot.record_id,
                     version_id: version.id,
                     content_hash: snapshot.content_hash,
@@ -5325,14 +5315,14 @@ impl QuickFS {
                     metadata_hash: snapshot.metadata_hash,
                 },
             );
-            let mut value = collab_types::FileMutationParticipant {
+            let mut value = fs_protocol::FileMutationParticipant {
                 record_id: snapshot.record_id,
                 role,
                 expected_version: expected,
                 proposed_binding: binding,
                 proposed_version: version,
                 proposed_content_revision,
-                projection_hash: collab_types::ContentHash([0; 32]),
+                projection_hash: fs_protocol::ContentHash([0; 32]),
             };
             value.projection_hash = value.computed_projection_hash().map_err(|_| EIO)?;
             Ok::<_, i32>(value)
@@ -5342,29 +5332,29 @@ impl QuickFS {
                 source_proposed,
                 source_binding,
                 *source_expected,
-                collab_types::FileMutationParticipantRole::Source,
+                fs_protocol::FileMutationParticipantRole::Source,
                 if parent == new_parent {
-                    collab_types::FileProvenance::Rename
+                    fs_protocol::FileProvenance::Rename
                 } else {
-                    collab_types::FileProvenance::Move
+                    fs_protocol::FileProvenance::Move
                 },
             )?,
             participant(
                 victim_proposed,
                 victim_binding,
                 *victim_expected,
-                collab_types::FileMutationParticipantRole::Replaced,
-                collab_types::FileProvenance::Delete,
+                fs_protocol::FileMutationParticipantRole::Replaced,
+                fs_protocol::FileProvenance::Delete,
             )?,
         ];
         participants.sort_by_key(|value| value.record_id);
-        let manifest = collab_types::FileMutationTransactionManifest {
-            schema_version: collab_types::FILE_MUTATION_TRANSACTION_VERSION,
+        let manifest = fs_protocol::FileMutationTransactionManifest {
+            schema_version: fs_protocol::FILE_MUTATION_TRANSACTION_VERSION,
             transaction_id: uuid::Uuid::new_v4(),
             workspace_id: publisher.workspace_id(),
             actor: *actor,
             timestamp_ms,
-            operation: collab_types::FileMutationOperation::ReplacementRename {
+            operation: fs_protocol::FileMutationOperation::ReplacementRename {
                 source_parent: source_parent_record,
                 source_name: name.to_vec().into(),
                 destination_parent: destination_parent_record,
@@ -5424,9 +5414,9 @@ impl QuickFS {
             self.record_version(
                 ino,
                 if parent == new_parent {
-                    collab_types::FileProvenance::Rename
+                    fs_protocol::FileProvenance::Rename
                 } else {
-                    collab_types::FileProvenance::Move
+                    fs_protocol::FileProvenance::Move
                 },
                 None,
             );
@@ -5468,18 +5458,18 @@ impl QuickFS {
             };
             let bytes = postcard::to_allocvec(&metadata).map_err(|_| EIO)?;
             let proposed = VersionSnapshot {
-                metadata_hash: collab_types::ContentHash(*blake3::hash(&bytes).as_bytes()),
+                metadata_hash: fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()),
                 ..expected
             };
             let parent_record = namespace.record_id_for(new_parent).ok_or(EIO)?;
             let actor = self.history.as_ref().ok_or(EIO)?.1;
             let kind = match attr.kind {
-                FileType::Directory => collab_types::FileNodeKind::Directory,
-                FileType::RegularFile => collab_types::FileNodeKind::File,
+                FileType::Directory => fs_protocol::FileNodeKind::Directory,
+                FileType::RegularFile => fs_protocol::FileNodeKind::File,
                 _ => return Err(EINVAL),
             };
-            let binding = collab_types::FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+            let binding = fs_protocol::FileBindingV1 {
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: proposed.record_id,
                 parent: Some(parent_record),
                 name: new_name.to_vec().into(),
@@ -5493,9 +5483,9 @@ impl QuickFS {
         self.append_version(
             proposed,
             if parent == new_parent {
-                collab_types::FileProvenance::Rename
+                fs_protocol::FileProvenance::Rename
             } else {
-                collab_types::FileProvenance::Move
+                fs_protocol::FileProvenance::Move
             },
             timestamp_ms,
         )
@@ -5573,7 +5563,7 @@ fn child_path(dir: &str, name: &[u8]) -> String {
 
 fn update_retry_state(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
-    record_id: collab_types::FileRecordId,
+    record_id: fs_protocol::FileRecordId,
     update: impl FnOnce(&mut RecordAvailability),
 ) {
     let mut registry = registry
@@ -5671,8 +5661,8 @@ fn update_candidate_state(
 /// parent, and the registry's recorded parent above them.
 fn covered_by_pin(
     registry: &AvailabilityRegistry,
-    parents: &HashMap<collab_types::FileRecordId, Option<collab_types::FileRecordId>>,
-    record_id: collab_types::FileRecordId,
+    parents: &HashMap<fs_protocol::FileRecordId, Option<fs_protocol::FileRecordId>>,
+    record_id: fs_protocol::FileRecordId,
 ) -> bool {
     let mut seen = std::collections::HashSet::new();
     let mut cursor = Some(record_id);
@@ -5809,7 +5799,7 @@ struct PinnedPassPlan {
 fn plan_pinned_pass(
     registry: &mut AvailabilityRegistry,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<collab_types::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut plan = PinnedPassPlan::default();
@@ -5904,7 +5894,7 @@ fn plan_pinned_pass(
 fn commit_pinned_pass(
     registry: &Arc<Mutex<AvailabilityRegistry>>,
     candidates: &[PinnedCandidate],
-    probes: &HashMap<collab_types::FileRecordId, PinnedProbe>,
+    probes: &HashMap<fs_protocol::FileRecordId, PinnedProbe>,
     observed_at: u64,
 ) -> PinnedPassPlan {
     let mut registry = registry
@@ -6435,7 +6425,7 @@ impl Filesystem for QuickFS {
         }
         self.publish(delta);
         if !signed {
-            self.record_version(attr.ino.0, collab_types::FileProvenance::Create, None);
+            self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         }
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
@@ -6621,7 +6611,7 @@ impl Filesystem for QuickFS {
             Some(attr) => {
                 self.publish(delta);
                 if self.record_publisher.is_none() || self.history.is_none() {
-                    self.record_version(attr.ino.0, collab_types::FileProvenance::Create, None);
+                    self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 }
                 reply.entry(&TTL, &attr, Generation(0));
             }
@@ -6698,7 +6688,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         }
-        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_RESTORE_XATTR) {
+        if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR) {
             match self.checked_restore_xattr(ino.0, value) {
                 Ok(()) => reply.ok(),
                 Err(errno) => reply.error(to_errno(errno)),
@@ -6724,28 +6714,27 @@ impl Filesystem for QuickFS {
             return;
         }
         if name.to_str() == Some(crate::history::HISTORY_CONTROL_XATTR) {
-            if value.len() > collab_types::MAX_HISTORY_CONTROL_BYTES {
+            if value.len() > fs_protocol::MAX_HISTORY_CONTROL_BYTES {
                 reply.error(to_errno(libc::E2BIG));
                 return;
             }
-            let Ok(request) =
-                serde_json::from_slice::<collab_types::HistoryControlRequestV1>(value)
+            let Ok(request) = serde_json::from_slice::<fs_protocol::HistoryControlRequestV1>(value)
             else {
                 reply.error(to_errno(EINVAL));
                 return;
             };
-            if request.schema_version != collab_types::HISTORY_CONTROL_VERSION {
+            if request.schema_version != fs_protocol::HISTORY_CONTROL_VERSION {
                 reply.error(to_errno(EINVAL));
                 return;
             }
             match request.operation {
-                collab_types::HistoryControlOperationV1::Restore { version_id } => {
+                fs_protocol::HistoryControlOperationV1::Restore { version_id } => {
                     match self.restore_version(ino.0, version_id) {
                         Ok(()) => reply.ok(),
                         Err(errno) => reply.error(to_errno(errno)),
                     }
                 }
-                collab_types::HistoryControlOperationV1::ResolveConflict {
+                fs_protocol::HistoryControlOperationV1::ResolveConflict {
                     conflict_id,
                     strategy,
                     version_id,
@@ -6791,9 +6780,9 @@ impl Filesystem for QuickFS {
         }
         if let Some(name) = name
             .to_str()
-            .filter(|name| name.starts_with(collab_types::files::HISTORY_READ_XATTR))
+            .filter(|name| name.starts_with(fs_protocol::files::HISTORY_READ_XATTR))
         {
-            use collab_types::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
+            use fs_protocol::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
             let query = match Query::parse_xattr(name) {
                 Ok(query) => query,
                 Err(error) => {
@@ -6816,7 +6805,7 @@ impl Filesystem for QuickFS {
                     result: self.read_file_history(ino.0, query),
                 };
                 match serde_json::to_vec(&response) {
-                    Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
+                    Ok(bytes) if bytes.len() <= fs_protocol::files::MAX_HISTORY_READ_BYTES => {
                         reply_xattr_bytes(reply, &bytes, size);
                     }
                     _ => reply.error(to_errno(EIO)),
@@ -6824,8 +6813,8 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR) {
-            let projection = collab_types::files::CheckedHistoryReviewResponseV1 {
+        if name.to_str() == Some(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR) {
+            let projection = fs_protocol::files::CheckedHistoryReviewResponseV1 {
                 schema_version: 1,
                 result: self.checked_history_review(ino.0),
             };
@@ -6836,13 +6825,13 @@ impl Filesystem for QuickFS {
             return;
         }
         if let Some(id) = name.to_str().and_then(|name| {
-            name.strip_prefix(collab_types::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
+            name.strip_prefix(fs_protocol::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
         }) {
             let Ok(id) = uuid::Uuid::parse_str(id) else {
                 reply.error(to_errno(EINVAL));
                 return;
             };
-            let projection = collab_types::files::CheckedHistoryResponseV1 {
+            let projection = fs_protocol::files::CheckedHistoryResponseV1 {
                 schema_version: 1,
                 outcome: self.checked_history_result(ino.0, id),
             };
@@ -6854,9 +6843,9 @@ impl Filesystem for QuickFS {
         }
         if let Some(version) = name
             .to_str()
-            .and_then(|name| name.strip_prefix(collab_types::HISTORY_PREVIEW_XATTR_PREFIX))
+            .and_then(|name| name.strip_prefix(fs_protocol::HISTORY_PREVIEW_XATTR_PREFIX))
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .map(collab_types::FileVersionId)
+            .map(fs_protocol::FileVersionId)
         {
             match self.history_version_preview(ino.0, version) {
                 Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
@@ -6866,7 +6855,7 @@ impl Filesystem for QuickFS {
         }
         if let Some(conflict_id) = name
             .to_str()
-            .and_then(|name| name.strip_prefix(collab_types::MERGE_PREFLIGHT_XATTR_PREFIX))
+            .and_then(|name| name.strip_prefix(fs_protocol::MERGE_PREFLIGHT_XATTR_PREFIX))
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
         {
             match self.history_merge_preflight(ino.0, conflict_id) {
@@ -6969,7 +6958,7 @@ impl Filesystem for QuickFS {
             .to_str()
             .and_then(|name| name.strip_prefix(crate::syncstate::RECORD_INDEX_BY_ID_XATTR_PREFIX))
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
-            .map(collab_types::FileRecordId)
+            .map(fs_protocol::FileRecordId)
         {
             if ino.0 != crate::namespace::ROOT_INO {
                 reply.error(to_errno(libc::ENODATA));
@@ -7143,11 +7132,9 @@ impl Filesystem for QuickFS {
             buf.extend_from_slice(crate::history::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
             if self.replacement_transactions.is_some() {
-                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
+                buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
                 buf.push(0);
-                buf.extend_from_slice(
-                    collab_types::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes(),
-                );
+                buf.extend_from_slice(fs_protocol::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes());
                 buf.push(0);
             }
         }

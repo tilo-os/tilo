@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use collab_types::{
+use fs_protocol::{
     ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileRecordError,
     FileRecordId, FileVersionId, FileVersionV1,
 };
@@ -448,7 +448,7 @@ fn stage_resolution(
         .ok_or(HistoryError::UnknownConflict(conflict_id))?;
     if let Some(existing) = &conflict.resolution
         && (existing == resolution
-            || !collab_types::prefer_conflict_resolution(resolution, existing))
+            || !fs_protocol::prefer_conflict_resolution(resolution, existing))
     {
         return Ok(None);
     }
@@ -893,7 +893,7 @@ impl FileHistoryStore {
     /// Content roots retained by the durable immutable history.  A home peer
     /// uses these to keep historical versions recoverable while reclaiming
     /// only blobs proven unreachable from both the live namespace and history.
-    pub fn retained_content_hashes(&self) -> Vec<collab_types::ContentHash> {
+    pub fn retained_content_hashes(&self) -> Vec<fs_protocol::ContentHash> {
         let Ok(current) = self.state.lock() else {
             return Vec::new();
         };
@@ -1169,9 +1169,8 @@ pub enum HistoryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
-        ConflictStrategy, ContentHash, Ed25519PublicKey, FileActor, FileProvenance,
-    };
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{ConflictStrategy, ContentHash, FileActor, FileProvenance};
 
     fn actor(byte: u8) -> FileActor {
         FileActor {

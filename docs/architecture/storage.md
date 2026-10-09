@@ -85,7 +85,7 @@ The pieces are strong. What is missing is one model and the performance path.
   `FileRecordId`, signed `RecordEnvelopeV1` operations
   (`crates/system/fs/src/record_replication.rs:61-81`), certified device
   authorship, and a signed placement binding `FileBindingV1 {record_id, parent,
-  name, kind, tombstoned}` (`crates/collab/collab-types/src/files.rs:209-220`).
+  name, kind, tombstoned}` (`crates/system/fs-protocol/src/files.rs:209-220`).
 - **Share and authority machinery.** Named and link shares, one-use
   redemption, revocation, exact-version replica receipts, fail-closed eviction
   and multi-record transactions (`docs/collaborative-files-product.md:7-96`).
@@ -2053,7 +2053,8 @@ device is clean and does not rewrite the index (tested,
 | `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
 | `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
 | `fs` `durable_backup.rs`, `tilo_files::native::atomic` | crash-safe small files | only for security stores |
-| `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
+| `crates/collab/collab-types` | `SignedOp`, validator, roles, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
+| `crates/system/fs-protocol` | `FileBindingV1`, file records and transactions, share and recipient control | unchanged |
 | `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
 | `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |
 | `ui-core` `application.rs` (`ApplicationDefinition`, `RecordOwners`) | the cleanest custody model | becomes the Record Store client and the only launch path |

@@ -27,6 +27,7 @@ pub mod capability;
 pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
+pub mod first_party;
 pub mod grants;
 pub mod history;
 pub mod ids;

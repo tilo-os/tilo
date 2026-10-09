@@ -2,8 +2,9 @@
 //! persisted, and never discard bytes that were not committed.
 
 use super::*;
-use collab_types::{Ed25519PublicKey, FileActor};
+use collab_types::Ed25519PublicKey;
 use ed25519_dalek::SigningKey;
+use fs_protocol::FileActor;
 use iroh::endpoint::{Endpoint, presets};
 use uuid::Uuid;
 
@@ -78,7 +79,7 @@ impl Fixture {
         loaded
     }
 
-    fn versions(&self, record_id: collab_types::FileRecordId) -> usize {
+    fn versions(&self, record_id: fs_protocol::FileRecordId) -> usize {
         self.history.snapshot(record_id).unwrap().versions.len()
     }
 }

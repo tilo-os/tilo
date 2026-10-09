@@ -3,17 +3,26 @@
 //! captured from `collab-types` before these types moved to `fs-protocol`;
 //! the move must not change a single byte of any of them.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::canonical::from_canonical_bytes;
-use collab_types::{
-    CONTENT_REVISION_VERSION, ContentHash, ContentRevisionV1, Ed25519PublicKey,
-    FILE_BINDING_VERSION, FileActor, FileBindingV1, FileInviteSubject, FileInviteV1,
+use collab_types::{Ed25519PublicKey, canonical_bytes};
+use ed25519_dalek::SigningKey;
+use fs_protocol::{
+    CONTENT_REVISION_VERSION, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
+    FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileInviteSubject, FileInviteV1,
     FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
     FileMutationTransaction, FileMutationTransactionManifest, FileNodeKind, FilePermission,
     FileProvenance, FileRecordId, FileVersionId, FileVersionV1, RECIPIENT_CONTROL_VERSION,
     RecipientControlOperationV1, RecipientControlRequestV1, RecipientSubscriptionKeyV1,
-    SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1, canonical_bytes,
+    SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1,
 };
-use ed25519_dalek::SigningKey;
 use uuid::Uuid;
 
 const RECIPIENT_ADMIT: &str = "01001e74696c6f2d73686172653a2f2f76322f6578616d706c6523736563726574";
@@ -108,6 +117,10 @@ fn signed_file_invite_keeps_its_wire_bytes_and_signature() {
     invite.verify_at(0).unwrap();
     assert_eq!(invite.record_id, record(0x66));
     assert_eq!(invite.permission, FilePermission::View);
+    assert_eq!(
+        invite.subject,
+        FileInviteSubject::Person(Ed25519PublicKey([8; 32]))
+    );
     assert_eq!(canonical_bytes(&invite).unwrap(), bytes);
 }
 
@@ -172,7 +185,7 @@ fn signed_file_mutation_transaction_keeps_its_wire_bytes() {
     })
     .collect();
     let manifest = FileMutationTransactionManifest {
-        schema_version: collab_types::FILE_MUTATION_TRANSACTION_VERSION,
+        schema_version: FILE_MUTATION_TRANSACTION_VERSION,
         transaction_id: Uuid::from_u128(0x77),
         workspace_id: Uuid::from_u128(0x88),
         actor,
