@@ -60,9 +60,11 @@ history-value-true = ein
 history-value-false = aus
 history-value-empty = nichts
 
-history-actor-for = { $actor } für { $for }
+history-actor-for = { $actor }, für { $for }
 history-actor-you = Du
 history-actor-you-for = Du, für { $for }
 history-actor-unknown = Jemand
-history-actor-agent = { $actor } (Agent)
-history-actor-shortcut = Kurzbefehl „{ $actor }“
+history-actor-agent = { $actor } · Agent
+history-actor-shortcut = { $actor } · Kurzbefehl
+history-actor-app = { $actor } · App
+history-actor-for-you = dich

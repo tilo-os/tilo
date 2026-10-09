@@ -2197,6 +2197,10 @@ impl RoomActivityPane {
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
         let local = self.local_user();
+        if !local.is_empty() {
+            // The reader's own changes read as theirs.
+            self.source.authors_mut().set_reader(local.clone());
+        }
         if !local.is_empty() && self.explicit_local_user.is_none() {
             let handle = automerge::ActorId::from(local.as_bytes()).to_hex_string();
             self.host.local_author(self.source.authors_mut(), &handle);

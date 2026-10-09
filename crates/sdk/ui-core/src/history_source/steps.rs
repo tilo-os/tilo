@@ -322,17 +322,17 @@ pub fn settle_compensation(doc: &mut AutoCommit, hash: ChangeHash) -> Result<(),
     .map_err(|error| error.to_string())
 }
 
-/// The steps `undo` would take back for `scope`, newest first: its changes
-/// that are in effect, at most `limit` of them.
+/// The changes `undo` would take back for `scope`, newest first: its steps
+/// that are in effect, at most `limit` of them. The changes of one gesture
+/// (the keystrokes of a word) are one step.
 fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
     let versions = tilo_resource::history::versions(doc);
     let undone = undone(doc);
     let mut superseded: HashSet<String> = HashSet::new();
     let mut targets = Vec::new();
+    let mut steps = 0usize;
+    let mut gesture = None;
     for version in versions.iter().rev().filter(|version| scope.owns(version)) {
-        if targets.len() >= limit {
-            break;
-        }
         let hash = version.hash.to_string();
         match kind_of(doc, version) {
             Kind::Undo(_) | Kind::Bookkeeping => continue,
@@ -342,11 +342,30 @@ fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Versio
             Kind::Edit if superseded.contains(&hash) => continue,
             Kind::Edit => {}
         }
-        if !undone.contains(&hash) {
-            targets.push(version.clone());
+        if undone.contains(&hash) {
+            gesture = None;
+            continue;
         }
+        let of = version.context.as_ref().and_then(|context| context.gesture);
+        if of.is_some() && of == gesture {
+            targets.push(version.clone());
+            continue;
+        }
+        if steps >= limit {
+            break;
+        }
+        steps += 1;
+        gesture = of;
+        targets.push(version.clone());
     }
     targets
+}
+
+/// What `undo` would take back for `scope` now: its last `limit` steps in
+/// effect, newest first, read from a copy so `doc` stays as it is.
+pub fn undo_preview(doc: &AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
+    let mut copy = doc.clone();
+    undo_targets(&mut copy, scope, limit)
 }
 
 /// The undo changes `redo` would revert for `scope`, newest first. A step

@@ -929,3 +929,49 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
         "a document's first edit is not a genesis unless its store made it"
     );
 }
+
+#[test]
+fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
+    use crate::widget::history::AuthorRelation;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut doc = AutoCommit::new();
+    let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
+        doc.put(ROOT, key, "x").unwrap();
+        let context = ActionContext::for_resource("r", "doc", "Report")
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+                [],
+            )))
+            .with_invoker(invoker);
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    };
+    step(&mut doc, "mine", ActionInvoker::actor("quinten"));
+    step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+    step(
+        &mut doc,
+        "agents",
+        ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("quinten"),
+    );
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("quinten");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let rows: Vec<(String, AuthorRelation)> = entries
+        .iter()
+        .rev()
+        .take(3)
+        .map(|entry| (entry.author.name.clone(), entry.author.relation))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude · Agent, for you".to_owned(),
+                AuthorRelation::Software
+            ),
+            ("ada".to_owned(), AuthorRelation::Person),
+            ("You".to_owned(), AuthorRelation::Reader),
+        ]
+    );
+}

@@ -163,6 +163,9 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action may be continued by a later one
     /// ([`Resource::continuable`]).
     continuable: Rc<Cell<bool>>,
+    /// The gesture the open step's changes record, so the step stays one
+    /// undo step in the document's history.
+    gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
 
@@ -211,6 +214,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             opened: Rc::clone(&self.opened),
             past: self.past,
             continuable: Rc::clone(&self.continuable),
+            gesture: Rc::clone(&self.gesture),
             marker: std::marker::PhantomData,
         }
     }
@@ -279,6 +283,7 @@ impl<R: Resource> Dispatcher<R> {
             opened: Rc::default(),
             past: false,
             continuable: Rc::default(),
+            gesture: Rc::default(),
             marker: std::marker::PhantomData,
         }
     }
@@ -710,21 +715,32 @@ impl<R: Resource> Dispatcher<R> {
         if let Some(me) = &self.me {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
-        let context = context.enriched_by(&named);
-        (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
+        let mut context = context.enriched_by(&named);
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
-        if !tilo_actions::Action::change_kind(action).is_step() {
-            return Ok(());
-        }
+        let step = tilo_actions::Action::change_kind(action).is_step();
         // Only an action right after this dispatcher's last one, with nothing
         // in between, can continue it.
         let serial = self.serial.get();
-        let continues = self
-            .last
-            .borrow()
-            .as_ref()
-            .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
+        let continues = step
+            && self
+                .last
+                .borrow()
+                .as_ref()
+                .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
+        // A change another may continue records its gesture, so the step it
+        // opens or continues stays one undo step after a restart too.
+        if step && R::continuable(action) {
+            let gesture = self.gesture.get().filter(|_| continues).unwrap_or_default();
+            self.gesture.set(Some(gesture));
+            context = context.in_gesture(Some(gesture));
+        } else if step {
+            context = context.in_gesture(continues.then(|| self.gesture.get()).flatten());
+        }
+        (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
+        if !step {
+            return Ok(());
+        }
         let serial = serial.wrapping_add(1);
         self.serial.set(serial);
         *self.last.borrow_mut() = Some((serial, action.clone()));
@@ -790,6 +806,7 @@ impl<R: Resource> Dispatcher<R> {
             opened: Rc::clone(&self.opened),
             past: self.past,
             continuable: Rc::clone(&self.continuable),
+            gesture: Rc::clone(&self.gesture),
             marker: std::marker::PhantomData,
         }
     }

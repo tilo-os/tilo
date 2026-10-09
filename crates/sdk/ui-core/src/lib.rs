@@ -422,8 +422,9 @@ pub use history_mode::{
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
-    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
-    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    AuthorRelation, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
+    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph,
+    op_class_is_revertible,
 };
 pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,

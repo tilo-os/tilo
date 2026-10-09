@@ -8,6 +8,7 @@ use tilo_automerge::ApplyIncoming;
 mod built_on;
 pub(crate) mod owned_restore;
 mod sequence_replay;
+mod shared_history;
 use sequence_replay::SequenceReplay;
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
@@ -632,6 +633,7 @@ impl UndoLog {
         message: Option<String>,
         named: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
+        undone: &[ChangeHash],
     ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = doc.get_heads();
         let via_action = entry
@@ -661,6 +663,9 @@ impl UndoLog {
             write_revert_patches(doc, &entry.after, &entry.before);
             message.or(named)
         };
+        // The document records what the undo took back, as the published
+        // `undo` does, so every way in sees the same history.
+        shared_history::mark_undone(doc, undone);
         let _ = tilo_resource::history::commit_stamped_with_message(doc, history_message);
         let inverse_after = doc.get_heads();
         self.last_heads.clone_from(&inverse_after);
@@ -703,7 +708,11 @@ impl UndoLog {
         let entry = self.undo_stack.remove(index);
         let step = step_context(doc, &entry, Direction::Undo);
         let named = inverse_message(step.as_ref(), Direction::Undo);
-        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
+        let undone = shared_history::steps_of(
+            doc,
+            &shared_history::span_changes(doc, &entry.before, &entry.after),
+        );
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry, &undone);
         // Opposite stack: applying `redo_via` re-does the forward action;
         // applying `undo_via` again undoes that redo.
         push_history(
@@ -760,8 +769,79 @@ impl UndoLog {
         current_metadata: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        let index = self.undo_index_for(Some(author))?;
-        self.undo_at(doc, index, current_focused_idx, current_metadata, registry)
+        self.undo_claimed(
+            doc,
+            author,
+            |log| log.undo_index_for(Some(author)),
+            current_focused_idx,
+            current_metadata,
+            registry,
+        )
+    }
+
+    /// Undo the entry `index_of` picks for `author`, skipping what another
+    /// way in already took back; with nothing of this session's, the
+    /// person's own last step from the document's history.
+    fn undo_claimed(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        index_of: impl Fn(&Self) -> Option<usize>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+        registry: Option<&tilo_actions::ActionRegistry>,
+    ) -> Option<UndoEntry> {
+        // A step another way in (an agent's or a script's `undo`) already
+        // took back is no step of this stack any more, and neither is an
+        // undo or redo made that way: Ctrl+Z goes on to the steps before.
+        while let Some(index) = index_of(self) {
+            let entry = self.undo_stack.get(index)?;
+            let span = shared_history::span_changes(doc, &entry.before, &entry.after);
+            let steps = shared_history::steps_of(doc, &span);
+            if !shared_history::published_moves_only(doc, &span)
+                && !shared_history::already_undone(doc, &steps)
+            {
+                return self.undo_at(doc, index, current_focused_idx, current_metadata, registry);
+            }
+            if !self.can_bump() {
+                return None;
+            }
+            self.undo_stack.remove(index);
+            self.bump();
+        }
+        // Nothing of this session's: the person's own steps from before (a
+        // restart, another window), as the document records them.
+        if !self.can_bump() {
+            return None;
+        }
+        let (before, after, step) = shared_history::undo_from_document(doc, author, registry)?;
+        self.last_heads.clone_from(&after);
+        push_history(
+            &mut self.redo_stack,
+            UndoEntry {
+                before: before.clone(),
+                after: after.clone(),
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
+                author: Some(author.clone()),
+                instance_id: None,
+                undo_via: None,
+                redo_via: None,
+                step,
+            },
+        );
+        self.bump();
+        Some(UndoEntry {
+            before: after,
+            after: before,
+            focused_node_idx: None,
+            widget_metadata: None,
+            author: Some(author.clone()),
+            instance_id: None,
+            undo_via: None,
+            redo_via: None,
+            step: None,
+        })
     }
 
     pub fn undo_as(
@@ -821,8 +901,32 @@ impl UndoLog {
         current_metadata: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        let index = self.redo_index_for(author)?;
-        self.redo_at(doc, index, current_focused_idx, current_metadata, registry)
+        if let Some(index) = self.redo_index_for(author) {
+            return self.redo_at(doc, index, current_focused_idx, current_metadata, registry);
+        }
+        self.redo_from_document(doc, author?)
+    }
+
+    /// Bring back an undo from before this session (or made another way
+    /// in), as the document records it.
+    fn redo_from_document(&mut self, doc: &mut AutoCommit, author: &UserId) -> Option<UndoEntry> {
+        if !self.can_bump() {
+            return None;
+        }
+        let (before, after) = shared_history::redo_from_document(doc, author)?;
+        self.last_heads.clone_from(&after);
+        self.bump();
+        Some(UndoEntry {
+            before: after,
+            after: before,
+            focused_node_idx: None,
+            widget_metadata: None,
+            author: Some(author.clone()),
+            instance_id: None,
+            undo_via: None,
+            redo_via: None,
+            step: None,
+        })
     }
 
     fn redo_at(
@@ -839,7 +943,7 @@ impl UndoLog {
         let entry = self.redo_stack.remove(index);
         let step = step_context(doc, &entry, Direction::Redo);
         let named = inverse_message(step.as_ref(), Direction::Redo);
-        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry);
+        let (before, after) = self.apply_inverse(doc, &entry, None, named, registry, &[]);
         push_history(
             &mut self.undo_stack,
             UndoEntry {
@@ -894,8 +998,14 @@ impl UndoLog {
         metadata: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        let index = Self::instance_index(&self.undo_stack, author, instance)?;
-        self.undo_at(doc, index, focus, metadata, registry)
+        self.undo_claimed(
+            doc,
+            author,
+            |log| Self::instance_index(&log.undo_stack, author, instance),
+            focus,
+            metadata,
+            registry,
+        )
     }
 
     pub fn redo_in(
@@ -918,8 +1028,10 @@ impl UndoLog {
         metadata: Option<String>,
         registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        let index = Self::instance_index(&self.redo_stack, author, instance)?;
-        self.redo_at(doc, index, focus, metadata, registry)
+        match Self::instance_index(&self.redo_stack, author, instance) {
+            Some(index) => self.redo_at(doc, index, focus, metadata, registry),
+            None => self.redo_from_document(doc, author),
+        }
     }
 
     /// See [`State::restore_to_heads`].
@@ -1015,7 +1127,7 @@ impl UndoLog {
             redo_via: None,
             step: None,
         };
-        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None, None);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry, message, None, None, &[]);
         if inv_before == inv_after {
             return false;
         }

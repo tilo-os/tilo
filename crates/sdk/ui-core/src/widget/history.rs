@@ -48,6 +48,22 @@ pub struct HistoryAuthor {
     /// the person's colour or the shared [`crate::presence::PEER_PALETTE`]
     /// slot.
     avatar_rgb: (u8, u8, u8),
+    /// Who the author is to whoever reads the history: themselves, another
+    /// person, or software acting for someone.
+    pub relation: AuthorRelation,
+}
+
+/// Who an author is to the person reading the history. Rows draw the
+/// reader's own changes, a collaborator's and an agent's differently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthorRelation {
+    /// The reader's own change.
+    Reader,
+    /// Another person's.
+    #[default]
+    Person,
+    /// An agent's, a Shortcut's or an app's, acting for someone.
+    Software,
 }
 
 impl HistoryAuthor {
@@ -62,7 +78,14 @@ impl HistoryAuthor {
             avatar_hue,
             identity_short: identity_short.into(),
             avatar_rgb: hue_to_rgb(avatar_hue),
+            relation: AuthorRelation::Person,
         }
+    }
+
+    #[must_use]
+    pub fn with_relation(mut self, relation: AuthorRelation) -> Self {
+        self.relation = relation;
+        self
     }
 
     /// Use this exact RGB for the avatar, cursor and history row.

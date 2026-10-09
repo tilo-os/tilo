@@ -61,6 +61,12 @@ pub struct ActionContext {
     /// executor. This describes a change; it carries no caller authority.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compensation: Option<ActionCompensation>,
+    /// The gesture this change belongs to: an id every change of one
+    /// actor's gesture shares (the keystrokes of a word, the values one drag
+    /// of a slider passes through), which undo takes back as one step.
+    /// Absent for a change that is a step of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<crate::ActionId>,
     /// Exact executor action that produced this change. This is inert
     /// correlation, never caller authority: fresh semantic envelopes replace
     /// it with their own identity.
@@ -287,6 +293,13 @@ impl ActionContext {
     #[must_use]
     pub fn with_facet(mut self, facet: ActionFacet) -> Self {
         self.facets.push(facet);
+        self
+    }
+
+    /// Continue the gesture `gesture` (see [`Self::gesture`]).
+    #[must_use]
+    pub fn in_gesture(mut self, gesture: Option<crate::ActionId>) -> Self {
+        self.gesture = gesture;
         self
     }
 
