@@ -1226,7 +1226,7 @@ def closed_return_editor_observation(access, before, after, same_chat):
 
 
 def wait_for_private_selection(socket, access, expected, selection, process, output, *,
-                               expected_caret=None):
+                               expected_caret=None, require_focused=False):
     """Observe dispatched physical keys; never replay them or change the assertion."""
     last = None
     deadline = time.monotonic() + 30
@@ -1235,7 +1235,8 @@ def wait_for_private_selection(socket, access, expected, selection, process, out
         nonlocal last
         last = private_editor_observation(access, expected, deadline=deadline)
         return last if last["selection"] == selection \
-            and (expected_caret is None or last["caret"] == expected_caret) else None
+            and (expected_caret is None or last["caret"] == expected_caret) \
+            and (not require_focused or last["accessibility_focused"] is True) else None
 
     try:
         return wait_for("physical selection in the actual private editor", selected, process)
@@ -1373,8 +1374,17 @@ def focus_agent_conversation_control(access, path, label):
     return {"keyboard_focus": label, "accepted": True}
 
 
-def wait_for_floating_return_control_focus(owner, output, process):
-    """Observe, without repairing focus, the current exact owned Return control."""
+def current_owned_conversation_accessibility(owner):
+    """Resolve current controls without replacing the captured Chat owner/route."""
+    current = agent_conversation_accessibility(owner["agent"], detached=owner["detached"])
+    if current is not None and any(current.get(field) != owner.get(field)
+            for field in ("process", "bus", "agent", "detached")):
+        raise RuntimeError("keyboard conversation control changed the owned Chat route")
+    return current
+
+
+def wait_for_conversation_control_focus(owner, output, process, *, detached=True, control="control"):
+    """Observe, without repairing focus, the current exact owned handoff control."""
     evidence = {"observation_count": 0, "initial": None, "last": None}
 
     def observe():
@@ -1382,17 +1392,21 @@ def wait_for_floating_return_control_focus(owner, output, process):
                   "known_stale_object": False, "control_focused": False}
         evidence["observation_count"] += 1
         try:
-            current = agent_conversation_accessibility(owner["agent"], detached=True)
+            if owner.get("detached") is not detached:
+                raise RuntimeError("keyboard conversation control has a malformed target route")
+            current = current_owned_conversation_accessibility(owner)
             if current is None:
                 return None
             sample["accessibility_observable"] = True
             sample["same_owned_route"] = all(current.get(field) == owner.get(field)
                 for field in ("process", "bus", "agent", "detached")) \
-                and current.get("detached") is True
+                and current.get("detached") is detached
             if not sample["same_owned_route"]:
                 raise RuntimeError("keyboard Return control changed the owned Chat route")
+            if not isinstance(current.get(control), str) or not current[control].startswith("/"):
+                raise RuntimeError("keyboard conversation control target is unobservable")
             sample["control_focused"] = _editor_accessibility_focus({
-                "bus": current["bus"], "composer": current["control"]})
+                "bus": current["bus"], "composer": current[control]})
             return current if sample["control_focused"] else None
         except atspi.GateError as error:
             if not re.search(
@@ -1405,10 +1419,15 @@ def wait_for_floating_return_control_focus(owner, output, process):
             if evidence["initial"] is None:
                 evidence["initial"] = sample.copy()
             evidence["last"] = sample
-            (output / "keyboard-return-control-focus.json").write_text(
+            receipt = "keyboard-return-control-focus.json" if detached else "keyboard-float-control-focus.json"
+            (output / receipt).write_text(
                 json.dumps(evidence, indent=2) + "\n")
 
     return wait_for("keyboard Return's current actual control focus", observe, process)
+
+
+def wait_for_floating_return_control_focus(owner, output, process):
+    return wait_for_conversation_control_focus(owner, output, process)
 
 
 def presented_primary_frame(response, app_id):
@@ -2205,7 +2224,8 @@ def native_float_return(socket, room, record, output, size, process):
     with hold_physical_modifiers(socket, shift=True):
         require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
     before = wait_for_private_selection(
-        socket, access, draft, [len(draft) - 1, len(draft)], process, output)
+        socket, access, draft, [len(draft) - 1, len(draft)], process, output,
+        require_focused=True)
     if before["selection"] != [len(draft) - 1, len(draft)]:
         raise RuntimeError("the IME result could not be selected through physical input")
     if before["accessibility_focused"] is not True:
@@ -2317,7 +2337,10 @@ def native_float_return(socket, room, record, output, size, process):
     # focus the already-published controls and let physical Enter activate the
     # same production handoff paths; AT never invokes either action here.
     access = wait_for("keyboard Float control", lambda: agent_conversation_accessibility("Tide"), process)
+    access = wait_for("current attached keyboard Float control",
+                      lambda: current_owned_conversation_accessibility(access), process)
     focus_agent_conversation_control(access, access["drag"], "Float")
+    access = wait_for_conversation_control_focus(access, output, process, detached=False, control="drag")
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     keyboard_frame = wait_for(
         "keyboard-activated Tide Float",
@@ -3045,7 +3068,11 @@ def native_ime_float_return(socket, output, size, process, fcitx_identity, env):
 
     # The same published controls must also support physical keyboard
     # activation. This is a second handoff after composition has settled.
+    returned_access = wait_for("current attached Rime keyboard Float control",
+        lambda: current_owned_conversation_accessibility(returned_access), process)
     focus_agent_conversation_control(returned_access, returned_access["drag"], "Float")
+    returned_access = wait_for_conversation_control_focus(
+        returned_access, output, process, detached=False, control="drag")
     require_ok(call(socket, {"op": "key", "key": "Enter"}))
     keyboard_frame = wait_for(
         "keyboard-activated Rime proof Float",
@@ -5603,6 +5630,14 @@ def wait_for_current_message_phase_accessibility(owner, draft, label, process):
     return wait_for("mounted original Message's current public phase", observe, process)
 
 
+def owned_chat_message_progress(owner, chat_identity, process, agent_identity, output):
+    """Read mounted telemetry without requiring input, paint, or an AT rebuild."""
+    if owned_agent_identity(process.pid) != agent_identity \
+            or chat_process_identity(owner) != chat_identity:
+        raise RuntimeError("mounted Message progress replaced its actual owner")
+    return latest_chat_input_state(output)
+
+
 def physical_send_after_stop(socket, room, record, provider, output, size, process, identity):
     """Supplement, never replace, the semantic lifecycle and physical editor journey."""
     if provider.request_count() != 3 or not provider.original_third_held() \
@@ -5627,6 +5662,7 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
     physical_chord(socket, "a", ctrl=True)
     require_ok(call(socket, {"op": "type", "text": draft}))
     wait_for("physical Send fixture draft", lambda: private_editor_value_matches(access, draft), process)
+    progress_chat_identity = chat_process_identity(access)
     access, send_control, frame = wait_for_owned_physical_send_control(
         socket, output, access, draft, frame, process,
     )
@@ -5642,14 +5678,7 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
                             output, send_log_offset, "key_pressed"), process)["revision"]
 
     def sample():
-        current = agent_conversation_accessibility("Tide")
-        current_frame = presented_primary_frame(call(socket, {"op": "foreign_frames"}), "so.tilo.chat")
-        if current is None or current_frame is None:
-            return None
-        physically_click_editor(socket, current, presented_content_geometry(current_frame))
-        require_chat_keyboard_focus_after_click(socket, output)
-        require_ok(call(socket, {"op": "key", "key": "ArrowLeft"}))
-        return latest_chat_input_state(output)
+        return owned_chat_message_progress(access, progress_chat_identity, process, identity, output)
 
     original = wait_for("physical Send's actual canonical request",
                         lambda: canonical_physical_message(socket, room, record, draft, process), process)
@@ -5696,6 +5725,60 @@ def physical_send_after_stop(socket, room, record, provider, output, size, proce
                 "private_content_recorded": False, "test_owned_draft_rendered": True}
     (output / "physical-send-after-stop.json").write_text(json.dumps(evidence, indent=2) + "\n")
     return evidence
+
+
+def wait_for_restored_agent_offers(socket, room, record, provider, process, expected, output):
+    """Observe both real offers while preserving exact process and private state."""
+    evidence = {"observation_count": 0, "initial": None, "last": None}
+
+    def observe():
+        sample = {"same_managed_process": False, "provider_counts_unchanged": False,
+                  "same_chat_route": False, "editor_state_matches": False,
+                  "message_offer_present": False, "queue_offer_present": False,
+                  "message_offer_count": 0, "queue_offer_count": 0}
+        evidence["observation_count"] += 1
+        try:
+            sample["same_managed_process"] = owned_agent_identity(process.pid) == expected["identity"]
+            sample["provider_counts_unchanged"] = provider.request_count() == 4 \
+                and provider.overflow_count() == 0
+            if not sample["same_managed_process"] or not sample["provider_counts_unchanged"]:
+                raise RuntimeError("restored offers changed process custody or initiated model work")
+            current = agent_conversation_accessibility(expected["access"]["agent"])
+            if current is None:
+                return None
+            sample["same_chat_route"] = all(current.get(field) == expected["access"].get(field)
+                for field in ("process", "bus", "agent", "detached")) \
+                and current.get("detached") is False
+            if not sample["same_chat_route"]:
+                raise RuntimeError("restored offers changed the exact attached Chat owner")
+            observed = private_editor_observation(current, expected["draft"])
+            sample["editor_state_matches"] = all(observed[field] == expected["observation"][field]
+                for field in ("draft_matches", "caret", "selection"))
+            if not sample["editor_state_matches"]:
+                raise RuntimeError("restored offers changed private editor content, caret or selection")
+            rows = actions(socket)
+            messages = [row for row in rows if row.get("application") == "so.tilo.chat"
+                and row.get("room") == room and row.get("record") == record
+                and row.get("semantic_identity") == {"kind": "chat.agent", "key": "chat.person:tide"}
+                and row.get("operation") == "message"]
+            queues = [row for row in rows if row.get("application") == "so.tilo.desktop"
+                and row.get("room") == room and row.get("record") == "tasks"
+                and row.get("resource") == "desktop:tasks" and row.get("operation") == "queue"]
+            sample["message_offer_count"] = min(len(messages), 64)
+            sample["queue_offer_count"] = min(len(queues), 64)
+            if len(messages) > 1 or len(queues) > 1:
+                raise RuntimeError("restored offers have ambiguous exact Message or Queue actions")
+            sample["message_offer_present"] = len(messages) == 1
+            sample["queue_offer_present"] = len(queues) == 1
+            return current if messages and queues else None
+        finally:
+            if evidence["initial"] is None:
+                evidence["initial"] = sample.copy()
+            evidence["last"] = sample
+            (output / "restored-agent-offer-observations.json").write_text(
+                json.dumps(evidence, indent=2) + "\n")
+
+    return wait_for("re-admission's actual current Message and Queue offers", observe, process)
 
 
 def native_agent_membership_revocation(
@@ -5843,9 +5926,9 @@ def native_agent_membership_revocation(
     for field in ("draft_matches", "caret", "selection"):
         if attached[field] != before[field]:
             raise RuntimeError("Return after re-admission changed private editor state")
-    if offered_agent_action(socket, room, record, "tide", "message") is None \
-            or offered_desktop_action(socket, room, "tasks", "desktop:tasks", "queue") is None:
-        raise RuntimeError("re-admission did not restore fresh Message and Queue offers")
+    attached_access = wait_for_restored_agent_offers(socket, room, record, provider, process, {
+        "identity": replacement_identity, "access": attached_access,
+        "draft": draft, "observation": before}, output)
     if owned_agent_identity(process.pid) != replacement_identity \
             or provider.request_count() != 4 or provider.overflow_count() != 0:
         raise RuntimeError("restored editor changed process custody or initiated model work")

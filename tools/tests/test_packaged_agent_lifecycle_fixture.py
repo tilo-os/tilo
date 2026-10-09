@@ -26,6 +26,125 @@ SPEC.loader.exec_module(PROOF)
 
 
 class PresentedEditorTargetTests(unittest.TestCase):
+    def test_selection_requires_focus_only_when_explicitly_requested(self):
+        pending = {"selection": [4, 9], "caret": 4, "draft_matches": True,
+                   "accessibility_focused": False}
+        ready = {**pending, "accessibility_focused": True}
+        with patch.object(PROOF, "private_editor_observation", side_effect=[pending, ready]) as read, \
+                patch.object(PROOF.time, "sleep"), patch.object(PROOF, "call") as calls:
+            self.assertEqual(PROOF.wait_for_private_selection(
+                "socket", {}, "fixture", [4, 9], None, pathlib.Path("unused"),
+                require_focused=True), ready)
+            self.assertEqual(read.call_count, 2)
+            calls.assert_not_called()
+        with patch.object(PROOF, "private_editor_observation", return_value=pending):
+            self.assertEqual(PROOF.wait_for_private_selection(
+                "socket", {}, "fixture", [4, 9], None, pathlib.Path("unused")), pending)
+
+    def test_owned_progress_reads_scheduled_telemetry_without_input_or_accessibility(self):
+        process = type("ManagedProcess", (), {"pid": 123})()
+        latest = {"app": "so.tilo.chat", "agent_message_progress": [{"phase": "committed"}]}
+        with patch.object(PROOF, "owned_agent_identity", return_value="actual-agent"), \
+                patch.object(PROOF, "chat_process_identity", return_value=(7, "started")), \
+                patch.object(PROOF, "latest_chat_input_state", return_value=latest) as telemetry, \
+                patch.object(PROOF, "call") as inputs, \
+                patch.object(PROOF, "agent_conversation_accessibility") as accessibility:
+            self.assertEqual(PROOF.owned_chat_message_progress(
+                {"process": 7}, (7, "started"), process, "actual-agent", pathlib.Path("unused")), latest)
+            telemetry.assert_called_once()
+            inputs.assert_not_called()
+            accessibility.assert_not_called()
+        for agent, chat in (("replacement", (7, "started")), ("actual-agent", (7, "new-start"))):
+            with self.subTest(agent=agent, chat=chat), \
+                    patch.object(PROOF, "owned_agent_identity", return_value=agent), \
+                    patch.object(PROOF, "chat_process_identity", return_value=chat), \
+                    patch.object(PROOF, "latest_chat_input_state") as telemetry:
+                with self.assertRaisesRegex(RuntimeError, "replaced its actual owner"):
+                    PROOF.owned_chat_message_progress(
+                        {"process": 7}, (7, "started"), process, "actual-agent", pathlib.Path("unused"))
+                telemetry.assert_not_called()
+
+    def test_restored_offers_wait_for_both_in_same_catalogue_and_reject_state_changes(self):
+        process = type("ManagedProcess", (), {"pid": 123, "poll": lambda self: None})()
+        provider = type("Provider", (), {"request_count": lambda self: 4,
+                                         "overflow_count": lambda self: 0})()
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": False}
+        before = {"draft_matches": True, "caret": 3, "selection": [3, 7]}
+        expected = {"identity": "agent", "access": owner, "draft": "PRIVATE-DRAFT", "observation": before}
+        message = {"application": "so.tilo.chat", "room": "room", "record": "record",
+                   "semantic_identity": {"kind": "chat.agent", "key": "chat.person:tide"},
+                   "operation": "message"}
+        queue = {"application": "so.tilo.desktop", "room": "room", "record": "tasks",
+                 "resource": "desktop:tasks", "operation": "queue"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "owned_agent_identity", return_value="agent"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "private_editor_observation", return_value=before) as read, \
+                patch.object(PROOF, "actions", side_effect=[[message], [queue], [message, queue]]) as catalogue, \
+                patch.object(PROOF.time, "sleep"), patch.object(PROOF, "invoke") as invokes:
+            output = pathlib.Path(directory)
+            self.assertEqual(PROOF.wait_for_restored_agent_offers(
+                "socket", "room", "record", provider, process, expected, output), owner)
+            self.assertEqual(read.call_count, 3)
+            self.assertEqual(catalogue.call_count, 3)
+            invokes.assert_not_called()
+            receipt = json.loads((output / "restored-agent-offer-observations.json").read_text())
+            self.assertFalse(receipt["initial"]["queue_offer_present"])
+            self.assertTrue(receipt["last"]["message_offer_present"])
+            self.assertTrue(receipt["last"]["queue_offer_present"])
+            self.assertNotIn("PRIVATE-DRAFT", json.dumps(receipt))
+        for identity, access, observation in (
+                ("replacement", owner, before), ("agent", {**owner, "process": 8}, before),
+                ("agent", owner, {**before, "draft_matches": False}),
+                ("agent", owner, {**before, "caret": 4}),
+                ("agent", owner, {**before, "selection": None})):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "owned_agent_identity", return_value=identity), \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value=access), \
+                    patch.object(PROOF, "private_editor_observation", return_value=observation), \
+                    patch.object(PROOF, "actions") as catalogue:
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_restored_agent_offers(
+                        "socket", "room", "record", provider, process, expected, pathlib.Path(directory))
+                catalogue.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "owned_agent_identity", return_value="agent"), \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=owner), \
+                patch.object(PROOF, "private_editor_observation", return_value=before), \
+                patch.object(PROOF, "actions", return_value=[message]), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_restored_agent_offers(
+                    "socket", "room", "record", provider, process, expected, pathlib.Path(directory))
+
+    def test_attached_float_control_requires_actual_focus_and_valid_current_target(self):
+        owner = {"process": 7, "bus": "owned", "agent": "Tide", "detached": False, "drag": "/old"}
+        current = {**owner, "drag": "/current"}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=current), \
+                patch.object(PROOF, "_editor_accessibility_focus", side_effect=[False, True]) as read, \
+                patch.object(PROOF.time, "sleep"):
+            self.assertEqual(PROOF.wait_for_conversation_control_focus(
+                owner, pathlib.Path(directory), None, detached=False, control="drag"), current)
+            read.assert_called_with({"bus": "owned", "composer": "/current"})
+        for changed in ({"process": 8}, {"drag": None}, {"detached": True}):
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "agent_conversation_accessibility", return_value={**current, **changed}), \
+                    patch.object(PROOF, "_editor_accessibility_focus") as read:
+                with self.assertRaises(RuntimeError):
+                    PROOF.wait_for_conversation_control_focus(
+                        owner, pathlib.Path(directory), None, detached=False, control="drag")
+                read.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(PROOF, "agent_conversation_accessibility", return_value=current), \
+                patch.object(PROOF, "_editor_accessibility_focus", return_value=False), \
+                patch.object(PROOF.time, "sleep"), \
+                patch.object(PROOF.time, "monotonic", side_effect=[0, 0, 10, 20, 30]):
+            with self.assertRaises(PROOF.ProofTimeout):
+                PROOF.wait_for_conversation_control_focus(
+                    owner, pathlib.Path(directory), None, detached=False, control="drag")
+
     def test_accessible_names_decodes_serialized_wire_labels_and_refuses_malformed(self):
         tree = {"/send": "(<'Send message'>,)", "/queue": "(<'Queue task'>,)"}
         with patch.object(PROOF.atspi, "atspi_address", return_value="address"), \
