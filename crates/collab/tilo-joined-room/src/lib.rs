@@ -54,7 +54,7 @@ use std::{
     sync::{Arc, Weak},
     time::SystemTime,
 };
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_peer_state::{AdmissionReport, NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
