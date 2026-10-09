@@ -422,6 +422,23 @@ impl AppActionBroker {
         self.state.certified_local_action_host(caller, presentation)
     }
 
+    /// [`Self::certified_local_action_host`] handed to agent `agent` by the
+    /// person's own device; see
+    /// [`CapnpBrokerState::certified_local_agent_host`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::certified_local_action_host`].
+    pub fn certified_local_agent_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        presentation: &[u8],
+        agent: &str,
+    ) -> Result<std::sync::Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>, String> {
+        self.state
+            .certified_local_agent_host(caller, presentation, agent)
+    }
+
     /// Reuse the checked signed person-room admission for native owner checks.
     /// # Errors
     /// Refuses non-person, foreign, stale or unadmitted execution; grants none.

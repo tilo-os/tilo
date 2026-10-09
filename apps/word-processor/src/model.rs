@@ -75,12 +75,13 @@ pub struct Reply {
     load = Document::demand,
     locate = Document::locate,
     lands = Document::lands,
+    answer = Document::answer,
 )]
 impl Document {
     /// Add a paragraph.
     ///
     /// A new paragraph holding the text, at the end of the document.
-    #[action]
+    #[action(answers)]
     pub fn append_paragraph(&mut self, text: String) -> Result<(), Refusal> {
         if text.is_empty() {
             return Err(Refusal::new("the paragraph needs text"));
@@ -92,7 +93,7 @@ impl Document {
     /// Insert a table.
     ///
     /// An empty table of `rows` by `columns` after the paragraph `after`.
-    #[action]
+    #[action(answers)]
     pub fn insert_table(&mut self, after: String, rows: usize, columns: usize) {
         self.body.perform(RichTextAction::InsertTable {
             after,
@@ -104,7 +105,7 @@ impl Document {
     /// Add a row.
     ///
     /// A new empty row at the bottom of the table.
-    #[action]
+    #[action(answers)]
     pub fn add_row(&mut self, table: String) -> Result<(), Refusal> {
         let (rows, _) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertRow { at: rows });
@@ -114,7 +115,7 @@ impl Document {
     /// Add a column.
     ///
     /// A new empty column at the right of the table.
-    #[action]
+    #[action(answers)]
     pub fn add_column(&mut self, table: String) -> Result<(), Refusal> {
         let (_, columns) = self.table_size(&table)?;
         self.edit_table(table, TableEdit::InsertColumn { at: columns });
@@ -678,6 +679,25 @@ pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
             .map_err(|error| error.to_string())?,
     };
     Ok(tilo_doc::model::init(doc, &body))
+}
+
+impl Document {
+    /// What a change to the document made, for its caller: the blocks it
+    /// changed, each with the handle that edits it, so an agent fills
+    /// what it made without reading the document again.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the resource's answer hook: some records answer nothing"
+    )]
+    fn answer(
+        doc: &AutoCommit,
+        _action: &str,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "changed": crate::semantic_read::changes::summary(doc, changes),
+        }))
+    }
 }
 
 /// A Writer document whose body holds the schema and nothing else, as a

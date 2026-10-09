@@ -533,6 +533,11 @@ impl DbClientApp {
     /// What opening an item does — a search hit, an agent's `open`: a saved
     /// connection opens, a saved query is loaded into the editor. An id that
     /// names neither is refused.
+    /// The catalogue's search index, shared with the opener of its hits.
+    pub(crate) fn search_index(&self) -> crate::search::DbSearchIndex {
+        self.search_index.clone()
+    }
+
     pub(crate) fn opener(
         &self,
     ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static

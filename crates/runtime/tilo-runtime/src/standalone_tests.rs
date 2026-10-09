@@ -622,6 +622,7 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         action_label: "Open".into(),
         risk: tilo_actions::RiskLevel::default(),
         needs_confirmation: false,
+        confirming: false,
     }
 }
 

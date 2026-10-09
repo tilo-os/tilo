@@ -48,7 +48,7 @@ fn config(path: std::path::PathBuf) -> Config {
 fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
-            caret_block: tilo_doc::model::open(doc, &automerge::ROOT)
+            caret_block: word_processor::model::open(doc)
                 .map(|c| {
                     tilo_doc::model::materialize(doc, &c)
                         .blocks
@@ -95,7 +95,7 @@ fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<tilo_actio
     fn allow_cancellation(resources: &mut [tilo_actions::Resource]) {
         for resource in resources {
             for action in &mut resource.actions {
-                if action.id == "insert-table" {
+                if action.id == "insert-table-here" {
                     action.contract.execution =
                         tilo_actions::ExecutionMode::Background { cancellable: true };
                     action.contract.result = tilo_actions::ResultSpec::Job;
@@ -129,17 +129,15 @@ fn scenario_outcome(
 ) {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("chat.sock");
-    let _broker = typed_peer::spawn_with_agent_actions(
-        &socket,
-        if allowed {
-            &[
-                (WP, typed_peer::WP_DOCUMENT, "insert-table"),
-                (WP, typed_peer::WP_DOCUMENT, "zoom-in"),
-            ][..]
-        } else {
-            &[]
-        },
-    );
+    let table = (WP, typed_peer::WP_DOCUMENT, "insert-table-here");
+    let _broker = if allowed {
+        typed_peer::spawn_with_agent_actions(
+            &socket,
+            &[table, (WP, typed_peer::WP_DOCUMENT, "zoom-in")],
+        )
+    } else {
+        typed_peer::spawn_with_agent_grants(&socket, &[], &[table])
+    };
     let mut chat_peer = TypedPeer::connect(&socket);
     send(
         &mut chat_peer,
@@ -168,8 +166,8 @@ fn scenario_outcome(
                 text: text.into(),
                 reference: ui::tilo_resource::Json(wait_for_owner.then(|| {
                     tilo_reference::ResourceRef::whole(
-                        "tilo.rich-text",
-                        "tilo.rich-text",
+                        typed_peer::WP_DOCUMENT,
+                        typed_peer::WP_DOCUMENT,
                         "Owner document",
                     )
                 })),
@@ -193,7 +191,7 @@ fn scenario_outcome(
         request(number);
     }
     let mut document = AutoCommit::new();
-    let schema = tilo_doc::model::init(&mut document, &automerge::ROOT);
+    let schema = word_processor::model::init(&mut document).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&document, &schema);
     {
         let mut edit = tilo_doc::DocMut {
@@ -395,7 +393,7 @@ fn scenario_outcome(
         requests * usize::from(expected_reply && allowed),
         "one actual owner dispatch across restart"
     );
-    let schema = tilo_doc::model::open(&document, &automerge::ROOT).unwrap();
+    let schema = word_processor::model::open(&document).unwrap();
     assert_eq!(
         tilo_doc::model::materialize(&document, &schema)
             .blocks
@@ -434,8 +432,11 @@ fn scenario_outcome(
     if requests == 0 {
         assert_eq!(work.state, AgentWorkState::Refused);
         assert!(work.trace.is_empty());
+        // A view of somebody else's window is nothing an agent is offered
+        // to do: it is refused, never dispatched.
         assert!(
-            reply.text.contains("view operations are unavailable"),
+            reply.text.contains("view operations are unavailable")
+                || reply.text.contains("cannot resolve this request"),
             "{}",
             reply.text
         );

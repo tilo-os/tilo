@@ -5738,6 +5738,8 @@ fn tracked_changes_reject_and_accept_all() {
         );
 
         wp.dispatch_review_action(ReviewAction::AcceptAllChanges, &mut edits(&mut state.doc));
+        // Accept All asks the person first; they agree.
+        confirm_asked(wp, &mut state.doc);
 
         // Every change is gone; accepting the insertion kept "keep" and accepting
         // the deletion removed "gone".
@@ -9087,4 +9089,18 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
         1,
     );
     assert!(wp.remote_presence_overlays(&stray).0.is_empty());
+}
+
+/// Apply what `wp` asked the person to confirm, as the door does once they
+/// agree.
+fn confirm_asked(wp: &WordProcessorWidget, doc: &mut automerge::AutoCommit) {
+    let dispatch = wp.dispatch.as_ref().expect("the editor is hosted");
+    let mut document =
+        ui::tilo_resource::Replica::<crate::framework::Document>::from_doc(doc.clone());
+    for action in dispatch.take_asked().expect("what was asked builds") {
+        document
+            .apply_action(&action)
+            .expect("a confirmed change applies");
+    }
+    *doc = document.doc().clone();
 }

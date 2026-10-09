@@ -64,6 +64,8 @@ impl Session {
         &mut self,
         before: &BTreeMap<&'static str, Vec<automerge::ChangeHash>>,
     ) -> bool {
+        // What the owner applied for the agent's invocation, under the
+        // broker's actor for it.
         let actor = format!("agent:{}", self.cfg.agent_id);
         self.peers.iter_mut().any(|(namespace, editor)| {
             before.get(namespace).is_some_and(|heads| {
@@ -143,6 +145,7 @@ impl Session {
                 None => match Editor::peer_from_snapshot_on_route(
                     contract,
                     route_app_id,
+                    &self.cfg.cluster.to_string(),
                     &data,
                     &self.cfg.agent_id,
                     self.cfg.permissions.clone(),
@@ -169,15 +172,12 @@ impl Session {
     /// reply and the state of its work are Chat's verbs, permission-checked
     /// and attributed to the agent like any participant's.
     fn publish_chat(&mut self, invoke: &ui::tilo_resource::Invoke<::chat::Chat>) -> Result<()> {
-        let action = invoke
-            .build(ui::time::unix_now_i64().saturating_mul(1000))
-            .map_err(|error| anyhow::anyhow!("Chat refused the verb: {error}"))?;
         let editor = self
             .peers
             .get_mut("chat")
             .ok_or_else(|| anyhow::anyhow!("Chat state unavailable"))?;
         let route_app_id = editor.route_app_id().to_string();
-        if let Some(data) = editor.apply::<::chat::Chat>(std::slice::from_ref(&action))? {
+        if let Some(data) = editor.invoke(invoke)? {
             self.link.send_to_route(
                 RouteSpec::app(route_app_id.as_str(), self.cfg.cluster),
                 &CollabRequest::document_incremental(data),
@@ -385,7 +385,11 @@ impl Session {
             let Some(offer) = surface::find(&offers, id).cloned() else {
                 return self.chat_refused("That action is no longer offered.");
             };
-            if offer.descriptor.kind != tilo_actions::OperationKind::Document {
+            // A document action, or an edit at the agent's own caret in the
+            // owner's view: both change only the record, as the agent.
+            if offer.descriptor.kind != tilo_actions::OperationKind::Document
+                && !super::edits_only(&offer.descriptor)
+            {
                 return self.chat_refused("External effects and view operations are unavailable in this Chat runner until durable delegated admission is connected.");
             }
             let namespace = surface::for_descriptor(&offer.descriptor).map_or_else(

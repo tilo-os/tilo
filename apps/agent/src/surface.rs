@@ -124,6 +124,8 @@ pub struct AppContract {
     /// The namespace the app's nested resource ids start with, and the key
     /// the agent holds its document under.
     pub namespace: &'static str,
+    /// The app itself, whose view the agent holds each of its records in.
+    pub definition: fn() -> &'static ui::application::ApplicationDefinition,
 }
 
 impl AppContract {
@@ -140,6 +142,7 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
     kind: ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>(),
     title: "the word processor",
     namespace: "word-processor",
+    definition: word_processor::definition,
 };
 
 /// Every app the agent can speak to: a rich-text document, a conversation, a
@@ -156,11 +159,13 @@ pub static CONTRACTS: &[AppContract] = &[
         kind: ui::framework::resource_kind::<chat::ChatShell>(),
         title: "the conversation",
         namespace: "chat",
+        definition: chat::definition,
     },
     AppContract {
         kind: ui::framework::resource_kind::<photos::PhotosShell>(),
         title: "the photo editor",
         namespace: "photos",
+        definition: photos::definition,
     },
 ];
 
@@ -251,7 +256,50 @@ impl Offer {
 
     /// Whether performing it requires a structured argument object.
     pub fn wants_arguments(&self) -> bool {
-        !self.descriptor.params.is_empty()
+        self.descriptor.params.iter().any(|param| param.required)
+    }
+
+    /// Whether every value it needs is one of a few words it names (an
+    /// alignment, a style), which an instruction says outright rather than
+    /// quotes.
+    pub fn wants_only_choices(&self) -> bool {
+        self.wants_arguments()
+            && self
+                .descriptor
+                .params
+                .iter()
+                .filter(|param| param.required)
+                .all(|param| !param.choices.is_empty())
+    }
+
+    /// The choices the instruction's own words name for each required
+    /// parameter that has them.
+    ///
+    /// # Errors
+    /// The choices of the first parameter the instruction names none, or
+    /// more than one, of.
+    pub fn arguments_from_choices(
+        &self,
+        instruction: &str,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, Vec<String>> {
+        let words: Vec<String> = keywords(instruction).iter().map(|w| spelled(w)).collect();
+        let mut arguments = serde_json::Map::new();
+        for param in self.descriptor.params.iter().filter(|param| param.required) {
+            let named: Vec<String> = param
+                .choices
+                .iter()
+                .map(ToString::to_string)
+                .filter(|choice| words.iter().any(|word| *word == choice.to_lowercase()))
+                .collect();
+            let [choice] = named.as_slice() else {
+                return Err(param.choices.iter().map(ToString::to_string).collect());
+            };
+            arguments.insert(
+                param.name.to_string(),
+                serde_json::Value::String(choice.clone()),
+            );
+        }
+        Ok(arguments)
     }
 
     /// Whether the text it wants is the address of content some other
@@ -530,22 +578,30 @@ pub fn offers(
 ) -> Vec<Offer> {
     let mut out = Vec::new();
     for (contract, doc) in held {
-        for descriptor in tilo_actions::door::survey(&tree(contract, doc)) {
-            // Denied means absent, so nothing downstream can decide to
-            // perform an operation it may not.
-            if !permitted_descriptor(perms, contract.app_id(), &descriptor) {
-                continue;
-            }
-            out.push(Offer {
-                app: contract.namespace.to_string(),
-                broker_peer_id: None,
-                descriptor,
-            });
-        }
+        out.extend(offers_in(contract, &tree(contract, doc), perms));
     }
     let onto = out.iter().chain(beside).any(Offer::produces_content);
     out.extend(openable(held, onto, perms));
     out
+}
+
+/// What `contract`'s app publishes in `resources` that the agent may
+/// perform. Denied means absent, so nothing downstream can decide to
+/// perform an operation it may not.
+pub fn offers_in(
+    contract: &'static AppContract,
+    resources: &[Resource],
+    perms: &PermissionContext,
+) -> Vec<Offer> {
+    tilo_actions::door::survey(resources)
+        .into_iter()
+        .filter(|descriptor| permitted_descriptor(perms, contract.app_id(), descriptor))
+        .map(|descriptor| Offer {
+            app: contract.namespace.to_string(),
+            broker_peer_id: None,
+            descriptor,
+        })
+        .collect()
 }
 
 /// Whether the room holds `namespace`'s state **with something in it**.
@@ -805,6 +861,14 @@ fn significant(word: &str) -> bool {
 
 /// The instruction's words, lowercased, with punctuation dropped and the
 /// noise removed.
+/// `word` in the spelling apps name their choices in.
+fn spelled(word: &str) -> String {
+    match word {
+        "centre" | "centred" | "centered" => "center".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 fn keywords(rest: &str) -> Vec<String> {
     rest.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -880,9 +944,17 @@ fn score(offer: &Offer, words: &[String]) -> usize {
         .filter(|w| {
             // The verb has to land on the operation. Matching only the
             // thing being acted on says which file, never what to do to it.
+            // A word naming one of its choices (an alignment) lands on it
+            // too.
             action.contains(w.as_str())
                 || resource.contains(w.as_str())
                 || kind.contains(w.as_str())
+                || offer.descriptor.params.iter().any(|param| {
+                    param
+                        .choices
+                        .iter()
+                        .any(|choice| choice.to_lowercase() == spelled(w))
+                })
         })
         .count()
 }
@@ -1007,6 +1079,20 @@ pub fn from_verbs<'a>(
     let Some(&chosen) = best.first() else {
         return Err(NoMatch::Nothing);
     };
+    if chosen.wants_only_choices() {
+        return chosen
+            .arguments_from_choices(rest)
+            .map(|arguments| (chosen, arguments))
+            .map_err(|choices| {
+                NoMatch::Ambiguous(
+                    choices
+                        .iter()
+                        .take(4)
+                        .map(|choice| format!("{} {choice}", chosen.descriptor.action_label))
+                        .collect(),
+                )
+            });
+    }
     if !collects_a_value_said(chosen) {
         return Ok((chosen, serde_json::Map::new()));
     }
@@ -1027,7 +1113,7 @@ pub fn from_verbs<'a>(
 /// place. This is the question to ask of an instruction and an operation
 /// together — whether what the one said is what the other takes.
 fn collects_a_value_said(offer: &Offer) -> bool {
-    offer.wants_arguments() && !offer.wants_content()
+    offer.wants_arguments() && !offer.wants_content() && !offer.wants_only_choices()
 }
 
 #[cfg(test)]
@@ -1140,11 +1226,17 @@ mod tests {
         // Case `a_document_with_no_blocks_is_still_something_to_act_on`.
         {
             let mut doc = AutoCommit::new();
-            tilo_doc::model::init(&mut doc, &automerge::ROOT);
+            <word_processor::framework::Document as ui::tilo_resource::Resource>::initialize(
+                &mut doc,
+            )
+            .expect("a new document");
             doc.commit();
-            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("the schema is there");
+            let c = word_processor::model::open(&doc).expect("the body is there");
             assert!(
-                tilo_doc::model::materialize(&doc, &c).blocks.is_empty(),
+                tilo_doc::model::materialize(&doc, &c)
+                    .blocks
+                    .iter()
+                    .all(|block| block.text.is_empty()),
                 "this test is about a document with nothing in it",
             );
 
@@ -1153,7 +1245,7 @@ mod tests {
                 !tree.is_empty(),
                 "an empty document reported nothing that could be done to it",
             );
-            let inserts = tree[0].actions.iter().any(|a| a.id == "insert-block");
+            let inserts = tree[0].actions.iter().any(|a| a.id == "append-paragraph");
             assert!(
                 inserts,
                 "the document exports {:?}, none of which inserts into it",
@@ -1264,34 +1356,17 @@ mod tests {
                 "opening an application takes no argument"
             );
 
+            // A chat record publishes its own operations from the moment it
+            // exists — starting the chat, making a workspace — so a held
+            // chat needs no opening, while an app the room does not hold
+            // stays on offer.
             let chat = chat_contract();
-            let doc = empty_chat();
+            let mut doc = empty_chat();
             assert!(
                 chat.kind.holds(&doc),
                 "the fixture has to be a document of the app's kind"
             );
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                !surveyable(&held, "chat"),
-                "this half is about an application with nothing open in it"
-            );
-            let empty_app = openable(&held, false, &perms);
-            assert!(
-                empty_app.iter().any(|o| o.app == "chat"),
-                "an application here but with nothing open exports no \
-                 operations, so the open must stay on offer"
-            );
-            assert_eq!(empty_app.len(), empty.len(), "and nothing else may change");
-
-            let mut doc = doc;
-            chat::demo::apply_as(
-                &mut doc,
-                "tester",
-                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                    name: "Test".into(),
-                }),
-            )
-            .unwrap();
+            chat::demo::start(&mut doc, "tester", "Tester", "TE").unwrap();
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
@@ -1313,44 +1388,28 @@ mod tests {
             );
         }
 
-        // Case `an_application_that_is_here_and_empty_is_not_yet_surveyable`.
+        // Case `a_started_chat_offers_making_a_channel`.
         {
             let chat = chat_contract();
-
-            let doc = empty_chat();
+            let mut doc = empty_chat();
             assert!(
                 chat.kind.holds(&doc),
                 "this document is the app's own, so an agent holding it is \
                  holding the app — which is all `holds` ever meant"
             );
-            let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
-            assert!(
-                !surveyable(&held, "chat"),
-                "and it publishes nothing, so a step that followed an open here \
-                 would survey a room with no operation in it"
-            );
-
-            let mut doc = doc;
-            chat::demo::apply_as(
-                &mut doc,
-                "tester",
-                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                    name: "Test".into(),
-                }),
-            )
-            .unwrap();
+            chat::demo::start(&mut doc, "tester", "Tester", "TE").unwrap();
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
                 surveyable(&held, "chat"),
-                "now it publishes its own operations, which is what the open \
-                 was for"
+                "a started chat publishes its own operations, which is what the \
+                 open was for"
             );
             let perms = granting(&[TreePath::root()]);
             assert!(
                 offers(&held, &[], &perms)
                     .iter()
-                    .any(|o| o.id().ends_with("#new-channel")),
+                    .any(|o| o.id().ends_with("#create-channel")),
                 "and creating a channel is among them, or this proves nothing \
                  about the step that wanted it"
             );

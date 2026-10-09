@@ -362,7 +362,7 @@ pub use participant::Participant;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
-pub use record::{OtherRecord, Records};
+pub use record::{OtherRecord, RecordOperations, Records};
 pub use root::reserved_action_ids;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};

@@ -3,19 +3,26 @@
 //! resource's own entries (the markup people made on it, [`crate::PdfMarkup`]'s
 //! `search`), so each entity has one search source.
 
-use tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
-use crate::actions::{PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id};
+use crate::actions::{
+    PdfEffect, PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id,
+};
 use crate::model::Page;
 
 pub const PDF_SEARCH_KIND: &str = "PDF Viewer";
 
-/// One hit: listed with the document's, invoking `address`.
-fn entry(title: String, text: String, subtitle: String, address: ActionAddress) -> SearchEntry {
+/// One hit: listed with the document's, opened by `effect` on the row
+/// `row`.
+fn entry(
+    title: String,
+    text: String,
+    subtitle: String,
+    row: String,
+    effect: &PdfEffect,
+) -> SearchEntry {
     SearchEntry::new(title, text)
-        .anchored(address.resource.clone())
-        .invoking(address)
+        .opening(row, effect)
         .grouped(PDF_SEARCH_KIND)
         .subtitled(subtitle)
 }
@@ -30,7 +37,8 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
         ctx.title.clone(),
         "pdf document find save annotated PDF".into(),
         "Open PDF document".into(),
-        ActionAddress::new(&document_id, "find"),
+        document_id,
+        &PdfEffect::Find,
     ));
     for (index, page_id) in ctx.page_ids.iter().enumerate() {
         let page = index + 1;
@@ -73,7 +81,8 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                 usize::from(*level) + 1
             ),
             format!("Contents on page {page}"),
-            ActionAddress::new(&resource, "go-to"),
+            resource,
+            &PdfEffect::GoTo { page: *page },
         ));
     }
     // The current find query is local view state, but its results are
@@ -100,7 +109,14 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                     index + 1
                 ),
                 format!("Find result for “{}”", ctx.search_query),
-                ActionAddress::new(&resource, "go-to-match"),
+                resource,
+                &PdfEffect::GoToMatch {
+                    query: ctx.search_query.clone(),
+                    whole_word: ctx.search_whole_word,
+                    case_sensitive: ctx.search_case_sensitive,
+                    index,
+                    page,
+                },
             ));
         }
     }

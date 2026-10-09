@@ -303,8 +303,15 @@ struct AdmittedRuntimeSession {
     policy_time: tilo_action_broker::peer_actions::PolicyTime,
     host: Arc<dyn ActionHost + Send + Sync>,
     admission: Arc<joined::SessionAdmission>,
+    /// The agent the person's device handed this run to.
+    agent: String,
 }
 impl AdmittedRuntimeSession {
+    /// The run's caller as the broker admits it: the agent, for the person.
+    fn acting(&self, caller: &Caller) -> Caller {
+        caller.clone().delegated_to(self.agent.clone())
+    }
+
     fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), ActionHostError> {
         let now = self
             .policy_time
@@ -354,9 +361,12 @@ impl RuntimeActionHost {
                 .admit_mcp_execution(&room, &host.room, &actor)
                 .map_err(io::Error::other)?;
             let caller = admission.caller().clone();
+            // The MCP client is an agent the person's device hands this
+            // session to; the admission stays the person's.
+            let agent = crate::mcp::agent_id(&caller);
             let qualified = host
                 .broker
-                .certified_local_action_host(&caller, admission.presentation())
+                .certified_local_agent_host(&caller, admission.presentation(), &agent)
                 .map_err(io::Error::other)?;
             admission.check(&host.joined).map_err(io::Error::other)?;
             let session_host = RuntimeActionHost {
@@ -367,6 +377,7 @@ impl RuntimeActionHost {
                     policy_time: policy_time.clone(),
                     host: qualified,
                     admission,
+                    agent,
                 })),
             };
             crate::mcp::McpServer::admitted(session_host, caller)
@@ -415,7 +426,10 @@ impl ActionHost for RuntimeActionHost {
             }
             // Existing general catalogue/builtin doors retain the exact
             // authenticated run. They make no SDK original-custody claim.
-            let answer = self.broker.state().action_query(caller, &query);
+            let answer = self
+                .broker
+                .state()
+                .action_query(&session.acting(caller), &query);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {
@@ -438,10 +452,10 @@ impl ActionHost for RuntimeActionHost {
             if certified_provider(&request.target.provider) {
                 return session.host.invoke(caller, request);
             }
-            let answer = self
-                .broker
-                .state()
-                .action_invoke(caller, None, None, &request);
+            let answer =
+                self.broker
+                    .state()
+                    .action_invoke(&session.acting(caller), None, None, &request);
             return session.guarded(Arc::clone(&self.joined), caller.clone(), answer);
         }
         if !self.admitted(caller) {

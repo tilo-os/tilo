@@ -24,6 +24,16 @@ type DemoChannelSeed = (
     u32,
 );
 
+/// The emoji the catalogue calls `name` ("thumbs up"), as a reaction or a
+/// message holds it.
+fn named(name: &str) -> String {
+    emoji::Catalogue::english()
+        .emoji()
+        .iter()
+        .find(|emoji| emoji.name() == name)
+        .map_or_else(String::new, |emoji| emoji.text().to_owned())
+}
+
 /// A demo message.
 #[derive(Clone, Debug, Default)]
 struct NewMessage {
@@ -176,7 +186,7 @@ impl Demo {
                     author: "u_aria".into(),
                     ts: m(96),
                     text: "Morning! Pushed the new call overlay mock — pulling tiles into a 2x2 grid reads way calmer than the old filmstrip.".into(),
-                    reactions: vec![("🎉".into(), vec!["u_me".into(), "u_milo".into()])],
+                    reactions: vec![(named("party popper"), vec!["u_me".into(), "u_milo".into()])],
                     ..Default::default()
                 },
             ),
@@ -193,8 +203,8 @@ impl Demo {
                         h: 360,
                     }),
                     reactions: vec![
-                        ("❤️".into(), vec!["u_me".into(), "u_sora".into(), "u_milo".into()]),
-                        ("🔥".into(), vec!["u_devon".into()]),
+                        (named("red heart"), vec!["u_me".into(), "u_sora".into(), "u_milo".into()]),
+                        (named("fire"), vec!["u_devon".into()]),
                     ],
                     ..Default::default()
                 },
@@ -214,7 +224,7 @@ impl Demo {
                     author: "u_milo".into(),
                     ts: m(84),
                     text: "+1 — and we should read every colour from the OS theme so it matches whatever the cluster is themed to.".into(),
-                    reactions: vec![("👍".into(), vec!["u_me".into(), "u_aria".into()])],
+                    reactions: vec![(named("thumbs up"), vec!["u_me".into(), "u_aria".into()])],
                     ..Default::default()
                 },
             ),
@@ -251,7 +261,7 @@ impl Demo {
                         h: 720,
                         size: 6_815_744,
                     }),
-                    reactions: vec![("🔥".into(), vec!["u_me".into(), "u_aria".into()])],
+                    reactions: vec![(named("fire"), vec!["u_me".into(), "u_aria".into()])],
                     ..Default::default()
                 },
             ),
@@ -269,8 +279,8 @@ impl Demo {
                         },
                     ],
                     reactions: vec![
-                        ("🚀".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into(), "u_devon".into()]),
-                        ("👀".into(), vec!["u_iris".into()]),
+                        (named("rocket"), vec!["u_me".into(), "u_aria".into(), "u_milo".into(), "u_devon".into()]),
+                        (named("eyes"), vec!["u_iris".into()]),
                     ],
                     ..Default::default()
                 },
@@ -302,7 +312,7 @@ impl Demo {
                 ts: m(92),
                 text: "Yeah — a thin accent ring that pulses. I'll spec the motion token.".into(),
                 parent: Some(parent_id.into()),
-                reactions: vec![("👍".into(), vec!["u_me".into()])],
+                reactions: vec![(named("thumbs up"), vec!["u_me".into()])],
                 ..Default::default()
             },
             NewMessage {
@@ -321,11 +331,12 @@ impl Demo {
         NewMessage {
             author: "u_iris".into(),
             ts: m(220),
-            text:
-                "Welcome to Acme Design 👋 Say hello and tell us what you're working on this week."
-                    .into(),
+            text: format!(
+                "Welcome to Acme Design {} Say hello and tell us what you're working on this week.",
+                named("waving hand")
+            ),
             reactions: vec![(
-                "👋".into(),
+                named("waving hand"),
                 vec!["u_me".into(), "u_aria".into(), "u_milo".into()],
             )],
             ..Default::default()

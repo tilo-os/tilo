@@ -228,6 +228,36 @@ pub(super) fn authorize_action_in(
     Ok(())
 }
 
+/// [`authorize_action_in`] at admission: whether the room's grants ask
+/// first (`Ok(true)`), when the invocation then needs the confirmation of
+/// the person it is made for.
+///
+/// # Errors
+/// When the grants refuse the action.
+pub(super) fn admit_action_in(
+    workspace: &tilo_desktop_model::Workspace,
+    (app, resource_kind, resource, action): (&str, &str, &str, &str),
+    need: &tilo_actions::ActionNeed,
+    actor: &BrokerActor,
+    now: u64,
+) -> Result<bool, String> {
+    let node = tilo_actions::action_node(
+        &workspace.node(),
+        app,
+        resource_kind,
+        resource,
+        need.field.as_deref(),
+        action,
+    );
+    match actor.answer_in(workspace, &node, need.kind, now) {
+        tilo_action_policy::Answer::Allow => Ok(false),
+        tilo_action_policy::Answer::Ask => Ok(true),
+        tilo_action_policy::Answer::Deny => {
+            Err("caller no longer authorized for invocation".into())
+        }
+    }
+}
+
 impl CapnpBrokerState {
     pub(super) fn authorize_invocation_permission(
         &self,

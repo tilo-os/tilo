@@ -1382,16 +1382,19 @@ impl PdfApp {
         if !kept.signer.is_empty() {
             self.signer_name.clone_from(&kept.signer);
         }
-        self.sig_strokes.clone_from(&kept.strokes);
+        self.sig_strokes.clone_from(&kept.strokes.0);
         self.dirty = true;
     }
 
     /// Keep an edit of the person's signature in their own record.
-    fn keep_signature(&mut self, action: &crate::signature::SignatureAction) {
+    fn keep_signature(
+        &mut self,
+        invoke: &ui::tilo_resource::Invoke<crate::signature::SignatureProfile>,
+    ) {
         let Some(record) = self.signature.as_ref() else {
             return;
         };
-        if let Err(error) = record.apply(action) {
+        if let Err(error) = record.invoke(invoke) {
             self.status_note = Some(format!("Your signature was not kept: {error}"));
             self.dirty = true;
         }
@@ -1399,10 +1402,8 @@ impl PdfApp {
 
     /// Keep the drawn strokes as the person's signature.
     fn keep_strokes(&mut self) {
-        let action = crate::signature::SignatureAction::SetStrokes {
-            strokes: self.sig_strokes.clone(),
-        };
-        self.keep_signature(&action);
+        let invoke = crate::signature::SignatureProfile::SET_STROKES.with(self.sig_strokes.clone());
+        self.keep_signature(&invoke);
     }
 
     /// The participant's permission to edit changed.
@@ -3468,10 +3469,9 @@ impl PdfApp {
                 } else {
                     name.to_string()
                 };
-                let action = crate::signature::SignatureAction::SetSigner {
-                    name: self.signer_name.clone(),
-                };
-                self.keep_signature(&action);
+                let invoke =
+                    crate::signature::SignatureProfile::SET_SIGNER.with(self.signer_name.clone());
+                self.keep_signature(&invoke);
             }
             EditTarget::FormField(name) => {
                 let value = model::FormEntry::Text(text.trim_end().to_string());
@@ -8577,7 +8577,7 @@ mod tests {
             app.keep_strokes();
             assert_eq!(record.get().signer, "Ada Lovelace", "the signer is kept");
             assert_eq!(
-                record.get().strokes,
+                record.get().strokes.0,
                 app.sig_strokes,
                 "the strokes are kept"
             );

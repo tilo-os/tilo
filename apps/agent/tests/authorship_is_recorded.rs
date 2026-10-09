@@ -28,6 +28,7 @@ use word_processor::framework::Document;
 
 const AGENT: &str = "Claude";
 const PERSON: &str = "quinten";
+const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 /// The invitation the agent joined with: write on the word processor.
 fn invited() -> ui::permissions::PermissionContext {
@@ -42,7 +43,8 @@ fn invited() -> ui::permissions::PermissionContext {
 fn a_page_somebody_wrote() -> (Vec<u8>, String) {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from(PERSON.as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    <Document as ui::tilo_resource::Resource>::initialize(&mut doc).expect("a new page");
+    let c = word_processor::model::open(&doc).expect("its body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     let block = {
         let mut dm = tilo_doc::DocMut {
@@ -61,7 +63,7 @@ fn a_page_somebody_wrote() -> (Vec<u8>, String) {
 /// Every author run the document records for `block`, oldest position first.
 fn runs_on(bytes: &[u8], block: &str) -> Vec<(usize, usize, String)> {
     let doc = AutoCommit::load(bytes).expect("reload the document");
-    let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open the schema");
+    let c = word_processor::model::open(&doc).expect("open the body");
     let marks = tilo_doc::model::marks(&doc, &c, block);
     tilo_doc::author_runs(&marks)
 }
@@ -76,20 +78,28 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
     // Case `what_the_agent_wrote_carries_its_name_in_the_document`.
     {
         let (bytes, block) = a_page_somebody_wrote();
-        let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
-                .expect("seed the replica");
+        let mut editor = tilo_agent::apply::Editor::from_snapshot(
+            &WORD_PROCESSOR,
+            ROOM,
+            &bytes,
+            AGENT,
+            invited(),
+        )
+        .expect("seed the replica");
 
         let note = " The bullet says 18:00.";
         editor
-            .apply::<Document>(
-                &[word_processor::model::action(&RichTextAction::SpliceText {
-                    region: RegionKind::Body,
-                    block: block.clone(),
-                    at: "Doors at seven.".chars().count(),
-                    del: 0,
-                    ins: note.to_string(),
-                })],
+            .invoke(
+                &ui::tilo_resource::Invoke::edit(&word_processor::model::edit(
+                    &RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.clone(),
+                        at: "Doors at seven.".chars().count(),
+                        del: 0,
+                        ins: note.to_string(),
+                    },
+                ))
+                .unwrap(),
             )
             .expect("the agent's edit applies");
 
@@ -118,7 +128,7 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
         // that only ever sees the saved bytes reads the same answer.
         let text = {
             let doc = AutoCommit::load(&saved).expect("reload");
-            let c = tilo_doc::model::open(&doc, &automerge::ROOT).expect("open");
+            let c = word_processor::model::open(&doc).expect("open");
             tilo_doc::model::block_text(&doc, &c, &block).unwrap_or_default()
         };
         let authored: String = text.chars().skip(*start).take(end - start).collect();
@@ -131,18 +141,26 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
     // Case `the_sentence_the_person_typed_is_left_alone`.
     {
         let (bytes, block) = a_page_somebody_wrote();
-        let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
-                .expect("seed the replica");
+        let mut editor = tilo_agent::apply::Editor::from_snapshot(
+            &WORD_PROCESSOR,
+            ROOM,
+            &bytes,
+            AGENT,
+            invited(),
+        )
+        .expect("seed the replica");
         editor
-            .apply::<Document>(
-                &[word_processor::model::action(&RichTextAction::SpliceText {
-                    region: RegionKind::Body,
-                    block: block.clone(),
-                    at: "Doors at seven.".chars().count(),
-                    del: 0,
-                    ins: " The bullet says 18:00.".to_string(),
-                })],
+            .invoke(
+                &ui::tilo_resource::Invoke::edit(&word_processor::model::edit(
+                    &RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.clone(),
+                        at: "Doors at seven.".chars().count(),
+                        del: 0,
+                        ins: " The bullet says 18:00.".to_string(),
+                    },
+                ))
+                .unwrap(),
             )
             .expect("the agent's edit applies");
 
@@ -167,19 +185,27 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
             "an untouched page must carry no authorship"
         );
 
-        let mut editor =
-            tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
-                .expect("seed the replica");
+        let mut editor = tilo_agent::apply::Editor::from_snapshot(
+            &WORD_PROCESSOR,
+            ROOM,
+            &bytes,
+            AGENT,
+            invited(),
+        )
+        .expect("seed the replica");
         // An edit that removes text authors nothing.
         editor
-            .apply::<Document>(
-                &[word_processor::model::action(&RichTextAction::SpliceText {
-                    region: RegionKind::Body,
-                    block: block.clone(),
-                    at: 0,
-                    del: 6,
-                    ins: String::new(),
-                })],
+            .invoke(
+                &ui::tilo_resource::Invoke::edit(&word_processor::model::edit(
+                    &RichTextAction::SpliceText {
+                        region: RegionKind::Body,
+                        block: block.clone(),
+                        at: 0,
+                        del: 6,
+                        ins: String::new(),
+                    },
+                ))
+                .unwrap(),
             )
             .expect("the agent's deletion applies");
 

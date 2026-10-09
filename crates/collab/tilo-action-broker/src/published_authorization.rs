@@ -11,9 +11,11 @@ use crate::collab_broker_capnp::{PublishedAction, PublishedSurface};
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
 const MAX_RECORD_ID_BYTES: usize = 128;
 
-/// Whether `answer` lets an invocation run: allowed; or asking first when the
-/// person acts themselves (`direct`), their own gesture being the answer.
-/// Someone acting for them, or a device not theirs, does not get past an ask.
+/// Whether `answer` lets an action be taken without anyone being asked:
+/// allowed; or asking first when the person acts themselves (`direct`),
+/// their own gesture being the answer. Someone acting for them, or a device
+/// not theirs, gets past an ask only with the person's confirmation, which
+/// admission requires (see [`authorize_person_published`]).
 #[must_use]
 pub fn permits(answer: Answer, direct: bool) -> bool {
     match answer {
@@ -61,10 +63,10 @@ pub fn authorize_person_published(
         .iter()
         .map(|node| authority.decide(node, kind, &cx).answer)
         .collect();
-    if answers.iter().all(|answer| permits(*answer, !capped)) {
-        Ok(answers.contains(&Answer::Ask))
-    } else {
+    if answers.contains(&Answer::Deny) {
         Err("not authorized: caller no longer authorized for invocation".into())
+    } else {
+        Ok(answers.contains(&Answer::Ask))
     }
 }
 
@@ -136,12 +138,19 @@ mod tests {
         send.contract.kind = tilo_actions::ActionKind::Outside;
         let typing = action("type-text");
         let s = surface("rec-1", vec![send.clone(), typing.clone()]);
-        assert!(authorize_person_published(&w, 10, OWNER, false, &s, &send).is_ok());
-        assert!(
-            authorize_person_published(&w, 10, OWNER, true, &s, &send).is_err(),
+        assert_eq!(
+            authorize_person_published(&w, 10, OWNER, false, &s, &send),
+            Ok(false)
+        );
+        assert_eq!(
+            authorize_person_published(&w, 10, OWNER, true, &s, &send),
+            Ok(true),
             "reaching outside asks first on a device that is not theirs"
         );
-        assert!(authorize_person_published(&w, 10, OWNER, true, &s, &typing).is_ok());
+        assert_eq!(
+            authorize_person_published(&w, 10, OWNER, true, &s, &typing),
+            Ok(false)
+        );
     }
 
     #[test]

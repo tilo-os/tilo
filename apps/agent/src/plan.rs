@@ -628,7 +628,7 @@ mod tests {
     /// actually exports.
     fn surveyed() -> Vec<Offer> {
         let mut doc = automerge::AutoCommit::new();
-        let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let c = word_processor::model::init(&mut doc).expect("a Writer body");
         let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
         {
             let mut dm = tilo_doc::DocMut {
@@ -643,7 +643,22 @@ mod tests {
         doc.commit();
         let wp = &surface::CONTRACTS[0];
         assert_eq!(wp.namespace, "word-processor");
-        surface::offers(&[(wp, &doc)], &[], &permitting("so.tilo.word-processor"))
+        // What the app's own view publishes over it: its verbs and the
+        // edits at a caret.
+        let published = word_processor::actions::published_for(
+            &word_processor::actions::WpResourceCtx {
+                caret_block: String::new(),
+                caret_offset: 0,
+                target_blocks: Vec::new(),
+                format_spans: Vec::new(),
+                selection: None,
+                region: word_processor::actions::RegionKind::Body,
+                search_hits: Vec::new(),
+                content: tilo_content::ContentStore::memory(),
+            },
+            &doc,
+        );
+        surface::offers_in(wp, &published, &permitting("so.tilo.word-processor"))
     }
 
     fn permitting(app: &str) -> ui::permissions::PermissionContext {
@@ -690,8 +705,8 @@ mod tests {
         {
             let offers = surveyed();
 
-            // "centre" and "notes" together land on exactly one offer: the
-            // heading's own alignment, not the document's.
+            // "centre" lands on exactly one offer, the paragraph alignment,
+            // with the alignment the instruction named.
             let one = Instruction::from_floor("centre the Notes", &offers);
             let Instruction::Perform {
                 id,
@@ -701,14 +716,14 @@ mod tests {
             else {
                 panic!("a single clear match must resolve to an address, got {one:?}");
             };
-            assert!(arguments.is_empty());
+            assert_eq!(arguments.get("align"), Some(&serde_json::json!("center")));
             assert_eq!(confirmation, &ConfirmationEvidence::None);
             assert!(
                 surface::find(&offers, id).is_some_and(|o| o
                     .descriptor
                     .action_label
                     .to_lowercase()
-                    .contains("centre")),
+                    .contains("align")),
                 "the floor chose {id}"
             );
 
@@ -736,13 +751,15 @@ mod tests {
             ));
 
             // There is no agent-only vocabulary: "table" means whatever the app
-            // publishes for it — here its own table of contents — never a
+            // publishes for it — here its table of contents and its table at
+            // the caret, between which the floor does not guess — never a
             // compiled-in recipe.
             let table = Instruction::from_floor("turn the headings into a table", &offers);
-            assert!(
-                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#generate-toc")),
-                "{table:?}"
-            );
+            let Instruction::Unknown(why) = &table else {
+                panic!("two of the app's own operations fit; got {table:?}");
+            };
+            assert!(why.contains("generate table of contents"), "{why}");
+            assert!(why.contains("insert table here"), "{why}");
         }
 
         // Case `an_answer_is_checked_against_the_survey_and_not_against_a_list`.

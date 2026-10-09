@@ -1,9 +1,2 @@
-[ratchets.hand_resource_impl]
-"apps/pdf-viewer/src/signature.rs" = 1
-
-[ratchets.action_address_new]
-"apps/pdf-viewer/src/search.rs" = 3
-
 [ratchets.direct_automerge_write]
 "apps/pdf-viewer/src/app.rs" = 1
-"apps/pdf-viewer/src/signature.rs" = 2

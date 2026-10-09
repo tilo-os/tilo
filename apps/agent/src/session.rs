@@ -480,6 +480,16 @@ fn ask_for_document(link: &mut Link) -> Result<()> {
     link.send(&CollabRequest::RequestDocumentSnapshot)
 }
 
+/// Whether `descriptor` only edits its record, at the invoker's own caret
+/// in the owner's view: as much a document change as a document action.
+pub(crate) fn edits_only(descriptor: &tilo_actions::door::ActionDescriptor) -> bool {
+    descriptor
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == ui::tilo_resource::effect::EDITS_TAG)
+}
+
 fn is_chat_app_id(app_id: &str) -> bool {
     app_id == "so.tilo.chat"
 }
@@ -1782,6 +1792,7 @@ impl Session {
             }
             self.editor = Some(Editor::from_snapshot(
                 contract,
+                &self.cfg.cluster.to_string(),
                 data,
                 &self.cfg.agent_id,
                 self.cfg.permissions.clone(),
@@ -1832,6 +1843,7 @@ impl Session {
         let peer = Editor::peer_from_snapshot_on_route(
             contract,
             contract.app_id(),
+            &self.cfg.cluster.to_string(),
             data,
             &self.cfg.agent_id,
             self.cfg.permissions.clone(),
@@ -2230,7 +2242,10 @@ impl Session {
             return Ok(Err(format!("I couldn't do that - {error}")));
         }
         let peer_id = offer.broker_peer_id;
-        if self.chat_run.is_some() && descriptor.kind != tilo_actions::OperationKind::Document {
+        if self.chat_run.is_some()
+            && descriptor.kind != tilo_actions::OperationKind::Document
+            && !edits_only(&descriptor)
+        {
             return Ok(Err("This Chat runner cannot admit external effects with durable delegated identity yet".into()));
         }
         if self.chat_run.is_some()
@@ -2476,9 +2491,12 @@ impl Session {
             .with_app(&self.cfg.app_id, "Agent")
             .with_purpose(&run.instruction)
             .with_group(&run.group_id, &run.instruction, "agent-run");
+        // The agent acts for whoever asked.
+        let mut invoker = crate::apply::agent(&self.cfg.agent_id);
         if let Some(issuer) = &run.issued_by {
-            context = context.with_facet(tilo_actions::ActionFacet::new("assigned-by", issuer));
+            invoker = invoker.acting_for(issuer);
         }
+        context = context.with_invoker(invoker);
         Some(context)
     }
 
@@ -2833,9 +2851,9 @@ impl Session {
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
         let editor = self.editor.as_mut().context("no document yet")?;
-        let delta = editor.apply::<word_processor::framework::Document>(&[
-            word_processor::model::action(action),
-        ])?;
+        let edit = ui::tilo_resource::Invoke::edit(&word_processor::model::edit(action))
+            .context("encode the edit")?;
+        let delta = editor.invoke(&edit)?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action
@@ -4550,7 +4568,7 @@ mod tests {
                 ],
             );
             let mut document = automerge::AutoCommit::new();
-            let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
+            let model = word_processor::model::init(&mut document).expect("a Writer body");
             let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
             let instruction_id = {
                 let mut edit = tilo_doc::DocMut {
@@ -4703,6 +4721,7 @@ mod tests {
             session.editor = Some(
                 Editor::from_snapshot(
                     surface::for_app_id(WRITER).unwrap(),
+                    &session.cfg.cluster.to_string(),
                     &document.save(),
                     "Scribe",
                     session.cfg.permissions.clone(),
@@ -4716,6 +4735,7 @@ mod tests {
                 Editor::peer_from_snapshot_on_route(
                     surface::for_app_id(PHOTOS).unwrap(),
                     PHOTOS,
+                    &session.cfg.cluster.to_string(),
                     &photo.save(),
                     "Scribe",
                     session.cfg.permissions.clone(),

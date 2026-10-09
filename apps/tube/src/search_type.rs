@@ -1,13 +1,12 @@
 //! Tube's search source: [`model_entries`] are what the host-wide search
-//! finds in Tube, each naming the exact resource/action that opens a video,
-//! creator, playlist, or local watch-history entry.
+//! finds in Tube, each anchored at the video, creator, playlist or local
+//! watch-history entry the window's opener shows ([`opened`]).
 
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
 const MAX_INDEXED_ENTITIES: usize = 100;
 /// The videos, creators, playlists and watch history Tube shows, as search
-/// entries, each naming the exact resource and action that opens it. Kept to
+/// entries, each anchored at what it opens. Kept to
 /// the same 100-item ceiling as the published rows, so every hit stays
 /// activatable; no entry gains authority merely because it is searchable.
 pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
@@ -19,10 +18,7 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
                 video.display_title(dearrow),
                 format!("{} {}", video.title, video.id),
             )
-            .invoking(ActionAddress::new(
-                format!("tube.video:{}", video.id),
-                "open-video",
-            ))
+            .anchored(format!("tube.video:{}", video.id))
             .grouped("Videos")
             .subtitled(video.channel_name.clone())
             .with_icon("play"),
@@ -31,10 +27,7 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     for channel in model.channels.iter().take(MAX_INDEXED_ENTITIES) {
         entries.push(
             SearchEntry::new(channel.name.clone(), channel.id.clone())
-                .invoking(ActionAddress::new(
-                    format!("tube.channel:{}", channel.id),
-                    "open-creator",
-                ))
+                .anchored(format!("tube.channel:{}", channel.id))
                 .grouped("Creators")
                 .subtitled(channel.handle.clone())
                 .with_icon("users"),
@@ -43,10 +36,7 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     for playlist in model.playlists.iter().take(MAX_INDEXED_ENTITIES) {
         entries.push(
             SearchEntry::new(playlist.title.clone(), playlist.id.clone())
-                .invoking(ActionAddress::new(
-                    format!("tube.playlist:{}", playlist.id),
-                    "open-playlist",
-                ))
+                .anchored(format!("tube.playlist:{}", playlist.id))
                 .grouped("Playlists")
                 .subtitled(playlist.channel_name.clone())
                 .with_icon("list-video"),
@@ -61,10 +51,7 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
                 video.display_title(dearrow),
                 format!("{} {video_id}", video.title),
             )
-            .invoking(ActionAddress::new(
-                format!("tube.history:{video_id}"),
-                "open-video",
-            ))
+            .anchored(format!("tube.history:{video_id}"))
             .grouped("Watch history")
             .subtitled(video.channel_name.clone())
             .with_icon("history"),
@@ -73,12 +60,26 @@ pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
     entries
 }
 
+/// What opening the anchor `anchor` runs: the video (from the catalogue or
+/// the watch history), the creator or the playlist it names.
+pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
+    use crate::actions::TubeEffect;
+    let (kind, id) = anchor.split_once(':')?;
+    let id = id.to_owned();
+    match kind {
+        "tube.video" | "tube.history" => Some(TubeEffect::OpenVideo { video: id }),
+        "tube.channel" => Some(TubeEffect::OpenCreator { creator: id }),
+        "tube.playlist" => Some(TubeEffect::OpenPlaylist { playlist: id }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn host_search_uses_canonical_actions_for_video_playlist_and_history() {
+    fn host_search_hits_open_videos_playlists_and_history() {
         let mut model = crate::sample::model();
         let video_id = model.videos[0].id.clone();
         model.history.push(video_id.clone());
@@ -104,11 +105,12 @@ mod tests {
                 ui::search::SearchProvider::search(&provider, query)
                     .iter()
                     .any(|hit| {
-                        hit.action_address().is_some_and(|address| {
-                            address.resource.starts_with(resource) && address.action == open
-                        })
+                        hit.action_id.starts_with(resource)
+                            && opened(&hit.action_id).is_some_and(|effect| {
+                                ui::tilo_resource::Effect::id(&effect) == open
+                            })
                     }),
-                "{query:?} exposes a canonical {resource} open action"
+                "{query:?} finds a {resource} hit that opens with {open}"
             );
         }
     }

@@ -23,7 +23,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
+use tilo_actions::{ActionAddress, ActionRegistry, Resource};
 use tilo_agent::wire::Link;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
@@ -306,42 +306,51 @@ pub fn service_document_invocation(
         actor,
         context,
     } = invocation;
-    let provenance = tilo_actions::door::InvocationProvenance {
-        actor: actor.as_bytes(),
-        ambient: context,
-    };
-    let registry = ActionRegistry::with(register);
-    let mut transport = LocalTransport::new();
-    let before = replica.get_heads();
-    let result = if let Some(json) =
-        argument.and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
-    {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))
-            .and_then(|arguments| {
-                tilo_actions::door::invoke_json_confirmed(
-                    replica,
-                    resources,
-                    &address,
-                    &arguments,
-                    provenance,
-                    &registry,
-                    &mut transport,
-                )
-            })
+    let _ = register;
+    // Who the broker admitted: the agent, as the participant whose own caret
+    // an edit at the caret moves.
+    let invoker = context
+        .and_then(|context| context.invoker.clone())
+        .filter(|invoker| invoker.actor == actor)
+        .unwrap_or_else(|| tilo_actions::ActionInvoker::actor(actor));
+    let invoker = if invoker.participant.is_some() {
+        invoker
     } else {
-        tilo_actions::door::invoke_confirmed(
-            replica,
-            resources,
-            &address,
-            argument,
-            provenance,
-            &registry,
-            &mut transport,
-        )
+        tilo_actions::ActionInvoker {
+            participant: tilo_actions::ParticipantId::new(actor).ok(),
+            ..invoker
+        }
     };
+    let before = replica.get_heads();
+    // The owning app services it in its own view of the record, as a
+    // window does: for the invoker the broker admitted.
+    let root = resources
+        .first()
+        .map(|resource| resource.kind.clone())
+        .unwrap_or_default();
+    let contract = tilo_agent::surface::CONTRACTS
+        .iter()
+        .find(|contract| contract.kind.kind() == root)
+        .expect("an app the agent speaks to owns the record");
+    let result = owner_view(contract, replica).and_then(|mut view| {
+        let arguments = match argument
+            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        {
+            Some(json) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?,
+            None => serde_json::Map::new(),
+        };
+        view.invoke_as(invoker, &address, &arguments, true)?;
+        if let Some(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
+            view.take_changes()
+        {
+            tilo_automerge::ApplyIncoming::load_incoming(replica, &bytes)
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?;
+        }
+        Ok(())
+    });
     match result {
-        Ok(_) => {
+        Ok(()) => {
             let delta = replica.save_after(&before);
             assert!(!delta.is_empty(), "the invoked document action was a no-op");
             peer.send(&CollabRequest::document_incremental(delta))
@@ -363,6 +372,30 @@ pub fn service_document_invocation(
     }
 }
 
+/// `contract`'s app's own view over `replica`, as the record's owner holds
+/// it.
+fn owner_view(
+    contract: &tilo_agent::surface::AppContract,
+    replica: &automerge::AutoCommit,
+) -> Result<ui::framework::AttachedView, tilo_actions::DoorError> {
+    let definition = (contract.definition)();
+    let checkout = ui::record::identity(replica)
+        .filter(|_| !definition.keeps_room_record())
+        .unwrap_or_else(|| {
+            ui::record::RecordCheckout::package_primary(definition.record_kind.clone())
+        });
+    ui::framework::AttachedView::open(
+        definition,
+        &room().to_string(),
+        checkout,
+        replica.clone().save(),
+        "owner",
+        ui::permissions::PermissionContext::permissive(),
+        false,
+    )
+    .map_err(tilo_actions::DoorError::Failed)
+}
+
 /// The word processor's document, the resource its editing actions are on.
 pub const WP_DOCUMENT: &str =
     <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND;
@@ -374,11 +407,11 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("dev.tilo.word-processor", WP_DOCUMENT, "align-center"),
-            ("dev.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "align"),
+            ("dev.tilo.word-processor", WP_DOCUMENT, "insert-table-here"),
             ("dev.tilo.word-processor", WP_DOCUMENT, "place-image"),
-            ("so.tilo.word-processor", WP_DOCUMENT, "align-center"),
-            ("so.tilo.word-processor", WP_DOCUMENT, "insert-table"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "align"),
+            ("so.tilo.word-processor", WP_DOCUMENT, "insert-table-here"),
             ("so.tilo.word-processor", WP_DOCUMENT, "place-image"),
         ],
     )
@@ -400,6 +433,24 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str, &str)],
+) -> shell::shell::collab_broker::BrokerHandle {
+    spawn_with_agent_grants(path, actions, &[])
+}
+
+/// [`spawn_with_agent_actions`], with the agent refused the `denied`
+/// actions outright: what its operator preset would otherwise let it do.
+///
+/// # Panics
+///
+/// As [`spawn_with_agent_actions`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "builds the whole agent test room in one place"
+)]
+pub fn spawn_with_agent_grants(
+    path: &Path,
+    actions: &[(&str, &str, &str)],
+    denied: &[(&str, &str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
     let parent = path.parent().expect("typed broker socket has a parent");
     shell::shell::collab_broker_capnp::tests::secure_socket_parent(parent)
@@ -459,6 +510,23 @@ pub fn spawn_with_agent_actions(
             format!("reviewed:{app}:{resource}:{action}"),
             "scribe",
             node,
+        ));
+    }
+    for (app, resource, action) in denied {
+        let node = workspace
+            .node()
+            .app(*app)
+            .rest()
+            .resource(*resource)
+            .rest()
+            .action(*action);
+        workspace.grant(tilo_action_policy::Grant::new(
+            format!("refused:{app}:{resource}:{action}"),
+            tilo_action_policy::Subject::agent("scribe"),
+            node,
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Deny,
+            owner.clone(),
         ));
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device

@@ -1812,6 +1812,108 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
     assert_eq!(door.app.served.len(), 1, "the denied call never ran");
 }
 
+/// An app whose grant asks first does not confirm the action by its own
+/// word: the person is asked on their sheet each time, and the call runs
+/// only on their answer.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a confirmed call and a declined one are one grant's life"
+)]
+fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
+    let (mut door, mut sheet) = door_asking(true);
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+    door.membership
+        .write()
+        .desktop
+        .workspaces
+        .first_mut()
+        .map(|room| {
+            let node =
+                tilo_actions::action_node(&room.node(), FIXTURE, INBOX_KIND, INBOX, None, "draft");
+            room.grant(tilo_action_policy::Grant::new(
+                "invoker-drafts-when-asked",
+                tilo_action_policy::Subject::app(INVOKER_APP),
+                node,
+                KindSet::READ_UNDOABLE,
+                Answer::Ask,
+                tilo_action_policy::Subject::person(owner_principal()),
+            ))
+        })
+        .expect("the room");
+
+    // The app claims a confirmation of its own; it counts for nothing.
+    let mut confirm = |door: &mut Door, answer: AppActionConsent, title: &str| {
+        let invocation = InvocationId::new();
+        let mut seen = None;
+        let reply = invoker.ask_while(
+            door,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
+                invocation,
+                target: draft.clone(),
+                argument: InvokeArgument::Json(
+                    json!({ "title": title })
+                        .as_object()
+                        .cloned()
+                        .expect("an object"),
+                ),
+                context: None,
+                confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+                revision: None,
+                wait_ms: None,
+            }),
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation
+                )
+            },
+            || {
+                sheet.pump();
+                if let Some(view) = sheet.view() {
+                    seen = Some(view);
+                    answer_sheet(&mut sheet, answer);
+                }
+            },
+        );
+        let RemoteActionMessage::Receipt(receipt) = reply else {
+            panic!("not a receipt: {reply:?}");
+        };
+        (receipt.status, seen)
+    };
+
+    let (status, seen) = confirm(&mut door, AppActionConsent::Once, "Confirmed");
+    if let ReceiptStatus::Rejected { error } = status {
+        panic!("confirmed by the person, the call goes ahead: {error:?}");
+    }
+    let seen = seen.expect("the person was asked, not the app's word taken");
+    assert!(
+        seen.title().contains("wants to act for you"),
+        "the sheet asks to confirm one call: {seen:?}"
+    );
+    assert_eq!(seen.app_name(), "Inbox · Write draft");
+    assert_eq!(
+        seen.choices(),
+        ["Allow once"],
+        "confirming grants nothing beyond this call"
+    );
+    served_until(&mut door, 1);
+    assert_eq!(
+        invoker_draft_grants(&door).len(),
+        1,
+        "nothing was granted beyond the grant that asks"
+    );
+
+    let (status, seen) = confirm(&mut door, AppActionConsent::Deny, "Declined");
+    assert!(seen.is_some(), "every call asks again");
+    assert!(not_permitted(&status), "{status:?}");
+    door.serve_briefly();
+    assert_eq!(door.app.served.len(), 1, "the declined call never ran");
+}
+
 /// A grant names one resource's action: the same action on another
 /// resource is another action, asked about afresh and refused when denied.
 #[test]

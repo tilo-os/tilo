@@ -1094,6 +1094,18 @@ impl SearchEntry {
         self
     }
 
+    /// Anchored at the live row `row`, opened by running `effect`, the
+    /// view effect that row offers (go to a bookmark, show a find match):
+    /// for a hit whose row is the window's own state rather than an item
+    /// of the record.
+    #[must_use]
+    pub fn opening<E: crate::Effect>(mut self, row: impl Into<String>, effect: &E) -> Self {
+        let row = row.into();
+        self.action = Some(tilo_actions::ActionAddress::new(row.clone(), effect.id()));
+        self.anchor = Some(row);
+        self
+    }
+
     /// List hits under `group` rather than the resource's label.
     #[must_use]
     pub fn grouped(mut self, group: impl Into<String>) -> Self {

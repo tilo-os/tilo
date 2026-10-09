@@ -414,3 +414,94 @@ fn a_control_whose_input_is_not_the_fields_value_maps_it_to_the_edit() {
     app.harness().click_named("large").unwrap();
     assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
 }
+
+/// Lists one entity as a live row offering a section's field edit for it.
+#[derive(Default)]
+struct Rules {
+    rect: tilo_app::prelude::Rect,
+    contrast: Option<tilo_app::framework::RecordOperations<Display>>,
+}
+
+impl Widget for Rules {
+    fn build_layout(
+        &mut self,
+        taffy: &mut tilo_app::advanced::TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<tilo_app::advanced::NodeId, *mut dyn Widget>,
+    ) -> tilo_app::advanced::NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        _: &tilo_app::advanced::TaffyTree<()>,
+        _: tilo_app::advanced::NodeId,
+        origin: Point,
+    ) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn draw(
+        &mut self,
+        _: &mut tilo_app::advanced::Scene,
+        _: tilo_app::advanced::Affine,
+        _: &mut TextRenderer,
+        _: &Theme,
+        _: &PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "Rules"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ResourceSurface<Board> for Rules {
+    fn present(&mut self, _: &std::rc::Rc<Board>) {}
+
+    fn attach(&mut self, cx: tilo_app::framework::SurfaceCx<Board>) {
+        let display = cx.settings::<Display>();
+        self.contrast = cx.record_operations(&display);
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        let row = LiveRow::new("screen:main", "test.screen", "Main screen");
+        let Some(contrast) = &self.contrast else {
+            return vec![row];
+        };
+        let edit = tilo_app::tilo_resource::ActionDecl::<Display>::edit(
+            "high-contrast",
+            "Use high contrast on this screen",
+            Display::paths().high_contrast.set(true),
+        );
+        vec![match contrast.operation(&edit) {
+            Some(operation) => row.operation(operation),
+            None => row,
+        }]
+    }
+}
+
+struct RowsApp;
+
+impl ResourceApp for RowsApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-board-rows";
+    const TITLE: &'static str = "Board";
+
+    fn view(cx: &mut ViewCx<Board>) -> Element {
+        cx.surface(Rules::default())
+    }
+}
+
+#[test]
+fn a_live_row_offers_another_records_field_edit() {
+    let mut app = TestApp::<RowsApp>::new().unwrap();
+    assert!(!app.settings::<Display>().get().high_contrast);
+    app.call_on("screen:main", "high-contrast", serde_json::json!({}))
+        .unwrap();
+    assert!(app.settings::<Display>().get().high_contrast);
+}

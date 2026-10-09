@@ -52,13 +52,16 @@ fn only_answering(name: &str) -> ui::permissions::PermissionContext {
     let answer = |action: &str| {
         ui::permissions::TreePath::root()
             .app(APP)
-            .kind("tilo.rich-text")
+            .kind(typed_peer::WP_DOCUMENT)
             .rest()
             .action(action)
     };
     ui::permissions::PermissionContext::agent_granted_at(
         name,
-        &[answer(tilo_resource::APPLY), answer(tilo_resource::GROUP)],
+        &[
+            answer(tilo_resource::FIELD_EDIT),
+            answer(tilo_resource::GROUP),
+        ],
         ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
@@ -68,7 +71,7 @@ fn only_answering(name: &str) -> ui::permissions::PermissionContext {
 fn seed_document_with_image(instruction: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let c = word_processor::model::init(&mut doc).expect("a Writer body");
     let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
         let mut dm = tilo_doc::DocMut {
@@ -87,7 +90,7 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    let c = word_processor::model::open(doc).expect("schema");
     tilo_doc::model::materialize(doc, &c).blocks
 }
 
@@ -351,10 +354,11 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 .into_iter()
                 .map(|v| v.actor)
                 .filter(|a| *a != genesis && *a != seed)
+                .map(|a| ui::history_source::actor_handle(&a).unwrap_or(a))
                 .collect();
         assert_eq!(
             actors,
-            std::collections::HashSet::from([hex::encode("Scribe")]),
+            std::collections::HashSet::from(["Scribe".to_owned()]),
             "the refusal's change must carry the agent's own actor"
         );
     }
@@ -443,7 +447,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             &[(
                 "so.tilo.word-processor",
                 typed_peer::WP_DOCUMENT,
-                "insert-table",
+                "insert-table-here",
             )],
             |sock, room| Config {
                 endpoint: Some(sock),
