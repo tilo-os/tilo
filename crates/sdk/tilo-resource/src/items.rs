@@ -147,6 +147,11 @@ pub struct ItemAction {
     pub param: &'static str,
     /// The collection field named by `#[action(item = "...")]`, if any.
     pub collection: Option<&'static str>,
+    /// For an item of a nested collection (`item = slides.elements`): the
+    /// enclosing collections, outermost first…
+    pub within: &'static [&'static str],
+    /// …and the parameters naming their items.
+    pub within_params: &'static [&'static str],
 }
 
 /// The id of the child resource an item is published as.
@@ -162,6 +167,9 @@ pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
 }
 
 fn targets(action: &ItemAction, fields: &[&str], field: &str) -> bool {
+    if !action.within.is_empty() {
+        return false;
+    }
     if let Some(named) = action.collection {
         return named == field;
     }
@@ -468,16 +476,38 @@ pub fn item_children<R: Resource>(
     let mut children = Vec::new();
     for collection in collections {
         if !collection.within.is_empty() {
-            // An item of a collection inside an item: its label, its fields
-            // and `open`; verbs act on it from its enclosing item.
-            if collection.labelled {
+            // An item of a collection inside an item: its label, its fields,
+            // `open`, and the verbs declared on it (`item = slides.elements`).
+            let outer: Vec<&str> = collection.within.iter().map(|(field, _)| *field).collect();
+            let verbs: Vec<(&ItemAction, &ActionDecl<R>)> = actions
+                .iter()
+                .filter(|action| {
+                    action.collection == Some(collection.field) && action.within == outer.as_slice()
+                })
+                .filter_map(|action| {
+                    declarations
+                        .iter()
+                        .find(|decl| decl.id == action.action)
+                        .map(|decl| (action, decl))
+                })
+                .collect();
+            if collection.labelled || !verbs.is_empty() {
                 for (id, label) in &collection.items {
-                    children.push(nested_item::<R>(
-                        &collection.within,
-                        collection.field,
-                        id,
-                        label,
-                    ));
+                    let mut child =
+                        nested_item::<R>(&collection.within, collection.field, id, label);
+                    for (action, decl) in &verbs {
+                        let mut values: Vec<(String, serde_json::Value)> = action
+                            .within_params
+                            .iter()
+                            .zip(&collection.within)
+                            .map(|(param, (_, outer_id))| {
+                                ((*param).to_owned(), outer_id.as_str().into())
+                            })
+                            .collect();
+                        values.push((action.param.to_owned(), id.as_str().into()));
+                        child = child.with_action(bound(decl, &values));
+                    }
+                    children.push(child);
                 }
             }
             continue;

@@ -146,6 +146,8 @@ struct ActionOptions {
     external: bool,
     answers: bool,
     item: Option<syn::Ident>,
+    /// The collections the item's collection sits in (`item = slides.elements`).
+    within: Vec<syn::Ident>,
     /// The function that names the verb compensating this one's outside
     /// consequence on undo.
     undo: Option<syn::ExprPath>,
@@ -162,6 +164,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         external: false,
         answers: false,
         item: None,
+        within: Vec::new(),
         undo: None,
         writes: Vec::new(),
     };
@@ -182,7 +185,14 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         } else if meta.path.is_ident("external") {
             options.external = true;
         } else if meta.path.is_ident("item") {
-            options.item = Some(meta.value()?.parse::<syn::Ident>()?);
+            let value = meta.value()?;
+            let mut names = vec![value.parse::<syn::Ident>()?];
+            while value.peek(Token![.]) {
+                value.parse::<Token![.]>()?;
+                names.push(value.parse::<syn::Ident>()?);
+            }
+            options.item = names.pop();
+            options.within = names;
         } else if meta.path.is_ident("undo") {
             options.undo = Some(meta.value()?.parse::<syn::ExprPath>()?);
         } else if meta.path.is_ident("answers") {
@@ -931,7 +941,49 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         // of a collection: it is also offered on each item, id bound. One
         // naming an outbox (`item = ops`) acts on an entry of it, which is
         // no item resource.
-        if let Some(first) = verb.params.first()
+        if !verb.options.within.is_empty() {
+            // An item of a collection inside items: the first parameters
+            // name the enclosing items, outermost first, then the item.
+            let depth = verb.options.within.len();
+            let ids = verb
+                .params
+                .iter()
+                .take(depth + 1)
+                .filter(|param| last_ident(&param.ty).is_some_and(|(name, _)| name == "Id"))
+                .count();
+            if ids != depth + 1 {
+                return Err(syn::Error::new(
+                    verb.method.span(),
+                    "an action on an item of a nested collection takes the enclosing items' ids, then the item's, first",
+                ));
+            }
+            let outer: Vec<String> = verb
+                .options
+                .within
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let outer_params: Vec<&String> = verb
+                .params
+                .iter()
+                .take(depth)
+                .map(|param| &param.public)
+                .collect();
+            let item_param = verb.params.get(depth).map(|param| &param.public);
+            let named = verb
+                .options
+                .item
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            item_actions.push(quote!(#krate::items::ItemAction {
+                action: #id,
+                param: #item_param,
+                collection: ::core::option::Option::Some(#named),
+                within: &[#(#outer),*],
+                within_params: &[#(#outer_params),*],
+            }));
+        } else if let Some(first) = verb.params.first()
             && last_ident(&first.ty).is_some_and(|(name, _)| name == "Id")
         {
             let param = &first.public;
@@ -950,6 +1002,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 action: #id,
                 param: #param,
                 collection: #collection,
+                within: &[],
+                within_params: &[],
             }));
             let message = if named.is_empty() {
                 format!(

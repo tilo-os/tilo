@@ -614,7 +614,19 @@ pub struct Deck {
 }
 
 #[resource(kind = "test.deck", label = "Deck")]
-impl Deck {}
+impl Deck {
+    /// Nudge an element along.
+    #[action(item = slides.elements)]
+    pub fn nudge(&mut self, slides: &Id, elements: &Id, by: f64) -> Result<(), &'static str> {
+        let element = self
+            .slides
+            .get_mut(slides)
+            .and_then(|slide| slide.elements.get_mut(elements))
+            .ok_or("no such element")?;
+        element.x += by;
+        Ok(())
+    }
+}
 
 #[test]
 fn items_of_a_nested_collection_are_resources_of_their_own() {
@@ -658,6 +670,27 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
     let action: <Deck as tilo_resource::Resource>::Action =
         serde_json::from_slice(&encoded.payload).unwrap();
     deck.apply_action(&action).unwrap();
+
+    // The verbs on elements are offered on each, both ids bound.
+    let published = deck.published().unwrap();
+    let element = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "test.deck/slides/s1/elements/e1")
+        .unwrap();
+    let nudge = element
+        .actions
+        .iter()
+        .find(|spec| spec.id == "nudge")
+        .expect("the element's verb");
+    let params: Vec<String> = nudge.params().iter().map(|p| p.name.to_string()).collect();
+    assert_eq!(params, ["by"]);
+    let encoded = nudge
+        .build_json(serde_json::json!({ "by": 0.5 }).as_object().unwrap())
+        .unwrap();
+    let action: <Deck as tilo_resource::Resource>::Action =
+        serde_json::from_slice(&encoded.payload).unwrap();
+    deck.apply_action(&action).unwrap();
     let state = deck.state().unwrap();
     let x = state
         .slides
@@ -667,5 +700,5 @@ fn items_of_a_nested_collection_are_resources_of_their_own() {
         .get(&Id::from_raw("e1"))
         .unwrap()
         .x;
-    assert_eq!(x, 4.5);
+    assert_eq!(x, 5.0);
 }
