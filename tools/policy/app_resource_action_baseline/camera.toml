@@ -1,5 +1,0 @@
-[ratchets.hand_resource_impl]
-"apps/camera/src/resource.rs" = 1
-
-[ratchets.direct_automerge_write]
-"apps/camera/src/doc.rs" = 14

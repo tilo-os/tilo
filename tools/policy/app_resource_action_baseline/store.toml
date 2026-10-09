@@ -1,14 +1,2 @@
-[ratchets.hand_resource_impl]
-"apps/store/src/resource.rs" = 1
-
-[ratchets.action_decl_new]
-"apps/store/src/resource.rs" = 1
-
 [ratchets.action_address_new]
 "apps/store/src/search.rs" = 1
-
-[ratchets.untyped_action_args]
-"apps/store/src/resource.rs" = 1
-
-[ratchets.direct_automerge_write]
-"apps/store/src/doc_actions.rs" = 4
