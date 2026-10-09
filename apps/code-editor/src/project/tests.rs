@@ -356,3 +356,50 @@ fn the_terminal_session_lives_in_one_panel_of_the_project() {
         .is_err()
     );
 }
+
+/// The terminal's runs land in its panel, and a command asked of it is
+/// queued for the process running it, as in Terminal's own window.
+#[test]
+fn the_terminal_records_its_runs_and_queues_asked_commands() {
+    let mut project = Replica::<Project>::new();
+    assert!(
+        act(
+            &mut project,
+            &crate::actions::terminal(Terminal::RUN.with("ls".to_owned()).build(0).unwrap()),
+        )
+        .is_err(),
+        "nothing runs the terminal yet"
+    );
+    let pane = "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59";
+    act(
+        &mut project,
+        &crate::actions::terminal(Terminal::CLAIM_PANE.with(pane.to_owned()).build(0).unwrap()),
+    )
+    .unwrap();
+    let finished = terminal::resource::Finished {
+        command: "cargo test".into(),
+        cwd: "/src".into(),
+        exit: 101,
+        run: Id::from("r1"),
+        ..Default::default()
+    };
+    act(
+        &mut project,
+        &crate::actions::terminal(Terminal::RECORD_RUN.with(finished).build(0).unwrap()),
+    )
+    .unwrap();
+    act(
+        &mut project,
+        &crate::actions::terminal(Terminal::RERUN.with(Id::from("r1")).build(0).unwrap()),
+    )
+    .unwrap();
+    let state = project.state().unwrap();
+    let session = state.terminal_panel.as_ref().unwrap();
+    assert_eq!(session.runs.get(&Id::from("r1")).unwrap().exit, 101);
+    let asked: Vec<(&str, &str)> = state
+        .terminal_requests
+        .pending()
+        .map(|(_, request)| (request.command.0.as_str(), request.pane.0.as_str()))
+        .collect();
+    assert_eq!(asked, [("cargo test", pane)]);
+}

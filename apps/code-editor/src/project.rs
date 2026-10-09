@@ -15,10 +15,10 @@ use std::collections::BTreeMap;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use terminal::resource::Terminal;
+use terminal::resource::{Finished, RunAnswer, RunRequest, Terminal};
 use ui::tilo_resource::{
     self, ActionCx, Collection, Delta, Demand, Derived, Doc, EditOp, Id, Model, ModelError,
-    Operations, Refusal, SearchEntry, Segment, Slot, resource,
+    Operations, Outbox, Refusal, SearchEntry, Segment, Slot, resource,
 };
 
 use crate::model::Language;
@@ -116,6 +116,11 @@ pub struct Project {
     /// The embedded terminal's session, recorded by the terminal running it.
     #[model(readonly)]
     pub terminal_panel: Option<Terminal>,
+    /// Commands asked of the terminal
+    ///
+    /// The command lines asked to run in the embedded terminal's session,
+    /// each settled with the run it became by the editor running it.
+    pub terminal_requests: Outbox<RunRequest, RunAnswer>,
 }
 
 /// The id a new file or folder is kept under.
@@ -349,9 +354,73 @@ impl Project {
             .get_or_insert_with(Terminal::default)
             .claim_pane(pane)
     }
+
+    /// Run in terminal
+    ///
+    /// Run a command line in the embedded terminal's session, and answer
+    /// with the run once it ends.
+    #[action(id = "run")]
+    pub fn run_in_terminal(
+        &mut self,
+        cx: &mut ActionCx,
+        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        #[param("The command line, as typed at the prompt")] command: String,
+    ) -> Result<(), Refusal> {
+        self.terminal()?.run(cx, terminal_requests, command)
+    }
+
+    /// Rerun in terminal
+    ///
+    /// Run one of the embedded terminal's runs again.
+    #[action(id = "rerun")]
+    pub fn rerun_in_terminal(
+        &mut self,
+        cx: &mut ActionCx,
+        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        #[param("The run")] run: Id,
+    ) -> Result<(), Refusal> {
+        self.terminal()?.rerun(cx, terminal_requests, &run)
+    }
+
+    /// Rerun test in terminal
+    ///
+    /// Run one test of one of the embedded terminal's runs again, the way
+    /// its tool runs one test.
+    #[action(id = "rerun-test")]
+    pub fn rerun_test_in_terminal(
+        &mut self,
+        cx: &mut ActionCx,
+        terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
+        #[param("The run")] run: Id,
+        #[param("The test's name, as the run reported it")] test: String,
+    ) -> Result<(), Refusal> {
+        self.terminal()?
+            .rerun_test(cx, terminal_requests, &run, test)
+    }
+
+    /// Record terminal run
+    ///
+    /// Record a run the embedded terminal's session ended.
+    #[action(external, id = "record-run")]
+    pub fn record_terminal_run(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The run, as the session marked it", flatten)] run: Finished,
+    ) -> Result<(), Refusal> {
+        self.terminal_panel
+            .get_or_insert_with(Terminal::default)
+            .record_run(cx, run)
+    }
 }
 
 impl Project {
+    /// The embedded terminal's session, once it has one.
+    fn terminal(&mut self) -> Result<&mut Terminal, Refusal> {
+        self.terminal_panel
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the project's terminal has not run yet"))
+    }
+
     /// The entry `id` when it is a folder.
     fn folder(&self, id: &Id) -> Result<&Entry, Refusal> {
         self.files

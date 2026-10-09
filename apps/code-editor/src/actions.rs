@@ -251,6 +251,23 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
                 pane: claim.pane,
             })
         }
+        TerminalAction::Run(run) => ProjectAction::RunInTerminal(project::project::RunInTerminal {
+            command: run.command,
+        }),
+        TerminalAction::Rerun(rerun) => {
+            ProjectAction::RerunInTerminal(project::project::RerunInTerminal { run: rerun.runs })
+        }
+        TerminalAction::RerunTest(rerun) => {
+            ProjectAction::RerunTestInTerminal(project::project::RerunTestInTerminal {
+                run: rerun.runs,
+                test: rerun.test,
+            })
+        }
+        TerminalAction::RecordRun(record) => {
+            ProjectAction::RecordTerminalRun(project::project::RecordTerminalRun {
+                run: record.run,
+            })
+        }
         // A session's fields change only by its verbs.
         TerminalAction::FieldEdit(edit) => ProjectAction::FieldEdit(Edit::new(
             std::iter::once(ui::tilo_resource::Segment::Field("terminal_panel".into()))

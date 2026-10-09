@@ -85,6 +85,113 @@ stored = "value"
 title = "Pane"
 type = "Option<Atom>"
 
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.runs"
+readonly = true
+stored = "collection"
+title = "Runs"
+type = "Collection<Run>"
+
+[[resources.fields]]
+label = true
+owner = "run"
+path = "terminal_panel.runs.*.command"
+stored = "value"
+title = "Command"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.cwd"
+stored = "value"
+title = "Working directory"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.environment"
+stored = "value"
+title = "Where it ran: the session's encoded target"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.actor"
+stored = "value"
+title = "Who ran it: the person at the keyboard, or whoever asked with `run`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.for_person"
+stored = "value"
+title = "The person an agent ran it for"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.started_ms"
+stored = "value"
+title = "Started, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.ended_ms"
+stored = "value"
+title = "Ended, in milliseconds since the Unix epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.exit"
+stored = "value"
+title = "Exit status"
+type = "i32"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.output"
+stored = "value"
+title = "Everything it printed, escape sequences included"
+type = "Bytes"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.truncated"
+stored = "value"
+title = "It printed more than the output keeps"
+type = "bool"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.tool"
+stored = "value"
+title = "The tool whose parser read it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "run"
+path = "terminal_panel.runs.*.items"
+stored = "value"
+title = "What its parsers found"
+type = "Vec<RunItem>"
+
+[[resources.fields]]
+owner = "terminal"
+path = "terminal_panel.requests"
+stored = "value"
+title = "Commands asked to run"
+type = "Outbox<RunRequest, RunAnswer>"
+
+[[resources.fields]]
+owner = "project"
+path = "terminal_requests"
+stored = "value"
+title = "Commands asked of the terminal"
+type = "Outbox<RunRequest, RunAnswer>"
+
 [[resources.verbs]]
 description = "New file  A new file named `name` in the folder `folder` (the project's root when none), holding `text`."
 id = "new-file"
@@ -343,4 +450,213 @@ required = true
 
 [resources.verbs.params.schema]
 description = "The pane's id"
+type = "string"
+
+[[resources.verbs]]
+description = "Run in terminal  Run a command line in the embedded terminal's session, and answer with the run once it ends."
+id = "run"
+kind = "outside"
+label = "Run in terminal"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+description = "The command line, as typed at the prompt"
+type = "string"
+
+[[resources.verbs]]
+description = "Rerun in terminal  Run one of the embedded terminal's runs again."
+id = "rerun"
+kind = "outside"
+label = "Rerun in terminal"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+description = "The run"
+type = "string"
+
+[[resources.verbs]]
+description = "Rerun test in terminal  Run one test of one of the embedded terminal's runs again, the way its tool runs one test."
+id = "rerun-test"
+kind = "outside"
+label = "Rerun test in terminal"
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+description = "The run"
+type = "string"
+
+[[resources.verbs.params]]
+name = "test"
+required = true
+
+[resources.verbs.params.schema]
+description = "The test's name, as the run reported it"
+type = "string"
+
+[[resources.verbs]]
+description = "Record terminal run  Record a run the embedded terminal's session ended."
+id = "record-run"
+kind = "undoable"
+label = "Record terminal run"
+
+[[resources.verbs.params]]
+name = "command"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "cwd"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "started_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "ended_ms"
+required = true
+
+[resources.verbs.params.schema]
+type = "integer"
+
+[[resources.verbs.params]]
+name = "exit"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 2147483647
+minimum = -2147483648
+type = "integer"
+
+[[resources.verbs.params]]
+name = "output"
+required = false
+
+[resources.verbs.params.schema]
+description = "The content hash of the raw output (lower-case hex), when it printed anything."
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "output_len"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "truncated"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tool"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "items"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One thing a parser found in a run's output: a diagnostic, a location, a link, a test, a changed file."
+required = [
+    "kind",
+    "text",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.code]
+description = "A diagnostic's code, a test's name, a change's status."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.column]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.kind]
+description = "What it is."
+enum = [
+    "error",
+    "warning",
+    "location",
+    "url",
+    "test-passed",
+    "test-failed",
+    "test-ignored",
+    "change",
+]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.line]
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.path]
+description = "The file it is in, or the URL."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+description = "What the output says about it."
+type = "string"
+
+[[resources.verbs.params]]
+name = "request"
+required = false
+
+[resources.verbs.params.schema]
+description = "The request it carried out, if `run` asked for it."
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "run"
+required = true
+
+[resources.verbs.params.schema]
+description = "The id the run takes: the request's when one asked for it, so its answer names the run."
 type = "string"
