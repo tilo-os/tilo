@@ -171,21 +171,18 @@ impl Resource for Chat {
     }
 
     /// Starting a call rides the root once there is a conversation to call
-    /// in, and launches Chat when it is closed (Home's "Plan a meeting", an
-    /// agent). A chat holding nothing yet offers nothing to do in it.
+    /// in (Home's "Plan a meeting", an agent). A chat holding nothing yet
+    /// offers nothing to do in it.
     fn bound_actions(state: &ChatState) -> Vec<tilo_actions::ActionSpec> {
         if state.workspaces.is_empty() {
             return Vec::new();
         }
         vec![
-            ChatEffect::StartCall.bound().launchable_when_closed(),
-            ChatEffect::StartVideoCall
-                .bound()
-                .launchable_when_closed()
-                .unavailable(
-                    crate::effects::VIDEO_CALL_UNAVAILABLE,
-                    crate::effects::video_call_unavailable_reason(),
-                ),
+            ChatEffect::StartCall.bound(),
+            ChatEffect::StartVideoCall.bound().unavailable(
+                crate::effects::VIDEO_CALL_UNAVAILABLE,
+                crate::effects::video_call_unavailable_reason(),
+            ),
         ]
     }
 
@@ -989,11 +986,6 @@ mod tests {
         for id in ["start-call", "start-video-call"] {
             let action = spec(id);
             assert_eq!(action.kind, ui::tilo_actions::OperationKind::Effect, "{id}");
-            assert_eq!(
-                action.contract.discovery,
-                ui::tilo_actions::DiscoveryScope::Launchable,
-                "{id} launches Chat when it is closed"
-            );
             assert_eq!(
                 action.contract.retry,
                 ui::tilo_actions::RetryPolicy::Idempotent

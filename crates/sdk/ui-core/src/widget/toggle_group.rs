@@ -648,14 +648,14 @@ impl ToggleGroup {
     )]
     pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
         use crate::tilo_actions::{
-            ActionBinding, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
-            ParamType, Resource,
+            ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            Resource,
         };
 
         const TYPE_ID: &str = "tilo.ui.segmented.select";
         self.id = Some(id.to_owned());
         let control_id = id.to_owned();
-        let mut spec = ActionSpec::typed_operation(
+        let spec = ActionSpec::typed_operation(
             "select",
             "Select",
             "Choose a segment",
@@ -677,7 +677,6 @@ impl ToggleGroup {
                 .expect("generated segmented action payload is serializable")
             },
         );
-        spec.contract.discovery = DiscoveryScope::Launchable;
         let resource = Resource::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
             .with_action(spec.clone());
         let binding = ActionBinding::new(&resource, &spec, |index: usize| {
@@ -3352,10 +3351,6 @@ mod tests {
             assert_eq!(resource.actions.len(), 1);
             let spec = &resource.actions[0];
             assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
-            assert_eq!(
-                spec.contract.discovery,
-                crate::tilo_actions::DiscoveryScope::Launchable
-            );
             assert_eq!(spec.params()[0].name, "index");
 
             assert!(Widget::perform_semantic_action(

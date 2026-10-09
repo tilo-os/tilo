@@ -8,7 +8,6 @@ fn certified_launch_action() -> runtime_collab::ExportedAction {
         .unwrap();
     action.operation_kind = tilo_actions::OperationKind::Effect;
     action.contract = tilo_actions::ActionContract {
-        discovery: tilo_actions::DiscoveryScope::Launchable,
         execution: tilo_actions::ExecutionMode::Background { cancellable: true },
         result: tilo_actions::ResultSpec::Job,
         ..tilo_actions::ActionContract::default()

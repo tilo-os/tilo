@@ -642,16 +642,9 @@ fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
     })
 }
 
-/// What a held record publishes that its door runs now. A `Launchable`
-/// action is delivered by launching the app, not by a record already open,
-/// so it is not offered here.
+/// What a held record publishes that its door runs now.
 fn live_actions(app: &Replica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
-        .into_iter()
-        .filter(|descriptor| {
-            descriptor.contract.discovery != tilo_actions::DiscoveryScope::Launchable
-        })
-        .collect()
 }
 
 /// How an invocation that did not succeed ended.

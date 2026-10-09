@@ -1433,8 +1433,8 @@ impl LiveUi {
     )]
     fn graph_resource(&self) -> crate::tilo_actions::Resource {
         use crate::tilo_actions::{
-            ActionContract, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
-            ParamType, Resource, ResultSpec,
+            ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+            Resource, ResultSpec,
         };
         let id = self.seen_document.root.id();
         let mut resource = Resource::new(
@@ -1470,7 +1470,6 @@ impl LiveUi {
             },
         );
         apply.contract = ActionContract {
-            discovery: DiscoveryScope::Launchable,
             result: ResultSpec::None,
             ..ActionContract::default()
         };

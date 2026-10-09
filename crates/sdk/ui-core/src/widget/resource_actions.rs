@@ -12,7 +12,7 @@ use crate::kurbo::{Affine, Point, Rect};
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
-    DiscoveryScope, EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
@@ -20,7 +20,7 @@ use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Wid
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
-/// Build one launchable resource with a unit operation.
+/// Build one resource with a unit operation.
 ///
 /// # Panics
 ///
@@ -40,7 +40,6 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
     )
     .expect("the unit operation is serializable");
     action.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
         execution: ExecutionMode::Immediate,
         result: ResultSpec::None,
         ..ActionContract::default()
@@ -48,7 +47,7 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
-/// Build one launchable resource whose arguments are schema-bound.
+/// Build one resource whose arguments are schema-bound.
 ///
 /// # Panics
 ///
@@ -65,7 +64,7 @@ pub fn typed_resource(
     action_label: &str,
     params: Vec<ActionParam>,
 ) -> Resource {
-    let mut action = ActionSpec::typed_operation(
+    let action = ActionSpec::typed_operation(
         action_id,
         action_label,
         "Enter action arguments",
@@ -77,7 +76,6 @@ pub fn typed_resource(
                 .expect("bound arguments are serializable")
         },
     );
-    action.contract.discovery = DiscoveryScope::Launchable;
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 

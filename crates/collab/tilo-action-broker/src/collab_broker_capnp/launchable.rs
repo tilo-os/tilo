@@ -1,14 +1,12 @@
-//! Actions an application keeps offering while it is closed.
+//! Every application keeps offering its actions while it is closed.
 //!
-//! An application opts an action into [`DiscoveryScope::Launchable`] when
-//! launching the app and then delivering the invocation is a sensible way to
-//! run it. The broker retains the last such projection per app, workspace and
-//! record, on disk, so a caller can still find and invoke it after the app
+//! No action runs out of sight: invoking one makes the app's view live and
+//! runs it there, exactly as a person's click does. So the broker retains
+//! the last tree each app published per workspace and record, on disk, and
+//! a caller can still find and invoke any of its actions after the app
 //! closes or the shell restarts. The retained rows are catalogue state only:
 //! invoking one launches the app and admits the invocation against the
 //! surface the app publishes fresh, never against the retained copy.
-//!
-//! [`DiscoveryScope::Launchable`]: tilo_actions::DiscoveryScope::Launchable
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -117,10 +115,7 @@ impl StoredSurface {
 fn launchable_actions(actions: &[PublishedAction]) -> Vec<PublishedAction> {
     actions
         .iter()
-        .filter(|action| {
-            action.contract.discovery == tilo_actions::DiscoveryScope::Launchable
-                && action.contract.validate_declaration().is_empty()
-        })
+        .filter(|action| action.contract.validate_declaration().is_empty())
         .cloned()
         .collect()
 }
@@ -252,9 +247,9 @@ impl LaunchableCatalogue {
         })
     }
 
-    /// Retain the launchable part of a surface a live application just
-    /// published, replacing what that app, workspace and record offered
-    /// before. A surface with nothing launchable forgets the old one.
+    /// Retain the surface a live application just published, replacing what
+    /// that app, workspace and record offered before. A surface offering
+    /// nothing forgets the old one.
     pub(super) fn retain(&self, published: &PublishedSurface) {
         let key = (
             published.app_id.clone(),
@@ -371,7 +366,6 @@ mod tests {
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
             contract: tilo_actions::ActionContract {
-                discovery: tilo_actions::DiscoveryScope::Launchable,
                 risk: if confirmation == tilo_actions::ConfirmationPolicy::None {
                     tilo_actions::RiskLevel::Low
                 } else {
@@ -909,14 +903,35 @@ mod tests {
     }
 
     #[test]
-    fn a_surface_without_launchable_actions_forgets_the_retained_one() {
+    fn a_surface_offering_nothing_forgets_the_retained_one() {
         let (state, room) = broker(&workspace());
         state.launchable.retain(&surface(7, &room));
-        let mut live_only = surface(7, &room);
-        for action in &mut live_only.actions {
-            action.contract.discovery = tilo_actions::DiscoveryScope::Live;
-        }
-        state.launchable.retain(&live_only);
+        let mut empty = surface(7, &room);
+        empty.actions.clear();
+        state.launchable.retain(&empty);
         assert!(state.launchable.surfaces().is_empty());
+    }
+
+    #[test]
+    fn every_published_action_stays_offered_once_the_app_closes() {
+        let (state, room) = broker(&workspace());
+        let mut published = surface(7, &room);
+        published.actions.push(PublishedAction {
+            operation_kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            ..action("rename", tilo_actions::ConfirmationPolicy::None)
+        });
+        state.launchable.retain(&published);
+        let retained = state.launchable.surfaces();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained[0]
+                .actions
+                .iter()
+                .map(|action| action.action.as_str())
+                .collect::<Vec<_>>(),
+            ["new-window", "empty-trash", "rename"],
+            "no action needs to opt in to being reachable while its app is closed"
+        );
     }
 }

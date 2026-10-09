@@ -9,8 +9,8 @@ use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Availability, ConfirmationPolicy,
-    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, Resource,
+    Action, ActionError, ActionRegistry, ActionSpec, Availability, ConfirmationPolicy, Doc,
+    EncodedAction, ExecutionLocus, Resource,
 };
 use ui::framework::LiveRow;
 use ui::tilo_resource::{self, Effect};
@@ -337,14 +337,13 @@ pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
 
 fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
     let maintenance = maintenance_specs(app);
-    let mut launch = offered(
+    let launch = offered(
         &WindowsEffect::Launch {
             app: app.id.clone(),
         },
         app.launch_available,
         app.launch_unavailable_reason.as_deref(),
     );
-    launch.contract.discovery = DiscoveryScope::Launchable;
     let mut row = LiveRow::new(
         format!("windows.app:{}", app.id),
         "windows.compat-app",

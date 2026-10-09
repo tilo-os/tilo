@@ -150,18 +150,6 @@ pub enum ExecutionMode {
     },
 }
 
-/// Where an action remains discoverable when no live window publishes it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiscoveryScope {
-    #[default]
-    Live,
-    /// Installed-app catalogue can launch the app and deliver the invocation.
-    Launchable,
-    /// Safe summary may remain in the permission-filtered durable index.
-    Durable,
-}
-
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
 /// do not need a parallel Tilo-only type system.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,8 +231,6 @@ pub struct ActionContract {
     #[serde(default)]
     pub execution: ExecutionMode,
     #[serde(default)]
-    pub discovery: DiscoveryScope,
-    #[serde(default)]
     pub result: ResultSpec,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -260,7 +246,6 @@ impl Default for ActionContract {
             retry: RetryPolicy::AtMostOnce,
             reversible: false,
             execution: ExecutionMode::Immediate,
-            discovery: DiscoveryScope::Live,
             result: ResultSpec::None,
             tags: Vec::new(),
         }

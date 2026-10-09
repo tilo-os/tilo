@@ -39,8 +39,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::contract::{
-    ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
-    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, Availability, ConfirmationPolicy, ExecutionMode, PermissionRequirement,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
@@ -1611,18 +1611,6 @@ impl ActionSpec {
     #[must_use]
     pub fn returns(mut self, result: ResultSpec) -> Self {
         self.contract.result = result;
-        self
-    }
-
-    #[must_use]
-    pub fn launchable_when_closed(mut self) -> Self {
-        self.contract.discovery = DiscoveryScope::Launchable;
-        self
-    }
-
-    #[must_use]
-    pub fn durably_discoverable(mut self) -> Self {
-        self.contract.discovery = DiscoveryScope::Durable;
         self
     }
 

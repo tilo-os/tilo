@@ -1625,9 +1625,6 @@ facts that let a caller plan safely:
 - `execution`: immediate, background, or streaming, with explicit cooperative
   cancellation. Long work reports monotonic progress and one terminal state;
   every streaming item is validated against the stream's declared JSON Schema.
-- `discovery`: live, launchable, or durable. Instance operations normally stay
-  live; an app-level action may opt into launchable discovery when it can run
-  after the shell starts the installed app.
 - `result`: no value, JSON checked by JSON Schema, a resource address, or the
   broker-owned job identity.
 

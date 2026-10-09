@@ -70,10 +70,8 @@ impl NativeControl {
         kind: tilo_actions::OperationKind,
         handler: Box<dyn FnMut()>,
     ) -> (Self, tilo_actions::ActionBinding<()>) {
-        let mut spec =
-            tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
-                .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let spec = tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
+            .expect("a control id is always JSON serializable");
         let resource =
             tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control", label)
                 .with_action(spec);

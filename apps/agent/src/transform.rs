@@ -31,8 +31,8 @@ use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
-    ActionContract, ConfirmationPolicy, DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG,
-    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -240,7 +240,6 @@ fn contract_of(action: &str) -> ActionContract {
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::Idempotent,
         execution: ExecutionMode::Immediate,
-        discovery: DiscoveryScope::Live,
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },

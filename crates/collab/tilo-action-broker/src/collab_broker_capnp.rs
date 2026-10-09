@@ -1183,8 +1183,8 @@ pub struct PublishedSurface {
     pub route: CrdtRoute,
     pub actions: Vec<PublishedAction>,
     /// False for a permission-filterable catalogue retained after the app
-    /// closes. Only actions that explicitly opted into launchable/durable
-    /// discovery are ever retained this way.
+    /// closes: what it last published, offered so invoking it launches the
+    /// app.
     pub live: bool,
 }
 
@@ -2756,7 +2756,7 @@ pub struct CapnpBrokerState {
     /// moving it. A launch waiting for an app to publish an action and open
     /// its stream wakes on either.
     surface_changes: tokio::sync::watch::Sender<u64>,
-    /// Last launchable projection per app, workspace and record, kept across
+    /// Last published surface per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
     /// Pull-only, revisioned directories owned by currently connected apps.
@@ -15672,8 +15672,7 @@ pub mod tests {
     fn exact_published_action_uses_current_live_routes_before_archived_descriptors() {
         let broker = CapnpBrokerState::test_broker_with_idle_directory_queue();
         let state = broker.state();
-        let mut retained = catalogue_surface(7, "room", "notebook");
-        retained.actions[0].contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let retained = catalogue_surface(7, "room", "notebook");
         state.launchable.retain(&retained);
         let route = retained.route.clone();
         let (archived, descriptor) = state.published_action(&route, "notebook", "open").unwrap();
@@ -16177,10 +16176,7 @@ pub mod tests {
                 description: None,
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
-                contract: tilo_actions::ActionContract {
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    ..tilo_actions::ActionContract::view()
-                },
+                contract: tilo_actions::ActionContract::view(),
                 view: None,
                 input: PublishedInput::None,
             }],
