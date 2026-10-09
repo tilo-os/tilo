@@ -4,9 +4,23 @@ use std::{io::Read as _, path::PathBuf, sync::Arc, time::SystemTime};
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_joined_room::{Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store};
 
-struct ReadOnlyStore;
+struct ReadOnlyStore {
+    history: tilo_joined_room::HistoryContent,
+}
+
+impl ReadOnlyStore {
+    fn for_state_file(path: &std::path::Path) -> Self {
+        Self {
+            history: tilo_joined_room::HistoryContent::for_state_file(path),
+        }
+    }
+}
 
 impl Store for ReadOnlyStore {
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
+
     fn healthy(&self) -> bool {
         true
     }
@@ -106,7 +120,7 @@ fn read_owner(path: &std::path::Path) -> Result<NativeWorkspaceOwner, Box<dyn st
             .take(),
     )?;
     Ok(NativeWorkspaceOwner::restore(
-        Arc::new(ReadOnlyStore),
+        Arc::new(ReadOnlyStore::for_state_file(path)),
         authority,
         SystemTime::now(),
     )?)
@@ -275,7 +289,7 @@ mod tests {
         assert!(matches_category(&[0xff], "room", "Lifecycle proof").is_err());
         let mut installed = false;
         assert!(
-            ReadOnlyStore
+            ReadOnlyStore::for_state_file(std::path::Path::new("/unopened-proof/state.json"))
                 .publish(
                     &NativeAuthorityStorage::default(),
                     Change::Pending,
@@ -284,5 +298,33 @@ mod tests {
                 .is_err()
         );
         assert!(!installed);
+    }
+
+    #[test]
+    fn inspector_reads_verified_history_only_beside_its_exact_state_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("state.json");
+        let content = tilo_joined_room::HistoryContent::for_state_file(&path);
+        let bytes = b"retained owner history";
+        let hash = content.put(bytes)?;
+        let inspector = ReadOnlyStore::for_state_file(&path);
+        assert_eq!(inspector.read_history(hash)?, bytes);
+        assert!(
+            inspector
+                .put_history(b"inspector must not publish history")
+                .is_err()
+        );
+        assert!(inspector.read_history([0; 32]).is_err());
+        let other = ReadOnlyStore::for_state_file(&directory.path().join("other/state.json"));
+        assert!(other.read_history(hash).is_err());
+        let address = blake3::Hash::from_bytes(hash).to_hex().to_string();
+        let shard = address.get(..2).ok_or("invalid test content address")?;
+        std::fs::write(
+            directory.path().join("content").join(shard).join(address),
+            b"corrupt",
+        )?;
+        assert!(inspector.read_history(hash).is_err());
+        Ok(())
     }
 }
