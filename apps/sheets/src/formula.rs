@@ -28,9 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
-use crate::model::{
-    Addr, CellFormat, CellValue, FormatCategory, FormulaError, GridEdit, a1_to_addr, addr_to_a1,
-};
+use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -2637,18 +2635,6 @@ fn arg_units<S: BuildHasher>(arg: &Expr, formats: &HashMap<Addr, CellFormat, S>)
         }
         _ => vec![unit_of(arg, formats)],
     }
-}
-
-/// True when a category should be allowed to propagate at all (kept for
-/// callers that want to gate by category without importing `Unit`).
-pub fn category_propagates(cat: FormatCategory) -> bool {
-    matches!(
-        cat,
-        FormatCategory::Currency
-            | FormatCategory::Percent
-            | FormatCategory::Date
-            | FormatCategory::Time
-    )
 }
 
 #[cfg(test)]

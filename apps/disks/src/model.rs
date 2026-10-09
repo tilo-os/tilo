@@ -304,10 +304,6 @@ impl Topology {
         self.drives.iter().map(|d| d.size).sum()
     }
 
-    pub fn total_used(&self) -> u64 {
-        self.drives.iter().map(Drive::used_total).sum()
-    }
-
     /// A curated, fully-populated sample machine for screenshots and tests:
     /// an `NVMe` with
     /// EFI + root + home + swap, a SATA SSD, a spinning HDD that needs

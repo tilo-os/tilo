@@ -253,10 +253,6 @@ impl FakeDav {
         self.lock().offline = offline;
     }
 
-    pub fn set_reject(&self, reject: bool) {
-        self.lock().reject = reject;
-    }
-
     pub fn inject(&self, fault: FakeFault) {
         self.lock().faults.push_back(fault);
     }

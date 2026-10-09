@@ -92,26 +92,6 @@ impl HostDocuments {
             certificate,
         })
     }
-    /// Binds these host documents to one policy-time lifetime.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when `time` is unusable or another lifetime is already bound.
-    pub fn register_policy_time(&self, time: PolicyTime) -> Result<(), String> {
-        time.now_ns().map_err(|error| error.to_string())?;
-        let mut candidate = Some(time);
-        let registered = self.policy_time.get_or_init(|| candidate.take());
-        // `candidate` is still present only when another registration came first.
-        let same_lifetime = match (registered, candidate) {
-            (Some(_), None) => true,
-            (Some(registered), Some(time)) => registered.same_origin(&time),
-            (None, _) => false,
-        };
-        if !same_lifetime {
-            return Err("host documents already belong to another policy lifetime".into());
-        }
-        Ok(())
-    }
     /// Stop producers atomically with the final queue admission. Exact receipts
     /// and intrinsic health remain available for settlement after retirement.
     ///
@@ -171,22 +151,6 @@ impl HostDocuments {
             .failure
             .clone()
             .map(|reason| (reason, state.only_stalls)))
-    }
-    pub fn outstanding_handoffs(&self) -> usize {
-        LIMIT.saturating_sub(self.permits.available_permits())
-    }
-    /// Number of exact owner receipts awaiting their commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the handoff state is unavailable.
-    pub fn pending_exact_receipts(&self) -> Result<usize, String> {
-        Ok(self
-            .state
-            .lock()
-            .map_err(|_| "host handoff unavailable")?
-            .pending
-            .len())
     }
 }
 impl HostDocumentCommitter for BoundSigner {
@@ -336,24 +300,6 @@ impl OwnerCommitService for HostDocuments {
 }
 
 impl PendingHostDocument {
-    /// This value exists only before apply consumes it. Started completion and
-    /// postcommit receipt custody have different types and cannot enter here.
-    ///
-    /// # Errors
-    ///
-    /// Returns the latched service failure, which then replaces `reason` in the reply.
-    pub fn reject_unstarted(self, reason: String) -> Result<(), String> {
-        let health = self.service.health();
-        let reason = health.as_ref().err().cloned().unwrap_or(reason);
-        // The refusal is the whole turn: answer, then end it.
-        let _ = self.reply.send(Err(reason));
-        let (_ended, turn) = crate::owner_turn::start(crate::owner_turn::STALL_BUDGET);
-        let _ = self.started.send(turn);
-        // A refused, never-started handoff owns no receipt or owner effect.
-        // Its existing permit is released; prior service failure stays latched.
-        drop(self.permit);
-        health
-    }
     pub fn matches_route(&self, app: &str, record: &str) -> bool {
         self.route.app_id == app && self.route.record.as_deref().unwrap_or("") == record
     }
