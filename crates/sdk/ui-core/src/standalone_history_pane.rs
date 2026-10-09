@@ -281,21 +281,19 @@ impl Widget for StandaloneHistoryPane {
             }
             self.child_nodes = vec![header, timeline, summary, restore];
         }
-        let node = taffy.parent_node(
-            Style {
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                gap: Size {
-                    width: taffy::LengthPercentage::length(theme.gap_standard),
-                    height: taffy::LengthPercentage::length(theme.gap_standard),
-                },
-                ..Default::default()
+        let style = Style {
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
-            &self.child_nodes,
-        );
+            gap: Size {
+                width: taffy::LengthPercentage::length(theme.gap_standard),
+                height: taffy::LengthPercentage::length(theme.gap_standard),
+            },
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

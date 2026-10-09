@@ -266,6 +266,8 @@ pub struct LiveAppActionsProvider {
     directory_epoch: AtomicU64,
     surface_snapshot: RefCell<Option<SurfaceSnapshot>>,
     surface_build: RefCell<Option<Receiver<SurfaceSnapshot>>>,
+    /// The long-lived index worker, started by the first rebuild.
+    index_worker: RefCell<Option<mpsc::Sender<IndexJob>>>,
     auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
     projection: Cell<QueryProjection>,
     #[cfg(test)]
@@ -282,6 +284,14 @@ struct SurfaceSnapshot {
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
     machine_index: Option<SearchIndex>,
+}
+
+/// One rebuild the index worker owes: the scope to project, where the
+/// finished snapshot goes, and the loop to wake once it is there.
+struct IndexJob {
+    scope: SurfaceBuildScope,
+    reply: mpsc::SyncSender<SurfaceSnapshot>,
+    wake: std::task::Waker,
 }
 
 #[cfg(test)]
@@ -419,6 +429,7 @@ impl LocalStart {
             context: None,
             confirmation,
             revision: None,
+            wait_ms: None,
         })
     }
 }
@@ -483,6 +494,7 @@ impl LiveAppActionsProvider {
             directory_epoch: AtomicU64::new(0),
             surface_snapshot: RefCell::new(None),
             surface_build: RefCell::new(None),
+            index_worker: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
             projection: Cell::new(QueryProjection::All),
             #[cfg(test)]
@@ -522,6 +534,37 @@ impl LiveAppActionsProvider {
             }
         }));
         Some(change)
+    }
+
+    /// Settles on the next change to any invocation's status or any
+    /// published surface after this call: what can change a listing of
+    /// these actions. A control listing waiting to settle sleeps on this.
+    /// `None` without a session runtime to watch from.
+    pub fn next_listing_change(&self) -> Option<Pending<()>> {
+        let mut statuses = self.broker.invocation_changes();
+        let mut surfaces = self.broker.surface_changes();
+        let runtime = crate::session_runtime::runtime().ok()?;
+        let (signal, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            let moved = tokio::select! {
+                Ok(()) = statuses.changed() => true,
+                Ok(()) = surfaces.changed() => true,
+                () = signal.abandoned() => false,
+            };
+            if moved {
+                signal.complete(());
+            }
+        }));
+        Some(change)
+    }
+
+    /// The broker's invocation and publication generations: a waiter that
+    /// kept them knows whether either moved since, whatever woke it.
+    pub fn change_generation(&self) -> (u64, u64) {
+        (
+            self.broker.statuses_generation(),
+            self.broker.surfaces_generation(),
+        )
     }
 
     fn local_start(
@@ -686,27 +729,65 @@ impl LiveAppActionsProvider {
             })
             && self.surface_build.borrow().is_none()
         {
-            let broker = self.broker.clone();
-            let (sender, receiver) = mpsc::sync_channel(1);
-            if std::thread::Builder::new()
-                .name("tilo-live-action-index".into())
-                .spawn({
-                    #[cfg(test)]
-                    let probe = Arc::clone(&self.build_probe);
-                    move || {
-                        let _ = sender.send(Self::build_local_snapshot(
-                            &broker,
-                            &scope,
-                            #[cfg(test)]
-                            &probe,
-                        ));
-                    }
-                })
-                .is_ok()
-            {
+            let (reply, receiver) = mpsc::sync_channel(1);
+            let job = IndexJob {
+                scope,
+                reply,
+                // The finished build wakes the loop that asked for it, so a
+                // listing waiting to be complete is answered when it is.
+                wake: crate::shell::search::invocation_wake::waker(),
+            };
+            if self.send_index_job(job) {
                 *self.surface_build.borrow_mut() = Some(receiver);
             }
         }
+    }
+
+    /// Hand one rebuild to the provider's index worker, starting it on the
+    /// first rebuild (or again, once, if it has ended). One long-lived
+    /// worker serves every surface generation rather than a thread each.
+    fn send_index_job(&self, job: IndexJob) -> bool {
+        let mut worker = self.index_worker.borrow_mut();
+        let job = if let Some(jobs) = worker.as_ref() {
+            match jobs.send(job) {
+                Ok(()) => return true,
+                Err(mpsc::SendError(job)) => job,
+            }
+        } else {
+            job
+        };
+        *worker = Self::spawn_index_worker(
+            self.broker.clone(),
+            #[cfg(test)]
+            Arc::clone(&self.build_probe),
+        );
+        worker.as_ref().is_some_and(|jobs| jobs.send(job).is_ok())
+    }
+
+    /// The worker behind [`Self::send_index_job`]. It ends when the provider
+    /// drops its sender.
+    fn spawn_index_worker(
+        broker: AppActionBroker,
+        #[cfg(test)] probe: Arc<BuildProbe>,
+    ) -> Option<mpsc::Sender<IndexJob>> {
+        let (jobs, queue) = mpsc::channel::<IndexJob>();
+        std::thread::Builder::new()
+            .name("tilo-live-action-index".into())
+            .spawn(move || {
+                while let Ok(job) = queue.recv() {
+                    let snapshot = Self::build_local_snapshot(
+                        &broker,
+                        &job.scope,
+                        #[cfg(test)]
+                        &probe,
+                    );
+                    if job.reply.send(snapshot).is_ok() {
+                        job.wake.wake();
+                    }
+                }
+            })
+            .ok()?;
+        Some(jobs)
     }
 
     fn local_action_candidates(
@@ -832,7 +913,10 @@ impl LiveAppActionsProvider {
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
             // bounds unanswered work, not how soon a completed page is read.
-            match pending.receiver.poll_ready() {
+            match crate::shell::search::invocation_wake::poll(
+                &mut pending.receiver,
+                &crate::shell::search::invocation_wake::waker(),
+            ) {
                 PendingPoll::Ready(Ok(page)) if !page.stale_cursor => {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
@@ -1455,7 +1539,9 @@ impl LiveAppActionsProvider {
         self.directory_pending.borrow_mut().insert(
             key,
             PendingDirectoryPage {
-                receiver: session.query(query),
+                // Its answer wakes the loop: a listing waiting to be complete
+                // is answered when the page is in.
+                receiver: crate::shell::search::invocation_wake::watch(session.query(query)),
                 deadline: deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
                 initial_page: cursor.is_empty(),
             },
@@ -1515,6 +1601,39 @@ impl LiveAppActionsProvider {
         roots.sort_by_key(|root| root.peer_id);
         roots.dedup_by_key(|root| root.peer_id);
         (roots, revision)
+    }
+
+    /// What [`Self::directory_roots_in`] answers changes with, read without
+    /// opening a certified session: the broker's published surfaces and
+    /// directory roots, and per workspace its local Person and that Person's
+    /// identity files. Stamps and counters only, so the palette can ask on
+    /// every tick.
+    fn directory_revision(&self, chrome: &crate::shell::chrome_state::ChromeState) -> String {
+        use std::hash::{Hash as _, Hasher as _};
+        /// Moves on every call while some identity can't be trusted to its
+        /// stamp, so such a revision never matches the previous one.
+        static UNSETTLED: AtomicU64 = AtomicU64::new(0);
+        let rooms = chrome
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.room)
+            .collect::<Vec<_>>();
+        let mut identities = std::collections::hash_map::DefaultHasher::new();
+        for room in rooms {
+            let name = room.to_string();
+            let Some(identity) = self.action_sessions.identity_revision(&name) else {
+                return format!("unsettled-{}", UNSETTLED.fetch_add(1, Ordering::Relaxed));
+            };
+            (name, chrome.local_user_for_room(&room), identity).hash(&mut identities);
+        }
+        format!(
+            "{}.{}.{:016x}",
+            self.broker.surfaces_generation(),
+            self.broker.action_directory_root_page(None, 0).generation,
+            identities.finish()
+        )
     }
 
     /// The drill-down scope for `resource` of the app `app_id` in the active
@@ -1739,6 +1858,7 @@ impl LiveAppActionsProvider {
                         context: None,
                         confirmation,
                         revision: Some(revision.clone()),
+                        wait_ms: None,
                     });
                 let ticket = directory_start_ticket(
                     admission,
@@ -2361,11 +2481,27 @@ impl SearchProvider for LiveAppActionsProvider {
             if ready { "ready" } else { "indexing" },
             self.directory_epoch.load(Ordering::Relaxed),
             // Listing publishers is a memory read; it never asks an app.
-            self.directory_roots(ctx).1,
+            self.directory_revision(ctx.chrome),
             self.broker.statuses_generation(),
             ctx.chrome.active_local_user(),
             ctx.include_programmatic,
         )
+    }
+
+    /// Settling while the local index for this scope is not built from the
+    /// current publications, or while a directory page is still owed. Both
+    /// wake the loop that asked when they land.
+    fn index_settling(&self, ctx: &SearchContext<'_>) -> bool {
+        let scope = Self::surface_scope(ctx);
+        let source_generation = self.broker.surfaces_generation();
+        let ready = self
+            .surface_snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| {
+                snapshot.source_generation == source_generation && snapshot.scope == scope
+            });
+        !ready || !self.directory_pending.borrow().is_empty()
     }
 
     #[allow(
@@ -2777,6 +2913,28 @@ mod tests {
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
             output: tilo_actions::ActionOutput::default(),
         }
+    }
+
+    #[test]
+    fn search_revision_opens_no_session_when_nothing_changed() {
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+        );
+        let chrome = chrome();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = context("", &chrome, &doc);
+        let first = provider.search_revision(&ctx);
+        assert_eq!(provider.search_revision(&ctx), first);
+        assert_eq!(
+            provider.action_sessions.opens(),
+            0,
+            "the palette tick reads stamps and counters, never a certified session"
+        );
+        // Listing the roots themselves still goes through each workspace's session.
+        let _ = provider.directory_roots(&ctx);
+        assert!(provider.action_sessions.opens() > 0);
+        assert_eq!(provider.search_revision(&ctx), first);
     }
 
     #[test]

@@ -2605,9 +2605,7 @@ mod tests {
     }
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     fn block(kind: BlockKind, text: &str, marks: Vec<MarkSpan>) -> BlockContent {

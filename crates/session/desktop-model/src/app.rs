@@ -1,6 +1,6 @@
 //! What kind of app a tile shows, and the id grants are keyed by.
 
-use collab_types::first_party_app_ids::package_id_for_builtin_label;
+use crate::first_party::package_id_for_builtin_label;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,7 +44,7 @@ impl AppKind {
 
 /// Reverse-DNS namespace of first-party packages, which the built-in kinds
 /// are.
-pub const APP_ID_PREFIX: &str = collab_types::first_party_app_ids::FIRST_PARTY_PREFIX;
+pub const APP_ID_PREFIX: &str = crate::first_party::FIRST_PARTY_PREFIX;
 
 /// Namespace of a built-in label that no package answers to (the shell's own
 /// `Editor`, fixtures) — the id such a tile has always been granted under.

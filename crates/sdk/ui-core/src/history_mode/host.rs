@@ -15,7 +15,7 @@ use crate::{
 use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
@@ -35,7 +35,7 @@ enum Command {
     NextPage,
     Scope(usize),
     Review(review::ReviewCommand),
-    FileParent(collab_types::FileVersionId),
+    FileParent(fs_protocol::FileVersionId),
     FileUndo,
     FileRedo,
     FileCheck,
@@ -91,7 +91,7 @@ pub struct HistoryHost {
     controller: Option<HistoryController>,
     files: Option<super::files_session::FileController>,
     retired_files: Vec<super::files_session::FileController>,
-    requested_file_version: Option<collab_types::FileVersionId>,
+    requested_file_version: Option<fs_protocol::FileVersionId>,
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
@@ -986,17 +986,40 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
-    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        let mut pending: Vec<_> = [
+    fn owned_layout_roots(&self) -> [Option<NodeId>; 5] {
+        [
             self.toolbar_node,
             self.timeline_node,
             self.canvas_node,
             self.unavailable_node,
             self.review_node,
         ]
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+        if !self.captures_input() && !self.has_saved_focus() {
+            return;
+        }
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if owned.contains(&node) {
+                continue;
+            }
+            // Ownership is exempted per surface, before combining denials.
+            // An already denied parent may still have descendants exempted by
+            // another surface, so its children must always be visited here.
+            denied.insert(node);
+            pending.extend(tree.children(node).unwrap_or_default());
+        }
+    }
+    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {
                 return true;
@@ -1679,6 +1702,7 @@ pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
         .with_icon(crate::icons::Icon::History)
         .with_message(I18nManager::lookup_plain(reason))
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "refresh_heads_tests.rs"]
 mod refresh_heads_tests;

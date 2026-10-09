@@ -17,15 +17,16 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "support/call.rs"]
+mod call;
 mod support;
 
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
-use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::HttpsLink;
@@ -34,93 +35,20 @@ use tilo_identity_host::custody::HostIdentity;
 use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
 use tilo_joined_room::voice::{Channel, Participation};
-use tilo_moq::client::{
-    CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status,
-};
-use tilo_moq::relay::Direction;
-use tilo_peer_state::join::{self, MemberRole, decode_and_verify_invitation};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
-use tilo_relay::RelayConfig;
+use tilo_moq::client::{Client, Status};
+use tilo_peer_state::NeighbourMsg;
+use tilo_peer_state::join::{self, MemberRole};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::rooms::{RoomAdminClient, RoomCommand, RoomReply};
-use tilo_relay::web::{TlsSource, WebConfig};
+use tilo_relay::rooms::RoomAdminClient;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::VoiceGrant;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{enrol, wait_for};
-
-const CHAT: &str = "so.tilo.chat";
-const CHANNEL: &str = "standup";
-
-async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .bind()
-        .await
-        .unwrap()
-}
-
-/// The browser's grant is its whole authority; it checks nothing more.
-struct Granted;
-impl ClientAuthority for Granted {
-    fn current(&self, _: &ConnectionScope, _: Direction, _: &str) -> bool {
-        true
-    }
-}
-
-async fn until(what: &str, client: &Client, done: fn(Status) -> bool) {
-    wait_for(what, || {
-        let reached = done(client.status());
-        async move { reached.then_some(()) }
-    })
-    .await;
-}
-
-/// Speak on `speaker` until `listener` hears it from `namespace`.
-async fn hears(what: &str, speaker: &Client, listener: &Client, namespace: &str) {
-    let mut timestamp = 0;
-    wait_for(what, || {
-        let _ = speaker.try_send(CapturedOpus {
-            timestamp_48k: timestamp,
-            duration_samples: tilo_moq::voice::FRAME_SAMPLES,
-            payload: vec![0xf8, 0xff, 0xfe],
-            captured_at: Instant::now(),
-        });
-        timestamp = timestamp.saturating_add(u64::from(tilo_moq::voice::FRAME_SAMPLES));
-        let mut heard = false;
-        while let Some(frame) = listener.try_recv() {
-            heard |= frame.publisher.namespace == namespace;
-        }
-        async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            heard.then_some(())
-        }
-    })
-    .await;
-}
-
-/// The next envelope from the browser session that `pick` accepts.
-async fn browser<T>(link: &mut HttpsLink, mut pick: impl FnMut(Envelope) -> Option<T>) -> T {
-    tilo_test_env::within("the host answers the browser", async {
-        loop {
-            if let Some(value) = pick(link.recv().await.expect("session open")) {
-                return value;
-            }
-        }
-    })
-    .await
-}
-
-fn granted(envelope: Envelope) -> Option<VoiceGrant> {
-    match envelope {
-        Envelope::VoiceGranted { grant, .. } => Some(*grant),
-        Envelope::VoiceRefused { reason, .. } => panic!("refused: {reason}"),
-        _ => None,
-    }
-}
+use call::{
+    CHANNEL, CHAT, browser, carrier, create_voice_channel, endpoint, enter, granted, hears, invite,
+    until,
+};
+use support::{TestHost, enrol, start_room_host};
 
 /// A person's native device holding a room through the joined-room owner,
 /// as the shell does, with its call participations.
@@ -286,100 +214,6 @@ impl Native {
     }
 }
 
-/// Create the room's chat record with a voice channel from a replica on
-/// another device of the owner that entered the room, over its own relay
-/// session, which the caller keeps open: local publication never creates a
-/// record.
-async fn create_voice_channel(
-    address: iroh::EndpointAddr,
-    workspace_id: u64,
-    room: &str,
-    host: &DeviceCert,
-    device: &support::Device,
-) -> RelayCoeditSession {
-    let session = RelayCoeditSession::join(
-        tilo_relay::RelayClient::connect_to_pinned_host(
-            endpoint(&device.key).await,
-            address,
-            device.cert.clone(),
-            device.key.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap(),
-        workspace_id,
-        device.cert.device_public_key,
-    )
-    .unwrap();
-    let mut peer = StatePeer::new(
-        room,
-        host.clone(),
-        vec![host.clone()],
-        RevocationList::new(),
-        SystemTime::now(),
-    )
-    .unwrap();
-    tilo_test_env::within("the replica learns the room", async {
-        while peer
-            .permissions(device.cert.device_public_key, SystemTime::now())
-            .is_err()
-        {
-            if let Some(Inbound::Delta { author, data }) = session.recv().await {
-                let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                peer.receive_from(
-                    TransportOrigin::RetainedRelayDelta(author),
-                    message,
-                    SystemTime::now(),
-                )
-                .unwrap();
-            }
-        }
-    })
-    .await;
-    let mut chat = AutoCommit::new();
-    let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = chat.put_object(&channels, CHANNEL, ObjType::Map).unwrap();
-    chat.put(&channel, "kind", "voice").unwrap();
-    chat.put(&channel, "workspace", "native").unwrap();
-    chat.commit();
-    let message = peer
-        .publish_incremental(
-            CHAT,
-            "",
-            chat.save_after(&[]),
-            &device.key,
-            SystemTime::now(),
-        )
-        .unwrap();
-    let (channel, kind) = tilo_peer_state::transport::retention(&message, false).unwrap();
-    let body = postcard::to_stdvec(&message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
-        session.publish_checkpoint(channel, body)
-    } else {
-        session.publish_retained_delta(channel, body)
-    }
-    .unwrap();
-    session
-}
-
-fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
-    Client::start(
-        Connection {
-            scope: ConnectionScope {
-                endpoint: grant.endpoint.clone(),
-                fingerprints: grant.fingerprints.clone(),
-                owner_epoch: grant.participation,
-                carrier_generation: generation,
-                publication: grant.publication.clone(),
-                subscriptions: grant.subscriptions.clone(),
-            },
-            authorization: grant.token.clone(),
-        },
-        Arc::new(Granted),
-    )
-    .unwrap()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -389,62 +223,20 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let desk = enrol(&alice, "alice-desk", DeviceCapabilities::primary());
     let page = enrol(&bob, "bob-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
-        RelayConfig {
-            state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
-        },
-        RelayIdentity {
-            user_public_key: alice.verifying_key().to_bytes(),
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
-    let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: None,
-            },
-            allowed_origins: Vec::new(),
-            plain_listen: None,
-        })
-        .await
-        .unwrap();
+    let TestHost { relay, web } = start_room_host(&alice, &host, state.path(), false).await;
     let address = relay.node_addr();
 
     // Alice's room on her relay; her native device holds it as its owner,
     // and Bob's person is invited.
     let admin = RoomAdminClient::new(endpoint(&laptop.key).await, laptop.cert.clone());
     let room = admin.create(address.clone(), "Standup").await.unwrap();
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { .. }
-    ));
-    assert!(matches!(
-        RoomAdminClient::new(endpoint(&desk.key).await, desk.cert.clone())
-            .send(
-                address.clone(),
-                RoomCommand::Enter {
-                    room: room.room.clone()
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Entered { .. }
-    ));
+    enter(&admin, address.clone(), &room.room).await;
+    enter(
+        &RoomAdminClient::new(endpoint(&desk.key).await, desk.cert.clone()),
+        address.clone(),
+        &room.room,
+    )
+    .await;
     let own = admin
         .invite(
             address.clone(),
@@ -464,33 +256,7 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
         room.workspace_id,
     )
     .await;
-    let invitation = admin
-        .invite(
-            address.clone(),
-            &room.room,
-            MemberRole::Editor,
-            Some(bob.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
-    let verified = decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    WorkspaceJoinClient::new(endpoint(&page.key).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation.clone(),
-            page.cert.clone(),
-            &page.key,
-            [7; 32],
-        )
-        .await
-        .unwrap();
+    invite(&admin, address.clone(), &room.room, &bob, &page).await;
 
     // The chat gets a voice channel; Alice's native device starts its call
     // and the governor grants her the first participation.

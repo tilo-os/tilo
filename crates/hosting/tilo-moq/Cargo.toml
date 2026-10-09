@@ -8,7 +8,9 @@ license.workspace = true
 
 [features]
 default = []
-relay = ["dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
+# The HTTPS server identity alone (`tls`): rustls, without the relay stack.
+tls = ["dep:rustls"]
+relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
@@ -33,6 +35,9 @@ web-transport-quinn = { version = "0.12.1", default-features = false, features =
 rustls.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tilo-test-env = { path = "../../dev/test-env" }
+# `tls` tests load a generated PEM pair from a temporary directory.
+rcgen.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "moq-proof"

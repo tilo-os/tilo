@@ -14,6 +14,9 @@
 #   TILO_HEADLESS_PROFILE  directory to keep a scratch profile in across
 #                          runs. Unset, each run gets a fresh one that is
 #                          removed when the compositor exits.
+#   TILO_HEADLESS_BINARY   the compositor to run (default target/debug/shell).
+#                          A release build serves the control socket only
+#                          when built with `--features dev-overrides`.
 #
 # Behaviour:
 #   - Runs against a scratch profile: HOME, the four XDG homes, the device
@@ -26,7 +29,7 @@
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
-#   - Runs ./target/debug/shell --backend headless.
+#   - Runs ./target/debug/shell (or $TILO_HEADLESS_BINARY) --backend headless.
 #   - Prints "PROFILE <dir>" to stderr and "READY <socket>" to stdout once
 #     usable; exits non-zero on timeout (the compositor's logs go to
 #     stderr so callers can grep them).
@@ -42,7 +45,7 @@
 set -euo pipefail
 
 SOCKET="${1:-${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; pass a socket path in a private directory}/tilo-session/test-control.sock}"
-BINARY="$(dirname "$0")/../../target/debug/shell"
+BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/shell}"
 TIMEOUT="${TILO_HEADLESS_TIMEOUT:-60}"
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then

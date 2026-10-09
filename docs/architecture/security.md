@@ -93,6 +93,49 @@ mount_setattr, quotactl, acct
 
 The default profile, `tilo-default`, also refuses any `mmap`/`mprotect`/`pkey_mprotect` asking for writable and executable memory at once. `tilo-jit` drops only that rule, and a manifest's request for it is honoured only for packages the image entitles (`/usr/lib/tilo/jit-entitled.conf`; `launcher::seccomp::resolve_profile`). `tilo-web-engine` is `tilo-jit` for a web engine that confines its own renderers: it also permits `clone`/`unshare` with `CLONE_NEWUSER`, `CLONE_NEWPID` and `CLONE_NEWNET` and `chroot`, the parts of Chromium's renderer sandbox, and still refuses `setns`, `mount`, `pivot_root` and every other namespace kind. It is honoured only for packages in `/usr/lib/tilo/web-engine-entitled.conf` (built in: the browser); a package entitled to the JIT but not to this gets `tilo-jit`. The compiled programs are pinned byte for byte by the launcher's tests, so any change to the filter is reviewed as a policy change.
 
+## App workers for host agents and room actions
+
+A host running agents (`tilo-relay --features agents`) acts on its rooms'
+records for agents and for the owner's pages (`RoomActions`). That host
+process holds its device signing key, every agent's device key
+(`agents.json`) and every room it serves, so no app code runs in it. Each
+record is held in its own app worker (`crates/agent/agent-participant/src/worker`):
+
+- **Process.** The host's executable started again in worker mode
+  (`worker::dispatch_early`), one per record, with a cleared environment and
+  its supervisor's socket as stdin. Registered reads and view discovery of an
+  existing record each get a worker too.
+- **Confinement**, before it reads a request, from the shared primitives:
+  `tilo-sandbox`'s `detach` (inherited descriptors closed, dies with its
+  supervisor) and resource caps; on Linux a Landlock ruleset granting no path
+  or port (best effort), the seccomp parser policy (`sandbox_core::seccomp::parser_program`:
+  application baseline with write-xor-execute, no socket, `connect`, `bind`
+  or `exec`) after the `clone3` compatibility filter, and a deny-list
+  refusing every syscall that opens, creates, removes, renames or relinks a
+  path, `io_uring`, and signals to any other process. The seccomp layers are
+  enforced on every kernel, so the state directory stays out of reach where
+  Landlock is missing. On macOS, `tilo-sandbox`'s Seatbelt profile with no
+  readable path. A worker that cannot confine itself serves nothing and the
+  operation is refused; there is no unconfined fallback.
+- **Keys.** The protocol (`worker/proto.rs`) carries app and record ids, the
+  participant's public name, Automerge bytes and a caller's read policy,
+  never a key. The supervisor seals and signs.
+- **Untrusted output.** A worker's Automerge bytes are admitted to the
+  supervisor's own copy of the record through `tilo-automerge-isolate`
+  before they are signed: a whole document must load, an increment must
+  apply on top of the record with nothing missing. Incoming changes are
+  admitted the same way before a worker sees them, and so are the changes
+  of records no worker holds: an agent's unopened records and the room's
+  shared desktop, whose tabs agents and room actions read
+  (`participant/unopened.rs`). With no isolate those changes wait and the
+  record does not open; nothing decodes them in the host instead. A worker
+  that dies is replaced from that copy, at most twice per record.
+
+Still in the host process: the app catalogue is linked statically (each
+app's `definition()` builds there), and agents' device keys are kept in
+`agents.json`. Moving the catalogue to installed packages and the agent keys
+to the secret store are tracked follow-ups.
+
 ## Per-workspace Wayland bridge socket
 
 The compositor's main wayland socket lives at `$XDG_RUNTIME_DIR/wayland-1` (or whatever the listener registered). For each workspace, the bridge (`crates/session/shell/src/compositor/bridge.rs`) binds an additional listening socket `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and proxies its connections to the main socket.
@@ -271,6 +314,7 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 ## Encryption
 
 - Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication.
+- **A cross-device action is signed by the device that sends it, not vouched for by the host that routes it.** Device certificates are public, so a workspace host — including a hosted server operated for the user — could otherwise name any member it has seen as the source of an action it invented. The sending device signs the exact action and its issue time; the target broker refuses any effect without that signature, outside a 60-second freshness window, or already admitted, and still checks the certificate against the room's current authority. Payloads are not hidden from the host. See `docs/architecture/collaboration.md`, "Private actions are signed by their source device".
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
@@ -285,10 +329,12 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
 | Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `network/input_firewall.rs`, driven from `compositor/state.rs::review_remote_input` |
 | Sandbox escape via syscall | seccomp-bpf blocklist + Landlock                        | `system/sandbox-core`, `packaging/launcher/landlock_shim.rs` |
+| Host key theft via a hostile record (agents, room actions) | One confined app worker per record; keys and signing stay in the host; worker output admitted through the isolate | `agent/agent-participant/src/worker/` |
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
 | Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature, never from a first answer; one admission for every receiver | `crates/collab/tilo-peer-state/src/room/admit.rs::admit_room_changes` |
+| Action forged by the workspace host | Source-device signature over the exact action + freshness window + replay window at the target broker | `tilo-delivery-protocol/src/peer_actions/signed.rs`, `tilo-action-broker/src/peer_action_broker.rs` |
 | Traffic snoop              | QUIC/TLS end-to-end                                     | Iroh                               |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |

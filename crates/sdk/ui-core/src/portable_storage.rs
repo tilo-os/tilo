@@ -1178,7 +1178,8 @@ impl PrivateActionsCapture {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_tests {
     use super::*;
     use crate::host_worker::private_actions::SenderStorageCode as Code;
@@ -1219,7 +1220,8 @@ mod private_capture_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod private_capture_transfer_tests {
     use super::*;
     #[test]
@@ -1401,7 +1403,8 @@ impl PortableStorage {
     }
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod private_physical_current_tests {
     use super::*;
     use crate::host_worker::private_actions::{SenderStorageCode, committed_test_fixture};

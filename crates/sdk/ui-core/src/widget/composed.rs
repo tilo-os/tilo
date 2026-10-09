@@ -41,6 +41,12 @@ impl Composed {
         self.element.insert(element).as_mut()
     }
 
+    /// Take the composition out, for an owner that keeps it across layouts
+    /// and lays it out again with [`Self::build_layout`].
+    pub fn take(&mut self) -> Option<Element> {
+        self.element.take()
+    }
+
     /// Drop the composition until the next layout builds a fresh one.
     pub fn clear(&mut self) {
         self.element = None;
@@ -123,4 +129,53 @@ impl Composed {
             .as_mut()
             .is_some_and(|element| element.take_structure_dirty())
     }
+}
+
+/// The [`Widget`] methods a view owning a [`Composed`] in `self.$field`
+/// forwards to it unchanged: layout placement, painting, events, child
+/// walks and its box.
+#[macro_export]
+macro_rules! forward_to_composed {
+    ($field:ident) => {
+        fn apply_layout(
+            &mut self,
+            taffy: &$crate::taffy::TaffyTree<()>,
+            node: $crate::taffy::NodeId,
+            origin: $crate::kurbo::Point,
+        ) {
+            self.$field.apply_layout(taffy, node, origin);
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut $crate::vello::Scene,
+            transform: $crate::kurbo::Affine,
+            text_renderer: &mut $crate::text_render::TextRenderer,
+            theme: &$crate::theme::Theme,
+            presence: &$crate::presence::PresenceCtx,
+        ) {
+            self.$field
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &$crate::winit::event::WindowEvent,
+            ctx: &mut $crate::widget::EventCtx<'_>,
+        ) {
+            self.$field.handle_event(event, ctx);
+        }
+
+        fn children(&self) -> Vec<&dyn $crate::widget::Widget> {
+            self.$field.children()
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn $crate::widget::Widget + '_)> {
+            self.$field.children_mut()
+        }
+
+        fn get_rect(&self) -> $crate::kurbo::Rect {
+            self.$field.rect()
+        }
+    };
 }

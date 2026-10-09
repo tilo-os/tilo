@@ -324,7 +324,11 @@ impl PackageStore {
     /// [`StoreError::Tapp`] for a malformed archive or a blob that does not
     /// match its name, [`StoreError::MissingBlobs`] when payload remains
     /// unavailable, [`StoreError::Payload`] when the payload exceeds its
-    /// budget, and I/O or content-store errors.
+    /// budget, and I/O or content-store errors. A precommit content barrier
+    /// failure leaves the registry selection unchanged. Garbage collection
+    /// errors can occur after the new selection is committed. If final close
+    /// fails after otherwise successful work, [`StoreError::CommittedSelection`]
+    /// identifies the selected app, version and package root.
     pub fn install<F>(
         &self,
         tapp: impl Read + Send,
@@ -333,6 +337,36 @@ impl PackageStore {
     ) -> Result<Installed, StoreError>
     where
         F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        self.install_with_flush(tapp, admit, fetcher, content::flush)
+    }
+
+    fn install_with_flush<F, B>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+        flush: B,
+    ) -> Result<Installed, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+        B: FnOnce(&Content<'_>) -> Result<(), StoreError> + Send,
+    {
+        self.install_with_hooks(tapp, admit, fetcher, flush, close_install_result)
+    }
+
+    fn install_with_hooks<F, B, C>(
+        &self,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+        flush: B,
+        after_close: C,
+    ) -> Result<Installed, StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+        B: FnOnce(&Content<'_>) -> Result<(), StoreError> + Send,
+        C: FnOnce(Option<&Installed>, Result<(), StoreError>) -> Result<(), StoreError> + Send,
     {
         let _lock = self.lock()?;
         let admit = |meta: &PackageMeta| {
@@ -346,18 +380,29 @@ impl PackageStore {
             }
             admit(meta)
         };
-        let (meta, admission, blobs_already_stored, blobs_fetched) =
-            self.ingest(tapp, admit, fetcher, false)?;
-        let blobs = meta.payload_hashes().len();
-        let (package, replaced) = self.commit(&meta, admission)?;
-        self.collect_garbage_locked()?;
-        Ok(Installed {
-            package,
-            replaced,
-            blobs,
-            blobs_already_stored,
-            blobs_fetched,
-        })
+        content::session_with_close(
+            &self.layout.content(),
+            &self.layout.tmp(),
+            |content| {
+                let (meta, admission, blobs_already_stored, blobs_fetched) =
+                    self.ingest_with_content(content, tapp, admit, fetcher, false)?;
+                // The registry is the commit point: content writes must finish before
+                // the row becomes visible. Final close runs after GC and on every
+                // error; an error from work still takes precedence over close.
+                flush(content)?;
+                let blobs = meta.payload_hashes().len();
+                let (package, replaced) = self.commit(&meta, admission)?;
+                self.collect_garbage_with_content(content)?;
+                Ok(Installed {
+                    package,
+                    replaced,
+                    blobs,
+                    blobs_already_stored,
+                    blobs_fetched,
+                })
+            },
+            after_close,
+        )
     }
 
     /// Install the environment image streamed from `tapp`: an `env-runtime`
@@ -519,43 +564,57 @@ impl PackageStore {
     {
         let layout = self.layout.clone();
         content::session(&layout.content(), &layout.tmp(), |content| {
-            let mut sink = IngestSink {
-                content,
-                admit: Some(admit),
-                admission: None,
-                refused: None,
-                referenced: BTreeSet::new(),
-                already: BTreeSet::new(),
-                ingested: BTreeSet::new(),
-            };
-            let decoded = tilo_app_package::tapp::read(tapp, &mut sink);
-            if let Some(reason) = sink.refused.take() {
-                return Err(StoreError::Refused(reason));
-            }
-            let tapp: Tapp = decoded?;
-            // A thin archive has no blobs, so admission runs here.
-            sink.admit(&tapp.meta)?;
-            if let Some(reason) = sink.refused.take() {
-                return Err(StoreError::Refused(reason));
-            }
-            let admission = sink
-                .admission
-                .take()
-                .ok_or_else(|| StoreError::Refused("package was not admitted".into()))?;
-            if keep_present && crate::image::read_image(&self.layout, tapp.meta.id)?.is_some() {
-                let blobs = tapp.meta.payload_hashes().len();
-                return Ok((tapp.meta, admission, blobs, 0));
-            }
-            let mut already = sink.already;
-            let (delivered, missing) =
-                Self::fill_missing(content, &tapp.meta, &mut already, &sink.ingested, fetcher)?;
-            if !missing.is_empty() {
-                return Err(StoreError::MissingBlobs(missing));
-            }
-            Self::check_budget(content, &tapp.meta)?;
-            self.materialise(content, &tapp.meta)?;
-            Ok((tapp.meta, admission, already.len(), delivered))
+            self.ingest_with_content(content, tapp, admit, fetcher, keep_present)
         })
+    }
+
+    fn ingest_with_content<F>(
+        &self,
+        content: &Content<'_>,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+        keep_present: bool,
+    ) -> Result<(PackageMeta, Admission, usize, usize), StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        let mut sink = IngestSink {
+            content,
+            admit: Some(admit),
+            admission: None,
+            refused: None,
+            referenced: BTreeSet::new(),
+            already: BTreeSet::new(),
+            ingested: BTreeSet::new(),
+        };
+        let decoded = tilo_app_package::tapp::read(tapp, &mut sink);
+        if let Some(reason) = sink.refused.take() {
+            return Err(StoreError::Refused(reason));
+        }
+        let tapp: Tapp = decoded?;
+        // A thin archive has no blobs, so admission runs here.
+        sink.admit(&tapp.meta)?;
+        if let Some(reason) = sink.refused.take() {
+            return Err(StoreError::Refused(reason));
+        }
+        let admission = sink
+            .admission
+            .take()
+            .ok_or_else(|| StoreError::Refused("package was not admitted".into()))?;
+        if keep_present && crate::image::read_image(&self.layout, tapp.meta.id)?.is_some() {
+            let blobs = tapp.meta.payload_hashes().len();
+            return Ok((tapp.meta, admission, blobs, 0));
+        }
+        let mut already = sink.already;
+        let (delivered, missing) =
+            Self::fill_missing(content, &tapp.meta, &mut already, &sink.ingested, fetcher)?;
+        if !missing.is_empty() {
+            return Err(StoreError::MissingBlobs(missing));
+        }
+        Self::check_budget(content, &tapp.meta)?;
+        self.materialise(content, &tapp.meta)?;
+        Ok((tapp.meta, admission, already.len(), delivered))
     }
 
     /// Look up the blobs `meta` references in the store and fetch the rest.
@@ -913,14 +972,26 @@ impl PackageStore {
             return Ok(0);
         }
         content::session(&self.layout.content(), &self.layout.tmp(), |content| {
-            let dead: Vec<BlobHash> = content
-                .hashes()?
-                .into_iter()
-                .filter(|hash| !live.contains(hash))
-                .collect();
-            content.evict(&dead)?;
-            Ok(dead.len())
+            Self::collect_garbage_content(content, &live)
         })
+    }
+
+    fn collect_garbage_with_content(&self, content: &Content<'_>) -> Result<usize, StoreError> {
+        let live = self.referenced_blobs()?;
+        Self::collect_garbage_content(content, &live)
+    }
+
+    fn collect_garbage_content(
+        content: &Content<'_>,
+        live: &BTreeSet<BlobHash>,
+    ) -> Result<usize, StoreError> {
+        let dead: Vec<BlobHash> = content
+            .hashes()?
+            .into_iter()
+            .filter(|hash| !live.contains(hash))
+            .collect();
+        content.evict(&dead)?;
+        Ok(dead.len())
     }
 
     /// What each row of `registry` occupies, in one pass: each record's
@@ -1227,5 +1298,236 @@ mod image_build_tests {
         );
         assert!(image_install_time(true, None, 17).is_err());
         assert!(image_install_time(true, Some("invalid"), 17).is_err());
+    }
+}
+
+fn close_install_result(
+    installed: Option<&Installed>,
+    closed: Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    closed.map_err(|source| match installed {
+        Some(installed) => StoreError::CommittedSelection {
+            id: installed.package.id.clone(),
+            version: installed.package.version.clone(),
+            root: installed.package.package_id_hex.clone(),
+            source: Box::new(source),
+        },
+        None => source,
+    })
+}
+
+#[cfg(test)]
+mod install_session_tests {
+    use super::{Admission, PackageStore, StoreError, close_install_result};
+    use crate::content;
+    use tilo_app_package::{Manifest, SigningIdentity, pack};
+
+    fn archive(version: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let identity = SigningIdentity::generate();
+        let payload = tempfile::tempdir()?;
+        std::fs::create_dir(payload.path().join("bin"))?;
+        std::fs::write(payload.path().join("bin/app"), vec![42; 300_000])?;
+        let manifest = Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.flush-test"
+version = "{version}"
+kind = "app"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+            hex::encode(identity.public_key_bytes())
+        ))?;
+        let packed = pack(payload.path(), &manifest, &identity)?;
+        Ok(tilo_app_package::tapp::to_bytes(
+            &packed.meta,
+            Some(&packed),
+        )?)
+    }
+
+    #[test]
+    fn precommit_flush_failure_preserves_selection_and_reopenable_payload() {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let root = tempfile::tempdir()?;
+            let store = PackageStore::at(root.path());
+            let first = archive("1.0.0")?;
+            let selected = store.install(
+                first.as_slice(),
+                |_| {
+                    Ok(Admission {
+                        pinned: true,
+                        ..Admission::default()
+                    })
+                },
+                None,
+            )?;
+            let before = std::fs::read(store.layout().registry())?;
+            let replacement = archive("2.0.0")?;
+            let mut barrier_reached = false;
+            let result = store.install_with_flush(
+                replacement.as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+                |content| {
+                    barrier_reached = true;
+                    assert_eq!(std::fs::read(store.layout().registry())?, before);
+                    content::flush(content)?;
+                    Err(StoreError::Content(
+                        "injected precommit flush failure".into(),
+                    ))
+                },
+            );
+            assert!(barrier_reached);
+            assert!(
+                matches!(result, Err(StoreError::Content(reason)) if reason == "injected precommit flush failure")
+            );
+            assert_eq!(std::fs::read(store.layout().registry())?, before);
+            drop(store);
+            let reopened = PackageStore::at(root.path());
+            let registry = reopened.registry()?;
+            let row = registry
+                .find("so.tilo.flush-test")
+                .ok_or("selection disappeared")?;
+            assert_eq!(row.package_id(), selected.package.package_id());
+            assert_eq!(row.version, "1.0.0");
+            assert!(row.pinned);
+            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+            let installed =
+                reopened.install(replacement.as_slice(), |_| Ok(Admission::default()), None)?;
+            assert_eq!(installed.package.version, "2.0.0");
+            assert!(installed.package.pinned);
+            assert!(
+                crate::integrity::verify(&installed.package, &installed.package.payload_root)?
+                    .is_intact()
+            );
+            // A fresh session must see the durable content, not only its previous
+            // runtime's cache. An identical reinstall uses all existing blobs.
+            let repeated = PackageStore::at(root.path()).install(
+                replacement.as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+            )?;
+            assert_eq!(repeated.blobs_already_stored, repeated.blobs);
+            assert!(
+                crate::integrity::verify(&repeated.package, &repeated.package.payload_root)?
+                    .is_intact()
+            );
+            Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn postcommit_gc_failure_keeps_committed_selection() {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let root = tempfile::tempdir()?;
+            let store = PackageStore::at(root.path());
+            let first = archive("1.0.0")?;
+            let selected = store.install(first.as_slice(), |_| Ok(Admission::default()), None)?;
+            std::fs::remove_file(
+                store
+                    .layout()
+                    .meta_dir(selected.package.package_id().ok_or("missing id")?)
+                    .join(crate::layout::COLLECTION_FILE),
+            )?;
+            let replacement = archive("2.0.0")?;
+            // Keep an additional registry row referencing the corrupt old record,
+            // so GC must reject it even after the replacement retires that tree.
+            let mut registry = store.registry()?;
+            let mut corrupt = selected.package;
+            corrupt.id = "so.tilo.corrupt-record".into();
+            registry.upsert(corrupt);
+            registry.save(&store.layout().registry())?;
+            let result = store.install_with_flush(
+                replacement.as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+                content::flush,
+            );
+            assert!(
+                matches!(result, Err(StoreError::CorruptPackage(id, _)) if id == "so.tilo.corrupt-record")
+            );
+            let reopened = PackageStore::at(root.path());
+            let registry = reopened.registry()?;
+            let row = registry
+                .find("so.tilo.flush-test")
+                .ok_or("committed selection disappeared")?;
+            assert_eq!(row.version, "2.0.0");
+            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+            Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn final_close_failure_reports_the_committed_selection() {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let root = tempfile::tempdir()?;
+            let store = PackageStore::at(root.path());
+            let tapp = archive("1.0.0")?;
+            let mut actual_close_completed = false;
+            let result = store.install_with_hooks(
+                tapp.as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+                content::flush,
+                |installed, closed| {
+                    assert!(
+                        closed.is_ok(),
+                        "actual store.close must run before fault injection"
+                    );
+                    actual_close_completed = true;
+                    close_install_result(
+                        installed,
+                        Err(StoreError::Content("injected close RPC failure".into())),
+                    )
+                },
+            );
+            assert!(actual_close_completed);
+            drop(store);
+            let reopened = PackageStore::at(root.path());
+            let registry = reopened.registry()?;
+            let row = registry
+                .find("so.tilo.flush-test")
+                .ok_or("committed selection disappeared")?;
+            assert!(crate::integrity::verify(row, &row.payload_root)?.is_intact());
+            let Err(error) = result else {
+                panic!("a final close error must be returned");
+            };
+            let message = error.to_string();
+            assert!(message.contains(&row.id));
+            assert!(message.contains(&row.version));
+            assert!(message.contains(&row.package_id_hex));
+            assert!(message.contains("selected"));
+            assert!(message.contains("injected close RPC failure"));
+            match error {
+                StoreError::CommittedSelection {
+                    id,
+                    version,
+                    root,
+                    source,
+                } => {
+                    assert_eq!(id, row.id);
+                    assert_eq!(version, row.version);
+                    assert_eq!(root, row.package_id_hex);
+                    assert!(
+                        matches!(*source, StoreError::Content(reason) if reason == "injected close RPC failure")
+                    );
+                }
+                other => panic!("missing committed selection context: {other}"),
+            }
+            Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
     }
 }

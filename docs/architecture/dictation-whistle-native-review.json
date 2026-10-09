@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "purpose": "Public prerecorded development review only; no native C API qualification or production admission",
+  "native_bridge": {
+    "binary_sha256": "10d2bc3c643d3fe85f376598c0a1bbdd810618c72cc3d60f64d1331705367099",
+    "binary_bytes": 1284648,
+    "adapter_sha256": "f06c1cce1fa6ab0e8618870a6c356d03e40decd38bc1d17db9587d3700a37d49",
+    "packages": [
+      {
+        "file": "libcxx-22.1.8-4.fc44.x86_64.rpm",
+        "bytes": 336831,
+        "sha256": "ef8a6a5622472b0fe89a38596fce00d5a39d9642aceff7a39dcc41f454814516",
+        "metadata": "libcxx|22.1.8-4.fc44|x86_64|Apache-2.0 WITH LLVM-exception OR MIT OR NCSA",
+        "signature": "existing RPM trust verified"
+      },
+      {
+        "file": "libcxxabi-22.1.8-4.fc44.x86_64.rpm",
+        "bytes": 89256,
+        "sha256": "a2cbbe96714fca3fdd8a6b2343accadeccc1036466b92b69b24af2b19cf90533",
+        "metadata": "libcxxabi|22.1.8-4.fc44|x86_64|Apache-2.0 WITH LLVM-exception OR NCSA",
+        "signature": "existing RPM trust verified"
+      },
+      {
+        "file": "libunwind-1.8.3-4.fc44.x86_64.rpm",
+        "bytes": 81534,
+        "sha256": "8abdc0be3830e25cf7385a1d23b94038c55752ed2b9d81b0cb936e2afa976b79",
+        "metadata": "libunwind|1.8.3-4.fc44|x86_64|MIT",
+        "signature": "existing RPM trust verified"
+      }
+    ],
+    "installed": false
+  },
+  "source_fixture": "tools/release/fixtures/whistle_stream_review.cpp",
+  "source_fixture_sha256": "f06c1cce1fa6ab0e8618870a6c356d03e40decd38bc1d17db9587d3700a37d49",
+  "runtime_closure": {
+    "source": "Fedora 44 existing trusted RPM repositories; packages verified with existing RPM key database",
+    "packages": [
+      {
+        "file": "libcxx-22.1.8-4.fc44.x86_64.rpm",
+        "bytes": 336831,
+        "sha256": "ef8a6a5622472b0fe89a38596fce00d5a39d9642aceff7a39dcc41f454814516",
+        "metadata": "libcxx|22.1.8-4.fc44|x86_64|Apache-2.0 WITH LLVM-exception OR MIT OR NCSA",
+        "signature": "existing RPM trust verified"
+      },
+      {
+        "file": "libcxxabi-22.1.8-4.fc44.x86_64.rpm",
+        "bytes": 89256,
+        "sha256": "a2cbbe96714fca3fdd8a6b2343accadeccc1036466b92b69b24af2b19cf90533",
+        "metadata": "libcxxabi|22.1.8-4.fc44|x86_64|Apache-2.0 WITH LLVM-exception OR NCSA",
+        "signature": "existing RPM trust verified"
+      },
+      {
+        "file": "libunwind-1.8.3-4.fc44.x86_64.rpm",
+        "bytes": 81534,
+        "sha256": "8abdc0be3830e25cf7385a1d23b94038c55752ed2b9d81b0cb936e2afa976b79",
+        "metadata": "libunwind|1.8.3-4.fc44|x86_64|MIT",
+        "signature": "existing RPM trust verified"
+      }
+    ],
+    "installed": false,
+    "trust_imported": false,
+    "extraction": "private review directory; original package licences retained; no scriptlets executed",
+    "closure_download_initial_failure": "unqualified architecture selection downloaded both x86_64 and i686; only exactly three verified x86_64 packages were extracted"
+  },
+  "fixture": {
+    "dataset": "google/fleurs",
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "case": "fr_fr-0",
+    "wav_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+    "pcm16_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+    "pacing": "two-second opening, then one-second increments with actual elapsed-time backpressure; intended French, silence, French sessions"
+  },
+  "limits": {
+    "address_space_bytes": 1073741824,
+    "virtual_headroom_guard_bytes": 1006632960,
+    "scope_memory_max_bytes": 1342177280,
+    "scope_memory_high_bytes": 1207959552,
+    "scope_swap_max_bytes": 0,
+    "cpu_affinity_count": 2,
+    "cpu_quota_percent": 200,
+    "scope_tasks_max": 64,
+    "observer_deadline_seconds": 180,
+    "scope_runtime_seconds": 240,
+    "native_thread_budget": 2,
+    "network_home_microphone": false
+  },
+  "attempts": [
+    {
+      "exit": -9,
+      "guarded": "deadline",
+      "memory_peak": {
+        "VmPeak": 897940,
+        "VmSize": 897940,
+        "VmHWM": 61480,
+        "VmRSS": 61480,
+        "Threads": 12
+      },
+      "cpu_seconds": null,
+      "wall_seconds": 180.0153637279982,
+      "scope_peak_bytes": 92745728,
+      "scope_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "log_sha256": "bf6ac2fb2d7e4dd9e6901bea085e01c9498f5d9db7166f04ecd916633409b83c",
+      "log": "dictation-whistle-native-fr-r3.log",
+      "qualified": false
+    },
+    {
+      "exit": -9,
+      "guarded": "native_thread_limit",
+      "memory_peak": {
+        "VmPeak": 100072,
+        "VmSize": 100072,
+        "VmHWM": 39084,
+        "VmRSS": 39084,
+        "Threads": 6
+      },
+      "cpu_seconds": null,
+      "wall_seconds": 0.043470216001878725,
+      "scope_peak_bytes": 50540544,
+      "scope_before": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "scope_after": {
+        "low": 0,
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0,
+        "oom_group_kill": 0,
+        "sock_throttled": 0
+      },
+      "log_sha256": "325d3d3b1c2da2c95a0fa15705e532a0b357871489275e49d9927b0bbe877631",
+      "log": "dictation-whistle-native-fr-r4.log",
+      "qualified": false
+    }
+  ],
+  "earlier_stops": [
+    "missing exact observer dependency receipt; stopped before decoder",
+    "host memory pressure above unchanged admission; stopped before decoder"
+  ],
+  "decision": "reject native C API integration under this envelope: no documented thread setter and observed 12 threads; CLI has a separate supported --threads 2 flag",
+  "scope_cleanup": "both native review units collected; first already exited at the observer deadline before explicit stop reached it",
+  "raw_result_retention": "Sanitized captured scope logs and owned process diagnostic are retained. The private per-run native-output JSON filename was reused for guard replay; original native stdout is not retained. No accuracy, prefix or latency claim is derived from it.",
+  "remaining": [
+    "audited native source/build provenance",
+    "supported native thread control",
+    "successful bounded source-paced replay",
+    "real cancellation, repeat/silence and field journeys"
+  ],
+  "microphone_accessed": false,
+  "model_installed": false,
+  "protected_publication": false,
+  "positive_cli_thread_guard_control": {
+    "exit": 0,
+    "guarded": null,
+    "memory_peak": {
+      "VmPeak": 167928,
+      "VmSize": 129336,
+      "VmHWM": 45300,
+      "VmRSS": 45300,
+      "Threads": 2
+    },
+    "cpu_seconds": 8.57,
+    "wall_seconds": 4.369642475001456,
+    "scope_peak_bytes": 60166144,
+    "native_thread_limit": 2,
+    "scope_events_before": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_events_after": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+    "input_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+    "materialization": {
+      "needle": "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
+      "whistle.cact": "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+      "model-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "runtime-LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "scope_script_sha256": "b9abfe655f8da2990052d22efab02358c0159f278818bfea24f0a731b59d0984",
+    "ledger_sha256": "79a37410bd810ca97f0adda8b2cf2b26d63ce7f0a1e67fe5cefe915403971ce8",
+    "log_sha256": "5f9ccf8bf81721bfe0db2b10d6dc1c639dccf8d8a6d25da8ff2b8f650043ff20",
+    "qualification": "positive bounded CLI control only; file chunks are not source-paced latency"
+  },
+  "separate_cactus_primary_source_audit": {
+    "revision": "2cfcdb8568eb9192323b27fd0012a834517b4419",
+    "files": [
+      {
+        "path": "LICENSE",
+        "bytes": 2152,
+        "git_blob": "d39378cef73054c432954ed0d281fc89ff83bbf9",
+        "sha256": "f674bfde8b610bca266d51b3c50464657495ca204c74f3b72d52b562e17aa397",
+        "url": "https://raw.githubusercontent.com/cactus-compute/cactus/2cfcdb8568eb9192323b27fd0012a834517b4419/LICENSE",
+        "pattern_lines": {
+          "whistle": [],
+          "\\.cact": [],
+          "needle_stream_transcribe": [],
+          "set.*thread": [],
+          "safetensors": [],
+          "whisper": [],
+          "parakeet": []
+        }
+      },
+      {
+        "path": "cactus-engine/cactus_engine.h",
+        "bytes": 6812,
+        "git_blob": "a60e4aec23603d3a661245ee242e743a433ffbaf",
+        "sha256": "9589f3d919e4267ecd552b6f42f8bc433973fcf3b8a98773019766f6e6a53096",
+        "url": "https://raw.githubusercontent.com/cactus-compute/cactus/2cfcdb8568eb9192323b27fd0012a834517b4419/cactus-engine/cactus_engine.h",
+        "pattern_lines": {
+          "whistle": [],
+          "\\.cact": [],
+          "needle_stream_transcribe": [],
+          "set.*thread": [],
+          "safetensors": [],
+          "whisper": [],
+          "parakeet": []
+        }
+      },
+      {
+        "path": "cactus-engine/src/model.cpp",
+        "bytes": 292799,
+        "git_blob": "d4c5ef79b90bac30dbf2280f5d0e543363e73d86",
+        "sha256": "d8e03078ac8a17e45e5f3c2fe6abcbc527f88139c595e3f563031dd663dac113",
+        "url": "https://raw.githubusercontent.com/cactus-compute/cactus/2cfcdb8568eb9192323b27fd0012a834517b4419/cactus-engine/src/model.cpp",
+        "pattern_lines": {
+          "whistle": [],
+          "\\.cact": [],
+          "needle_stream_transcribe": [],
+          "set.*thread": [],
+          "safetensors": [],
+          "whisper": [
+            4665,
+            4674,
+            5652
+          ],
+          "parakeet": [
+            905,
+            906,
+            907,
+            4712,
+            4713,
+            4728,
+            5653
+          ]
+        }
+      },
+      {
+        "path": "cactus-engine/src/transcribe.cpp",
+        "bytes": 24660,
+        "git_blob": "077dbe23200155114bc193dc2443e7f022849f48",
+        "sha256": "70cf2749996d13dd17cff8df4465f35992fbe6237f0ab9c785a482daeab5ba43",
+        "url": "https://raw.githubusercontent.com/cactus-compute/cactus/2cfcdb8568eb9192323b27fd0012a834517b4419/cactus-engine/src/transcribe.cpp",
+        "pattern_lines": {
+          "whistle": [],
+          "\\.cact": [],
+          "needle_stream_transcribe": [],
+          "set.*thread": [],
+          "safetensors": [],
+          "whisper": [
+            18,
+            20,
+            24,
+            41,
+            112,
+            119,
+            120,
+            121,
+            122,
+            123,
+            124,
+            127,
+            128,
+            178,
+            181,
+            233,
+            254,
+            260,
+            261,
+            262,
+            263,
+            264,
+            265,
+            268,
+            269,
+            282,
+            283,
+            288,
+            309,
+            327,
+            332,
+            333,
+            334,
+            358,
+            359,
+            377
+          ],
+          "parakeet": [
+            106,
+            107,
+            113,
+            179,
+            181,
+            247,
+            248,
+            255,
+            329,
+            345,
+            346,
+            438,
+            463
+          ]
+        }
+      },
+      {
+        "path": "cactus-engine/tests/test_needle.cpp",
+        "bytes": 3482,
+        "git_blob": "54fb1728b2f560a991ed41e223e7587d74ad2306",
+        "sha256": "84052af38b2b5a6b5f5c9711be252fa6853142b218acc56ede938aa3de77cdec",
+        "url": "https://raw.githubusercontent.com/cactus-compute/cactus/2cfcdb8568eb9192323b27fd0012a834517b4419/cactus-engine/tests/test_needle.cpp",
+        "pattern_lines": {
+          "whistle": [],
+          "\\.cact": [],
+          "needle_stream_transcribe": [],
+          "set.*thread": [],
+          "safetensors": [],
+          "whisper": [],
+          "parakeet": []
+        }
+      }
+    ],
+    "scope": "five primary files only; pattern matches do not prove compatibility",
+    "findings": [
+      "This different repository snapshot has an eligibility-restricted commercial licence, not the Apache-2.0 licence carried by the separately pinned Needle3 artifacts.",
+      "Its inspected Needle test is an LLM tool-call test using a directory config.txt; inspected transcription/model code uses Whisper/Parakeet graph bundles.",
+      "No Whistle, .cact or needle_stream_transcribe symbol appears in these five files. This limited audit establishes no compatibility or complete native source provenance.",
+      "No source from this repository is incorporated, built or used to replace the pinned runtime."
+    ]
+  },
+  "followup": "dictation-whistle-paced-review.json distinguishes the earlier static archive from current wrapper-selected 3.2.0 shared runtime and locates both strict guard refusals before audio submission; original failures retained.",
+  "source_fixture_revision_note": "source_fixture_sha256 identifies the original adapter used here. The current file adds phase markers, recorded separately in the follow-up; it does not rewrite these historical receipts."
+}

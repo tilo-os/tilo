@@ -1641,15 +1641,14 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            });
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
@@ -1704,60 +1703,24 @@ mod tests {
         (w, events)
     }
 
-    fn synth_device() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::mouse_release;
     fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
             id,
         })
     }
-    fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::testing::dispatch;
 
     #[test]
     fn window_moves_by_pointer_touch_and_keyboard_within_reach() {
@@ -1766,12 +1729,12 @@ mod tests {
             let start = w.window_rect();
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            assert!(dispatch(&mut w, &left_press()), "title press consumed");
+            assert!(dispatch(&mut w, &mouse_press()), "title press consumed");
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let moved = w.window_rect();
             assert!(
                 (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
@@ -1876,12 +1839,12 @@ mod tests {
             // Fling the window far past the bottom-right corner.
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r = w.window_rect();
             assert!(
                 r.x0 >= 0.0 && r.y0 >= 0.0,
@@ -1903,12 +1866,12 @@ mod tests {
             // Fling it far past the top-left (negative) corner.
             let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab2));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r2 = w.window_rect();
             assert!(
                 r2.x0 >= -0.5 && r2.y0 >= -0.5,
@@ -1987,12 +1950,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            assert!(dispatch(&mut w, &left_press()), "corner press consumed");
+            assert!(dispatch(&mut w, &mouse_press()), "corner press consumed");
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let grown = w.window_rect();
             assert!(
                 grown.width() > start.width() + 50.0,
@@ -2009,12 +1972,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(corner.x + 80.0, corner.y + 12.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
 
             let resized = w.window_rect();
             assert!((resized.width() / resized.height() - 16.0 / 9.0).abs() < 0.001);
@@ -2026,12 +1989,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r = w.window_rect();
             assert!(
                 r.width() >= MIN_WIDTH - 0.5,
@@ -2083,7 +2046,7 @@ mod tests {
             let start = w.window_rect();
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(&mut w, &cursor_at(Point::new(grab.x + 30.0, grab.y + 30.0)));
             assert_eq!(
                 Widget::cursor_shape(&w, Point::new(5.0, 5.0)),
@@ -2096,7 +2059,7 @@ mod tests {
             let (mut w, events) = laid_out(true);
             // Click far outside the window.
             dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
-            let handled = dispatch(&mut w, &left_press());
+            let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "outside click must be swallowed");
             assert!(w.is_open(), "outside click must NOT close the window");
             assert_eq!(events.get(), 0, "outside click must not forward to content");
@@ -2108,7 +2071,7 @@ mod tests {
             let c = w.content_area().center();
             dispatch(&mut w, &cursor_at(c));
             let before = events.get();
-            let handled = dispatch(&mut w, &left_press());
+            let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "in-box press consumed");
             assert!(
                 events.get() > before,

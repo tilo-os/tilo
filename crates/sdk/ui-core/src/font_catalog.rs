@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use cosmic_text::{FontSystem, fontdb};
 #[cfg(test)]
 use tilo_font_catalog::MANIFEST;
-use tilo_font_catalog::{Asset, Face, Manifest, Scope};
+use tilo_font_catalog::{Asset, Face, Manifest, Scope, Trust};
 
 /// The verified catalog materialized for this source build.
 pub use tilo_font_catalog::checkout_root;
@@ -637,12 +637,14 @@ struct VerifiedBundle {
 type VerifiedBundles = HashMap<(PathBuf, bool), Arc<VerifiedBundle>>;
 
 /// Verify a catalog root once per process and hand every later load a clone
-/// of the resulting database. Hashing the ~43 MB of shipped fonts dominates
-/// loading (about 1.5 s in a debug build), while cloning the database copies
-/// only face metadata: the faces stay file-backed. A root that fails
-/// verification is not remembered, so a repaired installation loads on the
-/// next attempt. The lock is held across verification so concurrent first
-/// loads hash the fonts once rather than once per caller.
+/// of the resulting database; cloning copies only face metadata, the faces
+/// stay file-backed. Hashing the 54.9 MB of shipped fonts costs 22 ms with
+/// SHA instructions and about 140 ms without, so the image's immutable
+/// catalog is not hashed at all ([`tilo_font_catalog::Trust`]); any other
+/// root still is. A root that fails verification is not remembered, so a
+/// repaired installation loads on the next attempt. The lock is held across
+/// verification so concurrent first loads hash the fonts once rather than
+/// once per caller.
 fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, FontCatalogError> {
     static VERIFIED: OnceLock<Mutex<VerifiedBundles>> = OnceLock::new();
     let mut verified = VERIFIED
@@ -665,6 +667,11 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
 fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
     tilo_font_catalog::check_manifest(root)?;
     let manifest = tilo_font_catalog::manifest()?;
+    // The image's catalog is root-owned on a read-only mount, so its bytes
+    // are the image's (composefs/fs-verity) and need no hashing here; a
+    // checkout, a per-user runtime's or any writable catalog is hashed.
+    let trust = Trust::of_root(root);
+    tracing::debug!(root = %root.display(), ?trust, "verifying Tilo font catalog");
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
     let mut reserved = HashSet::new();
@@ -681,7 +688,7 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
         // Only this catalog's canonical faces reserve names. Product mode
         // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-        let path = verify_asset(root, asset)?;
+        let path = verify_asset(root, asset, trust)?;
         let ids = db.load_font_source(fontdb::Source::File(path.clone()));
         if ids.len() != asset.faces.len() {
             return Err(FontCatalogError::at(
@@ -725,20 +732,24 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
     })
 }
 
-/// Check one catalog file against its pinned size and SHA-256.
+/// Check one catalog file against its pinned size and, unless `trust` and
+/// the file itself show it immutable, its SHA-256.
 #[cfg(not(windows))]
 fn verify_asset(
     root: &Path,
     asset: &tilo_font_catalog::Asset,
+    trust: Trust,
 ) -> Result<PathBuf, FontCatalogError> {
-    Ok(asset.verify(root)?)
+    Ok(asset.verify_with(root, trust)?)
 }
 
-/// Windows hashes through the platform provider (see [`windows::digest`]).
+/// Windows hashes through the platform provider (see [`windows::digest`]);
+/// no Windows root is ever [`Trust::Immutable`].
 #[cfg(windows)]
 fn verify_asset(
     root: &Path,
     asset: &tilo_font_catalog::Asset,
+    _trust: Trust,
 ) -> Result<PathBuf, FontCatalogError> {
     let path = asset.path_in(root)?;
     let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;

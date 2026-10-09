@@ -822,11 +822,10 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
 
-        let (service, acceptor) =
-            crate::idle_thread_probe::spawned_thread("tilo-shell-ui-a", || {
-                FloatingSurfaceService::start().expect("start floating service")
-            });
-        crate::idle_thread_probe::assert_stays_asleep(&acceptor, "shell-ui acceptor");
+        let (service, acceptor) = tilo_test_env::idle::spawned_thread("tilo-shell-ui-a", || {
+            FloatingSurfaceService::start().expect("start floating service")
+        });
+        tilo_test_env::idle::assert_stays_asleep(&acceptor, "shell-ui acceptor");
         UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))
             .expect("still accepts clients");
         drop(service);

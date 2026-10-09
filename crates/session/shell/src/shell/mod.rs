@@ -78,6 +78,7 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
@@ -134,6 +135,7 @@ pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
@@ -1466,4 +1468,15 @@ mod legacy_files_opener_regressions {
             "deferred admission must not replace or mutate an already-open canonical file record"
         );
     }
+}
+
+/// Install immutable trusted project check configuration before session admission.
+///
+/// # Errors
+/// Refuses malformed, ambiguous, non-private or unsupported host definitions.
+#[cfg(target_os = "linux")]
+pub fn install_approved_checks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::approved_checks::install_from_args(arguments)
 }

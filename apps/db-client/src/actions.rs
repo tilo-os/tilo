@@ -376,9 +376,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_doc(),
         registry: {
-            let mut registry = ActionRegistry::new();
-            register(&mut registry);
-            registry
+            ActionRegistry::with(register)
         },
         resources: |doc| resources_for(doc),
         palette: ["Remove saved connection", "Remove saved query", "Save current query", "Connect", "Add connection"],

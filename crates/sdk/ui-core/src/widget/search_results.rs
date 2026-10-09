@@ -1218,7 +1218,7 @@ impl Widget for SearchResultsView {
 mod tests {
     use super::*;
     use crate::search::SearchRegistry;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
@@ -1441,81 +1441,27 @@ mod tests {
         // Case `keyboard_navigation_wraps_and_enter_activates`.
         {
             let mut v = view_from("");
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let taffy = TaffyTree::<()>::new();
-            let mods = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut ft = None;
-            let node = NodeId::new(0);
 
             let key = |k: NamedKey| {
-                // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero bit
-                // pattern; `handle_event` only inspects `logical_key` + `state`.
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(k);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
-                WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                }
+                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    Key::Named(k),
+                    None,
+                    ElementState::Pressed,
+                ))
             };
 
             assert_eq!(v.cursor(), 0);
-            v.handle_event(
-                &key(NamedKey::ArrowDown),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let handled = dispatch(&mut v, &key(NamedKey::ArrowDown));
             assert!(handled, "arrow-down consumed");
             assert_eq!(v.cursor(), 1);
             // Wrap: up from the top lands on the last row.
             v.set_cursor(0);
-            v.handle_event(
-                &key(NamedKey::ArrowUp),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch(&mut v, &key(NamedKey::ArrowUp));
             assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
             // Enter activates the highlighted row and drains once.
             v.set_cursor(0);
-            v.handle_event(
-                &key(NamedKey::Enter),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch(&mut v, &key(NamedKey::Enter));
             assert_eq!(
                 v.take_activated().as_deref(),
                 Some("c:alice"),
@@ -1532,45 +1478,19 @@ mod tests {
             assert_eq!(plan.rows.len(), 3);
             let target = plan.rows[2].rect.center();
 
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let taffy = TaffyTree::<()>::new();
-            let mods = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut ft = None;
-            let node = NodeId::new(0);
-
-            v.handle_event(
+            let mut handled = dispatch(
+                &mut v,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(target.x, target.y),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
-                },
             );
-            v.handle_event(
+            handled |= dispatch(
+                &mut v,
                 &WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: node,
-                    taffy: &taffy,
                 },
             );
             assert!(handled, "row click consumed");

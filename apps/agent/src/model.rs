@@ -383,7 +383,8 @@ impl ActionDecision<'_> {
     /// Run the conversation to a plan. The first turn already shows the
     /// published operations (and reveals them), and the system prompt and
     /// tools are the same bytes on every turn, so the provider's prompt cache
-    /// keeps everything up to the newest messages.
+    /// keeps everything up to the newest messages — and, through the
+    /// [`FirstTurn`]'s breakpoint, the operations across decisions too.
     fn run(
         &self,
         trace_id: u64,
@@ -393,8 +394,8 @@ impl ActionDecision<'_> {
         let dialect = Dialect::of(self.selection.protocol);
         let began = ui::time::now();
         let mut revealed = Revealed::new();
-        let user_turn = action_user_turn(self.rest, self.blocks, self.catalogue, &mut revealed);
-        let mut messages = dialect.first_messages(&user_turn);
+        let first = action_user_turn(self.rest, self.blocks, self.catalogue, &mut revealed);
+        let mut messages = dialect.first_messages(&first);
         let mut refused = None;
         for turn in 0..MAX_ACTION_TURNS {
             let body = dialect.body(self.selection, &messages, self.most_steps);
@@ -496,12 +497,12 @@ impl Dialect {
         }
     }
 
-    fn first_messages(self, user_turn: &str) -> Vec<Value> {
+    fn first_messages(self, first: &FirstTurn) -> Vec<Value> {
         match self {
-            Self::Anthropic => vec![serde_json::json!({ "role": "user", "content": user_turn })],
+            Self::Anthropic => vec![first.message(self)],
             Self::OpenAi => vec![
                 serde_json::json!({ "role": "system", "content": ACTION_SYSTEM }),
-                serde_json::json!({ "role": "user", "content": user_turn }),
+                first.message(self),
             ],
         }
     }
@@ -528,6 +529,64 @@ impl Dialect {
             Self::OpenAi => {
                 serde_json::json!({ "role": "tool", "tool_call_id": id, "content": answer })
             }
+        }
+    }
+}
+
+/// A conversation's first user turn, in two parts: the published operations,
+/// the same bytes for the same catalogue whatever the task, then everything
+/// that varies per task (the earlier conversation, the document, the
+/// request).
+///
+/// Anthropic caches only up to an explicit breakpoint, so its dialect sends
+/// the parts as two text blocks with a breakpoint closing the operations:
+/// the next task over the same catalogue reads tools, system prompt and
+/// operations back from the cache instead of prefilling them again (the
+/// gateway's own breakpoints still mark the conversation tail). An
+/// `OpenAI`-compatible provider caches a repeated prefix by itself, and some
+/// reject fields they do not know, so it gets the one joined string.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FirstTurn {
+    /// The published operations: stable across tasks.
+    pub operations: String,
+    /// Everything after them.
+    pub task: String,
+}
+
+impl FirstTurn {
+    /// The whole turn as one text.
+    pub fn text(&self) -> String {
+        format!("{}{}", self.operations, self.task)
+    }
+
+    /// The first user message in `dialect`. A blank part gets no block (an
+    /// empty text block is refused), and with no operations there is
+    /// nothing worth a breakpoint of its own.
+    fn message(&self, dialect: Dialect) -> Value {
+        let content = match dialect {
+            Dialect::Anthropic if !self.operations.trim().is_empty() => {
+                let mut blocks = vec![serde_json::json!({
+                    "type": "text",
+                    "text": self.operations,
+                    "cache_control": { "type": "ephemeral" },
+                })];
+                if !self.task.trim().is_empty() {
+                    blocks.push(serde_json::json!({ "type": "text", "text": self.task }));
+                }
+                Value::Array(blocks)
+            }
+            Dialect::Anthropic | Dialect::OpenAi => Value::String(self.text()),
+        };
+        serde_json::json!({ "role": "user", "content": content })
+    }
+}
+
+/// A first turn with no published operations ahead of `task`.
+impl From<&str> for FirstTurn {
+    fn from(task: &str) -> Self {
+        Self {
+            operations: String::new(),
+            task: task.to_owned(),
         }
     }
 }
@@ -743,17 +802,18 @@ fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, Str
 /// The first user turn of an action decision: the operations published
 /// right now ([`tools::catalogue_summary`], capped as the task loop caps it,
 /// each id shown revealed so `plan` may name it at once), then the document,
-/// then the instruction. Stable first, volatile last: the provider caches
-/// the longest byte-identical prefix, and the summary changes only when the
-/// applications republish.
+/// then the instruction. Stable first, volatile last: the summary changes
+/// only when the applications republish, so it is the [`FirstTurn`]'s
+/// cached part and the document and instruction are its task.
 pub fn action_user_turn(
     rest: &str,
     blocks: &[Block],
     catalogue: &Catalogue,
     revealed: &mut Revealed,
-) -> String {
+) -> FirstTurn {
     let summary = tools::catalogue_summary(catalogue, revealed, tools::MOST_SUMMARISED);
-    let mut text = format!("Operations published right now:\n\n{summary}\n");
+    let operations = format!("Operations published right now:\n\n{summary}\n");
+    let mut text = String::new();
     if !blocks.is_empty() {
         text.push_str("The shared document as it stands:\n\n");
         for (index, block) in blocks.iter().take(MAX_BLOCKS).enumerate() {
@@ -768,7 +828,10 @@ pub fn action_user_turn(
         text.push('\n');
     }
     let _ = write!(text, "The instruction asks for:\n\n{}\n", rest.trim());
-    text
+    FirstTurn {
+        operations,
+        task: text,
+    }
 }
 
 /// Send one action-discovery turn through the profile selected for this
@@ -1008,14 +1071,14 @@ impl Conversation {
         protocol: agent_provider_config::ProviderProtocol,
         model: &str,
         system: &str,
-        user_turn: &str,
+        first: &FirstTurn,
     ) -> Self {
         let dialect = Dialect::of(protocol);
         let messages = match dialect {
-            Dialect::Anthropic => vec![serde_json::json!({ "role": "user", "content": user_turn })],
+            Dialect::Anthropic => vec![first.message(dialect)],
             Dialect::OpenAi => vec![
                 serde_json::json!({ "role": "system", "content": system }),
-                serde_json::json!({ "role": "user", "content": user_turn }),
+                first.message(dialect),
             ],
         };
         Self {
@@ -1309,7 +1372,8 @@ mod tests {
     #[test]
     fn reasoning_history_stays_in_the_original_coding_conversation() {
         let protocol = agent_provider_config::ProviderProtocol::OpenAiCompatible;
-        let mut conversation = Conversation::new(protocol, "pinned-qwen", "system", "task");
+        let mut conversation =
+            Conversation::new(protocol, "pinned-qwen", "system", &FirstTurn::from("task"));
         let body = serde_json::json!({"choices":[{"message":{
             "content":null,"reasoning_content":"provider-authored thought",
             "tool_calls":[{"id":"call_1","type":"function","function":{"name":"list_operations","arguments":"{}"}}]
@@ -1324,7 +1388,12 @@ mod tests {
         );
         assert_eq!(next["messages"][2]["content"], Value::Null);
         assert_eq!(next["messages"][3]["tool_call_id"], "call_1");
-        let fresh = Conversation::new(protocol, "different-model", "system", "new task");
+        let fresh = Conversation::new(
+            protocol,
+            "different-model",
+            "system",
+            &FirstTurn::from("new task"),
+        );
         assert!(
             !fresh
                 .body(&serde_json::json!([]))
@@ -1335,7 +1404,7 @@ mod tests {
             agent_provider_config::ProviderProtocol::Anthropic,
             "other-provider",
             "system",
-            "new task",
+            &FirstTurn::from("new task"),
         );
         assert!(
             !other_dialect
@@ -1360,7 +1429,8 @@ mod tests {
         let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
         let dialect = Dialect::of(selection.protocol);
         assert_eq!(dialect, Dialect::OpenAi);
-        let mut messages = dialect.first_messages("turn the bullets into a table");
+        let mut messages =
+            dialect.first_messages(&FirstTurn::from("turn the bullets into a table"));
         let body = dialect.body(&selection, &messages, 4);
 
         // The request is Chat Completions shaped: no Anthropic keys at all.
@@ -1500,7 +1570,7 @@ mod tests {
             agent_provider_config::ModelDescriptor::new("claude-x"),
         );
         let dialect = Dialect::of(selection.protocol);
-        let mut messages = dialect.first_messages("do it");
+        let mut messages = dialect.first_messages(&FirstTurn::from("do it"));
         let body = dialect.body(&selection, &messages, 4);
         assert_eq!(body["system"], ACTION_SYSTEM);
         assert_eq!(body["max_tokens"], 4096);
@@ -1513,7 +1583,12 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
-        let conversation = Conversation::new(selection.protocol, "claude-x", "system", "do it");
+        let conversation = Conversation::new(
+            selection.protocol,
+            "claude-x",
+            "system",
+            &FirstTurn::from("do it"),
+        );
         assert!(conversation.streams(), "tool calls run while Claude writes");
     }
 
@@ -1634,6 +1709,16 @@ mod tests {
         protocol: agent_provider_config::ProviderProtocol,
         answers: Vec<String>,
     ) -> (Result<tools::Answer, String>, Vec<Value>) {
+        decide_on(protocol, "sample twelve values, normalised", answers)
+    }
+
+    /// [`decide`] for the instruction `rest`, over the same document and
+    /// catalogue.
+    fn decide_on(
+        protocol: agent_provider_config::ProviderProtocol,
+        rest: &str,
+        answers: Vec<String>,
+    ) -> (Result<tools::Answer, String>, Vec<Value>) {
         let mut profile = agent_provider_config::ProviderProfile::hosted(protocol);
         profile
             .models
@@ -1643,7 +1728,7 @@ mod tests {
         let blocks = [block("paragraph", "sample twelve values, normalised")];
         let decision = ActionDecision {
             selection: &selection,
-            rest: "sample twelve values, normalised",
+            rest,
             blocks: &blocks,
             catalogue: &catalogue,
             most_steps: 4,
@@ -1663,16 +1748,91 @@ mod tests {
         (decided.map_err(|AskError::Failed(error)| error), sent)
     }
 
-    /// The text of the first user turn of a request.
+    /// The text of the first user turn of a request: one string, or
+    /// Anthropic's text blocks in order.
     fn first_user_turn(body: &Value) -> String {
-        body["messages"]
+        let user = body["messages"]
             .as_array()
             .unwrap()
             .iter()
             .find(|message| message["role"] == "user")
-            .and_then(|message| message["content"].as_str())
-            .unwrap()
-            .to_owned()
+            .unwrap();
+        match &user["content"] {
+            Value::String(text) => text.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .map(|block| {
+                    assert_eq!(block["type"], "text", "{block}");
+                    block["text"].as_str().unwrap()
+                })
+                .collect(),
+            other => panic!("a first user turn is text: {other}"),
+        }
+    }
+
+    /// Two decisions over the same catalogue open with byte-identical
+    /// operations. Anthropic's first turn closes them with a cache
+    /// breakpoint of their own, so the next decision reads tools, system
+    /// prompt and operations back from the cache; the document and the
+    /// instruction follow in a block of their own. `OpenAI`-compatible
+    /// bodies carry no `cache_control` at all and keep the one string.
+    #[test]
+    fn the_operations_are_cached_across_decisions() {
+        let first_bodies = |protocol: agent_provider_config::ProviderProtocol| {
+            ["sample twelve values, normalised", "sample three values"].map(|rest| {
+                let answer = call(protocol, "p1", tools::PLAN, &plan_of(SAMPLE));
+                let (decided, sent) = decide_on(protocol, rest, vec![answer]);
+                assert_eq!(decided.unwrap().actions, [SAMPLE]);
+                sent.into_iter().next().unwrap()
+            })
+        };
+        let anthropic = first_bodies(agent_provider_config::ProviderProtocol::Anthropic);
+        // What Anthropic caches at the breakpoint, in its render order:
+        // tools, system, then the first user message through the operations.
+        let prefix = |body: &Value| {
+            let content = body["messages"][0]["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "{body}");
+            serde_json::to_string(&(&body["tools"], &body["system"], &content[0])).unwrap()
+        };
+        assert_eq!(prefix(&anthropic[0]), prefix(&anthropic[1]));
+        let operations = &anthropic[0]["messages"][0]["content"][0];
+        assert_eq!(operations["type"], "text");
+        assert_eq!(
+            operations["cache_control"],
+            serde_json::json!({"type": "ephemeral"})
+        );
+        let operations = operations["text"].as_str().unwrap();
+        assert!(
+            operations.starts_with("Operations published right now:")
+                && operations.contains(SAMPLE),
+            "{operations}"
+        );
+        assert!(
+            !operations.contains("The instruction asks for"),
+            "{operations}"
+        );
+        let task = |body: &Value| body["messages"][0]["content"][1].clone();
+        assert_ne!(task(&anthropic[0]), task(&anthropic[1]));
+        assert!(task(&anthropic[0]).get("cache_control").is_none());
+        assert!(
+            task(&anthropic[1])["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("The instruction asks for:\n\nsample three values\n")
+        );
+        for body in &anthropic {
+            // The one breakpoint the agent places; the gateway adds the rest.
+            assert_eq!(body.to_string().matches("cache_control").count(), 1);
+        }
+
+        let openai = first_bodies(agent_provider_config::ProviderProtocol::OpenAiCompatible);
+        for (body, same) in openai.iter().zip(&anthropic) {
+            assert!(!body.to_string().contains("cache_control"), "{body}");
+            assert!(body["messages"][1]["content"].is_string(), "{body}");
+            // The same words, joined.
+            assert_eq!(first_user_turn(body), first_user_turn(same));
+            assert!(first_user_turn(body).starts_with(operations));
+        }
     }
 
     /// The first turn already shows the published operations with their

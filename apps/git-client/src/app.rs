@@ -3711,6 +3711,13 @@ impl GitClientApp {
             return Err(ui::i18n!("git-remote-busy"));
         }
         match effect {
+            GitClientEffect::RunApprovedCheck { check_id } => {
+                let checked = cx.approved_check(&check_id)?;
+                return Ok(cx.spawn(
+                    |_| checked,
+                    |_app, observed, _cx| observed.map(Effected::value),
+                ));
+            }
             effect @ (GitClientEffect::ShowChanges
             | GitClientEffect::ShowHistory
             | GitClientEffect::ShowBranches

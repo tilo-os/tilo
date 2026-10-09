@@ -38,7 +38,7 @@ use shell::shell::state::{
 use ui::widget::Widget as _;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// This device's peer salt: room projection publishes only ids it minted.
@@ -310,16 +310,7 @@ impl Desk {
     }
 
     fn press(&mut self, key: NamedKey, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct
-        // is zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
+        let ev = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         self.dispatch(
             &WindowEvent::KeyboardInput {
                 device_id: winit::event::DeviceId::dummy(),
