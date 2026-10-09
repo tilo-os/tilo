@@ -43,8 +43,27 @@ class AppSdkWorkflow(unittest.TestCase):
             self.assertEqual(body.count("uses: ./.forgejo/actions/merge-main"), 1, name)
             self.assertIn("main: ${{ needs.builder.outputs.main }}", body, name)
 
+    def test_manual_linux_diagnosis_keeps_normal_browser_gates(self) -> None:
+        self.assertIn('default: all', block('on', 0))
+        self.assertIn('options: [all, linux]', block('on', 0))
+        selector = "(github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux')"
+        for name in ('web', 'web-size'):
+            body = job(name)
+            self.assertIn(selector + " && !cancelled()", body)
+            self.assertIn("needs.builder.outputs.affected == 'true'", body)
+            self.assertIn("needs.policy.result == 'success'", body)
+        self.assertNotIn(selector, job('linux'))
+
     def test_macos_stays_disabled_until_a_runner_serves_it(self) -> None:
         self.assertIn("    if: false\n", job("macos"))
+
+    def test_linux_uses_native_arm_for_prs_and_keeps_main_x86_qualification(self) -> None:
+        body = job("linux")
+        self.assertIn("runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}", body)
+        self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}", body)
+        self.assertIn('run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', body)
+        for name in ("web", "web-size"):
+            self.assertIn("    runs-on: runner\n", job(name))
 
 
 if __name__ == "__main__":

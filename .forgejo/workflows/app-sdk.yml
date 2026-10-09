@@ -44,6 +44,13 @@ on:
       - "tools/web/**"
       - "vendor/**"
   workflow_dispatch:
+    inputs:
+      lanes:
+        description: 'Diagnostic selection; normal PR/main runs retain every lane.'
+        type: choice
+        required: false
+        default: all
+        options: [all, linux]
 
 concurrency:
   # A newer commit on a pull request replaces its older run. Pushes keep one
@@ -151,7 +158,10 @@ jobs:
     # app for two targets) share one target directory: they outgrow the
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
     # reports its peak memory.
-    runs-on: runner
+    # PRs use already-online native ARM capacity while the x86 pool is busy.
+    # Every main commit retains the native x86 SDK qualification; browser
+    # lanes remain x86 because Chrome for Testing supplies an x86 Linux build.
+    runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-large-arm64' }}
     timeout-minutes: 180
     env:
       CARGO_INCREMENTAL: "0"
@@ -170,6 +180,10 @@ jobs:
           main: ${{ needs.builder.outputs.main }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
+      - name: Verify native Linux SDK runner architecture
+        env:
+          EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || 'aarch64' }}
+        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
       - name: tilo-caps and the tilo-app target commands
         run: |
           bash tools/ci/measure.sh "tilo-caps tests" -- cargo test --locked -p tilo-caps
@@ -274,7 +288,7 @@ jobs:
   web:
     # The dev mount does not consume release artifacts; build both lanes in parallel.
     needs: [builder, policy]
-    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -388,7 +402,7 @@ jobs:
   # The release desktop bundle held to its size budget, beside the mount test.
   web-size:
     needs: [builder, policy]
-    if: ${{ !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.event.inputs.lanes != 'linux') && !cancelled() && needs.builder.result == 'success' && (github.event_name != 'pull_request' || needs.policy.result == 'success') && needs.builder.outputs.affected == 'true' }}
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
