@@ -96,3 +96,48 @@ fn headless_focus_order_enumerates_history_once() {
     assert!(order.len() >= 2_000, "all live rows remain focusable");
     assert_eq!(visits.get(), 1, "one History enumeration per recomputation");
 }
+
+#[test]
+fn saved_and_captured_history_deny_only_live_composition_nodes() {
+    let state = crate::State::new();
+    let (mut root, _) = FocusHistoryRoot::new(3, &state);
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+    let outside = tree.new_leaf(taffy::Style::default()).unwrap();
+    let live = root.history.live_layout_node().unwrap();
+    let row = tree.children(live).unwrap()[0];
+    let owned = nodes
+        .keys()
+        .copied()
+        .find(|&node| root.history.owns_node(node, &tree))
+        .unwrap();
+    let allows = |root: &FocusHistoryRoot, node| super::embedded::allows_focus(root, node, &tree);
+    assert!(allows(&root, row));
+    root.live.children_mut()[0].set_focus(true);
+    root.history.preserve_captured_focus(Some(
+        crate::widget::layout::CompositionFocus::capture_live(&root.live).unwrap(),
+    ));
+    assert!(root.history.has_saved_focus());
+    assert!(!root.history.captures_input());
+    assert!(
+        !allows(&root, row),
+        "saved focus alone restricts the live app"
+    );
+    assert!(allows(&root, owned));
+    assert!(allows(&root, outside));
+    root.history.discard_saved_focus();
+    assert!(
+        allows(&root, row),
+        "releasing saved focus allows the live app"
+    );
+    assert!(root.history.request_open());
+    assert!(root.history.captures_input());
+    assert!(!root.history.has_saved_focus());
+    assert!(
+        !allows(&root, row),
+        "input capture alone restricts the live app"
+    );
+    assert!(allows(&root, owned));
+    assert!(allows(&root, outside));
+}
