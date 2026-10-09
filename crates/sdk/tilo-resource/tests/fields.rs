@@ -579,3 +579,16 @@ fn a_group_is_checked_once_at_its_end() {
     let state = pair.state().unwrap();
     assert_eq!((state.left, state.right), (2, 2));
 }
+
+#[test]
+fn a_place_offers_a_verb_with_nothing_bound() {
+    let place = Derived::<Board>::new("Board").with(Board::RETITLE.unbound());
+    let published = place.publish();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == "retitle")
+        .expect("offered on the place");
+    let params: Vec<String> = spec.params().iter().map(|p| p.name.to_string()).collect();
+    assert_eq!(params, ["title", "suffix"]);
+}

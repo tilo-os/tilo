@@ -345,11 +345,26 @@ pub(crate) fn verb(
         .and_then(serde_json::Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let described = Described::new(Did::verb(
-        ActionKey::new("", kind, id),
-        args.iter()
-            .filter_map(|(name, value)| Some((name.clone(), Scalar::from_json(value)?))),
-    ));
+    // Plain arguments by name; a record argument by its fields, one level
+    // deep (`receipt.completed`).
+    let mut plain: Vec<(String, Scalar)> = Vec::new();
+    for (name, value) in &args {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (field, value) in fields {
+                    if let Some(scalar) = Scalar::from_json(value) {
+                        plain.push((format!("{name}.{field}"), scalar));
+                    }
+                }
+            }
+            value => {
+                if let Some(scalar) = Scalar::from_json(value) {
+                    plain.push((name.clone(), scalar));
+                }
+            }
+        }
+    }
+    let described = Described::new(Did::verb(ActionKey::new("", kind, id), plain));
     // The item: an argument naming an item of one of the collections.
     for field in shape.fields() {
         let (Shape::Collection(item) | Shape::Keyed(item)) = field.shape else {

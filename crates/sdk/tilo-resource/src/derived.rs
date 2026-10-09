@@ -144,6 +144,17 @@ impl<R, P: Serialize> ActionRef<R, P> {
             marker: PhantomData,
         }
     }
+
+    /// This verb with nothing bound: every parameter still asked, offered on
+    /// a place as it is on the record (the terminal's verbs on its place).
+    #[must_use]
+    pub fn unbound(&self) -> Bound<R> {
+        Bound {
+            action: self.id,
+            values: Vec::new(),
+            marker: PhantomData,
+        }
+    }
 }
 
 /// One derived resource. See the module docs.
