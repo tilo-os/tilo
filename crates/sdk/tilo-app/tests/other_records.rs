@@ -296,3 +296,51 @@ fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
     assert!(playback.with(|state| state.autoplay));
     assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
 }
+
+/// Keeps both records, though its view shows neither.
+struct DeclaringApp;
+
+impl ResourceApp for DeclaringApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-board-declaring";
+    const TITLE: &'static str = "Board";
+
+    fn view(_cx: &mut ViewCx<Board>) -> Element {
+        Box::new(Column::new())
+    }
+
+    fn records(records: &mut Records<'_>) {
+        records.settings::<Display>().person::<Playback>();
+    }
+}
+
+#[test]
+fn declared_records_are_published_and_committed_though_no_view_shows_them() {
+    let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+    app.call_on(
+        "settings:test.display",
+        "field-edit",
+        serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
+    )
+    .unwrap();
+    assert!(app.settings::<Display>().get().high_contrast);
+    app.call_on(
+        "person:test.playback",
+        "mute",
+        serde_json::json!({ "channel": "news" }),
+    )
+    .unwrap();
+    let playback = app.person::<Playback>().unwrap();
+    assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
+
+    let report = tilo_app::framework::testing::surface_report::<DeclaringApp>();
+    let kinds: Vec<&str> = report["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|surface| surface["kind"].as_str())
+        .collect();
+    for kind in ["test.board", "test.display", "test.playback"] {
+        assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+    }
+}

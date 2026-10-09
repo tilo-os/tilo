@@ -253,6 +253,44 @@ pub(crate) mod sealed {
     pub struct Storage<'a>(pub(crate) &'a super::ViewStorage);
 }
 
+/// The records an app keeps besides the one it shows, declared in
+/// [`ResourceApp::records`](super::ResourceApp::records): each is opened
+/// with the window and published beside the app's resource, so the palette
+/// and agents reach it whether or not a view has shown it, and the app's
+/// committed surface lists it.
+pub struct Records<'a> {
+    storage: &'a ViewStorage,
+}
+
+impl<'a> Records<'a> {
+    pub(crate) fn new(storage: &'a ViewStorage) -> Self {
+        Self { storage }
+    }
+
+    /// The person's own record of `P` ([`ViewCx::person`]).
+    pub fn person<P: Resource>(&mut self) -> &mut Self {
+        let _ = self.storage.person::<P>();
+        self
+    }
+
+    /// The person's record `P` another app keeps
+    /// ([`ViewCx::shared_person`]).
+    pub fn shared_person<P: tilo_resource::SharedRecord>(&mut self) -> &mut Self {
+        let _ = self.storage.shared_person::<P>();
+        self
+    }
+
+    /// The settings section `T`, a resource model ([`ViewCx::settings`]).
+    pub fn settings<T>(&mut self) -> &mut Self
+    where
+        T: Resource<State = T> + Fields + SettingsSchema,
+    {
+        let settings = self.storage.storage().settings::<T>();
+        let _ = self.storage.section(&settings);
+        self
+    }
+}
+
 /// The settings section `T` held as a record: kept as the resource model in
 /// a document of its own, each change applied there, checked, and stored in
 /// the settings document with who made it.

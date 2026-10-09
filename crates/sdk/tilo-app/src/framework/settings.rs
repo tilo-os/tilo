@@ -225,6 +225,7 @@ impl ViewStorage {
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
+        super::controls::opened::<T>();
         if let Some(person) = &self.person {
             return person.open_section(settings.clone(), self.device());
         }

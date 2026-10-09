@@ -160,7 +160,7 @@ pub mod prelude {
     pub use crate::framework::{
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonRecord,
-        ResourceApp, ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, Submit,
+        Records, ResourceApp, ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, Submit,
         SurfaceCx, TextControl, ViewCx,
     };
     pub use tilo_resource::{

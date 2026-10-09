@@ -258,6 +258,21 @@ pub trait ResourceApp: 'static {
         let _ = cx;
         Vec::new()
     }
+
+    /// The records the app keeps besides the one it shows: the person's own
+    /// records and the settings sections that are resource models. Each is
+    /// opened with the window and published beside the app's resource, so
+    /// the palette and agents change it whether or not a view has shown it,
+    /// and `tilo-app surface` commits its surface with the app's.
+    ///
+    /// ```ignore
+    /// fn records(records: &mut Records<'_>) {
+    ///     records.person::<WatchHistory>().settings::<Playback>();
+    /// }
+    /// ```
+    fn records(records: &mut super::Records<'_>) {
+        let _ = records;
+    }
 }
 
 /// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
@@ -428,6 +443,11 @@ pub(crate) fn build_root<A: ResourceApp>(
         dispatch
     };
     let storage = super::settings::ViewStorage::new(storage, hosted.attach(A::ID, A::TITLE));
+    // A window someone uses opens the records the app keeps beside its own,
+    // so they are published before any view shows them.
+    if permissions.is_some() {
+        A::records(&mut super::Records::new(&storage));
+    }
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
