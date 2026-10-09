@@ -3673,11 +3673,11 @@ mod tests {
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::sync::Arc;
 
     fn chrome_rc() -> crate::shell::chrome_state::Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -3692,7 +3692,7 @@ mod tests {
         ws.set_owner("shell-fixture");
         tree.desktop.workspaces.push(ws);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_fixture_handle(
             handle,
             crate::shell::hosted_inputs::HostedTileInputs::default(),
@@ -4204,9 +4204,10 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "tab.duplicate")
                 .expect("duplicate action is registered");
-            let chrome = ChromeState::new_with_handle(std::sync::Arc::new(
-                parking_lot::RwLock::new(crate::shell::state::WorkspaceTree::default()),
-            ));
+            let chrome =
+                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(
+                    crate::shell::state::WorkspaceTree::default(),
+                ));
             let args = ActionArgs::bind(action.params, []).expect("duplicate is nullary");
             let error = (action.apply)(&mut chrome.borrow_mut(), &args)
                 .expect_err("no active tab must be a machine-readable failure");
@@ -4707,7 +4708,7 @@ mod tests {
             tree.desktop.active = workspace_id;
             tree.desktop.external_revision = chrome.borrow().tree().desktop.external_revision;
             ChromeState::new_with_fixture_handle(
-                Arc::new(RwLock::new(tree)),
+                crate::shell::state::WorkspaceTreeHandle::new(tree),
                 crate::shell::hosted_inputs::HostedTileInputs::default(),
             )
         };
@@ -5676,7 +5677,8 @@ mod tests {
             workspace.set_owner("a-different-person");
             tree.desktop.workspaces.push(workspace);
             tree.desktop.active = id;
-            let chrome = ChromeState::new_with_handle(Arc::new(RwLock::new(tree)));
+            let chrome =
+                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(tree));
 
             for action_id in [
                 "identity.devices.copy",

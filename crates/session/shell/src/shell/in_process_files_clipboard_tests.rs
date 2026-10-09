@@ -9,7 +9,7 @@ mod files_clipboard_tests {
     use tilo_actions::remote::{Pending, PendingPoll};
 
     struct RetiredOwner {
-        tree: std::sync::Weak<parking_lot::RwLock<crate::shell::state::WorkspaceTree>>,
+        tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
         broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
     }
@@ -1305,7 +1305,7 @@ mod files_clipboard_tests {
             .unwrap();
         let tree = fixture.session.workspace_tree();
         let probe = RetiredOwner {
-            tree: std::sync::Arc::downgrade(&tree),
+            tree: tree.downgrade(),
             runtime: tree.read().native_runtime.authority_witness(),
             broker: std::sync::Arc::downgrade(fixture.broker.state()),
         };
