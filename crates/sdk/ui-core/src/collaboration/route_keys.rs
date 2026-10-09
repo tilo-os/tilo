@@ -455,11 +455,11 @@ mod tests {
 
         route.update(Wire::Ready, 1, Some(&encoded));
         assert!(!route.awaiting_keys());
+        assert_eq!(route.take_held_inbound().len(), 1, "released with the keys");
         assert!(
             !route.wants_keys_for_held(),
             "nothing held asks for nothing"
         );
-        route.take_held_inbound();
         let newer = keys(channel).0;
         let (metadata, sealed) = newer
             .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
