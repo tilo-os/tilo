@@ -441,7 +441,13 @@ impl ResourceApp for AgendaApp {
     const ID: &'static str = "so.tilo.test-agenda";
     const TITLE: &'static str = "Agenda";
 
-    fn view(_cx: &mut ViewCx<Agenda>) -> Element {
+    fn view(cx: &mut ViewCx<Agenda>) -> Element {
+        // The server takes every upload at once.
+        cx.outbox(
+            Agenda::paths().uploads,
+            |_, _: &Meeting| true,
+            |_, _, _| Ok(Effected::done()),
+        );
         Box::new(Column::new())
     }
 }
@@ -467,6 +473,7 @@ fn undoing_a_field_edit_that_queued_queues_the_restored_value() {
     // Ctrl+Z puts both fields back in one step, through apply: the server
     // gets the restored meeting.
     assert!(app.undo());
+    app.settle();
     assert_eq!(app.state().meeting.title, "Review");
     assert_eq!(app.state().meeting.room, "");
     assert_eq!(
@@ -474,12 +481,69 @@ fn undoing_a_field_edit_that_queued_queues_the_restored_value() {
         Some(&("Review".to_owned(), String::new()))
     );
     assert!(app.undo());
+    app.settle();
     assert_eq!(app.state().meeting.title, "");
     assert_eq!(sent(&app).last(), Some(&(String::new(), String::new())));
     assert!(app.redo());
+    app.settle();
     assert_eq!(app.state().meeting.title, "Review");
     assert_eq!(
         sent(&app).last(),
         Some(&("Review".to_owned(), String::new()))
     );
+}
+
+fn pending_steps(app: &TestApp<AwaitedApp>) -> usize {
+    app.read_document(|doc| history_source::steps::pending_compensations(doc).len())
+}
+
+#[test]
+fn an_undo_that_queues_counts_once_its_entry_settled_done() {
+    AWAITED.with(|awaited| awaited.borrow_mut().clear());
+    REPLIES.with(|replies| replies.borrow_mut().clear());
+    let mut app = TestApp::<AwaitedApp>::new().unwrap();
+    let send = start(
+        &mut app,
+        "send",
+        &serde_json::json!({ "device": "test-device", "text": "hello" }),
+    );
+    reply(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert!(succeeded(&mut app, send));
+
+    // Ctrl+Z queues the recall; until the server confirms it the send is
+    // still in effect.
+    assert!(app.undo());
+    app.settle();
+    app.settle();
+    assert_eq!(
+        AWAITED.with(|awaited| awaited.borrow().last().map(|(_, text)| text.clone())),
+        Some("recall ".to_owned())
+    );
+    assert_eq!(pending_steps(&app), 1, "the undo waits for its recall");
+
+    // The server refuses the recall for good: the send stays in effect.
+    reply(Ok(tilo_actions::ActionOutput {
+        value: serde_json::to_value(Settled::<String>::failed("too late")).ok(),
+        resources: Vec::new(),
+    }));
+    app.settle();
+    assert_eq!(
+        pending_steps(&app),
+        1,
+        "a failed recall leaves the send in effect"
+    );
+
+    // Undo again: this recall goes through, and the send is taken back.
+    assert!(app.undo());
+    app.settle();
+    app.settle();
+    reply(Ok(tilo_actions::ActionOutput::default()));
+    app.settle();
+    assert_eq!(
+        pending_steps(&app),
+        0,
+        "the confirmed recall completes the undo"
+    );
+    assert!(!app.undo(), "nothing more to take back");
 }

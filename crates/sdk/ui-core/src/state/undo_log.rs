@@ -690,10 +690,16 @@ impl UndoLog {
         let mut pending: HashSet<ChangeHash> = HashSet::new();
         let applied = compensation.is_some_and(|actions| {
             actions.iter().all(|(marks, action, settles)| {
-                if *settles {
+                // An outside consequence the inverse queues settles these
+                // steps when it settles.
+                let compensating = tilo_actions::CompensatingScope::enter(
+                    marks.iter().map(ToString::to_string).collect(),
+                );
+                let applied = action.apply(doc).is_ok();
+                if *settles || compensating.awaited() {
                     pending.extend(marks.iter().copied());
                 }
-                action.apply(doc).is_ok()
+                applied
             })
         });
         if !applied {
@@ -964,11 +970,17 @@ impl UndoLog {
                 restoration.action.as_ref(),
                 &actor,
             );
-            restoration.action.apply(doc).is_ok().then_some((
-                restoration.originals,
-                restoration.settles,
-                inverse,
-            ))
+            let compensating = tilo_actions::CompensatingScope::enter(
+                restoration
+                    .originals
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            );
+            let applied = restoration.action.apply(doc).is_ok();
+            let settles = restoration.settles || compensating.awaited();
+            drop(compensating);
+            applied.then_some((restoration.originals, settles, inverse))
         });
         let mut compensation = None;
         match restored {

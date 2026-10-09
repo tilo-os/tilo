@@ -1071,10 +1071,23 @@ impl<O: Serialize + serde::de::DeserializeOwned> Model for Settled<O> {
 pub struct OutboxEntry<T, O = ()> {
     pub value: T,
     pub settled: Option<Settled<O>>,
+    /// The steps (change hashes) whose undo or redo queued this entry: they
+    /// count as taken back (or brought back) once it settles done.
+    pub compensates: Vec<String>,
 }
 
 const ENTRY_VALUE: &str = "value";
 const ENTRY_SETTLED: &str = "settled";
+const ENTRY_COMPENSATES: &str = "compensates";
+
+/// The undo or redo of `steps` completed: the entry they waited for settled
+/// done. A step whose undo waits for nothing (settled already, or another
+/// device's history) is left as it is.
+fn settle_steps(doc: &mut Doc, steps: &[String]) {
+    for step in steps {
+        let _ = tilo_actions::settle_compensation(doc, step);
+    }
+}
 
 impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry<T, O> {
     const CHECKS: bool = T::CHECKS;
@@ -1083,6 +1096,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
         serde_json::json!({
             ENTRY_VALUE: self.value.to_json(),
             ENTRY_SETTLED: self.settled.to_json(),
+            ENTRY_COMPENSATES: self.compensates.to_json(),
         })
     }
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
@@ -1090,6 +1104,10 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
         Ok(Self {
             value: T::from_json(value.get(ENTRY_VALUE).unwrap_or(&null))?,
             settled: Option::<Settled<O>>::from_json(value.get(ENTRY_SETTLED).unwrap_or(&null))?,
+            compensates: match value.get(ENTRY_COMPENSATES) {
+                Some(steps) => Vec::from_json(steps)?,
+                None => Vec::new(),
+            },
         })
     }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
@@ -1099,12 +1117,23 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for OutboxEntry
         Ok(Self {
             value: read_key(doc, id, ENTRY_VALUE)?,
             settled: read_key(doc, id, ENTRY_SETTLED)?,
+            compensates: read_key(doc, id, ENTRY_COMPENSATES)?,
         })
     }
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         let map = slot.object(doc, ObjType::Map)?;
+        let was_done = read_key::<Option<Settled<O>>>(doc, &map, ENTRY_SETTLED)
+            .ok()
+            .flatten()
+            .is_some_and(|settled| settled.is_done());
         write_key(doc, &map, ENTRY_VALUE, &self.value)?;
-        write_key(doc, &map, ENTRY_SETTLED, &self.settled)
+        write_key(doc, &map, ENTRY_SETTLED, &self.settled)?;
+        write_key(doc, &map, ENTRY_COMPENSATES, &self.compensates)?;
+        // A verb that settles the entry done completes the undo it was.
+        if !was_done && self.settled.as_ref().is_some_and(Settled::is_done) {
+            settle_steps(doc, &self.compensates);
+        }
+        Ok(())
     }
     fn check(&self) -> Result<(), Refusal> {
         self.value.check()
@@ -1149,13 +1178,16 @@ impl<T, O> Outbox<T, O> {
         Self::default()
     }
 
-    /// Queue `value` under `id` (mint it with [`ActionCx::id`]).
+    /// Queue `value` under `id` (mint it with [`ActionCx::id`]). Queued by
+    /// an undo's or a redo's compensating action, it records the steps it
+    /// settles.
     pub fn push(&mut self, id: Id, value: T) -> Id {
         self.entries.push(
             id,
             OutboxEntry {
                 value,
                 settled: None,
+                compensates: tilo_actions::await_compensation(),
             },
         )
     }
@@ -1279,7 +1311,15 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned> Model for Outbox<T, O
             ([], EditOp::Settle { id, outcome }) => {
                 let outcome = Settled::<O>::from_json(outcome)?;
                 let (_, value) = outbox_entry(doc, slot, id)?;
-                write_key(doc, &value, ENTRY_SETTLED, &Some(outcome))
+                let done = outcome.is_done();
+                write_key(doc, &value, ENTRY_SETTLED, &Some(outcome))?;
+                // Done, it completes the undo or redo it was queued by; a
+                // failure leaves that step as it was.
+                if done {
+                    let steps: Vec<String> = read_key(doc, &value, ENTRY_COMPENSATES)?;
+                    settle_steps(doc, &steps);
+                }
+                Ok(())
             }
             ([], EditOp::Forget { id }) => {
                 let (map, value) = outbox_entry(doc, slot, id)?;

@@ -29,7 +29,7 @@ use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::revert::revert_changes;
 
 /// Prefix of the root keys naming each undone change, by its full hash.
-pub const UNDONE_KEY: &str = "tilo:undone:";
+pub use tilo_actions::UNDONE_KEY;
 /// Prefix of the root keys holding named versions.
 pub const CHECKPOINT_KEY: &str = "tilo:checkpoint:";
 /// Prefix every bookkeeping root key shares; a restore leaves them alone.
@@ -313,19 +313,7 @@ pub fn compensation_is_redo(doc: &AutoCommit, hash: ChangeHash) -> bool {
 /// # Errors
 /// Refuses an absent, completed or invalid pending compensation marker.
 pub fn settle_compensation(doc: &mut AutoCommit, hash: ChangeHash) -> Result<(), String> {
-    let key = format!("{UNDONE_KEY}{hash}");
-    let pending = doc
-        .get(automerge::ROOT, &key)
-        .map_err(|error| error.to_string())?
-        .and_then(|(value, _)| value.as_i64())
-        .filter(|attempt| *attempt != 0);
-    let pending = pending.ok_or("history compensation is not pending")?;
-    if pending < 0 {
-        doc.put(automerge::ROOT, key, ScalarValue::Boolean(true))
-    } else {
-        doc.delete(automerge::ROOT, key)
-    }
-    .map_err(|error| error.to_string())
+    tilo_actions::settle_compensation(doc, &hash.to_string()).map_err(|error| error.to_string())
 }
 
 /// The changes `undo` would take back for `scope`, newest first: its steps
@@ -670,7 +658,7 @@ fn take_back_with(
                 if compensation.requires_settlement {
                     pending.insert(target.hash);
                 }
-                actions.push(compensation.action);
+                actions.push((target.hash, compensation.action));
             }
             None => patches.push(target.clone()),
         }
@@ -678,8 +666,13 @@ fn take_back_with(
     if !patches.is_empty() {
         revert(doc, &patches, "undo")?;
     }
-    for action in actions {
+    for (hash, action) in actions {
+        // An outside consequence the inverse queues settles the step.
+        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
         action.apply(doc).map_err(|error| error.to_string())?;
+        if compensating.awaited() {
+            pending.insert(hash);
+        }
     }
     for target in &targets {
         let key = format!("{UNDONE_KEY}{}", target.hash);
@@ -845,7 +838,7 @@ pub fn redo_with(
                 .ok_or("redo cannot resolve its original step")?;
             if let Some(compensation) = restore(original)? {
                 outside = true;
-                actions.push(compensation.action);
+                actions.push((original.hash, compensation.action));
                 originals.push((original.hash, compensation.requires_settlement));
             } else {
                 ordinary = true;
@@ -863,10 +856,16 @@ pub fn redo_with(
     if !patches.is_empty() {
         revert(doc, &patches, "redo")?;
     }
-    for action in actions {
+    let mut awaited = HashSet::new();
+    for (hash, action) in actions {
+        let compensating = tilo_actions::CompensatingScope::enter(vec![hash.to_string()]);
         action.apply(doc).map_err(|error| error.to_string())?;
+        if compensating.awaited() {
+            awaited.insert(hash);
+        }
     }
     for (hash, pending) in originals {
+        let pending = pending || awaited.contains(&hash);
         let key = format!("{UNDONE_KEY}{hash}");
         if pending {
             let attempt = doc

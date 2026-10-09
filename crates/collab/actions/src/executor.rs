@@ -43,6 +43,88 @@ pub fn current_step() -> Option<ActionId> {
     OPEN_STEP.with(std::cell::Cell::get)
 }
 
+/// The document key prefix of a step's undo marker, followed by the step's
+/// change hash: `true` once taken back, a negative attempt count while its
+/// undo waits for an outside consequence to settle, a positive one while its
+/// redo does.
+pub const UNDONE_KEY: &str = "tilo:undone:";
+
+thread_local! {
+    /// The steps the action applying now undoes or redoes, and whether it
+    /// queued an outside consequence that settles them.
+    static COMPENSATING: std::cell::RefCell<Option<(Vec<String>, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The undo or redo of the steps `marks` (their change hashes) applying its
+/// compensating action on this thread: an outside consequence the action
+/// queues reads them ([`await_compensation`]), and the step counts as taken
+/// back (or brought back) only once that consequence settles
+/// ([`settle_compensation`]).
+pub struct CompensatingScope(Option<(Vec<String>, bool)>);
+
+impl CompensatingScope {
+    #[must_use]
+    pub fn enter(marks: Vec<String>) -> Self {
+        Self(COMPENSATING.with(|current| current.replace(Some((marks, false)))))
+    }
+
+    /// Whether the action queued an outside consequence that will settle
+    /// the steps.
+    #[must_use]
+    pub fn awaited(&self) -> bool {
+        COMPENSATING.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, awaited)| *awaited)
+        })
+    }
+}
+
+impl Drop for CompensatingScope {
+    fn drop(&mut self) {
+        COMPENSATING.with(|current| *current.borrow_mut() = self.0.take());
+    }
+}
+
+/// The steps an outside consequence queued now settles, recording that
+/// their undo or redo waits for it; empty outside a compensation.
+#[must_use]
+pub fn await_compensation() -> Vec<String> {
+    COMPENSATING.with(|current| {
+        current
+            .borrow_mut()
+            .as_mut()
+            .map(|(marks, awaited)| {
+                *awaited = true;
+                marks.clone()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Mark the undo (or redo) of the step `hash` complete: its outside
+/// consequence settled.
+///
+/// # Errors
+/// Refuses a step whose undo or redo waits for nothing.
+pub fn settle_compensation(doc: &mut Doc, hash: &str) -> Result<(), ActionError> {
+    use automerge::ReadDoc as _;
+    let key = format!("{UNDONE_KEY}{hash}");
+    let pending = doc
+        .get(automerge::ROOT, &key)?
+        .and_then(|(value, _)| value.as_i64())
+        .filter(|attempt| *attempt != 0)
+        .ok_or_else(|| ActionError::Refused("history compensation is not pending".into()))?;
+    if pending < 0 {
+        doc.put(automerge::ROOT, key, true)?;
+    } else {
+        doc.delete(automerge::ROOT, key)?;
+    }
+    Ok(())
+}
+
 /// The context of the action whose [`Action::apply`] is running on this
 /// thread: who invoked it and in which work group (an agent run). Pinned by
 /// the envelope like the actor and the time, so a replica replaying the
