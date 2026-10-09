@@ -124,8 +124,12 @@ record is held in its own app worker (`crates/agent/agent-participant/src/worker
   supervisor's own copy of the record through `tilo-automerge-isolate`
   before they are signed: a whole document must load, an increment must
   apply on top of the record with nothing missing. Incoming changes are
-  admitted the same way before a worker sees them. A worker that dies is
-  replaced from that copy, at most twice per record.
+  admitted the same way before a worker sees them, and so are the changes
+  of records no worker holds: an agent's unopened records and the room's
+  shared desktop, whose tabs agents and room actions read
+  (`participant/unopened.rs`). With no isolate those changes wait and the
+  record does not open; nothing decodes them in the host instead. A worker
+  that dies is replaced from that copy, at most twice per record.
 
 Still in the host process: the app catalogue is linked statically (each
 app's `definition()` builds there), and agents' device keys are kept in
