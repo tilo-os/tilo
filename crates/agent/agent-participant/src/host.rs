@@ -167,7 +167,7 @@ impl AgentHost {
         let _ = self.shared.runtime.set(runtime);
         self.supervisor.set_link(link);
         let snapshot = read_state(&self.state_file())?;
-        let resume = self.supervisor.restore(snapshot, now_ns());
+        let resume = self.supervisor.restore(snapshot, tilo_clock::unix_now_ns());
         for (identity, control) in resume {
             tracing::info!(agent = %identity.delegation.agent_id, "agent resumes after a host restart");
             if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
@@ -184,7 +184,7 @@ impl AgentHost {
                 .name("agent-host".into())
                 .spawn(move || {
                     while !shared.stopping.load(Ordering::Acquire) {
-                        for expired in supervisor.expire(now_ns()) {
+                        for expired in supervisor.expire(tilo_clock::unix_now_ns()) {
                             tracing::info!(grant = %expired, "agent grant expired");
                         }
                         persist(&supervisor, &file, &written);
@@ -347,12 +347,4 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut out = options.open(path)?;
     out.write_all(bytes)?;
     out.sync_all()
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
-        })
 }

@@ -361,13 +361,7 @@ impl Widget for ImageCropEditor {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.image.apply_layout(taffy, node, origin);
     }
 

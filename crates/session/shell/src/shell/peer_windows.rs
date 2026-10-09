@@ -1510,7 +1510,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn room_file_managers_alone_see_the_users_home() {
         fn a_file_manager_opened_for_the_room_can_see_the_users_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
 
             assert!(
@@ -1530,7 +1530,7 @@ mod tests {
         }
 
         fn opening_another_app_for_the_room_grants_it_no_home() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), APP);
 
             let _ = examine(&mut tree);
@@ -1542,7 +1542,7 @@ mod tests {
         }
 
         fn a_refused_file_manager_is_granted_nothing() {
-            let home = xdg_paths::home().expect("the test machine has a home directory");
+            let home = tilo_paths::home().expect("the test machine has a home directory");
             let mut ws = room_owned_by("quinten");
             ws.owner = None;
             let (mut tree, _tab) = tree_with_peer_window_for(ws, FILES);

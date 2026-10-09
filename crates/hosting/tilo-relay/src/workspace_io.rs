@@ -343,6 +343,8 @@ pub(crate) async fn replace_membership(
                 .devices
                 .retain(|device| members.contains(device));
         }
+        // Sessions of removed devices re-check now, before the write.
+        crate::authority_epoch::bump();
         let saved = members.clone();
         authorization_io(move || store.save_membership(&saved), None).await?;
         let mut runtime = workspace.lock().await;
@@ -407,6 +409,8 @@ pub(crate) async fn replace_governed_access(
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
         }
+        // Sessions of removed devices and roots re-check now, before the write.
+        crate::authority_epoch::bump();
         let saved = access.clone();
         authorization_io(move || store.save_governed_access(&saved), None).await?;
         let mut runtime = workspace.lock().await;

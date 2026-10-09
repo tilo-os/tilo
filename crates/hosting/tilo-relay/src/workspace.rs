@@ -31,9 +31,14 @@ impl Membership {
         self.devices.contains(device)
     }
 
-    /// Replace the membership with a new set.
+    /// Replace the membership with a new set. A different set wakes the
+    /// sessions admitted under the old one to re-check
+    /// ([`crate::authority_epoch`]).
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {
-        self.devices = devices;
+        if self.devices != devices {
+            self.devices = devices;
+            crate::authority_epoch::bump();
+        }
     }
 }
 
@@ -501,6 +506,11 @@ impl WorkspaceRuntime {
                     .live
                     .store(false, std::sync::atomic::Ordering::SeqCst);
             }
+            if self.subscribers.contains_key(&sub.device_public_key) {
+                // The displaced connection is no longer the device's current
+                // session; its next access audit ends it.
+                crate::authority_epoch::bump();
+            }
         }
         self.checkpoint_served
             .insert(sub.device_public_key, HashSet::new());
@@ -562,7 +572,11 @@ impl WorkspaceRuntime {
 
     /// Drop a subscription for `device`, and its live membership. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
-        self.subscribers.remove(device);
+        if self.subscribers.remove(device).is_some() {
+            // A connection whose subscription went is ended by its next
+            // access audit.
+            crate::authority_epoch::bump();
+        }
         self.action_targets.remove(device);
         if let Some(session) = self.state_sessions.remove(device) {
             session
@@ -671,15 +685,15 @@ impl WorkspaceRuntime {
                     "delta workspace or authenticated author mismatch",
                 )));
             }
-            crate::coedit::CoeditPayload::decode(delta)
+            crate::coedit::retention_metadata(delta)
         } else {
             None
         };
         match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => {
                 self.store.retain_checkpoint(channel, &raw)?;
             }
-            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+            Some((channel, crate::coedit::RetentionKind::Delta)) => {
                 self.store.retain_delta(channel, seq, &raw)?;
             }
             None => {}
@@ -700,7 +714,7 @@ impl WorkspaceRuntime {
         // (hello / SyncReq / rejected checkpoint). Peer relays always receive
         // it so they can federate; retention and offline queues are unchanged.
         let checkpoint_channel = match &retained {
-            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(*channel),
+            Some((channel, crate::coedit::RetentionKind::Checkpoint)) => Some(*channel),
             _ => None,
         };
         let mut delivered = 0usize;
@@ -940,6 +954,7 @@ impl WorkspaceRuntime {
         }
         let _ = sub.disconnect.try_send(());
         self.subscribers.remove(target);
+        crate::authority_epoch::bump();
         false
     }
 

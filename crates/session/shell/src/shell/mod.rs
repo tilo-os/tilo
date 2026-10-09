@@ -1,22 +1,11 @@
-//! # Visual smoke checklist
+//! The desktop shell: workspace tree, chrome, input policy and the services the
+//! compositor hosts.
 //!
-//! Run `cargo run -p tilo-desktop` and verify:
-//!
-//! - `TopBar` renders with a live clock; wheel over the center area cycles to
-//!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens the search palette; typing filters; Enter invokes; Escape closes.
-//! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
-//! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
-//!   WiFi/BT drill-in and back work.
-//! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
-//!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
-//!   shows per-role × per-file matrix.
-//! - `SidebarWheelDisc` switches workspaces, resists with overscroll at each
-//!   end, and exposes an add-workspace control on the disc band.
-//! - Right-clicking a tile opens the context menu.
-//! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
-//! - Creating a workspace (any path) triggers a toast.
-//! - A simulated remote cursor floats over the active tile.
+//! To see it, drive a running compositor rather than eyeballing a checklist:
+//! `cargo run --bin shell -- --backend headless` plus `tilo-control`
+//! (`scripts/headless-examples/`, `docs/headless-testing.md`), or render stills
+//! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
+//! in a window inside an existing X11/Wayland session.
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
@@ -26,6 +15,7 @@ pub mod app_close;
 pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod audio_output;
+pub(crate) mod audio_writer;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -96,9 +86,11 @@ pub(crate) mod launch_readiness;
 pub mod launcher;
 pub mod live_activities;
 pub mod live_presence;
+pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
 pub mod media_keys;
+pub(crate) mod membership;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
@@ -139,7 +131,6 @@ pub mod remote_action_link;
 pub mod remote_actions;
 pub mod remote_audio;
 pub mod remote_capture;
-pub mod remote_cursors;
 pub mod remote_use;
 pub mod render;
 pub mod room_activity;
@@ -156,10 +147,8 @@ pub mod speaker_group;
 pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
 pub mod speaker_settings;
-pub mod split_row;
 pub mod state;
 pub mod status;
-pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
@@ -886,7 +875,7 @@ impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
-/// (the same `Arc<RwLock<_>>` the portal's `GrantStoreHandle` and
+/// (the same handle the portal's `GrantStoreHandle` and
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
@@ -1427,9 +1416,8 @@ mod legacy_files_opener_regressions {
         root: &std::path::Path,
         records: ui::record::RecordStore,
     ) -> chrome_state::Chrome {
-        let tree = std::sync::Arc::new(parking_lot::RwLock::new(
-            state::WorkspaceTree::bootstrap_demo(),
-        ));
+        let tree =
+            crate::shell::state::WorkspaceTreeHandle::new(state::WorkspaceTree::bootstrap_demo());
         let chrome = chrome_state::ChromeState::new_with_handle(tree);
         chrome.borrow_mut().hosted_inputs =
             hosted_inputs::HostedTileInputs::for_host_directory_privately(root)

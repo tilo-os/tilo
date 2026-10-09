@@ -1,7 +1,7 @@
 //! Canonical records created by the governing host's compiled application factory.
 //! This is a host-local operation; incoming member documents cannot mint ownership.
 
-use super::{CollaborationError, Rooms, now_ns, system_time};
+use super::{CollaborationError, Rooms, system_time};
 use tilo_agent_participant::{AppCatalogue, Replica, Seed};
 use tilo_user_identity::DeviceCert;
 
@@ -26,7 +26,7 @@ impl Rooms {
         app: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.author")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
@@ -104,7 +104,7 @@ impl Rooms {
         catalogue: &AppCatalogue,
         app: &str,
     ) -> Result<bool, CollaborationError> {
-        let now = now_ns();
+        let now = tilo_clock::unix_now_ns();
         self.authorize(governor, now, "application.prepare")?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(

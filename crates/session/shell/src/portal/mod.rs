@@ -654,7 +654,7 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// Both variables follow the XDG rule: an empty or relative value is ignored
 /// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
+    tilo_paths::state_dir().or_else(tilo_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
@@ -884,7 +884,7 @@ pub struct PortalContext {
     /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
     /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
-    /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
+    /// production wires a [`ChannelInjector`] the compositor loop drains, and tests use the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
     /// Compositor authority for InputCapture.  Native mode supplies live
     /// output zones; hosted/headless contexts deliberately keep it unavailable.

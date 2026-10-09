@@ -189,9 +189,16 @@ pub fn has_action_control_bindings(widget: &dyn Widget) -> bool {
     if let Some(controls) = capability::<dyn ActionControls>(widget) {
         return controls.has_action_control_bindings();
     }
-    control_action_bindings(widget)
-        .iter()
-        .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
+    // Without ActionControls, this widget contributes only semantic bindings.
+    // Those never consume ActionEmitter availability; inspect exposed children
+    // directly rather than materializing the widget's accessibility subtree.
+    let mut found = false;
+    widget.for_each_child(&mut |child| {
+        if !found {
+            found = has_action_control_bindings(child);
+        }
+    });
+    found
 }
 
 /// Push the permission-filtered action surface into every control under `widget`.
@@ -222,3 +229,7 @@ pub fn has_pending_control_invocation(widget: &dyn Widget) -> bool {
         .into_iter()
         .any(has_pending_control_invocation)
 }
+
+#[cfg(test)]
+#[path = "controls/presence_tests.rs"]
+mod presence_tests;

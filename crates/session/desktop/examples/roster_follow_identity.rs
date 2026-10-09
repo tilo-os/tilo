@@ -46,6 +46,7 @@ fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], theme: &Theme) 
             own_status_automatic: false,
             status_sharing: ui::StatusSharing::Automatic,
             status_editing: false,
+            status_selection: ui::text_selection::Selection::default(),
             screen_exposure: None,
         },
         None,

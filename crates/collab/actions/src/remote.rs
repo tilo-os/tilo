@@ -30,6 +30,11 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+/// The shared view action that asks the platform to reveal a running window.
+pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
+/// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
+pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+
 mod catalogue;
 mod pending;
 

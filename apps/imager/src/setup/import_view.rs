@@ -1290,10 +1290,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .map_err(|_| "system time is before the Unix epoch".to_string())?
-                .as_nanos(),
+            ui::time::try_unix_now_ns()
+                .ok_or_else(|| "system time is before the Unix epoch".to_string())?,
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
         );
         let journal = store.root().join(format!("{id}.journal"));
@@ -2771,13 +2769,7 @@ impl Widget for ImportApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(composed) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()

@@ -111,9 +111,10 @@ pub(super) async fn restart_after_offline_snapshot(
     let path = directory.path().join("state.json");
     let mut tree = crate::shell::persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner =
-        crate::shell::native_workspace_owner::open(Arc::new(parking_lot::RwLock::new(tree)))
-            .unwrap();
+    let owner = crate::shell::native_workspace_owner::open(
+        crate::shell::state::WorkspaceTreeHandle::new(tree),
+    )
+    .unwrap();
     owner
         .with_current(room, |view| {
             assert_eq!(view.peer().replay_floors(), floors);

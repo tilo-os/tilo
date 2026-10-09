@@ -826,11 +826,7 @@ impl MarkGate {
         };
         if state.busy {
             if state.pending.len() < 256 {
-                let at = ui::time::wall()
-                    .duration_since(ui::time::UNIX_EPOCH)
-                    .map_or(0, |elapsed| {
-                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                    });
+                let at = ui::time::unix_now_ms();
                 state.pending.push((trace, event, at));
             }
             return;
