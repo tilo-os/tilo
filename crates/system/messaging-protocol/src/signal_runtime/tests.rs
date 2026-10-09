@@ -47,7 +47,9 @@ fn runtime(root: &Path, stream: UnixStream) -> SignalRuntime {
 fn event(account: &str) -> Vec<u8> {
     let value = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{
         "account":account,"envelope":{"sourceUuid":"01234567-89ab-cdef-0123-456789abcdef",
-        "dataMessage":{"timestamp":42,"message":"received text"}}}});
+        "dataMessage":{"timestamp":42,"message":"received text","expiresInSeconds":0,
+        "isExpirationUpdate":false,"viewOnce":false,"isEndSession":false,
+        "isProfileKeyUpdate":false,"hasProfileKey":true}}}});
     let mut encoded = serde_json::to_vec(&value).unwrap();
     encoded.push(b'\n');
     encoded
