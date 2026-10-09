@@ -495,6 +495,7 @@ fn dictation_paragraphs_reach_an_explicit_multiline_field_once_without_keys() {
     assert_eq!(h.peer(&field).committed, [Some(final_text.into())]);
     assert!(h.peer(&field).keys.is_empty());
     assert!(h.state.finish_dictation(id, now).is_err());
+    drop(h);
 }
 
 #[test]
@@ -532,6 +533,7 @@ fn dictation_paragraphs_cannot_survive_multiline_policy_changes_or_enter_a_termi
     );
     assert!(h.peer(&terminal).committed.is_empty());
     assert!(h.peer(&terminal).keys.is_empty());
+    drop(h);
 }
 
 #[test]
@@ -595,6 +597,7 @@ fn public_image_transcripts_cannot_cross_focus_changes_or_canceled_session_bound
         assert_eq!(h.peer(&first).committed, [Some(row.raw_final)]);
         assert!(h.peer(&second).committed.is_empty());
         assert!(h.peer(&first).keys.is_empty() && h.peer(&second).keys.is_empty());
+        drop(h);
     }
 }
 

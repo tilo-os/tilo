@@ -95,6 +95,7 @@ pub fn recv_with_owned_fds(sock: RawFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
 /// Receive bounded data, refusing and closing every ancillary descriptor.
 /// # Errors
 /// Rejects empty/oversized buffers, truncation and unexpected rights.
+#[cfg(target_os = "linux")]
 pub(crate) fn recv_data(sock: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
     if buffer.is_empty() || buffer.len() > 16384 {
         return Err(io::Error::other("invalid data receive bound"));

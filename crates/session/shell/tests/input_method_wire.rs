@@ -1122,6 +1122,33 @@ impl NativeNotes {
     }
 }
 
+fn prepare_native_field_dictation(
+    h: &mut Harness,
+    proxy: &mut shell::compositor::shell_text_input::ShellTextInput,
+    field: shell::compositor::shell_text_input::FieldRequest,
+    identity: Option<shell::compositor::shell_text_input::NativeFieldId>,
+    deadline: std::time::Instant,
+) -> shell::compositor::dictation::SessionId {
+    let id = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not activate"
+        );
+        h.pump();
+        proxy.sync_for_field(&mut h.state, Some(field), identity);
+        if h.state
+            .advance_dictation_preparation(id, std::time::Instant::now())
+            .unwrap()
+        {
+            return id;
+        }
+    }
+}
+
 #[test]
 fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() {
     use shell::compositor::shell_text_input::{FieldRequest, NativeFieldId, ShellTextInput};
@@ -1146,24 +1173,7 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
         proxy.sync_for_field(&mut h.state, Some(field), first);
         h.pump();
     }
-    let stale = h
-        .state
-        .prepare_dictation(std::time::Instant::now())
-        .unwrap();
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "field did not activate"
-        );
-        h.pump();
-        proxy.sync_for_field(&mut h.state, Some(field), first);
-        if h.state
-            .advance_dictation_preparation(stale, std::time::Instant::now())
-            .unwrap()
-        {
-            break;
-        }
-    }
+    let stale = prepare_native_field_dictation(&mut h, &mut proxy, field, first, deadline);
     h.state
         .update_dictation(stale, "must not move".into(), std::time::Instant::now())
         .unwrap();
@@ -1184,25 +1194,8 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
         event,
         winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
     )));
-    let next = h
-        .state
-        .prepare_dictation(std::time::Instant::now())
-        .unwrap();
+    let next = prepare_native_field_dictation(&mut h, &mut proxy, field, second, deadline);
     assert_ne!(next, stale);
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "successor did not activate"
-        );
-        h.pump();
-        proxy.sync_for_field(&mut h.state, Some(field), second);
-        if h.state
-            .advance_dictation_preparation(next, std::time::Instant::now())
-            .unwrap()
-        {
-            break;
-        }
-    }
     h.state
         .update_dictation(next, "successor".into(), std::time::Instant::now())
         .unwrap();

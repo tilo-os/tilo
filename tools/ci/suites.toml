@@ -881,6 +881,9 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
+  "docs/architecture/dictation-whistle-aot-review.json",
+  "docs/architecture/dictation-whistle-aot-image.json",
+  "docs/architecture/dictation-whistle-aot-image-120s.json",
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
@@ -892,6 +895,7 @@ readers = [
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/tests/support/snapshot.rs",
+  "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
 ]
