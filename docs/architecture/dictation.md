@@ -2221,3 +2221,54 @@ tests; multiline IME intent and the existing decorator forwarding contract.
 The full rootfs COPY invariant script also passed. These are synthetic field
 and worker checks, not live microphone or deployed-image qualification.
 Browser and block-document paragraph policy remain separate unfinished work.
+
+
+### Document paragraph transaction and browser qualification boundary
+
+BlockEditor now advertises paragraph intent only for its focused writable
+ordinary text/code field. Find, link/slash controls, visual formulas and tables
+do not inherit that policy. A paragraph IME final routes through the existing
+document replacement transaction, including a selection within one child line;
+the transaction preserves selected-range prefix/suffix and inherited block
+continuation rules. Pure LF and trailing LF also commit in multiline TextInput
+without invoking Enter/submit or splitting a final at autocorrection boundaries.
+
+The real Notes component regression passes Unicode two-paragraph, paragraph-only
+and trailing-break finals through its actual field intent and compositor bridge.
+Each replaces the original selection, enters owned persistent history once, and
+restores the entire original edit with one undo and one redo. This remains an
+output replay qualification, with no microphone or live model activation.
+
+The SDK browser lease can carry a strictly parsed original-field multiline scalar
+in equality and its keyed stamp; absent metadata defaults to single-line, and
+changed or malformed metadata does not authorize insertion. Browser DOM paragraph
+propagation is an unpublished prototype, not qualified or enabled by this commit.
+Its real CEF build and three focused tests are recorded in
+`dictation-browser-paragraph-native.json`: control-character and single-line-kind
+rejection pass; the paragraph test fails on an exact native-event assertion.
+Independent native controls establish four input notifications for one undoable
+text command, plus three rendered LF for two requested LF in the rich fixture.
+The alternate fragment command preserves breaks but loses inherited bold and
+changes the native input-event type. Neither notification count nor that fragment
+experiment establishes safe universal rich-editor paragraph insertion.
+
+The failed browser assertion remains intact and its prototype is kept locally
+for review. Browser paragraph acceptance needs a field/frame-bound native edit
+path that preserves literal paragraph semantics, style, undo and cancellation;
+the current DOM command is not sufficient evidence. No assertion was weakened,
+failing test ignored, production browser sandbox relaxed or runtime deployed.
+
+The final document routing passed all 35 existing BlockEditor unit regressions
+and the shared multiline IME test, including literal paragraph-only breaks and
+no submit. The 13 SDK browser guard tests also pass. The browser failure evidence
+is explicitly separate from these passed source checks.
+
+The final Notes paragraph regression was rerun after composition cleanup and
+passed all three cases (1.322 seconds combined; remote compile 3m16s). The
+existing staged formatting/contracts/secrets hook passed on the eight intended
+publication paths. The failing DOM prototype is deliberately excluded.
+
+The required final remote `check --locked -p shell --tests` also passed on the
+exact document-routing source after cleanup (1m49s); no local build or fallback
+was used. Latest-head CI status remains a separate result, not inferred from
+these focused checks.

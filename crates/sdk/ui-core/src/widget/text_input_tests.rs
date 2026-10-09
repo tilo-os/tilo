@@ -3459,6 +3459,15 @@ fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
     ));
     assert_eq!(input.value(), "before First café.\n\nSecond 👋 after");
     assert!(!input.take_submit());
+    input.set_selection(7, 7 + "First café.\n\nSecond 👋".len());
+    assert!(drive(
+        &mut input,
+        &mut doc,
+        &WindowEvent::Ime(winit::event::Ime::Commit("\n\n".into())),
+        Modifiers::default(),
+    ));
+    assert_eq!(input.value(), "before \n\n after");
+    assert!(!input.take_submit());
     input.set_multiline(false);
     assert!(
         !crate::ime::ImeWindowState::from_widget(&input)
