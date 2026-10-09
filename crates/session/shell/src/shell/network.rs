@@ -11,6 +11,8 @@ mod display_input_tests;
 mod display_observations;
 mod governor_actions;
 mod hosted_topology;
+#[cfg(test)]
+mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
@@ -1061,11 +1063,23 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
         .collect()
 }
 
-/// How often a shell asks the rooms it is in for anything it is
-/// missing. Local changes are pushed the tick they land
-/// ([`ShellNetwork::push_room_changes`]); this pull is the repair path for a
-/// push a peer missed (it was offline, or gossip dropped it).
+/// How often a waking shell re-derives who its authenticated peers are (so a
+/// revoked or expired device drops out) and checks its own continuity
+/// snapshot for a change to publish. Local work; nothing goes out unless
+/// something changed.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long after a room changed, here or by a peer's batch, a shell asks
+/// its rooms for anything it is missing. Local changes are pushed the tick
+/// they land ([`ShellNetwork::push_room_changes`]); this pull, made once a
+/// burst of activity settles, is the repair path for a push a peer missed:
+/// a peer whose request names changes it lacks asks back
+/// ([`crate::network::replica::WorkspaceTreeReplica`]). A peer that comes
+/// back is pulled when it joins.
+const SYNC_REPAIR_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest a shell goes without that pull while nothing changes: the
+/// safety net under the repair pull and the join pull, not a heartbeat. An
+/// idle, converged desktop asks once per this long.
+const SYNC_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Upper bound between full projections of every room while nothing the
 /// push trigger watches has moved. Most local edits move the desktop
@@ -1177,8 +1191,10 @@ fn personal_workspaces_path(state_dir: &Path) -> PathBuf {
 
 /// How often a device restates its workspace list when nothing changed, so
 /// a snapshot lost in transit is repaired without waiting for the next edit.
-const PERSONAL_WORKSPACES_RESTATE_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(30);
+/// A change goes out when it lands and the list goes to each of the
+/// person's devices that joins, so this is the safety net alone, at the pace
+/// of room repair ([`SYNC_SAFETY_INTERVAL`]): an idle desktop is quiet.
+const PERSONAL_WORKSPACES_RESTATE_INTERVAL: std::time::Duration = SYNC_SAFETY_INTERVAL;
 
 fn device_fabric_path(state_dir: &Path) -> PathBuf {
     state_dir.join("personal-device-fabric.postcard")
@@ -1425,9 +1441,14 @@ pub struct ShellNetwork {
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
     last_home_peer_refresh: Mutex<Option<std::time::Instant>>,
-    /// When [`Self::kick_periodic_sync`] last asked. `None` until the
-    /// first tick, so the first frame after startup kicks a round.
+    /// When [`Self::kick_periodic_sync`] last did its local upkeep. `None`
+    /// until the first tick.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// When [`Self::kick_periodic_sync`] next asks the rooms for what this
+    /// shell is missing. `None` is now: the first frame after startup asks.
+    next_sync_pull: Mutex<Option<std::time::Instant>>,
+    /// See [`Self::peers_joined_epoch`].
+    peers_joined: std::sync::atomic::AtomicU64,
     /// Push side of room replication: see [`Self::push_room_changes`].
     room_push: Mutex<RoomPush>,
     /// Private, same-person continuation state. It is intentionally separate
@@ -1809,6 +1830,7 @@ impl ShellNetwork {
                 builder
                     .secret_key(keypair.clone())
                     .address_lookup(lookup.clone())
+                    .transport_config(crate::network::actor::transport_config())
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
@@ -1970,6 +1992,8 @@ impl ShellNetwork {
             personal_device_peers: Mutex::default(),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
+            next_sync_pull: Mutex::new(None),
+            peers_joined: std::sync::atomic::AtomicU64::new(0),
             room_push: Mutex::new(RoomPush::default()),
             personal_focus_recency: Mutex::new(
                 crate::shell::continuity_suggestion::FocusRecency::seeded(
@@ -2604,6 +2628,19 @@ impl ShellNetwork {
             self.peer_colours_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
         }
+    }
+
+    /// A counter that advances whenever a peer joins one of this session's
+    /// topics or is first authenticated: what such a peer has not heard yet
+    /// (where a resting pointer is) is said again for it, and nothing is
+    /// restated on a timer for peers that already heard it.
+    pub fn peers_joined_epoch(&self) -> u64 {
+        self.peers_joined.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn note_peer_joined(&self) {
+        self.peers_joined
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// A counter that advances whenever a peer's colour changes. Equal
@@ -3918,6 +3955,15 @@ impl ShellNetwork {
     pub fn dial_addr(&self) -> Option<iroh::EndpointAddr> {
         let addrs = self.listen_addrs.lock().ok()?;
         addrs.first().cloned()
+    }
+
+    /// The tally of every application message this device's peers and
+    /// hosts delivered to it. Blocks until the actor answers, so it must
+    /// not be called from inside the network's runtime.
+    pub fn wire_tally(&self) -> Option<Arc<crate::network::actor::WireTally>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.cmd_tx.try_send(NetCmd::WireTally(reply)).ok()?;
+        answer.blocking_recv().ok()
     }
 
     /// Invitations this authority can still resend or cancel. Expired
@@ -6154,23 +6200,59 @@ impl ShellNetwork {
         true
     }
 
-    /// [`Self::publish_sync_requests`], rate-limited to
-    /// [`SYNC_KICK_INTERVAL`]. Called from every frame tick, which runs
-    /// far more often than a room changes.
+    /// Called from every frame tick, which runs far more often than a room
+    /// changes. Every [`SYNC_KICK_INTERVAL`] it does the local upkeep that
+    /// keeps revocation prompt and continuity current, which sends nothing
+    /// unless something changed; [`Self::publish_sync_requests`] goes out
+    /// only when [`Self::schedule_repair_pull`] or [`SYNC_SAFETY_INTERVAL`]
+    /// made it due.
     fn kick_periodic_sync(&self) {
-        let Ok(mut last) = self.last_sync_kick.lock() else {
-            return;
-        };
         let now = std::time::Instant::now();
-        if let Some(prev) = *last
-            && now.duration_since(prev) < SYNC_KICK_INTERVAL
-        {
-            return;
+        let upkeep = self.last_sync_kick.lock().is_ok_and(|mut last| {
+            let due = last.is_none_or(|prev| now.duration_since(prev) >= SYNC_KICK_INTERVAL);
+            if due {
+                *last = Some(now);
+            }
+            due
+        });
+        if upkeep {
+            self.refresh_authenticated_persons();
+            self.publish_personal_continuity_if_changed();
         }
-        *last = Some(now);
-        drop(last);
-        self.refresh_authenticated_persons();
-        self.publish_sync_requests();
+        // A guest still redeeming an invite keeps asking at the repair pace
+        // until the authority answers: its request is what redeems.
+        let redeeming = self
+            .pending_redemptions
+            .lock()
+            .is_ok_and(|pending| !pending.is_empty());
+        let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
+            let due = next.is_none_or(|at| now >= at);
+            if due {
+                let wait = if redeeming {
+                    SYNC_REPAIR_DELAY
+                } else {
+                    SYNC_SAFETY_INTERVAL
+                };
+                *next = Some(now.checked_add(wait).unwrap_or(now));
+            }
+            due
+        });
+        if pull {
+            self.publish_sync_requests();
+        }
+    }
+
+    /// A room changed: pull [`SYNC_REPAIR_DELAY`] from now, unless a pull is
+    /// due sooner.
+    fn schedule_repair_pull(&self) {
+        let now = std::time::Instant::now();
+        let due = now.checked_add(SYNC_REPAIR_DELAY).unwrap_or(now);
+        if let Ok(mut next) = self.next_sync_pull.lock()
+            && let Some(at) = *next
+            && at > due
+        {
+            *next = Some(due);
+        }
     }
 
     /// Announce every room document change since the last announcement as a
@@ -6200,8 +6282,14 @@ impl ShellNetwork {
         let due = push
             .last_full
             .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
-        if push.trigger.as_ref() == Some(&trigger) && !due {
+        let moved = push.trigger.as_ref() != Some(&trigger);
+        if !moved && !due {
             return;
+        }
+        if moved {
+            // Once this activity settles, ask the rooms for what this shell
+            // or a peer missed of it.
+            self.schedule_repair_pull();
         }
         push.trigger = Some(trigger);
         push.last_full = Some(now);
@@ -6295,6 +6383,7 @@ impl ShellNetwork {
                 self.handle_host_ready(ws, peer);
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
+                self.note_peer_joined();
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.insert(peer);
                 }
@@ -6352,6 +6441,9 @@ impl ShellNetwork {
                         });
                 if !has_live_route {
                     let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                    // Adverts are not restated on a timer, so they do not
+                    // go stale by themselves: a departure forgets them.
+                    crate::network::media_caps::forget(handle);
                     self.peer_identities
                         .remove(&crate::shell::state::PeerOrigin::peer(&peer));
                     if let Ok(replica) = self.replica.lock() {
@@ -7768,7 +7860,9 @@ impl ShellNetwork {
         // The initial SyncReq can race ahead of the identity hello and is
         // intentionally dropped. Re-kick anti-entropy after trust is
         // established so joining never waits for another topology event.
+        // Presence sent before trust was dropped the same way: say it again.
         if !was_known {
+            self.note_peer_joined();
             self.publish_sync_requests();
         }
     }
@@ -8121,6 +8215,10 @@ impl Drop for ShellNetwork {
 /// a caller-owned receiver, bypassing the iroh actor. `pub(crate)` so
 /// the broker's own tests can drive the inbound side of the peer bridge too.
 #[cfg(test)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture spells out every field of `ShellNetwork` in one literal, as `spawn_with` does"
+)]
 pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
     local_peer_hash: u64,
@@ -8154,6 +8252,8 @@ pub(crate) fn shell_network_for_test(
         personal_device_peers: Mutex::default(),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
+        next_sync_pull: Mutex::new(None),
+        peers_joined: std::sync::atomic::AtomicU64::new(0),
         room_push: Mutex::new(RoomPush::default()),
         personal_continuity: Mutex::default(),
         personal_continuity_user: None,

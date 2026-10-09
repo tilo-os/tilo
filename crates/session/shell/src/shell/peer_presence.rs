@@ -9,8 +9,10 @@
 //! Outbound: a [`RoomSubscription`] republishes each local app's
 //! surface-local pointer as this session's cursor — per session, not per
 //! connection, so one person stays one cursor across windows.
-//! [`should_publish_cursor`] throttles to [`MIN_PUBLISH_GAP`] and
-//! restates a still pointer every [`CURSOR_KEEPALIVE`] for late joiners.
+//! [`should_publish_cursor`] throttles to [`MIN_PUBLISH_GAP`]. A still
+//! pointer is not restated on a timer, which would repaint every peer for
+//! nothing: it is said once more only when a peer joins, so a late joiner
+//! learns where it rests ([`ShellNetwork::peers_joined_epoch`]).
 //!
 //! A cursor never travels in desktop coordinates: those are this device's
 //! monitors, and a collaborator's desktop is another shape. It travels as
@@ -195,6 +197,9 @@ pub struct PeerPresence {
     /// What this session last put on the wire, per room: position and
     /// when. Read by [`should_publish_cursor`].
     last_published: Mutex<CursorPublishHistory>,
+    /// The [`ShellNetwork::peers_joined_epoch`] the pointer was last said
+    /// at: a peer that joined since has not heard where a still one rests.
+    joins_welcomed: AtomicU64,
     /// The [`ShellNetwork::peer_colours_epoch`] whose colours [`Self::pump`]
     /// last applied; `u64::MAX` until the first pump applies them.
     colours_applied: AtomicU64,
@@ -246,11 +251,6 @@ pub const ROSTER_RECHECK: Duration = Duration::from_secs(1);
 /// Hz, matching the rate the toolkit throttles an app's pointer to so a
 /// desktop cursor and an in-app cursor cost the same on the wire.
 pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
-
-/// How long a stationary pointer goes unmentioned before the session
-/// restates it. Presence is gossip: a host that joins after somebody
-/// stopped moving has never heard where they are.
-pub const CURSOR_KEEPALIVE: Duration = Duration::from_secs(1);
 
 fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room: &str) -> bool {
     match payload {
@@ -328,23 +328,23 @@ fn departure_presence_ids(
 }
 
 /// Should this session put its pointer on the wire again? `last` is
-/// what it last published for this room and when. Pure so the decision
-/// can be asserted on directly.
+/// what it last published for this room and when; `welcome` is whether a
+/// peer joined since, who has not heard where a still pointer rests. Pure
+/// so the decision can be asserted on directly.
 pub fn should_publish_cursor<P: PartialEq + Copy>(
     last: Option<(P, Instant)>,
     at: P,
     now: Instant,
     min_gap: Duration,
-    keepalive: Duration,
+    welcome: bool,
 ) -> bool {
     let Some((was, when)) = last else {
         return true; // Never said anything about this room — say it.
     };
-    let elapsed = now.saturating_duration_since(when);
     if was == at {
-        return elapsed >= keepalive;
+        return welcome;
     }
-    elapsed >= min_gap
+    now.saturating_duration_since(when) >= min_gap
 }
 
 /// What to put on the wire for a room right now, if anything. `at` is
@@ -355,10 +355,10 @@ fn cursor_to_publish<P: PartialEq + Copy>(
     last: Option<(P, Instant)>,
     now: Instant,
     min_gap: Duration,
-    keepalive: Duration,
+    welcome: bool,
 ) -> Option<P> {
     let at = at?;
-    should_publish_cursor(last, at, now, min_gap, keepalive).then_some(at)
+    should_publish_cursor(last, at, now, min_gap, welcome).then_some(at)
 }
 
 impl PeerPresence {
@@ -486,6 +486,7 @@ impl PeerPresence {
             rooms: Mutex::new(rooms),
             followed: Mutex::new(None),
             last_published: Mutex::new(HashMap::new()),
+            joins_welcomed: AtomicU64::new(net.peers_joined_epoch()),
             colours_applied: AtomicU64::new(u64::MAX),
             presence_epoch: AtomicU64::new(0),
             roster_tree,
@@ -565,15 +566,16 @@ impl PeerPresence {
             .last_published
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(at) = cursor_to_publish(
-            at,
-            last.get(room).copied(),
-            now,
-            MIN_PUBLISH_GAP,
-            CURSOR_KEEPALIVE,
-        ) else {
+        // Read before deciding: a peer joining while this runs is welcomed
+        // on the next frame.
+        let joined = self.net.peers_joined_epoch();
+        let welcome = self.joins_welcomed.load(Ordering::Acquire) != joined;
+        let Some(at) =
+            cursor_to_publish(at, last.get(room).copied(), now, MIN_PUBLISH_GAP, welcome)
+        else {
             return false;
         };
+        self.joins_welcomed.store(joined, Ordering::Release);
         let key = PresenceKey::tile_pointer(room, at.tab);
         let Ok(key_str) = serde_json::to_string(&key) else {
             return false;
@@ -1064,9 +1066,21 @@ pub fn place_pointers(
             .get(&key)
             .and_then(|list| list.iter().find(|(u, _)| u.0 == *user))
             .map(|(_, at)| *at);
-        if placed == Some(at) && !fresh.contains(user) {
+        // Restated where it already is (a late joiner's welcome, or an older
+        // build's keepalive): heard again, so it does not fade, but nothing
+        // on screen moves unless it had started fading.
+        let restated = placed == Some(at);
+        if restated && !fresh.contains(user) {
             continue;
         }
+        let fading = restated
+            && presence.pointer_opacity(
+                &key,
+                &ui::permissions::UserId(user.clone()),
+                now,
+                POINTER_IDLE,
+                POINTER_FADE,
+            ) < 1.0;
         // Stamped with when it was heard rather than now: moving with a
         // tile is not the peer saying anything.
         presence.apply_remote_presence_at(
@@ -1075,7 +1089,7 @@ pub fn place_pointers(
             PresencePayload::Pointer { x: at.0, y: at.1 },
             *heard,
         );
-        changed = true;
+        changed |= !restated || fading;
     }
     changed |= presence.prune_pointers(now, POINTER_IDLE);
     changed
@@ -1354,7 +1368,7 @@ mod tests {
                 (10.0, 10.0),
                 Instant::now(),
                 MIN_PUBLISH_GAP,
-                CURSOR_KEEPALIVE,
+                false,
             ));
         }
 
@@ -1362,20 +1376,14 @@ mod tests {
             let now = Instant::now();
 
             assert_eq!(
-                cursor_to_publish::<(f64, f64)>(None, None, now, MIN_PUBLISH_GAP, CURSOR_KEEPALIVE),
+                cursor_to_publish::<(f64, f64)>(None, None, now, MIN_PUBLISH_GAP, false),
                 None,
                 "a session whose pointer has never moved must not announce one"
             );
 
             // The origin is not banned once actually moved to.
             assert_eq!(
-                cursor_to_publish(
-                    Some((0.0, 0.0)),
-                    None,
-                    now,
-                    MIN_PUBLISH_GAP,
-                    CURSOR_KEEPALIVE
-                ),
+                cursor_to_publish(Some((0.0, 0.0)), None, now, MIN_PUBLISH_GAP, false),
                 Some((0.0, 0.0)),
                 "a pointer somebody actually moved to the origin is still a pointer"
             );
@@ -1389,7 +1397,7 @@ mod tests {
                     (11.0, 10.0),
                     t0 + Duration::from_millis(5),
                     MIN_PUBLISH_GAP,
-                    CURSOR_KEEPALIVE,
+                    false,
                 ),
                 "a pointer moving at frame rate must not put every sample on the wire"
             );
@@ -1402,7 +1410,7 @@ mod tests {
                 (400.0, 300.0),
                 t0 + MIN_PUBLISH_GAP,
                 MIN_PUBLISH_GAP,
-                CURSOR_KEEPALIVE,
+                false,
             ));
         }
 
@@ -1415,19 +1423,29 @@ mod tests {
                     at,
                     t0 + Duration::from_millis(200),
                     MIN_PUBLISH_GAP,
-                    CURSOR_KEEPALIVE,
+                    false,
                 ),
                 "a still pointer must not republish at frame rate"
+            );
+            assert!(
+                !should_publish_cursor(
+                    Some((at, t0)),
+                    at,
+                    t0 + Duration::from_secs(3600),
+                    MIN_PUBLISH_GAP,
+                    false,
+                ),
+                "nor on a timer: everyone in the room already knows where it rests"
             );
             assert!(
                 should_publish_cursor(
                     Some((at, t0)),
                     at,
-                    t0 + CURSOR_KEEPALIVE,
+                    t0 + Duration::from_millis(200),
                     MIN_PUBLISH_GAP,
-                    CURSOR_KEEPALIVE,
+                    true,
                 ),
-                "but it must be restated once the keepalive is due"
+                "but a peer that joined since has not heard, so it is said again"
             );
         }
 
@@ -1643,6 +1661,71 @@ mod tests {
             back
         ));
         assert_eq!(presence.pointer_for(&key, &bob), Some((70.0, 70.0)));
+    }
+
+    /// A resting pointer said again where it already is (an older build's
+    /// keepalive, or the welcome a late joiner gets) is heard, so it does not
+    /// fade, but nothing on screen moves: no repaint, unless it had started
+    /// fading and so comes back.
+    #[test]
+    fn identical_restated_pointer_does_not_repaint() {
+        use ui::presence::{POINTER_FADE, POINTER_IDLE};
+        use vello::kurbo::Rect;
+        let room = "3f2b1c00-0000-4000-8000-000000000002";
+        let key = PresenceKey::Workspace { id: room.into() };
+        let bob = ui::permissions::UserId("peer@7".into());
+        let mut presence = PresenceCtx::default();
+        let mut anchored = AnchoredPointers::new();
+        let here = [(TAB, Rect::new(100.0, 50.0, 700.0, 700.0))];
+        let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
+            fold_inbound(
+                vec![arrived("bob", 7, room, (30.0, 20.0))],
+                anchored,
+                presence,
+                &unnamed,
+                &any_room,
+                at,
+            )
+        };
+        let t0 = Instant::now();
+        let fresh = heard(&mut anchored, &mut presence, t0);
+        assert!(
+            place_pointers(&anchored, &fresh, &mut presence, &here, t0),
+            "a pointer arriving is painted"
+        );
+
+        let again = t0 + Duration::from_secs(1);
+        let fresh = heard(&mut anchored, &mut presence, again);
+        assert!(
+            !place_pointers(&anchored, &fresh, &mut presence, &here, again),
+            "the same place heard again paints nothing"
+        );
+        // Heard, though: still fully drawn when the first word would have
+        // faded out.
+        let past_first = t0 + POINTER_IDLE;
+        assert!(!place_pointers(
+            &anchored,
+            &[],
+            &mut presence,
+            &here,
+            past_first
+        ));
+        assert_eq!(presence.pointer_for(&key, &bob), Some((130.0, 70.0)));
+        assert!(
+            presence.pointer_opacity(&key, &bob, past_first, POINTER_IDLE, POINTER_FADE) >= 1.0
+        );
+
+        let fading = again + POINTER_IDLE.saturating_sub(POINTER_FADE / 2);
+        assert!(
+            presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE) < 1.0,
+            "quiet long enough to have started fading"
+        );
+        let fresh = heard(&mut anchored, &mut presence, fading);
+        assert!(
+            place_pointers(&anchored, &fresh, &mut presence, &here, fading),
+            "a fading pointer heard again is painted back"
+        );
+        assert!(presence.pointer_opacity(&key, &bob, fading, POINTER_IDLE, POINTER_FADE) >= 1.0);
     }
 
     fn unnamed(_room: &str) -> PeerLabels {
