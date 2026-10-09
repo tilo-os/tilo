@@ -25,13 +25,7 @@ use std::process::Stdio;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(any(test, target_os = "linux"))]
-use std::io::{self, Read, Write};
-#[cfg(any(test, target_os = "linux"))]
-use std::os::fd::AsRawFd;
-#[cfg(any(test, target_os = "linux"))]
-use std::os::unix::net::UnixStream;
-#[cfg(any(test, target_os = "linux"))]
-use std::os::unix::process::CommandExt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -187,36 +181,6 @@ fn register_launched_process(
             },
         );
     }
-}
-
-#[cfg(any(test, target_os = "linux"))]
-const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
-
-/// Hand the launcher a private inherited descriptor that its process entry
-/// waits on before doing any launch work. `Command::spawn` can therefore
-/// return after exec, the compositor registers the real pid, and only then
-/// releases the launcher without a fork/exec race.
-#[cfg(any(test, target_os = "linux"))]
-fn install_launch_registration_gate(command: &mut Command) -> io::Result<UnixStream> {
-    let (release, wait) = UnixStream::pair()?;
-    let wait_fd = wait.as_raw_fd();
-    command.env(LAUNCH_REGISTRATION_FD_ENV, wait_fd.to_string());
-    // SAFETY: the closure runs after fork and before exec and calls only the
-    // async-signal-safe `fcntl(2)`. The closure retains the child copy through
-    // exec; the launcher closes it immediately after reading release.
-    unsafe {
-        command.pre_exec(move || {
-            let inherited_fd = wait.as_raw_fd();
-            let flags = libc::fcntl(inherited_fd, libc::F_GETFD);
-            if flags == -1
-                || libc::fcntl(inherited_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    Ok(release)
 }
 
 /// Durable room ids for live, launcher-verified instances of `package_id`.
@@ -3670,7 +3634,9 @@ fn start_launch(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut launch_gate = match install_launch_registration_gate(&mut cmd) {
+        // The launcher waits on this gate before any launch work; see
+        // `launcher::registration_gate`.
+        let launch_gate = match launcher::registration_gate::install(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
                 events.startup.fail(startup_token, error.to_string());
@@ -3758,7 +3724,7 @@ fn start_launch(
         });
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
-        let _ = launch_gate.write_all(&[1]);
+        let _ = launch_gate.release();
 
         // Drain both pipes concurrently. A GUI normally keeps both streams
         // open for its entire lifetime, so reading either one to EOF before
@@ -4451,7 +4417,9 @@ fn take_staged_resume(
 
 /// Take the continuation staged for the next launch of `package_id` into
 /// `room`: the record instance, and the resume projection when there is one.
-/// Taking it means exactly one launch receives it.
+/// Taking it means exactly one launch receives it. The projection is checked
+/// once more against the package's installed manifest, which may not have
+/// existed when the checkpoint arrived from another device.
 pub fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
@@ -4461,7 +4429,13 @@ pub fn take_staged_resume_for_package(
         .rev()
         .find(|note| note.key == package_id)
         .map(|note| note.placement)?;
-    take_staged_resume(placement, room)
+    let (resume, record_instance) = take_staged_resume(placement, room)?;
+    let resume = resume.and_then(|(schema, bytes)| {
+        crate::shell::personal_continuity_registry::resume_for_installed_launch(
+            package_id, schema, bytes,
+        )
+    });
+    Some((resume, record_instance))
 }
 
 /// Drop the newest unclaimed placement note for `package_id`, if any —

@@ -283,9 +283,27 @@ pub enum Scope {
     /// matches the domain and subdomains; anything else is an exact hostname.
     /// An IP literal is not a host and matches nothing.
     NetHost(String),
-    /// One action an app exports, `(app, action)` — the finest scope: exactly
-    /// one verb-bearing operation on one app's surface.
-    Action { app: String, action: String },
+    /// One action on one resource an app exports, `(app, resource, action)`
+    /// — the finest scope: exactly one verb-bearing operation on one
+    /// resource of one app's surface. The same action id on another
+    /// resource (a page body's `apply` and the notebook's `apply`) is a
+    /// different action and is not covered.
+    Action {
+        app: String,
+        resource: String,
+        action: String,
+    },
+    /// One action on every resource of one kind an app exports,
+    /// `(app, kind, action)`: what a shortcut step that picks its resource
+    /// when it runs (the first of a kind, a bound value) needs. Only a
+    /// shortcut's grant is evaluated against it, where the action's
+    /// descriptor names the resource's kind; against any other resource it
+    /// is inert.
+    ActionOnKind {
+        app: String,
+        kind: String,
+        action: String,
+    },
     /// A room as a *resource*. A capability scoped to a room, subject a
     /// person, **is** that person's room membership — the same machinery as
     /// any other share, so there is no second sharing system.
@@ -346,9 +364,18 @@ impl Scope {
 
             (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
 
-            (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
-                app == b && action == c
-            }
+            (
+                Scope::Action {
+                    app,
+                    resource,
+                    action,
+                },
+                ResourceRef::Action {
+                    app: b,
+                    resource: r,
+                    action: c,
+                },
+            ) => app == b && resource == r && action == c,
 
             // Room membership is converted into an actor role by `Workspace`
             // before an action is checked. Direct scope matching remains narrow:
@@ -367,6 +394,7 @@ impl Scope {
                 | Scope::Device(_)
                 | Scope::NetHost(_)
                 | Scope::Action { .. }
+                | Scope::ActionOnKind { .. }
                 | Scope::Room(_)
                 | Scope::FsRecord(_),
                 _,
@@ -417,8 +445,12 @@ pub enum ResourceRef {
     Device(String),
     /// An outbound network host.
     NetHost(String),
-    /// One exported action on one app.
-    Action { app: String, action: String },
+    /// One exported action on one resource of one app.
+    Action {
+        app: String,
+        resource: String,
+        action: String,
+    },
     /// A room, as the target of a membership capability.
     Room(String),
     /// A stable collaborative-file record id.

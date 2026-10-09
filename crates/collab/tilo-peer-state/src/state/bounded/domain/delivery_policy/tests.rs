@@ -377,6 +377,7 @@ fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
         Subject::app("so.tilo.notes"),
         Scope::Action {
             app: "so.tilo.word-processor".into(),
+            resource: "word-processor.document".into(),
             action: "read-text".into(),
         },
         Verb::Write,

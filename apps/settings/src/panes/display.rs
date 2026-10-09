@@ -13,6 +13,8 @@
 //! Every change is a [`DisplayEffect`] the area's [`DisplayModel`] carries
 //! out.
 
+mod shared_displays;
+
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -103,6 +105,29 @@ pub enum DisplayEffect {
         revision: u64,
         x: i32,
         y: i32,
+    },
+    /// Opt this device into automatic grants to its enrolled online input devices.
+    /// The separate Continuity master and Display/input switches must also be on.
+    #[effect(returns, permission = "admin", idempotent)]
+    SetAutomaticDisplayInput { on: bool },
+    /// Inspect the observed displays and their shared arrangement, including offline devices.
+    #[effect(view, returns, permission = "read", label = "Inspect shared displays")]
+    InspectSharedDisplays,
+    /// Include a display in the shared layout. This does not allow remote input.
+    #[effect(returns, row, idempotent)]
+    IncludeSharedDisplay {
+        device: String,
+        output: String,
+        revision: u64,
+        on: bool,
+    },
+    /// Set a display's one-based position in the person's display order.
+    #[effect(returns, row, idempotent)]
+    OrderSharedDisplay {
+        device: String,
+        output: String,
+        revision: u64,
+        order: u32,
     },
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
@@ -209,6 +234,11 @@ pub(crate) fn answer(
                 };
                 Ok(Effected::value(value))
             },
+        ));
+    }
+    if effect == DisplayEffect::InspectSharedDisplays {
+        return Ok(Effected::value(
+            app.displays().model().borrow().shared_display_inspection(),
         ));
     }
     if effect == DisplayEffect::InspectDisplayConfiguration {
@@ -729,6 +759,7 @@ impl DisplayArea {
                 .filter(|display| DisplayModel::device_movable(display))
                 .map(DisplayModel::device_output_row),
         );
+        rows.extend(model.shared_display_rows());
         if model.of_device {
             for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
                 rows.push(
@@ -754,8 +785,12 @@ pub struct DisplayModel {
     brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
+    person_devices: Vec<settings_store::person_displays::PersonDevice>,
+    shared_display_prefs: Followed<shared_displays::SharedDisplayPrefs>,
+    automatic_display_prefs: Followed<shared_displays::AutomaticDisplayPrefs>,
     pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
     awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
+    shared_move_revisions: Option<Vec<(String, u64)>>,
     device_move_reply: Option<Rc<std::cell::RefCell<ui::widget::DeviceDisplayMoveReply>>>,
     ambient_sensor_available: bool,
     brightness: f32,
@@ -856,6 +891,12 @@ impl DisplayModel {
             .device_displays
             .iter()
             .find(|screen| screen.key() == request.screen.key());
+        let request = request.clone();
+        let confirmed = observed.is_some_and(|screen| {
+            screen.online
+                && screen.revision > request.screen.revision
+                && (screen.x, screen.y) == (request.x, request.y)
+        });
         let message = match observed {
             None => Some(t("display-device-move-unavailable")),
             Some(screen) if !screen.online => Some(t("display-device-move-unavailable")),
@@ -868,7 +909,12 @@ impl DisplayModel {
             }
             _ => None,
         };
-        if let Some(message) = message {
+        if let Some(mut message) = message {
+            if confirmed && let Err(error) = self.confirm_shared_device_move(&request.screen.device)
+            {
+                message = error;
+            }
+            self.shared_move_revisions = None;
             self.awaiting_device_move = None;
             self.notice = Some(message);
             self.changed = true;
@@ -907,6 +953,8 @@ impl DisplayModel {
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
         Self {
+            shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: true,
@@ -919,6 +967,7 @@ impl DisplayModel {
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
+            shared_move_revisions: None,
             device_move_reply: None,
             last_seen_transaction: None,
             host_state: None,
@@ -935,6 +984,8 @@ impl DisplayModel {
             notice: None,
             arrangement_drag: LocalState::new(None),
             device_arrangement_drag: LocalState::new(None),
+            person_devices: settings_store::person_displays::PersonDisplays::load()
+                .map_or_else(Vec::new, |view| view.devices),
             device_displays: settings_store::device_displays::DeviceDisplaySnapshot::load()
                 .map_or_else(Vec::new, |snapshot| snapshot.displays),
             changed: false,
@@ -971,6 +1022,10 @@ impl DisplayModel {
             color_profile_labels: BTreeMap::new(),
             monitor: None,
         }]);
+        model.person_devices = model
+            .cx
+            .scene()
+            .map_or_else(Vec::new, |scene| scene.person_devices.clone());
         model.device_displays = device_displays;
         model
     }
@@ -979,6 +1034,8 @@ impl DisplayModel {
     /// it what they drive.
     fn detached(cx: PaneCx) -> Self {
         Self {
+            shared_display_prefs: cx.follow::<shared_displays::SharedDisplayPrefs>(),
+            automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             prefs: cx.follow::<DisplayPrefs>(),
             cx,
             of_device: false,
@@ -991,6 +1048,7 @@ impl DisplayModel {
             pending_candidate: None,
             pending_device_move: None,
             awaiting_device_move: None,
+            shared_move_revisions: None,
             device_move_reply: None,
             last_seen_transaction: None,
             host_state: None,
@@ -1007,6 +1065,7 @@ impl DisplayModel {
             arrangement_drag: LocalState::new(None),
             device_arrangement_drag: LocalState::new(None),
             device_displays: Vec::new(),
+            person_devices: Vec::new(),
             changed: false,
         }
     }
@@ -1120,6 +1179,7 @@ impl DisplayModel {
                 })
             }).collect::<Vec<_>>(),
             "device_displays": self.device_displays,
+            "shared_displays": self.shared_display_inspection(),
             "saved_configuration": self.output_config,
             "staged_configuration": self.staged(),
             "has_staged_changes": self.pending_candidate.is_some(),
@@ -1404,6 +1464,10 @@ impl DisplayModel {
         }
         self.changed = true;
         let reported = match effect {
+            DisplayEffect::SetAutomaticDisplayInput { on } => self.set_automatic_display_input(*on),
+            DisplayEffect::IncludeSharedDisplay { .. }
+            | DisplayEffect::OrderSharedDisplay { .. } => self.edit_shared_display(effect),
+            DisplayEffect::InspectSharedDisplays => Err(t("display-shared-read-only")),
             DisplayEffect::MoveDeviceDisplay {
                 display,
                 revision,
@@ -1423,6 +1487,7 @@ impl DisplayModel {
                     })
                     .ok_or_else(|| t("display-device-move-unavailable"))?
                     .clone();
+                self.shared_move_revisions = self.capture_shared_move_revisions(&screen.device);
                 self.pending_device_move =
                     Some(settings_store::device_displays::DeviceDisplayMove {
                         screen,
@@ -1848,6 +1913,12 @@ impl DisplayModel {
             self.device_displays = devices;
             self.changed = true;
         }
+        let person_devices = settings_store::person_displays::PersonDisplays::load()
+            .map_or_else(Vec::new, |view| view.devices);
+        if self.person_devices != person_devices {
+            self.person_devices = person_devices;
+            self.changed = true;
+        }
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
@@ -1903,6 +1974,9 @@ impl DisplayModel {
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(shared) = self.build_shared_displays_card() {
+            cards.push(shared);
+        }
         if let Some(devices) = self.build_device_arrangement_card() {
             cards.push(devices);
         }
@@ -2605,6 +2679,12 @@ impl PaneModel for DisplayModel {
         self.poll_device_move();
         self.poll_background();
         self.poll_device();
+        if self.automatic_display_prefs.refresh() {
+            self.changed = true;
+        }
+        if self.shared_display_prefs.refresh() {
+            self.changed = true;
+        }
         if self.prefs.refresh() {
             self.changed = true;
         }

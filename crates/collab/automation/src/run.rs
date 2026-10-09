@@ -619,7 +619,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         if !grant_permits(
             &self.shortcut.grant,
             app_id,
-            action,
+            &descriptor.address,
+            &descriptor.resource_kind,
             descriptor.contract.permission,
         ) {
             return Err(StepFailure::OutsideGrant {

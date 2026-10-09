@@ -400,6 +400,7 @@ activity-capability = { $effect ->
 activity-capability-unknown = a capability
 activity-capability-this-workspace = this workspace
 activity-capability-every-type = every { $kind }
+activity-capability-action-on-kind = { $app }:{ $action } on every { $kind }
 activity-capability-one-artifact = one artifact
 activity-capability-one-shared-file = one shared file
 activity-capability-network = network { $host }
@@ -515,11 +516,11 @@ workspace-settings-role-assign-placeholder = Role and collaborator
 workspace-settings-role-assign-description = Assign a saved least-privilege role to a person, application, or agent.
 workspace-settings-role-assign-named = Assign { $role }
 workspace-settings-role-assign-named-placeholder = Collaborator identity
-workspace-settings-app-action-placeholder = App and action
+workspace-settings-app-action-placeholder = App, resource and action
 workspace-settings-app-action-grant = Let an app use another app's action
-workspace-settings-app-action-grant-description = Grant one application the use of one action another application publishes, in this workspace.
+workspace-settings-app-action-grant-description = Grant one application the use of one action on one resource another application publishes, in this workspace.
 workspace-settings-app-action-revoke = Stop an app using another app's action
-workspace-settings-app-action-revoke-description = Take back every grant letting one application use another application's action in this workspace.
+workspace-settings-app-action-revoke-description = Take back every grant letting one application use one action on one of another application's resources in this workspace.
 workspace-settings-ownership-resource = { $workspace } ownership
 workspace-settings-ownership-propose = Propose ownership transfer
 workspace-settings-ownership-propose-placeholder = Recipient identity
@@ -564,7 +565,8 @@ workspace-settings-scope-screencast = screen capture
 workspace-settings-scope-remote-desktop = remote pointer + keyboard
 workspace-settings-scope-any-host = any network host
 workspace-settings-scope-host = network host { $host }
-workspace-settings-scope-action = “{ $action }” in { $app }
+workspace-settings-scope-action = “{ $action }” on { $resource } in { $app }
+workspace-settings-scope-action-on-kind = “{ $action }” on every { $kind } in { $app }
 workspace-settings-scope-resource-type = { $kind ->
     [note] every note
     [file] every file
@@ -585,7 +587,8 @@ workspace-settings-scope-screencast-object = screen capture
 workspace-settings-scope-remote-desktop-object = remote pointer + keyboard
 workspace-settings-scope-any-host-object = any network host
 workspace-settings-scope-host-object = network host { $host }
-workspace-settings-scope-action-object = “{ $action }” in { $app }
+workspace-settings-scope-action-object = “{ $action }” on { $resource } in { $app }
+workspace-settings-scope-action-on-kind-object = “{ $action }” on every { $kind } in { $app }
 workspace-settings-scope-resource-type-object = { $kind ->
     [note] every note
     [file] every file

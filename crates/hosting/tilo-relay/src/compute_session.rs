@@ -295,12 +295,13 @@ async fn authenticate_server(
 /// Refresh membership, admit `device` if the workspace allows it, and load
 /// its durable compute backlog. `None` when the device is not admitted.
 /// Blocking I/O: run it on the blocking pool with the workspace lock held.
-fn admit_compute_peer(
+/// Membership comes from the same reload as every routing read, so a pending
+/// or failed replacement's ceiling bounds it too.
+pub(crate) fn admit_compute_peer(
     workspace: &mut crate::workspace::WorkspaceRuntime,
     device: [u8; 32],
 ) -> Result<Option<Vec<crate::store::PendingEntry>>, crate::store::StoreError> {
-    let devices = workspace.store.load_membership()?;
-    workspace.membership.set(devices);
+    crate::workspace_io::current_membership_blocking(workspace)?;
     if !workspace.membership.contains(&device) {
         if !workspace.admit_authenticated {
             return Ok(None);

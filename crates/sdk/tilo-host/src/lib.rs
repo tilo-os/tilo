@@ -38,6 +38,10 @@
 //! under the same path (`ui::portal`, `ui::host`, `ui::time`, …), and
 //! `tilo-app` turns every service on by default.
 
+/// Network hints shared with the app-facing SDK. Host transport integration only.
+#[doc(hidden)]
+pub use tilo_net::status as network_status;
+
 pub mod action_authority;
 pub mod background;
 pub mod capture;

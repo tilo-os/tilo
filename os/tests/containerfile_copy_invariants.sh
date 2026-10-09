@@ -130,7 +130,10 @@ containerfile="$repo/os/Containerfile"
 # the destination, source bytes and executable mode remain the same.
 # The disk-unlock polkit action and exact-command read rule ship beside the
 # existing policies. Their two rootfs payload rows are the intentional delta.
-expected_contract=e6f45d3a390bf7bd9fd63c96d811cab8f55c4feda6ae445d2c95cefe1037869a
+# The signed SDK font-catalog tree adds one native-builder-payload row.
+# Combining the application publisher with the existing runtime publisher
+# COPY preserves their exact payload mappings and the 156-instruction budget.
+expected_contract=4372db75dcbad74f335a6739bf50d53112397f806945d63239202f4adcfc391b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

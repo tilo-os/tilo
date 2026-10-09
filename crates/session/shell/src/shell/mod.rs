@@ -1,22 +1,11 @@
-//! # Visual smoke checklist
+//! The desktop shell: workspace tree, chrome, input policy and the services the
+//! compositor hosts.
 //!
-//! Run `cargo run -p tilo-desktop` and verify:
-//!
-//! - `TopBar` renders with a live clock; wheel over the center area cycles to
-//!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
-//! - Cmd+K opens the search palette; typing filters; Enter invokes; Escape closes.
-//! - Cmd+Tab toggles the `OverviewView`; clicking a card activates the workspace.
-//! - The `RightTray` gear icon opens `QuickSettings`; sliders are interactive;
-//!   WiFi/BT drill-in and back work.
-//! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
-//!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
-//!   shows per-role × per-file matrix.
-//! - `SidebarWheelDisc` switches workspaces, resists with overscroll at each
-//!   end, and exposes an add-workspace control on the disc band.
-//! - Right-clicking a tile opens the context menu.
-//! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
-//! - Creating a workspace (any path) triggers a toast.
-//! - A simulated remote cursor floats over the active tile.
+//! To see it, drive a running compositor rather than eyeballing a checklist:
+//! `cargo run --bin shell -- --backend headless` plus `tilo-control`
+//! (`scripts/headless-examples/`, `docs/headless-testing.md`), or render stills
+//! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
+//! in a window inside an existing X11/Wayland session.
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
@@ -139,7 +128,6 @@ pub mod remote_action_link;
 pub mod remote_actions;
 pub mod remote_audio;
 pub mod remote_capture;
-pub mod remote_cursors;
 pub mod remote_use;
 pub mod render;
 pub mod room_activity;
@@ -156,10 +144,8 @@ pub mod speaker_group;
 pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
 pub mod speaker_settings;
-pub mod split_row;
 pub mod state;
 pub mod status;
-pub mod system_monitor;
 pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
@@ -1087,18 +1073,18 @@ pub fn mount_in_process(
 /// top bar and wallpaper, the collaboration launchpad for an empty
 /// workspace, and a leading inset for the sidebar wheel.
 pub(crate) fn workspace_surface_chrome(
-    tree: &WorkspaceTree,
+    desktop: &state::DesktopTree,
     chrome: &chrome_state::Chrome,
 ) -> tilo_desktop::composition::SurfaceChrome {
     let local = chrome
         .borrow()
         .explicit_local_user()
         .map_or_else(crate::shell::state::local_user_id, str::to_owned);
-    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(&tree.desktop, local)
+    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(desktop, local)
         .with_chrome(topbar_chrome::native_source(chrome.clone()));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.
-    let backdrop: Box<dyn Widget> = tree.desktop.active_workspace().map_or_else(
+    let backdrop: Box<dyn Widget> = desktop.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
             let workspace_id = workspace.id.0.to_string();
@@ -1144,15 +1130,30 @@ pub fn build_workspace_root(
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
 ) {
-    let surface_chrome = workspace_surface_chrome(tree, chrome);
+    let failures = chrome.borrow().record_creation_errors(tree);
+    build_desktop_root(&tree.desktop, records, chrome, &failures)
+}
+
+/// [`build_workspace_root`] for a desktop alone, with the tabs whose record
+/// could not be created already found: all a rebuild needs, so it never
+/// copies the tree's replication documents.
+pub(crate) fn build_desktop_root(
+    desktop: &state::DesktopTree,
+    records: &ui::record::RecordStore,
+    chrome: &chrome_state::Chrome,
+    failures: &std::collections::BTreeMap<u64, String>,
+) -> (
+    Box<dyn Widget>,
+    std::collections::HashMap<state::StripId, *mut GroupRow>,
+) {
+    let surface_chrome = workspace_surface_chrome(desktop, chrome);
     let state = chrome.borrow();
-    let failures = state.record_creation_errors(tree);
     let mut resolver = NativeTileResolver {
         inputs: &state.hosted_inputs,
-        failures: &failures,
+        failures,
     };
     let mut surface = Box::new(tilo_desktop::composition::DesktopSurface::build(
-        &tree.desktop,
+        desktop,
         records,
         &mut resolver,
         surface_chrome,
@@ -1160,7 +1161,7 @@ pub fn build_workspace_root(
     for id in surface.strip_ids() {
         if let Some(row) = surface.row_mut(id) {
             for group in &mut row.groups {
-                tab_documents::apply_creation_failures(group, &failures);
+                tab_documents::apply_creation_failures(group, failures);
             }
         }
     }

@@ -1215,6 +1215,8 @@ pub(crate) fn publish_parts<R: Resource>(
 ) -> tilo_actions::Resource {
     let children = state.map(R::children).unwrap_or_default();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
+    // Describe the declared domain ID before any host dispatch alias projection.
+    resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(R::KIND, id);
     for decl in R::declarations() {
         #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");

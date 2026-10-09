@@ -4,7 +4,7 @@
 //! ```text
 //! root
 //! ├── "folders"  (Map id -> { name, order, collapsed })
-//! ├── "feeds"    (Map id -> { title, url, site_url, folder, order, kind })
+//! ├── "feeds"    (Map id -> { title, url, site_url, folder, order, kind, certificate_pin })
 //! └── "articles" (Map id -> { feed, title, author, url, published,
 //!                             summary, read, starred, tags{}, content })
 //! ```
@@ -119,6 +119,12 @@ impl FeedsDoc {
         );
         ui::doc::put_if_changed(doc, &obj, "order", i64::from(f.order));
         ui::doc::put_if_changed(doc, &obj, "kind", Self::kind_str(f.kind));
+        ui::doc::put_if_changed(
+            doc,
+            &obj,
+            "certificate_pin",
+            f.certificate_pin.as_deref().unwrap_or_default(),
+        );
     }
 
     /// # Panics
@@ -375,6 +381,8 @@ impl FeedsDoc {
                     },
                     order: read_i64_coerced(doc, &obj, "order").unwrap_or(0) as u32,
                     kind: Self::kind_from(&read_str(doc, &obj, "kind").unwrap_or_default()),
+                    certificate_pin: read_str(doc, &obj, "certificate_pin")
+                        .filter(|pin| !pin.is_empty()),
                 });
             }
         }
@@ -456,6 +464,7 @@ mod tests {
             folder: Some(folder.id),
             order: 0,
             kind: FeedKind::Atom,
+            certificate_pin: None,
         };
         let article = Article {
             id: Uuid::new_v4(),
