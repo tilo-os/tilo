@@ -12,7 +12,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
@@ -21,7 +21,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
 use crate::widget::{TaffyTreeExt, Widget};
 
@@ -380,12 +380,45 @@ impl FunnelChart {
     fn palette(theme: &Theme, index: usize) -> Color {
         theme.tokens.colors.presence.series(index)
     }
+}
+
+impl InteractiveChart for FunnelChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
+    }
     fn update_hover(&mut self) {
         self.hovered = self
             .geometry()
             .into_iter()
             .find(|stage| stage.bounds.contains(self.pointer))
             .map(|stage| stage.index);
+    }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) else {
+            return false;
+        };
+        self.activated = Some(stage.id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self.valid();
+        self.hovered = moved_item(self.hovered, &candidates, action);
+        if let Some(bounds) = self
+            .geometry()
+            .into_iter()
+            .find(|stage| Some(stage.index) == self.hovered)
+            .map(|stage| stage.bounds)
+        {
+            self.pointer = bounds.center();
+        }
+        self.hovered.is_some()
     }
 }
 
@@ -491,71 +524,7 @@ impl Widget for FunnelChart {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                        self.activated = Some(stage.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                    self.activated = Some(stage.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                        self.activated = Some(stage.id.clone());
-                    }
-                } else {
-                    let candidates = self.valid();
-                    self.hovered = moved_item(self.hovered, &candidates, action);
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some(bounds) = self
-                        .geometry()
-                        .into_iter()
-                        .find(|stage| Some(stage.index) == self.hovered)
-                        .map(|stage| stage.bounds)
-                    {
-                        self.pointer = bounds.center();
-                    }
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
