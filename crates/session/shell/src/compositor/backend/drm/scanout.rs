@@ -579,13 +579,14 @@ impl DirectScanoutState {
         true
     }
 
-    /// Retire the queued flip.  Only now is the old front released back to the
-    /// renderer and the queued target promoted to the visible front.
+    #[cfg(test)]
     pub(super) fn complete(&mut self) -> bool {
         self.complete_flip().is_some()
     }
 
-    /// [`Self::complete`], saying what the retired flip shows.
+    /// Retire the queued flip, saying what it shows.  Only now is the old front
+    /// released back to the renderer and the queued target promoted to the
+    /// visible front.
     pub(super) fn complete_flip(&mut self) -> Option<Flip> {
         let flip = self.pending.take()?;
         if let Flip::Slot(slot) = flip {
