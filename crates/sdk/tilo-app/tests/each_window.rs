@@ -144,23 +144,37 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
     let mut app = seeded();
     let total = usize::try_from(TASKS).unwrap();
 
-    // Agents and the palette: every task is published with its actions,
-    // mounted or not.
+    // Agents and the palette: the published tree carries a page of the
+    // tasks with their actions, mounted or not; every other task is
+    // resolved by its id when addressed, as an agent addresses it.
     let resources = app.harness().resources();
     let root = resources
         .iter()
         .find(|resource| resource.kind == Checklist::KIND)
         .unwrap();
-    assert_eq!(root.children.len(), total, "every item is published");
-    let last = root
+    let page = total.min(tilo_resource::items::ITEM_PAGE);
+    assert_eq!(
+        root.children.len(),
+        page,
+        "a page of the items is published"
+    );
+    let paged = root
         .children
         .iter()
-        .find(|child| child.label == format!("Task {}", total.saturating_sub(1)))
-        .expect("the last item is published while its row is not mounted");
+        .find(|child| child.label == format!("Task {}", page.saturating_sub(1)))
+        .expect("the page's last item is published while its row is not mounted");
     assert!(
-        last.actions.iter().any(|spec| spec.id == "set-done"),
+        paged.actions.iter().any(|spec| spec.id == "set-done"),
         "its actions are bound to it"
     );
+    let last = task_id(&app, total.saturating_sub(1));
+    app.call_on(
+        &tilo_resource::items::item_resource_id::<Checklist>("tasks", &last),
+        "set-done",
+        serde_json::json!({ "done": true }),
+    )
+    .expect("an item past the page is reached by its id");
+    assert!(app.state().tasks.get(&last).unwrap().done);
 
     // Assistive technology: the mounted rows, each placed in the whole list.
     let items = list_items(&mut app);
@@ -182,19 +196,9 @@ fn the_published_tree_lists_every_row_while_only_the_window_is_mounted() {
         app.harness().click_named(&control(&far)).is_err(),
         "its row is not mounted"
     );
-    let item = root
-        .children
-        .iter()
-        .find(|child| child.label == format!("Task {}", total.saturating_sub(2)))
-        .unwrap()
-        .id
-        .clone();
-    app.call_on(
-        item.as_str(),
-        "set-done",
-        serde_json::json!({ "done": true }),
-    )
-    .unwrap();
+    let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);
+    app.call_on(&item, "set-done", serde_json::json!({ "done": true }))
+        .unwrap();
     assert!(app.state().tasks.get(&far).unwrap().done);
 }
 
