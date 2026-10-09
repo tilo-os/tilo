@@ -692,7 +692,7 @@ impl Widget for PieChart {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.theme = Some(theme.clone());
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: self.height.map_or_else(Dimension::auto, Dimension::length),
@@ -700,9 +700,8 @@ impl Widget for PieChart {
             // Without a fixed height the chart takes the room it is given.
             flex_grow: if self.height.is_some() { 0.0 } else { 1.0 },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -729,13 +728,7 @@ impl Widget for PieChart {
         }
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,

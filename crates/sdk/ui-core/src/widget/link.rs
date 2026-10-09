@@ -212,7 +212,7 @@ impl Widget for Link {
             self.style = style;
             self.dirty = true;
         }
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::auto(),
                 height: Dimension::auto(),
@@ -220,9 +220,8 @@ impl Widget for Link {
             flex_shrink: 0.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

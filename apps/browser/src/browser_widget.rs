@@ -324,7 +324,7 @@ pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
     browsing_mode: BrowsingMode,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
@@ -695,7 +695,7 @@ impl BrowserWidget {
             rect: Rect::ZERO,
             engine,
             browsing_mode,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             bootstrap_done: false,
             headless,
             dispatch: None,
@@ -2271,8 +2271,8 @@ impl BrowserWidget {
             None
         }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
+            .element()
+            .and_then(|c| walk(c, id))
             .unwrap_or(false)
     }
 
@@ -3129,9 +3129,9 @@ impl BrowserWidget {
             }
             false
         }
-        self.composed.as_mut().is_some_and(|composed| {
-            clear(composed.as_mut());
-            focus(composed.as_mut(), id)
+        self.composed.element_mut().is_some_and(|composed| {
+            clear(composed);
+            focus(composed, id)
         })
     }
 
@@ -3151,13 +3151,10 @@ impl BrowserWidget {
                 restore(child, id, value);
             }
         }
-        let saved = self
-            .composed
-            .as_ref()
-            .and_then(|widget| state(widget.as_ref(), id));
+        let saved = self.composed.element().and_then(|widget| state(widget, id));
         self.focus_control(id);
-        if let (Some(value), Some(widget)) = (saved, self.composed.as_mut()) {
-            restore(widget.as_mut(), id, &value);
+        if let (Some(value), Some(widget)) = (saved, self.composed.element_mut()) {
+            restore(widget, id, &value);
         }
     }
 
@@ -3186,8 +3183,8 @@ impl BrowserWidget {
             w.children().iter().find_map(|c| walk(*c, id))
         }
         self.composed
-            .as_ref()
-            .and_then(|c| walk(c.as_ref(), id))
+            .element()
+            .and_then(|c| walk(c, id))
             .or_else(|| {
                 self.anchored_panel
                     .as_ref()
@@ -3534,10 +3531,7 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
-        let address_state = self
-            .composed
-            .as_ref()
-            .and_then(|widget| address_state(widget.as_ref()));
+        let address_state = self.composed.element().and_then(address_state);
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
@@ -3555,14 +3549,14 @@ impl Widget for BrowserWidget {
             restore_address(composed.as_mut(), &id, &state);
         }
         composed.set_motion_reduced(self.motion_reduced);
-        self.composed = Some(composed);
+        self.composed.replace(composed);
         if let Some(id) = self.daily.focus_pending.take() {
             self.focus_control(id);
             if id == crate::daily_controls::FIND_INPUT
                 && let Some(cursor) = self.daily.take_buffered_cursor()
-                && let Some(composed) = self.composed.as_mut()
+                && let Some(composed) = self.composed.element_mut()
             {
-                restore_address(composed.as_mut(), id, &cursor.to_string());
+                restore_address(composed, id, &cursor.to_string());
             }
             self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
                 (unsafe { &**widget }.test_id() == Some(id)).then_some((*node, id))
@@ -3621,7 +3615,7 @@ impl Widget for BrowserWidget {
             self.compact_chrome = compact;
             self.structure_dirty = true;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&child_node) = children.first()
         {
@@ -3655,7 +3649,7 @@ impl Widget for BrowserWidget {
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
         }
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
         // One hairline under the toolbar row separates it from the page.
@@ -3675,7 +3669,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The popover paints its own material, shadow and content.
@@ -3702,22 +3696,18 @@ impl Widget for BrowserWidget {
         self.navigation_hold.waiting()
             || self
                 .composed
-                .as_ref()
-                .is_some_and(|composed| composed.needs_animation_frame())
+                .element()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|c| c.take_structure_dirty())
+        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
-        if let Some(composed) = &mut self.composed {
+        if let Some(composed) = self.composed.element_mut() {
             composed.set_motion_reduced(reduced);
         }
     }
@@ -3959,7 +3949,7 @@ impl Widget for BrowserWidget {
             }
         }
 
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
@@ -4127,13 +4117,13 @@ impl Widget for BrowserWidget {
             .modal_capture()
             .or_else(|| self.back_menu.modal_capture())
             .or_else(|| self.suggestions.modal_capture())
-            .or_else(|| self.composed.as_ref().and_then(|c| c.modal_capture()))
+            .or_else(|| self.composed.element().and_then(Widget::modal_capture))
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
+            .element()
+            .map(|c| c as &dyn Widget)
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4145,8 +4135,8 @@ impl Widget for BrowserWidget {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
+            .element_mut()
+            .map(|c| c as &mut (dyn Widget + '_))
             .into_iter()
             .chain(
                 self.anchored_panel
@@ -4667,7 +4657,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.sync_search_and_suggestions();
 
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
         self.poll_active_pip_element();
@@ -4839,14 +4829,8 @@ mod architecture_tests {
                 .into_iter()
                 .find_map(|child| target(child, label))
         }
-        let menu = menu(
-            widget
-                .composed
-                .as_mut()
-                .expect("actual composition")
-                .as_mut(),
-        )
-        .expect("retained overflow menu");
+        let menu = menu(widget.composed.element_mut().expect("actual composition"))
+            .expect("retained overflow menu");
         menu.open(true);
         let target = target(menu.accessibility().expect("exported menu"), label)
             .expect("the command has its real semantic target");
@@ -8468,9 +8452,9 @@ mod tests {
             let mut w = BrowserWidget::new_headless();
             layout_at(&mut w, 900.0, 600.0);
             layout_at(&mut w, 900.0, 600.0);
-            let composed = w.composed.as_ref().expect("composed browser");
+            let composed = w.composed.element().expect("composed browser");
             assert_eq!(
-                surface_name(composed.as_ref()).as_deref(),
+                surface_name(composed).as_deref(),
                 Some(format!("{SHOTS_URL} — test page").as_str()),
                 "assistive technology reads the loaded page by its title"
             );

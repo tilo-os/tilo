@@ -889,6 +889,10 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
+    /// The tiles shown and the pointer, kept current for a presence pump
+    /// that runs outside this tree (the hosted shell's). `None` unless
+    /// [`Self::share_desk`] asked; the native frame loop reads them directly.
+    shared_desk: Option<crate::shell::peer_presence::SharedDesk>,
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
@@ -2003,6 +2007,12 @@ impl ShellOverlayHost {
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
+    /// Settles on the next change to any app invocation's status, for a
+    /// control reply waiting on its job. `None` before the broker attaches.
+    pub fn next_invocation_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_invocation_change()
+    }
+
     pub(crate) fn attach_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,
@@ -2393,6 +2403,7 @@ impl ShellOverlayHost {
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
+            shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
             magnifier_changed: false,
@@ -7543,6 +7554,17 @@ impl ShellOverlayHost {
         tiles
     }
 
+    /// Keep [`Self::tab_tiles`] and the pointer current in a handle a
+    /// presence pump outside this tree can read — the hosted shell's frame
+    /// tick, which is handed no host. Tiles refresh after every layout, the
+    /// pointer on every move and when it leaves the window.
+    pub fn share_desk(&mut self) -> crate::shell::peer_presence::SharedDesk {
+        let desk = self.shared_desk.get_or_insert_default().clone();
+        desk.set_tiles(self.tab_tiles());
+        desk.set_pointer(self.last_cursor.map(|p| (p.x, p.y)));
+        desk
+    }
+
     /// SAFETY mirrors the rest of the `group_row_ptrs` accessors: pointers
     /// were captured from a `Box<GroupRow>` we own through the content
     /// tree, the host outlives the content, and `&self` here keeps the
@@ -10643,13 +10665,13 @@ impl ShellOverlayHost {
             self.room_activity.layout_window(viewport);
         }
         if let Some(chrome) = self.chrome.clone() {
-            let st = chrome.borrow();
-            let records = st.records().clone();
-            let mut tree = st.tree_mut();
+            let (tree, records) = {
+                let st = chrome.borrow();
+                (st.tree_handle(), st.records().clone())
+            };
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut *tree, &records, &*local);
+                .refresh_observed(&tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -10770,16 +10792,13 @@ impl ShellOverlayHost {
             return;
         }
         let workspace = {
-            let st = chrome.borrow();
-            let records = st.records().clone();
-            let mut tree = st.tree_mut();
+            let (tree, records) = {
+                let st = chrome.borrow();
+                (st.tree_handle(), st.records().clone())
+            };
             let local = self.room_records.borrow();
             self.room_activity
-                .observe_workspace(tree.desktop.active.raw());
-            self.room_activity.refresh(&mut *tree);
-            self.room_activity
-                .refresh_records_with_local(&mut *tree, &records, &*local);
-            tree.desktop.active.raw()
+                .refresh_observed(&tree, &records, &*local)
         };
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
@@ -11594,9 +11613,19 @@ impl ShellOverlayHost {
     /// hover, for hit-testing overlay clicks in the absence of position
     /// data on `MouseInput`. First stage of `handle_event`.
     fn track_cursor_position(&mut self, event: &WindowEvent, scale_factor: f64) {
+        // A pointer that left the window is nowhere a peer can be shown. Only
+        // the shared desk forgets it: `last_cursor` still hit-tests.
+        if matches!(event, WindowEvent::CursorLeft { .. })
+            && let Some(desk) = &self.shared_desk
+        {
+            desk.set_pointer(None);
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
+            if let Some(desk) = &self.shared_desk {
+                desk.set_pointer(Some((p.x, p.y)));
+            }
             self.focus_display_at(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
@@ -18044,12 +18073,7 @@ impl Widget for ShellOverlayHost {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         self.workspace_settings_overlay.layout(self.overlay_area());
         let contextual_tour = self
             .onboarding
@@ -18192,6 +18216,9 @@ impl Widget for ShellOverlayHost {
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
         self.finish_axis_gather();
         self.publish_strip_viewport();
+        if let Some(desk) = &self.shared_desk {
+            desk.set_tiles(self.tab_tiles());
+        }
     }
 
     fn draw(
@@ -24325,16 +24352,9 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // A quiet peer's pointer fades out before it is retired; with
-        // reduced motion it simply goes.
-        let fade = if theme.reduce_motion {
-            std::time::Duration::ZERO
-        } else {
-            ui::presence::POINTER_FADE
-        };
-        let peers = self.workspace_peers(presence, fade);
+        let peers = self.workspace_peers(presence, theme.reduce_motion);
         ui::presence::draw_peer_presence(scene, transform, self.rect, text_renderer, theme, &peers);
-        self.draw_follow_cursor_affordances(scene, transform, presence);
+        self.draw_follow_cursor_affordances(scene, transform, presence, theme.reduce_motion);
     }
 
     /// Rebuild the direct-manipulation targets over remote cursor anchors and
@@ -24345,12 +24365,13 @@ impl ShellOverlayHost {
         scene: &mut Scene,
         transform: Affine,
         presence: &PresenceCtx,
+        reduce_motion: bool,
     ) {
         self.follow_cursor_targets.clear();
         let Some(room_key) = self.active_workspace_presence_key() else {
             return;
         };
-        let anchors = self.workspace_follow_anchors(presence);
+        let anchors = self.workspace_follow_anchors(presence, reduce_motion);
         for (follower, target) in presence.following_in(&room_key) {
             let Some((_, from, color)) = anchors
                 .iter()
@@ -24425,7 +24446,14 @@ impl ShellOverlayHost {
         }
     }
 
-    fn workspace_follow_anchors(&self, presence: &PresenceCtx) -> Vec<(String, Point, Color)> {
+    /// Each followable peer's pointer as [`Self::workspace_peers`] paints it,
+    /// so the ring sits on the cursor rather than where it is gliding to.
+    fn workspace_follow_anchors(
+        &self,
+        presence: &PresenceCtx,
+        reduce_motion: bool,
+    ) -> Vec<(String, Point, Color)> {
+        let now = std::time::Instant::now();
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -24445,16 +24473,20 @@ impl ShellOverlayHost {
         };
         let anchors = pointers
             .iter()
-            .filter_map(|(user, (x, y))| {
-                rows.iter()
-                    .find(|row| row.followable && row.id == user.0)
-                    .map(|row| {
-                        (
-                            user.0.clone(),
-                            Point::new(f64::from(*x), f64::from(*y)),
-                            row.color,
-                        )
-                    })
+            .filter_map(|(user, heard)| {
+                let row = rows.iter().find(|row| row.followable && row.id == user.0)?;
+                let (x, y) = if reduce_motion {
+                    *heard
+                } else {
+                    presence
+                        .pointer_position_at(&key, user, now)
+                        .unwrap_or(*heard)
+                };
+                Some((
+                    user.0.clone(),
+                    Point::new(f64::from(x), f64::from(y)),
+                    row.color,
+                ))
             })
             .collect();
         drop(tree);
@@ -24527,19 +24559,27 @@ impl ShellOverlayHost {
     /// test, not just an empty screen both ways.
     #[cfg(test)]
     pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
-        self.workspace_peers(presence, ui::presence::POINTER_FADE)
+        self.workspace_peers(presence, false)
             .into_iter()
             .filter(|peer| self.rect.contains(Point::new(peer.pos.0, peer.pos.1)))
             .collect()
     }
 
-    /// The active workspace's peer pointers as painted, each at the
-    /// opacity its fade (over `fade`) has reached.
+    /// The active workspace's peer pointers as painted: each where its
+    /// glide between samples has reached
+    /// ([`PresenceCtx::pointer_position_at`]) at the opacity its fade has
+    /// reached. With `reduce_motion` neither moves: a pointer is shown where
+    /// it was heard and goes, rather than fading, when retired.
     fn workspace_peers(
         &self,
         presence: &PresenceCtx,
-        fade: std::time::Duration,
+        reduce_motion: bool,
     ) -> Vec<ui::presence::PeerCursor> {
+        let fade = if reduce_motion {
+            std::time::Duration::ZERO
+        } else {
+            ui::presence::POINTER_FADE
+        };
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -24583,6 +24623,13 @@ impl ShellOverlayHost {
                     .copied()
                     .or_else(|| assigned.get(user.0.as_str()).copied())
                     .unwrap_or_else(|| presence.color_for(user));
+                let pos = if reduce_motion {
+                    *pos
+                } else {
+                    presence
+                        .pointer_position_at(&key, user, now)
+                        .unwrap_or(*pos)
+                };
                 ui::presence::PeerCursor {
                     pos: (f64::from(pos.0), f64::from(pos.1)),
                     // Falls back to the id when the roster has no name.

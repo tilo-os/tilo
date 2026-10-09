@@ -8,6 +8,7 @@
 //!
 //! - [`shim`]      — the PATH shims a `[cli]` package publishes.
 //! - [`isa`]       — host ISA detection, for target selection.
+//! - [`runtime_blobs`] — runtime payload bytes already on this device.
 //! - [`state`]     — the user's per-room app data: what uninstalling
 //!   must ask about rather than assume.
 
@@ -25,6 +26,7 @@
 )]
 
 pub mod isa;
+pub mod runtime_blobs;
 pub mod shim;
 pub mod state;
 

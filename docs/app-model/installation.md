@@ -401,6 +401,19 @@ bundle the way the launcher does (signature, a publisher from
 payload has the digest it is named by) and places it in the per-user runtime
 directory below.
 
+Because the runtime is rebuilt with every release, the newest version of an
+app usually names a build the device does not have. Opening an app that is
+not installed (`app install`, the Store's Open, a peer's window) therefore
+takes the newest offered version whose runtime build is already installed —
+the image's or a per-user one — and only falls back to the newest version,
+and its runtime, when no retained version runs on one. Every candidate is a
+version of the same publisher-signed entry, installed through the same
+verified pipeline. `app update` still moves the app to the newest version and
+its runtime. When a runtime does have to be installed, every payload blob
+whose BLAKE3 hash an installed bundle's `bundle.toml` lists is copied from
+that bundle, re-hashed while it is copied, and only the rest is fetched, with
+four requests in flight.
+
 ```
 $ tilo-install runtime install --version 2026.07 --from-host --force
 installed runtime bundle: tilo-runtime/2026.07

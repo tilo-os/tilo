@@ -1763,7 +1763,13 @@ fn splice_minimal_libs(
     if use_minimal_libs {
         let entry = pop_entry(argv)?;
         for path in minimal_loader_binds() {
-            if std::path::Path::new(path).exists() {
+            // The fixed system profile already binds these parents read-only.
+            // Rebinding a child can land on a distro symlink (libgcc_s.so.1),
+            // which bubblewrap rightly refuses as a mount destination.
+            let covered = crate::profile::SYSTEM_READ_PATHS
+                .iter()
+                .any(|root| std::path::Path::new(path).starts_with(root));
+            if !covered && std::path::Path::new(path).exists() {
                 argv.push("--ro-bind".to_string());
                 argv.push(path.to_string());
                 argv.push(path.to_string());

@@ -274,6 +274,48 @@ mod tests {
     }
 
     #[test]
+    fn normal_files_scope_authorizes_namespace_without_host_root_grant() {
+        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+        let person = [41; 32];
+        let read = CapOverride::grant(
+            Subject::User(Ed25519PublicKey(person)),
+            Scope::FsPath("/var/workspace".into()),
+            Verb::Read,
+        );
+        assert!(require_files_access(person, std::slice::from_ref(&read)).is_err());
+        let mut write = read.clone();
+        write.verb = Verb::Write;
+        require_files_access(person, std::slice::from_ref(&write))
+            .expect("normal Edit files includes Read without Admin");
+        let mut ui_person = write.clone();
+        ui_person.subject = Subject::person(hex::encode(person));
+        require_files_access(person, &[ui_person])
+            .expect("normal Permissions member subject matches certified person");
+        let policy = vec![read, write.clone()];
+        require_files_access(person, &policy).expect("normal scoped Read/Write choice");
+        assert!(require_files_access([42; 32], &policy).is_err());
+        assert!(
+            policy
+                .iter()
+                .all(|cap| cap.scope == Scope::FsPath("/var/workspace".into()))
+        );
+        write.scope = Scope::FsPath("/var/workspace/documents".into());
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        write.scope = Scope::FsPath("/var/workspace-other".into());
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        write.scope = Scope::FsPath("/var/workspace".into());
+        write.expiry = Expiry::AtUnix(1);
+        assert!(require_files_access(person, std::slice::from_ref(&write)).is_err());
+        let mut restricted = policy;
+        write.expiry = Expiry::Never;
+        write.scope = Scope::FsPath("/var".into());
+        write.effect = Effect::Restrict;
+        write.verb = Verb::Read;
+        restricted.push(write);
+        assert!(require_files_access(person, &restricted).is_err());
+    }
+
+    #[test]
     fn prepared_namespace_resumes_existing_signed_policy_without_root_export() {
         let temp = tempfile::tempdir().expect("isolated fixture");
         let cache = temp.path().join("files");
@@ -330,8 +372,8 @@ mod tests {
         let grant = CapOverride {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
-            scope: Scope::FsPath("/".into()),
-            verb: Verb::Admin,
+            scope: Scope::FsPath("/var/workspace".into()),
+            verb: Verb::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,
             granted_by: None,

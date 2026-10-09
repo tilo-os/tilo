@@ -421,7 +421,7 @@ impl Widget for Checkbox {
     ) -> NodeId {
         self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
         let labelled = self.label.is_some();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: if labelled && !self.intrinsic {
                     Dimension::percent(1.0)
@@ -442,9 +442,8 @@ impl Widget for Checkbox {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

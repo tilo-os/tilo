@@ -1322,7 +1322,7 @@ impl Widget for Dropdown {
         } else {
             Dimension::auto()
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width,
                 height: Dimension::length(px(self.field_height + self.caption_height)),
@@ -1333,19 +1333,13 @@ impl Widget for Dropdown {
             },
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(crate::widget::placed(&l, origin));
         self.layout_dirty = false;
     }
 

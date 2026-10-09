@@ -37,7 +37,25 @@ const STREAM_REPLY: &str = concat!(
     "data: [DONE]\n\n",
 );
 
+/// An Anthropic Messages stream as the provider writes it: `event:` lines,
+/// a `ping`, a tool call whose input arrives in pieces, one with no input.
+const ANTHROPIC_STREAM_REPLY: &str = concat!(
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test-model-2026\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n",
+    "event: ping\ndata: {\"type\": \"ping\"}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"list_operations\",\"input\":{}}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"search\\\":\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" \\\"x\\\"}\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"plan\",\"input\":{}}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":7}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
 const ERROR_BODY: &str = r#"{"error":{"message":"test instruction echoed back","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
+const QUOTA_BODY: &str = r#"{"error":{"type":"insufficient_quota","code":"insufficient_quota"}}"#;
 
 fn read_request(stream: &mut TcpStream) -> String {
     stream.set_nonblocking(false).unwrap();
@@ -106,7 +124,7 @@ fn child_profile(case: &str) -> ProviderProfile {
         profile.endpoint = profile.endpoint.replace("127.0.0.1", "localhost");
     }
 
-    if case == "anthropic" {
+    if case.starts_with("anthropic") {
         profile.protocol = ProviderProtocol::Anthropic;
         profile.endpoint = profile.endpoint.trim_end_matches("/v1").to_owned();
     }
@@ -237,8 +255,8 @@ fn child_request(case: &str, body: serde_json::Value) -> Request {
                 "limits-owner-caller" => 100,
                 _ => 10_000,
             },
-            stream: case == "stream" || case == "stream-deltas",
-            deltas: case == "stream-deltas",
+            stream: matches!(case, "stream" | "stream-deltas" | "anthropic-stream"),
+            deltas: matches!(case, "stream-deltas" | "anthropic-stream"),
             trace: Some(PlanTrace { id: 7, turn: 1 }),
         }
     }
@@ -320,6 +338,25 @@ fn shared_transport_limits_transform_without_changing_legacy_requests() {
     }
 }
 
+/// Whether the peer refuses request number `request` (from 1) of `case`
+/// unprocessed: a `-once` case its first, `429-quota` every one.
+fn refuses(case: &str, request: usize) -> bool {
+    (case.ends_with("-once") && request == 1) || case == "429-quota"
+}
+
+fn refusal(case: &str) -> String {
+    if case == "429-quota" {
+        return format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{QUOTA_BODY}",
+            QUOTA_BODY.len()
+        );
+    }
+    format!(
+        "HTTP/1.1 {} Provider Busy\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        case.trim_end_matches("-once")
+    )
+}
+
 fn run_case(test: &str, case: &str) -> Option<Observed> {
     if let Ok(child_case) = std::env::var("PLAN_TEST_CASE") {
         child_plan(&child_case);
@@ -362,6 +399,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                         .into()
                 }
                 "stream" | "stream-deltas" => STREAM_REPLY.into(),
+                "anthropic-stream" => ANTHROPIC_STREAM_REPLY.into(),
                 "400detail" => format!(
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ERROR_BODY}",
                     ERROR_BODY.len()
@@ -369,6 +407,7 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                 "redirect" => format!(
                     "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
+                case if refuses(case, requests.len()) => refusal(case),
                 value if value.parse::<u16>().is_ok() => format!(
                     "HTTP/1.1 {value} Provider Error\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
@@ -486,9 +525,12 @@ fn plan_dispatch_unreadable_response_is_unknown() {
     }
 }
 
+/// Every status that leaves open whether the provider did the work. A rate
+/// limit (429) or overload (529) says it did not; see
+/// `plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it`.
 #[test]
 fn plan_dispatch_never_replays_provider_status() {
-    for status in [503, 408, 429, 500, 502, 504, 529, 401] {
+    for status in [503, 408, 500, 502, 504, 401] {
         let Some(observed) = run_case(
             "plan_dispatch_never_replays_provider_status",
             &status.to_string(),
@@ -496,6 +538,216 @@ fn plan_dispatch_never_replays_provider_status() {
             return;
         };
         assert_unknown(observed);
+    }
+}
+
+#[test]
+fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
+    let name = "plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it";
+    // Phase: refused as rate-limited or overloaded, then answered: one
+    // success, from the very same request sent again.
+    for case in ["429-once", "529-once"] {
+        let Some(observed) = run_case(name, case) else {
+            return;
+        };
+        assert!(
+            observed.response.ok,
+            "{case}: {:?}",
+            observed.response.error
+        );
+        assert_eq!(observed.response.output.as_deref(), Some(OUTPUT), "{case}");
+        assert_eq!(observed.requests.len(), 2, "{case}");
+        assert_eq!(observed.requests[0], observed.requests[1], "{case}");
+    }
+
+    // Phase: refused every time: bounded, and the error says how often.
+    for case in ["429", "529"] {
+        let Some(observed) = run_case(name, case) else {
+            return;
+        };
+        assert_eq!(observed.requests.len(), 3, "{case}");
+        assert!(!observed.response.ok);
+        let error = observed.response.error.unwrap();
+        assert!(error.contains(&format!("HTTP {case}")), "{error}");
+        assert!(error.contains("(3 attempts)"), "{error}");
+        assert!(!error.contains("outcome is unknown"), "{error}");
+        assert!(!error.contains("fabricated-test-key"));
+    }
+
+    // Phase: an exhausted quota is a 429 that asking again cannot help.
+    let Some(observed) = run_case(name, "429-quota") else {
+        return;
+    };
+    assert_eq!(observed.requests.len(), 1);
+    assert!(!observed.response.ok);
+    let error = observed.response.error.unwrap();
+    assert!(error.contains("insufficient_quota"), "{error}");
+    assert!(error.contains("request was not retried"), "{error}");
+}
+
+struct Sending {
+    left: Duration,
+    waits: Vec<Duration>,
+    calls: usize,
+}
+
+fn refused(status: Option<u16>, unprocessed: bool, asked_for: Option<Duration>) -> ProviderFailure {
+    ProviderFailure {
+        why: status.map_or_else(
+            || "provider transport failed".into(),
+            |status| format!("provider returned HTTP {status}"),
+        ),
+        again: Again::Soon(asked_for),
+        outcome_unknown: !unprocessed,
+        unprocessed,
+        status,
+    }
+}
+
+/// One fake attempt's outcome.
+type Outcome = fn() -> Result<&'static str, ProviderFailure>;
+
+/// [`plan_send`] over `outcomes` (the last repeats) on a fake clock, each
+/// attempt taking 200 ms; `emitted` says whether a frame reached the caller.
+fn send_plan(
+    left: Duration,
+    emitted: bool,
+    outcomes: &[Outcome],
+) -> (Result<&'static str, ProviderFailure>, Sending) {
+    let sending = std::cell::RefCell::new(Sending {
+        left,
+        waits: Vec::new(),
+        calls: 0,
+    });
+    let result = tilo_rt::block_on(plan_send(
+        || {
+            let sending = sending.borrow();
+            (!sending.left.is_zero()).then_some(sending.left)
+        },
+        |duration| {
+            let mut sending = sending.borrow_mut();
+            sending.waits.push(duration);
+            sending.left = sending.left.saturating_sub(duration);
+            std::future::ready(())
+        },
+        &|| emitted,
+        |_budget| {
+            let mut sending = sending.borrow_mut();
+            let index = sending.calls.min(outcomes.len().saturating_sub(1));
+            sending.calls = sending.calls.saturating_add(1);
+            sending.left = sending.left.saturating_sub(Duration::from_millis(200));
+            std::future::ready(outcomes[index]())
+        },
+    ))
+    .unwrap();
+    (result, sending.into_inner())
+}
+
+/// Plan asks again only for a provider that provably did no work, never
+/// once a frame reached the caller, at most three times in all, waiting what
+/// the provider asked for, and only with room left for an answer.
+#[test]
+fn plan_send_replays_only_unprocessed_refusals_within_its_budget() {
+    let answered: Outcome = || Ok("answer");
+    let limited: Outcome = || Err(refused(Some(429), true, None));
+    let overloaded_for_two: Outcome =
+        || Err(refused(Some(529), true, Some(Duration::from_secs(2))));
+    let unreachable: Outcome = || Err(refused(None, true, None));
+    let failed: Outcome = || Err(refused(Some(500), false, None));
+
+    // Phase: a rate limit, an overload or a refused connection, then an answer.
+    for refusal in [limited, unreachable] {
+        let (result, sending) = send_plan(Duration::from_secs(20), false, &[refusal, answered]);
+        assert_eq!(result.ok(), Some("answer"));
+        assert_eq!(sending.calls, 2);
+        assert_eq!(sending.waits, [Duration::from_millis(500)]);
+    }
+    let (result, sending) = send_plan(
+        Duration::from_secs(20),
+        false,
+        &[overloaded_for_two, answered],
+    );
+    assert_eq!(result.ok(), Some("answer"));
+    assert_eq!(
+        sending.waits,
+        [Duration::from_secs(2)],
+        "Retry-After is honoured"
+    );
+
+    // Phase: at most three attempts, and the error counts them.
+    let (result, sending) = send_plan(Duration::from_secs(20), false, &[limited]);
+    let failure = result.err().unwrap();
+    assert_eq!(sending.calls, 3);
+    assert_eq!(
+        sending.waits,
+        [Duration::from_millis(500), Duration::from_secs(1)]
+    );
+    assert_eq!(failure.status, Some(429));
+    assert!(failure.why.ends_with("(3 attempts)"), "{}", failure.why);
+
+    // Phase: a failure that may have done the work is never sent again.
+    let (result, sending) = send_plan(Duration::from_secs(20), false, &[failed, answered]);
+    let failure = result.err().unwrap();
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+    assert_eq!(failure.why, "provider returned HTTP 500");
+
+    // Phase: nothing is sent again once a frame reached the caller.
+    let (result, sending) = send_plan(Duration::from_secs(20), true, &[limited, answered]);
+    assert!(result.is_err());
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+
+    // Phase: a wait that would leave no room to answer ends the Plan instead.
+    let (result, sending) = send_plan(
+        Duration::from_secs(6),
+        false,
+        &[overloaded_for_two, answered],
+    );
+    assert_eq!(result.err().unwrap().status, Some(529));
+    assert_eq!(sending.calls, 1);
+    assert!(sending.waits.is_empty());
+}
+
+/// A refused connection never reached the provider and a rate limit or
+/// overload did no work there; an exhausted quota and every other status
+/// leave the outcome as it was.
+#[test]
+fn only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed() {
+    let closed = {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let mut profile = ProviderProfile::local_vllm();
+    profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
+    let http = provider_client().unwrap();
+    let failure = tilo_rt::block_on(send_provider(
+        &http,
+        &profile,
+        &provider_url(&profile),
+        None,
+        &serde_json::json!({"model": "test-model"}),
+        Duration::from_secs(5),
+    ))
+    .unwrap()
+    .err()
+    .unwrap();
+    assert!(failure.unprocessed, "{}", failure.why);
+    assert!(!failure.outcome_unknown, "{}", failure.why);
+    assert_eq!(failure.status, None);
+
+    assert!(refused_unprocessed(
+        429,
+        br#"{"error":{"type":"rate_limit_error"}}"#
+    ));
+    assert!(refused_unprocessed(429, b""));
+    assert!(refused_unprocessed(
+        529,
+        br#"{"error":{"type":"overloaded_error"}}"#
+    ));
+    assert!(!refused_unprocessed(429, QUOTA_BODY.as_bytes()));
+    for status in [400, 401, 402, 408, 409, 500, 502, 503, 504] {
+        assert!(!refused_unprocessed(status, b""), "HTTP {status}");
     }
 }
 
@@ -803,15 +1055,20 @@ fn finish_chunk() -> serde_json::Value {
     serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
 }
 
-/// Run the SSE core over `chunks`; the clock reads `times_ms` (one per data
-/// line) from a fixed base. Returns every emitted frame as (event, output).
-fn feed(
-    chunks: &[serde_json::Value],
+/// Every frame a stream emitted, as (event, output).
+type Frames = Vec<(String, serde_json::Value)>;
+
+/// Run `protocol`'s SSE core over `text`, delivered in transport pieces of
+/// at most `piece` bytes (cut anywhere, mid-line and mid-character alike);
+/// the clock reads `times_ms` (one per data line) from a fixed base.
+/// Returns every emitted frame and the assembled body or why it failed.
+fn run_sse(
+    protocol: ProviderProtocol,
+    text: &str,
+    piece: usize,
     times_ms: &[u64],
     deltas: bool,
-) -> (Vec<(String, serde_json::Value)>, String) {
-    let text = sse(chunks);
-    let mut reader = std::io::Cursor::new(text.into_bytes());
+) -> (Frames, Result<String, String>) {
     let base = Instant::now();
     let mut times = times_ms.iter().copied();
     let mut clock = move || {
@@ -820,8 +1077,10 @@ fn feed(
     };
     let mut frames = Vec::new();
     let mut timing = PlanTiming::start();
+    let pieces = text.as_bytes().chunks(piece).collect::<Vec<_>>();
     let body = read_sse(
-        &mut reader,
+        SseReader::new(protocol, deltas),
+        &pieces,
         &mut |event| {
             frames.push((
                 event.event.clone().unwrap(),
@@ -830,11 +1089,23 @@ fn feed(
             true
         },
         &mut timing,
-        deltas,
         &mut clock,
     )
-    .unwrap_or_else(|failure| panic!("{}", failure.why));
+    .map_err(|failure| failure.why);
     (frames, body)
+}
+
+/// Run the OpenAI-compatible SSE core over `chunks`; the clock reads
+/// `times_ms` (one per data line) from a fixed base.
+fn feed(chunks: &[serde_json::Value], times_ms: &[u64], deltas: bool) -> (Frames, String) {
+    let (frames, body) = run_sse(
+        ProviderProtocol::OpenAiCompatible,
+        &sse(chunks),
+        usize::MAX,
+        times_ms,
+        deltas,
+    );
+    (frames, body.unwrap_or_else(|why| panic!("{why}")))
 }
 
 #[test]
@@ -872,21 +1143,15 @@ fn malformed_streamed_reasoning_is_a_provider_failure() {
         serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":{"wrong":"type"}}}]}),
         finish_chunk(),
     ]);
-    let mut reader = std::io::Cursor::new(text.into_bytes());
-    let mut timing = PlanTiming::start();
-    let mut emitted = false;
-    let result = read_sse(
-        &mut reader,
-        &mut |_event| {
-            emitted = true;
-            true
-        },
-        &mut timing,
+    let (frames, result) = run_sse(
+        ProviderProtocol::OpenAiCompatible,
+        &text,
+        usize::MAX,
+        &[],
         false,
-        &mut Instant::now,
     );
     assert!(result.is_err());
-    assert!(!emitted);
+    assert!(frames.is_empty());
 }
 
 #[test]
@@ -1031,7 +1296,7 @@ fn old_plan_requests_decode_without_deltas_and_never_serialize_it() {
 
 #[test]
 fn content_free_stream_progress_survives_unfinished_reasoning_response() {
-    let mut reader = SseReader::new(false);
+    let mut reader = SseReader::new(ProviderProtocol::OpenAiCompatible, false);
     let mut timing = PlanTiming::start();
     let mut emit = |_event: &Response| true;
     let mut clock = Instant::now;
@@ -1072,4 +1337,412 @@ fn content_free_stream_progress_survives_unfinished_reasoning_response() {
     for private in ["private", "💡", "foreign", "reasoning_content"] {
         assert!(!fields.contains(private));
     }
+}
+
+#[test]
+fn plan_dispatch_streams_anthropic_tool_calls_then_the_message_body() {
+    let Some(observed) = run_case(
+        "plan_dispatch_streams_anthropic_tool_calls_then_the_message_body",
+        "anthropic-stream",
+    ) else {
+        return;
+    };
+    assert_eq!(observed.requests.len(), 1);
+    let request = &observed.requests[0];
+    assert!(request.starts_with("POST /v1/messages HTTP/1.1\r\n"));
+    assert!(request.contains("x-api-key: fabricated-test-key\r\n"));
+    let body = request_body(request);
+    assert_eq!(body["stream"], true);
+    assert!(body.get("stream_options").is_none());
+    assert!(observed.response.ok, "{:?}", observed.response.error);
+    assert!(observed.response.event.is_none());
+    let events = observed
+        .events
+        .iter()
+        .map(|event| {
+            (
+                event.event.clone().unwrap(),
+                serde_json::from_str::<serde_json::Value>(event.output.as_deref().unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let kinds = events
+        .iter()
+        .map(|(kind, _)| kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL
+        ]
+    );
+    assert_eq!(
+        events[2].1,
+        serde_json::json!({"id": "toolu_a", "name": "list_operations", "arguments": "{\"search\": \"x\"}"})
+    );
+    // A call streamed without input carries the block's own empty input.
+    assert_eq!(
+        events[3].1,
+        serde_json::json!({"index": 1, "id": "toolu_b", "name": "plan", "delta": "{}"})
+    );
+    assert_eq!(events[4].1["arguments"], "{}");
+    // The final frame is the Messages body a non-streamed Plan returns.
+    let assembled: serde_json::Value =
+        serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        assembled,
+        serde_json::json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "test-model-2026",
+            "content": [
+                {"type": "tool_use", "id": "toolu_a", "name": "list_operations", "input": {"search": "x"}},
+                {"type": "tool_use", "id": "toolu_b", "name": "plan", "input": {}},
+            ],
+            "stop_reason": "tool_use", "stop_sequence": null,
+            "usage": {"input_tokens": 5, "cache_read_input_tokens": 3, "output_tokens": 7},
+        })
+    );
+    let timing = &observed.stderr;
+    assert!(timing.contains(" stream=true "), "{timing}");
+    for unmeasured in ["first_token_ms=-", "first_tool_call_ms=-", "plan_call_ms=-"] {
+        assert!(!timing.contains(unmeasured), "{timing}");
+    }
+    assert!(
+        timing.contains("prompt_tokens=5 completion_tokens=7"),
+        "{timing}"
+    );
+    assert!(
+        timing.contains("cached_tokens=3 cache_write_tokens=- tool_calls=2"),
+        "{timing}"
+    );
+}
+
+/// Anthropic SSE text for `events`, each after the `event:` line naming it,
+/// as the provider writes them.
+fn anthropic_sse(events: &[serde_json::Value]) -> String {
+    let mut text = String::new();
+    for event in events {
+        text.push_str("event: ");
+        text.push_str(event["type"].as_str().unwrap());
+        text.push_str("\ndata: ");
+        text.push_str(&event.to_string());
+        text.push_str("\n\n");
+    }
+    text
+}
+
+/// A tool input as the model writes it: a unicode escape, escaped quotes and
+/// backslash, a raw multi-byte character and an escaped surrogate pair.
+const INVOKE_INPUT: &str = r#"{"operation":"broker:7:doc#type-text","parameters":{"text":"Café \"quoted\" \\ 🌊 🌊\nend"}}"#;
+const PLAN_INPUT: &str = r#"{"reply":"Done.","done":true}"#;
+
+/// A recorded-shape, non-streamed Messages body: thinking, text, a tool
+/// call, more text, a second tool call.
+fn anthropic_message() -> serde_json::Value {
+    serde_json::json!({
+        "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [
+            {"type": "thinking", "thinking": "Read, then write.", "signature": "c2lnbmF0dXJl"},
+            {"type": "text", "text": "Writing the paragraph — then I'm done."},
+            {"type": "tool_use", "id": "toolu_01", "name": "invoke",
+             "input": serde_json::from_str::<serde_json::Value>(INVOKE_INPUT).unwrap()},
+            {"type": "text", "text": "Ünïcödé between calls."},
+            {"type": "tool_use", "id": "toolu_02", "name": "plan",
+             "input": serde_json::from_str::<serde_json::Value>(PLAN_INPUT).unwrap()},
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {"input_tokens": 2095, "cache_creation_input_tokens": 0,
+                  "cache_read_input_tokens": 1800, "output_tokens": 503},
+    })
+}
+
+/// `text` in pieces of `cut` characters.
+fn pieces(text: &str, cut: usize) -> Vec<String> {
+    let chars = text.chars().collect::<Vec<_>>();
+    chars
+        .chunks(cut)
+        .map(|piece| piece.iter().collect())
+        .collect()
+}
+
+/// The events streaming `message` the way the provider does, every text,
+/// thought and tool input (`inputs`, as written) cut into `cut`-character
+/// deltas, so a cut lands inside escapes and multi-byte characters.
+fn anthropic_events(
+    message: &serde_json::Value,
+    inputs: &[&str],
+    cut: usize,
+) -> Vec<serde_json::Value> {
+    let mut opening = message.clone();
+    opening["content"] = serde_json::json!([]);
+    opening["stop_reason"] = serde_json::Value::Null;
+    opening["usage"]["output_tokens"] = serde_json::json!(1);
+    let mut events = vec![
+        serde_json::json!({"type": "message_start", "message": opening}),
+        serde_json::json!({"type": "ping"}),
+    ];
+    let mut inputs = inputs.iter();
+    for (index, block) in message["content"].as_array().unwrap().iter().enumerate() {
+        let delta = |delta: serde_json::Value| serde_json::json!({"type": "content_block_delta", "index": index, "delta": delta});
+        let mut opened = block.clone();
+        let streamed = match block["type"].as_str().unwrap() {
+            "thinking" => {
+                opened["thinking"] = "".into();
+                opened.as_object_mut().unwrap().remove("signature");
+                pieces(block["thinking"].as_str().unwrap(), cut)
+                    .into_iter()
+                    .map(|piece| delta(serde_json::json!({"type": "thinking_delta", "thinking": piece})))
+                    .chain([delta(serde_json::json!({"type": "signature_delta", "signature": block["signature"]}))])
+                    .collect::<Vec<_>>()
+            }
+            "text" => {
+                opened["text"] = "".into();
+                pieces(block["text"].as_str().unwrap(), cut)
+                    .into_iter()
+                    .map(|piece| delta(serde_json::json!({"type": "text_delta", "text": piece})))
+                    .collect()
+            }
+            _ => {
+                opened["input"] = serde_json::json!({});
+                std::iter::once(String::new())
+                    .chain(pieces(inputs.next().unwrap(), cut))
+                    .map(|piece| {
+                        delta(
+                            serde_json::json!({"type": "input_json_delta", "partial_json": piece}),
+                        )
+                    })
+                    .collect()
+            }
+        };
+        events.push(serde_json::json!({"type": "content_block_start", "index": index, "content_block": opened}));
+        events.extend(streamed);
+        events.push(serde_json::json!({"type": "content_block_stop", "index": index}));
+        events.push(serde_json::json!({"type": "ping"}));
+    }
+    events.push(serde_json::json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": message["stop_reason"], "stop_sequence": null},
+        "usage": {"output_tokens": message["usage"]["output_tokens"]},
+    }));
+    events.push(serde_json::json!({"type": "message_stop"}));
+    events
+}
+
+/// One clock reading per data line, each a full coalescing window apart.
+fn windows(events: usize) -> Vec<u64> {
+    (0..events as u64)
+        .map(|line| line.saturating_mul(50))
+        .collect()
+}
+
+#[test]
+fn anthropic_stream_rebuilds_the_non_streamed_message_however_it_is_cut() {
+    let message = anthropic_message();
+    for cut in [1, 2, 3, 7, 1000] {
+        let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], cut);
+        let text = anthropic_sse(&events);
+        // Transport pieces cut lines, escapes and UTF-8 sequences anywhere.
+        for piece in [1, 2, 3, 5, 64, usize::MAX] {
+            let (frames, body) = run_sse(
+                ProviderProtocol::Anthropic,
+                &text,
+                piece,
+                &windows(events.len()),
+                true,
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(&body.unwrap_or_else(|why| panic!("{why}"))).unwrap();
+            assert_eq!(body, message, "cut {cut}, piece {piece}");
+            let calls = frames
+                .iter()
+                .filter(|(kind, _)| kind == EVENT_TOOL_CALL)
+                .map(|(_, call)| call)
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 2, "cut {cut}, piece {piece}");
+            for (index, (call, (id, name, input))) in calls
+                .iter()
+                .zip([
+                    ("toolu_01", "invoke", INVOKE_INPUT),
+                    ("toolu_02", "plan", PLAN_INPUT),
+                ])
+                .enumerate()
+            {
+                assert_eq!(call["id"], id);
+                assert_eq!(call["name"], name);
+                assert_eq!(call["arguments"], input, "the input exactly as written");
+                let deltas = frames
+                    .iter()
+                    .filter(|(kind, delta)| {
+                        kind == EVENT_TOOL_CALL_DELTA && delta["index"] == index
+                    })
+                    .map(|(_, delta)| {
+                        assert_eq!(delta["id"], id);
+                        delta["delta"].as_str().unwrap()
+                    })
+                    .collect::<String>();
+                assert_eq!(
+                    deltas, input,
+                    "every delta of call {index} precedes its call"
+                );
+            }
+            // Thoughts and text never leave the gateway as frames.
+            for (_, frame) in &frames {
+                let frame = frame.to_string();
+                assert!(
+                    !frame.contains("Read, then") && !frame.contains("Writing"),
+                    "{frame}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_anthropic_tool_call_is_reported_at_its_own_block_stop() {
+    let message = anthropic_message();
+    let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], 4);
+    let mut sse = SseReader::new(ProviderProtocol::Anthropic, false);
+    let mut timing = PlanTiming::start();
+    let mut reported = Vec::new();
+    for (position, event) in events.iter().enumerate() {
+        let text = anthropic_sse(std::slice::from_ref(event));
+        let flow = sse
+            .feed(
+                text.as_bytes(),
+                &mut |frame| {
+                    assert_eq!(frame.event.as_deref(), Some(EVENT_TOOL_CALL));
+                    let call: serde_json::Value =
+                        serde_json::from_str(frame.output.as_deref().unwrap()).unwrap();
+                    reported.push((position, call["id"].as_str().unwrap().to_owned()));
+                    true
+                },
+                &mut timing,
+                &mut Instant::now,
+            )
+            .unwrap_or_else(|failure| panic!("{}", failure.why));
+        assert_eq!(flow == Flow::Done, position + 1 == events.len());
+    }
+    let at = |kind: &str, index: usize| {
+        events
+            .iter()
+            .position(|event| event["type"] == kind && event["index"] == index)
+            .unwrap()
+    };
+    assert_eq!(
+        reported,
+        [
+            (at("content_block_stop", 2), "toolu_01".to_owned()),
+            (at("content_block_stop", 4), "toolu_02".to_owned()),
+        ],
+        "each call is reported the moment its block closes"
+    );
+    let message_delta = events
+        .iter()
+        .position(|event| event["type"] == "message_delta")
+        .unwrap();
+    assert!(reported[0].0 < at("content_block_start", 3));
+    assert!(reported[1].0 < message_delta);
+    assert!(timing.first_reasoning.is_some() && timing.reasoning_chunks > 0);
+    assert!(timing.first_token.is_some() && timing.plan_call.is_some());
+    let body = sse
+        .finish(
+            &mut |_| -> bool { panic!("every call was already reported") },
+            &mut timing,
+        )
+        .unwrap_or_else(|failure| panic!("{}", failure.why));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+        message
+    );
+    assert_eq!(timing.tool_calls, 2);
+    assert_eq!(timing.completion_tokens, Some(503));
+    assert_eq!(timing.cached_tokens, Some(1800));
+    assert_eq!(timing.cache_write_tokens, Some(0));
+}
+
+#[test]
+fn anthropic_stream_failures_are_provider_failures() {
+    let message = anthropic_message();
+    let events = anthropic_events(&message, &[INVOKE_INPUT, PLAN_INPUT], 5);
+    let first_stop = events
+        .iter()
+        .position(|event| event["type"] == "content_block_stop" && event["index"] == 2)
+        .unwrap();
+    let run = |events: &[serde_json::Value], tail: &str| {
+        let text = anthropic_sse(events) + tail;
+        run_sse(ProviderProtocol::Anthropic, &text, 7, &[], false)
+    };
+    let calls = |frames: &Frames| {
+        frames
+            .iter()
+            .map(|(_, call)| call["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // An `error` event after a 200: only its type is passed on.
+    let overloaded = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded near test instruction\"}}\n\n";
+    let (frames, result) = run(&events[..=first_stop], overloaded);
+    let why = result.unwrap_err();
+    assert_eq!(why, "provider stream failed (type=overloaded_error)");
+    assert_eq!(
+        calls(&frames),
+        ["toolu_01"],
+        "a call completed before it stands"
+    );
+
+    // A stream that stops before `message_stop`, between or inside blocks.
+    for (end, reported) in [
+        (events.len() - 1, 2),
+        (first_stop + 1, 1),
+        (first_stop - 1, 0),
+        (1, 0),
+    ] {
+        let (frames, result) = run(&events[..end], "");
+        assert_eq!(
+            result.unwrap_err(),
+            "provider stream ended early",
+            "end {end}"
+        );
+        assert_eq!(
+            calls(&frames).len(),
+            reported,
+            "only finished calls, end {end}"
+        );
+    }
+    // A connection cut in the middle of a data line.
+    let text = anthropic_sse(&events);
+    let cut = text.rfind("\"usage\"").unwrap();
+    let cut = text.get(..cut).unwrap();
+    let (frames, result) = run_sse(ProviderProtocol::Anthropic, cut, 3, &[], false);
+    assert_eq!(result.unwrap_err(), "provider stream was unreadable");
+    assert_eq!(calls(&frames), ["toolu_01", "toolu_02"]);
+
+    // Malformed streams: input that is not JSON when its block closes, a
+    // delta for a block never opened, a block before the message, a second
+    // message.
+    let mut broken = events[..first_stop].to_vec();
+    broken.push(serde_json::json!({"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"tail\":"}}));
+    broken.extend_from_slice(&events[first_stop..]);
+    let (frames, result) = run(&broken, "");
+    assert_eq!(result.unwrap_err(), "provider tool input was not JSON");
+    assert!(frames.is_empty());
+    for stray in [
+        serde_json::json!({"type": "content_block_delta", "index": 9, "delta": {"type": "text_delta", "text": "x"}}),
+        events[0].clone(),
+    ] {
+        let mut broken = events[..3].to_vec();
+        broken.push(stray);
+        let (_, result) = run(&broken, "");
+        assert_eq!(result.unwrap_err(), "provider stream was unreadable");
+    }
+    let (_, result) = run(&events[2..], "");
+    assert_eq!(result.unwrap_err(), "provider stream was unreadable");
 }

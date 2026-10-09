@@ -63,7 +63,7 @@ pub struct RevocationEntry {
     /// Why the device was revoked. Advisory.
     pub reason: RevocationReason,
     /// Ed25519 signature covering everything else.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "crate::cert::serde_bytes_64")]
     pub signature: [u8; 64],
 }
 
@@ -222,29 +222,6 @@ impl RevocationList {
     /// True if no devices have been revoked.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-}
-
-mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
     }
 }
 

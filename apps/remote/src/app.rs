@@ -1899,22 +1899,6 @@ fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
 
-/// A parent node that fills the window around one child.
-fn fill_node(taffy: &mut TaffyTree<()>, child: NodeId) -> NodeId {
-    taffy.parent_node(
-        Style {
-            display: taffy::Display::Flex,
-            flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )
-}
-
 // ===========================================================================
 // Widget impl
 // ===========================================================================
@@ -2016,7 +2000,7 @@ impl Widget for RemoteApp {
         self.rebuild_views();
         self.layout_dirty = false;
         let child = self.body_mut().build_layout(taffy, theme, node_map);
-        let node = fill_node(taffy, child);
+        let node = taffy.fill_node(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -2025,12 +2009,7 @@ impl Widget for RemoteApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(child) = child_node(taffy, node) {
             self.body_mut().apply_layout(taffy, child, origin);
@@ -2776,29 +2755,22 @@ impl Widget for SessionPane {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: 1.0,
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = ui::widget::placed(l, origin);
     }
 
     fn draw(

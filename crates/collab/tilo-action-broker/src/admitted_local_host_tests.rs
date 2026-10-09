@@ -444,13 +444,12 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                         .row()
                         .descriptor
                         .unwrap();
-                    action.operation_kind = "effect".into();
-                    action.contract_json = serde_json::to_string(&tilo_actions::ActionContract {
+                    action.operation_kind = tilo_actions::OperationKind::Effect;
+                    action.contract = tilo_actions::ActionContract {
                         execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                         result: tilo_actions::ResultSpec::Job,
                         ..tilo_actions::ActionContract::default()
-                    })
-                    .unwrap();
+                    };
                     rig.worker
                         .handle
                         .publish_actions(&env.route.app_id, &[action])

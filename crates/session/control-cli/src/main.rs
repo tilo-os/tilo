@@ -183,6 +183,9 @@ enum Command {
         args_json: Option<String>,
         args_stdin: bool,
         device: Option<String>,
+        /// `--wait[=MS]`: answer once the invocation settles, waiting at
+        /// most this long, rather than once it is admitted.
+        wait_ms: Option<u64>,
     },
     ActionsStatus {
         invocation_id: u64,
@@ -190,6 +193,9 @@ enum Command {
     ActionsCancel {
         invocation_id: u64,
     },
+    /// One connection for many requests: one wire request per stdin line,
+    /// one answer per stdout line.
+    ActionsSession,
     Raw {
         json: String,
     },
@@ -215,6 +221,7 @@ impl Command {
                 | Self::ActionsInvoke { .. }
                 | Self::ActionsStatus { .. }
                 | Self::ActionsCancel { .. }
+                | Self::ActionsSession
                 | Self::Raw { .. }
                 | Self::Read { .. }
         )
@@ -390,7 +397,10 @@ fn parse_read<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command
 const READ_DISCOVERY_ATTEMPTS: u32 = 20;
 const READ_DISCOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
 /// How long `read` follows an admitted invocation to its answer: an app
-/// action is admitted first and answers on its job.
+/// action is admitted first and answers on its job. The desktop holds the
+/// reply until then (`wait_ms`); a desktop that answers the admission at
+/// once is followed with `actions status` instead.
+const READ_ANSWER_WAIT_MS: u64 = 20_000;
 const READ_ANSWER_ATTEMPTS: u32 = 100;
 const READ_ANSWER_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 
@@ -398,9 +408,14 @@ const READ_ANSWER_PAUSE: std::time::Duration = std::time::Duration::from_millis(
 fn unanswered_job(response: &serde_json::Value) -> Option<u64> {
     let receipt = response.pointer("/answer/receipt")?;
     let state = receipt.pointer("/update/state")?.as_str()?;
-    matches!(state, "accepted" | "running" | "streaming")
+    (!settled(state))
         .then(|| receipt.get("broker_invocation_id")?.as_u64())
         .flatten()
+}
+
+/// Whether an invocation in `state` has ended, one way or another.
+fn settled(state: &str) -> bool {
+    matches!(state, "succeeded" | "failed" | "cancelled")
 }
 
 /// The address of `app`'s `read` action in an enumeration answer.
@@ -472,6 +487,7 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         "provider": "app-actions",
         "id": id,
         "args": args,
+        "wait_ms": READ_ANSWER_WAIT_MS,
     })
     .to_string();
     let mut response = match round_trip(stream, &invoke) {
@@ -496,6 +512,89 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         };
     }
     print_read_answer(&response, json)
+}
+
+/// `actions invoke --wait`: print the answer as without `--wait`, then say
+/// how the action ended. One that failed or was cancelled exits 1 with its
+/// reason; one still running when the wait ran out says how to follow it.
+fn print_settled(response: &serde_json::Value) -> u8 {
+    let answer = response
+        .get("answer")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    println!("{answer}");
+    let update = answer
+        .pointer("/receipt/update")
+        .cloned()
+        .unwrap_or_default();
+    let text = |pointer: &str| {
+        update
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    match text("/state").as_deref() {
+        Some("failed") => {
+            let code = text("/error/code").unwrap_or_else(|| "action_failed".into());
+            eprintln!(
+                "error [{code}]: {}",
+                text("/error/message").unwrap_or_default()
+            );
+            1
+        }
+        Some("cancelled") => {
+            eprintln!(
+                "error [cancelled]: {}",
+                text("/message").unwrap_or_default()
+            );
+            1
+        }
+        Some(state) if !settled(state) => {
+            if let Some(job) = answer
+                .pointer("/receipt/broker_invocation_id")
+                .and_then(serde_json::Value::as_u64)
+            {
+                eprintln!(
+                    "hint: still {state} when the wait ran out; follow it with \
+                     `tilo-control actions status {job}`"
+                );
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// `actions session`: send each request line of `requests` over the one
+/// connection and write each answer line to `answers`, in order, until
+/// `requests` ends. Blank lines are skipped. One process and one connection
+/// serve every call, instead of one of each per call.
+fn run_session(
+    stream: &UnixStream,
+    requests: impl BufRead,
+    mut answers: impl Write,
+) -> std::io::Result<()> {
+    let mut sender = stream;
+    let mut replies = BufReader::new(stream);
+    for request in requests.lines() {
+        let request = request?;
+        let request = request.trim();
+        if request.is_empty() {
+            continue;
+        }
+        sender.write_all(request.as_bytes())?;
+        sender.write_all(b"\n")?;
+        let mut reply = String::new();
+        if replies.read_line(&mut reply)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "the desktop closed the connection",
+            ));
+        }
+        answers.write_all(reply.as_bytes())?;
+        answers.flush()?;
+    }
+    Ok(())
 }
 
 /// Print the value a `read` answered, or why it did not.
@@ -620,8 +719,10 @@ fn parse_action_invocation<'a>(
     let mut args_json = None;
     let mut args_stdin = false;
     let mut device = None;
+    let mut wait_ms = None;
     while let Some(flag) = iter.next() {
         match flag.as_str() {
+            "--wait" => wait_ms = Some(DEFAULT_INVOKE_WAIT_MS),
             "--device" => {
                 let id = iter.next().ok_or_else(|| {
                     ParseError::Usage("--device requires an enrolled device id".to_string())
@@ -656,11 +757,23 @@ fn parse_action_invocation<'a>(
                 args_json = Some(json.clone());
             }
             other => {
-                return Err(ParseError::Usage(format!(
-                    "actions invoke: unknown option `{other}`"
-                )));
+                let Some(ms) = other.strip_prefix("--wait=") else {
+                    return Err(ParseError::Usage(format!(
+                        "actions invoke: unknown option `{other}`"
+                    )));
+                };
+                wait_ms = Some(ms.parse::<u64>().map_err(|_| {
+                    ParseError::Usage(format!("--wait=MS: `{ms}` is not a number of milliseconds"))
+                })?);
             }
         }
+    }
+    if wait_ms.is_some() && device.is_some() {
+        return Err(ParseError::Usage(
+            "--wait follows an invocation run here; one sent with --device answers once \
+             the device has it"
+                .into(),
+        ));
     }
     Ok(Command::ActionsInvoke {
         provider: provider.clone(),
@@ -668,18 +781,31 @@ fn parse_action_invocation<'a>(
         args_json,
         args_stdin,
         device,
+        wait_ms,
     })
 }
+
+/// How long `actions invoke --wait` waits for the invocation to settle when
+/// no time is given: the MCP door's default. The desktop caps any wait at
+/// 30 s.
+const DEFAULT_INVOKE_WAIT_MS: u64 = 5_000;
 
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
     let verb = iter.next().map(String::as_str).ok_or_else(|| {
         ParseError::Usage(
-            "actions requires `list`, `invoke`, `status`, or `cancel` (try --help)".to_string(),
+            "actions requires `list`, `invoke`, `status`, `cancel` or `session` (try --help)"
+                .to_string(),
         )
     })?;
     match verb {
+        "session" => match iter.next() {
+            None => Ok(Command::ActionsSession),
+            Some(extra) => Err(ParseError::Usage(format!(
+                "actions session takes no arguments (got `{extra}`); it reads requests on stdin"
+            ))),
+        },
         "list" => {
             // Everything after `list` that isn't a flag joins the
             // query, so `actions list open settings` works without
@@ -722,7 +848,8 @@ fn parse_actions_command<'a>(
             })
         }
         other => Err(ParseError::Usage(format!(
-            "actions: unknown verb `{other}` (expected `list`, `invoke`, `status`, or `cancel`)"
+            "actions: unknown verb `{other}` (expected `list`, `invoke`, `status`, `cancel` or \
+             `session`)"
         ))),
     }
 }
@@ -793,6 +920,29 @@ fn parse_modifier_flags(s: &str) -> Result<(bool, bool, bool, bool), ParseError>
 /// Build the JSON wire payload for a parsed [`Command`]. For `raw`
 /// the caller's JSON is used verbatim; every other variant serialises
 /// through `serde_json::to_string`.
+/// The `actions_invoke` request, carrying `device` and `wait_ms` only when
+/// they are given.
+fn invoke_wire(
+    provider: &str,
+    id: &str,
+    args: &serde_json::Value,
+    device: Option<&str>,
+    wait_ms: Option<u64>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "op": "actions_invoke", "provider": provider, "id": id, "args": args,
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(device) = device {
+            object.insert("device".to_string(), device.into());
+        }
+        if let Some(wait_ms) = wait_ms {
+            object.insert("wait_ms".to_string(), wait_ms.into());
+        }
+    }
+    value
+}
+
 fn action_arguments(
     text: Option<&str>,
     stdin_pending: bool,
@@ -883,29 +1033,22 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             args_json,
             args_stdin,
             device,
-        } => {
-            let args = action_arguments(args_json.as_deref(), *args_stdin)?;
-            let mut value =
-                json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args });
-            if let Some(device) = device {
-                let Some(object) = value.as_object_mut() else {
-                    return Err(ParseError::Usage(
-                        "action invocation payload is not an object".into(),
-                    ));
-                };
-                object.insert(
-                    "device".to_string(),
-                    serde_json::Value::String(device.clone()),
-                );
-            }
-            value
-        }
+            wait_ms,
+        } => invoke_wire(
+            provider,
+            id,
+            &action_arguments(args_json.as_deref(), *args_stdin)?,
+            device.as_deref(),
+            *wait_ms,
+        ),
         Command::ActionsStatus { invocation_id } => {
             json!({ "op": "actions_status", "invocation_id": invocation_id })
         }
         Command::ActionsCancel { invocation_id } => {
             json!({ "op": "actions_cancel", "invocation_id": invocation_id })
         }
+        // Its requests come from stdin, one per line, and go out as they are.
+        Command::ActionsSession => return Ok(String::new()),
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
             // the caller whether their shell quoting or the payload was wrong.
@@ -1092,6 +1235,9 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             println!("{path}");
         }
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
+        Command::ActionsInvoke {
+            wait_ms: Some(_), ..
+        } => return print_settled(response),
         Command::ActionsInvoke { .. }
         | Command::ActionsStatus { .. }
         | Command::ActionsCancel { .. } => {
@@ -1113,8 +1259,9 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
-        Command::Read { .. } => {
-            // Answered by `run_read`, which owns its two round trips.
+        Command::Read { .. } | Command::ActionsSession => {
+            // Answered by `run_read` and `run_session`, which own their
+            // round trips.
             println!("{response}");
         }
         Command::Raw { .. } => {
@@ -1220,11 +1367,16 @@ fn print_usage() {
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
-         \x20                               run one action by its address; answers the\n\
-         \x20                               typed receipt. --device sends it to that\n\
-         \x20                               enrolled device\n\
+         \x20               [--wait[=MS]]   run one action by its address; answers the\n\
+         \x20                               typed receipt. --wait answers once it has\n\
+         \x20                               settled (default 5000 ms, at most 30000) and\n\
+         \x20                               exits 1 if it failed. --device sends it to\n\
+         \x20                               that enrolled device\n\
          \x20 actions status INVOCATION_ID  latest state and output of a running action\n\
          \x20 actions cancel INVOCATION_ID  request cooperative cancellation\n\
+         \x20 actions session               many requests over one connection: one wire\n\
+         \x20                               request per stdin line (`raw` JSON), one\n\
+         \x20                               answer per stdout line\n\
          \x20 read APP [ITEM] [--json]      what an open app holds, as typed data: the\n\
          \x20                               resource itself, or the ITEM it lists\n\
          \x20                               (e.g. `read so.tilo.notes`, then a page's item)\n\
@@ -1370,6 +1522,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    if matches!(invocation.command, Command::ActionsSession) {
+        return match run_session(&stream, std::io::stdin().lock(), std::io::stdout().lock()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tilo-control: session: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
 
     if let Command::Read { app, item, json } = &invocation.command {
         let code = run_read(&mut stream, app, item.as_deref(), *json);
@@ -1633,6 +1795,7 @@ mod tests {
                     args_stdin: false,
                     args_json: Some(r#"{"count":2,"force":true}"#.into()),
                     device: None,
+                    wait_ms: None,
                 },
             ),
             // Receipt ids parse for both status and cancel.
@@ -1790,6 +1953,119 @@ mod tests {
         assert_eq!(print_read_answer(&answered, true), 0);
         let refused = serde_json::json!({"err": {"code": "unknown_action", "message": "gone"}});
         assert_eq!(unanswered_job(&refused), None);
+        let progressing = serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 7, "update": {"state": "progress", "phase": "copying"}}}});
+        assert_eq!(
+            unanswered_job(&progressing),
+            Some(7),
+            "a job reporting progress has not answered yet"
+        );
+    }
+
+    /// `--wait` asks the desktop to hold the answer until the action
+    /// settles; without it the answer stays the admission receipt.
+    #[test]
+    fn invoke_wait_asks_the_desktop_for_the_settled_outcome() {
+        let invoke = |extra: &[&str]| {
+            let mut words = vec!["actions", "invoke", "app-actions", "notes.new"];
+            words.extend_from_slice(extra);
+            parse(&words).map(|invocation| invocation.command)
+        };
+        let plain = invoke(&[]).unwrap();
+        assert!(matches!(
+            plain,
+            Command::ActionsInvoke { wait_ms: None, .. }
+        ));
+        assert_eq!(wire(&plain).get("wait_ms"), None);
+        let waited = invoke(&["--wait"]).unwrap();
+        assert!(matches!(
+            waited,
+            Command::ActionsInvoke {
+                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
+                ..
+            }
+        ));
+        assert_eq!(wire(&waited)["wait_ms"], DEFAULT_INVOKE_WAIT_MS);
+        assert_eq!(wire(&invoke(&["--wait=250"]).unwrap())["wait_ms"], 250);
+        assert!(matches!(
+            invoke(&["--wait=soon"]),
+            Err(ParseError::Usage(_))
+        ));
+        assert!(matches!(
+            invoke(&["--wait", "--device", "aa"]),
+            Err(ParseError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn a_waited_invocation_exits_by_how_it_ended() {
+        let answer = |update: serde_json::Value| {
+            serde_json::json!({"answer": {"receipt": {
+                "broker_invocation_id": 7, "update": update}}})
+        };
+        let settled = answer(serde_json::json!({"state": "succeeded", "output": {}}));
+        assert_eq!(print_settled(&settled), 0);
+        let failed = answer(serde_json::json!({"state": "failed",
+            "error": {"code": "action_failed", "message": "no note"}}));
+        assert_eq!(print_settled(&failed), 1);
+        assert_eq!(
+            print_settled(&answer(serde_json::json!({"state": "cancelled"}))),
+            1
+        );
+        let running = answer(serde_json::json!({"state": "progress", "phase": "copying"}));
+        assert_eq!(print_settled(&running), 0, "still running is no failure");
+    }
+
+    #[test]
+    fn a_session_answers_each_request_line_in_order_over_one_connection() {
+        let (client, server) = UnixStream::pair().expect("socket pair");
+        let desktop = std::thread::spawn(move || {
+            let mut replies = &server;
+            let mut requests = BufReader::new(&server);
+            let mut seen = Vec::new();
+            let mut line = String::new();
+            while requests.read_line(&mut line).expect("request") > 0 {
+                let request: serde_json::Value =
+                    serde_json::from_str(line.trim()).expect("one JSON request per line");
+                seen.push(request["op"].as_str().unwrap_or_default().to_string());
+                writeln!(
+                    replies,
+                    "{}",
+                    serde_json::json!({"answer": {"op": request["op"]}})
+                )
+                .expect("reply");
+                line.clear();
+            }
+            seen
+        });
+        let requests =
+            b"{\"op\":\"actions_enumerate\"}\n\n{\"op\":\"actions_status\",\"invocation_id\":1}\n";
+        let mut answers = Vec::new();
+        run_session(&client, &requests[..], &mut answers).expect("session");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("end of requests");
+        assert_eq!(
+            desktop.join().expect("desktop"),
+            ["actions_enumerate", "actions_status"],
+            "one request per non-blank line, in order"
+        );
+        let answers = String::from_utf8(answers).expect("utf-8 answers");
+        assert_eq!(
+            answers.lines().collect::<Vec<_>>(),
+            [
+                r#"{"answer":{"op":"actions_enumerate"}}"#,
+                r#"{"answer":{"op":"actions_status"}}"#,
+            ]
+        );
+        assert!(matches!(
+            parse(&["actions", "session"]).map(|invocation| invocation.command),
+            Ok(Command::ActionsSession)
+        ));
+        assert!(matches!(
+            parse(&["actions", "session", "extra"]),
+            Err(ParseError::Usage(_))
+        ));
     }
 
     /// `windows` reads the tree in the desktop's own terms, and marks the
@@ -1942,6 +2218,7 @@ mod tests {
             args_stdin: false,
             args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
             device: None,
+            wait_ms: None,
         });
         assert_eq!(value["op"], "actions_invoke");
         assert_eq!(value["args"]["resource"], "notes.note:42");

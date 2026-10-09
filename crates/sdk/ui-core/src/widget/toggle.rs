@@ -518,7 +518,7 @@ impl Widget for Toggle {
         )]
         let (track_w, track_h) = (track_w as f32, track_h as f32);
         let target = self.interaction.minimum_target();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(track_w.max(target)),
                 height: Dimension::length(track_h.max(target)),
@@ -529,9 +529,8 @@ impl Widget for Toggle {
             // squeezed it to zero width beside a stretching text field.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -134,12 +134,11 @@ impl App {
             .filter(|cache| cache.key == key)
             .map_or_else(Vec::new, |cache| cache.declared.clone());
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(
+        semantics.refresh_action_projection(
             self.root_widget.as_ref(),
             &self.layout.node_map,
             &self.bindings.semantic_node_names(&self.layout.node_map),
             self.focused_node,
-            &[],
         );
         complete.extend(semantics.action_resources());
         complete.extend(self.history_action_resources());
@@ -423,6 +422,17 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        self.control_binding_coverage_for(
+            resources,
+            crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+        )
+    }
+
+    fn control_binding_coverage_for(
+        &self,
+        resources: &[tilo_actions::Resource],
+        bindings: Vec<crate::widget::ControlBindingMetadata>,
+    ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes doors served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
         let mut host_resources = vec![crate::search::search_resource()];
@@ -435,7 +445,7 @@ impl App {
             ));
         }
         let mut seen = std::collections::HashSet::new();
-        crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
+        bindings
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
@@ -666,7 +676,10 @@ impl App {
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_action_coverage_for(&self.collect_resources());
+        let binding_coverage = self.control_binding_coverage_for(
+            &self.collect_resources(),
+            crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+        );
         if binding_coverage
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -771,7 +784,10 @@ impl App {
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
-        let actions = descriptors.iter().map(Self::exported_action).collect();
+        let actions = descriptors
+            .iter()
+            .map(crate::collaboration::ExportedAction::from)
+            .collect();
         // A surface the transport did not take is retried on the next frame.
         if self
             .collaboration
@@ -782,36 +798,6 @@ impl App {
             })
         {
             self.actions.last_published_actions = Some(descriptors);
-        }
-    }
-
-    fn exported_action(
-        descriptor: &tilo_actions::ActionDescriptor,
-    ) -> crate::collaboration::ExportedAction {
-        crate::collaboration::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.clone(),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor.view.clone(),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => crate::collaboration::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
         }
     }
 
@@ -893,64 +879,17 @@ impl App {
         Ok(revision)
     }
 
+    /// The descriptor a directory row carries. Directory pages have never
+    /// carried a resource view: the broker proves a view's mount and range
+    /// bindings against the actions on the same page, which a bounded page
+    /// cannot promise, so views reach the shell through the published
+    /// surface instead.
     fn exported_directory_action(
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
-            resource: descriptor.address.resource.clone(),
-            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
-                runtime_collab::ExportedResourceSemanticIdentity {
-                    kind: identity.kind.clone(),
-                    key: identity.key.clone(),
-                }
-            }),
-            action: descriptor.address.action.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource_label: descriptor.resource_label.clone(),
-            action_label: descriptor.action_label.clone(),
-            description: descriptor.description.clone(),
-            operation_kind: descriptor.kind.as_str().to_string(),
-            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
-            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
-            view: descriptor
-                .view
-                .as_ref()
-                .map(|view| runtime_collab::ExportedView {
-                    id: view.id.clone(),
-                    label: view.label.clone(),
-                    description: view.description.clone(),
-                    open_action: view.open_action.clone(),
-                    primary: view.primary,
-                    range: view
-                        .range
-                        .as_ref()
-                        .map(|range| runtime_collab::ExportedViewRange {
-                            action: range.action.clone(),
-                            start_param: range.start_param.clone(),
-                            end_param: range.end_param.clone(),
-                            unit_param: range.unit_param.clone(),
-                        }),
-                    mount: view
-                        .mount
-                        .as_ref()
-                        .map(|mount| runtime_collab::ExportedViewMount {
-                            action: mount.action.clone(),
-                            capability_param: mount.capability_param.clone(),
-                            view_param: mount.view_param.clone(),
-                        }),
-                }),
-            input: match &descriptor.input {
-                tilo_actions::InputSpec::None => runtime_collab::ExportedInput::None,
-                tilo_actions::InputSpec::Text {
-                    prompt,
-                    placeholder,
-                    collects,
-                } => runtime_collab::ExportedInput::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    wants_content: *collects == tilo_actions::Collects::Content,
-                },
-            },
+            view: None,
+            ..runtime_collab::ExportedAction::from(descriptor)
         }
     }
 
@@ -991,18 +930,18 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
-            resource_presentation_json: resource
+            presentation: resource
                 .presentation
-                .as_ref()
-                .filter(|presentation| presentation.is_valid())
-                .and_then(|presentation| serde_json::to_string(presentation).ok())
-                .unwrap_or_default(),
+                .clone()
+                .filter(tilo_actions::ResourcePresentation::is_valid),
             action: None,
             descriptor: None,
             has_children: may_descend
                 && (!resource.children.is_empty() || !resource.actions.is_empty()),
-            visibility_action: Some(visibility.address.action),
-            visibility_contract_json: serde_json::to_string(&visibility.contract).ok()?,
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: visibility.address.action,
+                contract: visibility.contract,
+            }),
         })
     }
 
@@ -1021,12 +960,14 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
-            resource_presentation_json: String::new(),
+            presentation: None,
             action: Some(action_id.to_owned()),
-            descriptor: Some(exported.clone()),
+            visibility: Some(tilo_actions::remote::RowVisibility {
+                action: action_id.to_owned(),
+                contract: exported.contract.clone(),
+            }),
+            descriptor: Some(exported),
             has_children: false,
-            visibility_action: Some(action_id.to_owned()),
-            visibility_contract_json: exported.contract_json,
         })
     }
 
@@ -1148,7 +1089,7 @@ impl App {
         let add = |row: runtime_collab::ActionDirectoryRow,
                    rows: &mut Vec<runtime_collab::ActionDirectoryRow>,
                    bytes: &mut usize| {
-            *bytes = bytes.saturating_add(directory_row_wire_bytes(&row));
+            *bytes = bytes.saturating_add(runtime_collab::action_directory_row_wire_bytes(&row));
             rows.push(row);
         };
 
@@ -1649,7 +1590,10 @@ impl App {
         let Ok(current) = self.try_action_directory_revision() else {
             return runtime_collab::ActionDirectoryResolution::Unavailable;
         };
-        if revision != current {
+        // No revision asks for the directory as it is now: a caller that
+        // names an action it already knows (an agent's) chose it from no
+        // page, and reading the revision first would cost it a round trip.
+        if !revision.is_empty() && revision != current {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
         if let Some(row) = self
@@ -4724,51 +4668,6 @@ impl App {
 /// Room for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
-
-/// An upper bound on `row`'s Cap'n Proto size, which the broker checks the
-/// page against: every text field costs its bytes, a NUL, padding to a word
-/// and an 8-byte pointer; every struct a fixed allowance for its data words,
-/// pointer and list tag.
-pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow) -> usize {
-    const STRUCT: usize = 64;
-    fn text(value: &str) -> usize {
-        value.len().saturating_add(8) / 8 * 8 + 8
-    }
-    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
-        let input = match &descriptor.input {
-            runtime_collab::ExportedInput::None => 0,
-            runtime_collab::ExportedInput::Text {
-                prompt,
-                placeholder,
-                ..
-            } => STRUCT + text(prompt) + text(placeholder),
-        };
-        STRUCT
-            + text(&descriptor.resource)
-            + descriptor.semantic_identity.as_ref().map_or(0, |identity| {
-                STRUCT + text(&identity.kind) + text(&identity.key)
-            })
-            + text(&descriptor.action)
-            + text(&descriptor.resource_kind)
-            + text(&descriptor.resource_label)
-            + text(&descriptor.action_label)
-            + text(descriptor.description.as_deref().unwrap_or(""))
-            + text(&descriptor.operation_kind)
-            + text(&descriptor.params_json)
-            + text(&descriptor.contract_json)
-            + input
-    });
-    STRUCT
-        + text(&row.parent_resource)
-        + text(&row.resource)
-        + text(&row.resource_kind)
-        + text(&row.resource_label)
-        + text(&row.resource_presentation_json)
-        + text(row.action.as_deref().unwrap_or(""))
-        + text(row.visibility_action.as_deref().unwrap_or(""))
-        + text(&row.visibility_contract_json)
-        + descriptor
-}
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and

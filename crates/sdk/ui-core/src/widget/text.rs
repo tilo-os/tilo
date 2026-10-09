@@ -870,7 +870,7 @@ impl Widget for Text {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -881,9 +881,8 @@ impl Widget for Text {
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A bound text that has nothing to say leaves its container's flow,

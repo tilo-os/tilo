@@ -142,6 +142,11 @@ fn directory_start_ticket(
 /// Poll an admission from the frame loop until it answers or `deadline`
 /// passes. Dropped once answered or given up on, so a start still waiting
 /// sees nobody wants it and does not begin after the deadline.
+///
+/// The answer arrives on the broker's thread; it wakes the loop that made
+/// the ticket ([`invocation_wake`](crate::shell::search::invocation_wake)),
+/// so an idle desktop polls it again at once instead of on its next
+/// unrelated wake.
 fn admission_ticket(
     admission: Pending<Result<(u64, InvocationReceipt), ActionHostError>>,
     deadline: Instant,
@@ -149,11 +154,14 @@ fn admission_ticket(
     timed_out: impl Fn() -> ActionError + 'static,
 ) -> PendingInvocation {
     let admission = Rc::new(RefCell::new(Some(admission)));
+    let waker = crate::shell::search::invocation_wake::waker();
     Rc::new(move || {
         let polled = admission
             .borrow_mut()
             .as_mut()
-            .map_or(PendingPoll::Abandoned, Pending::poll_ready);
+            .map_or(PendingPoll::Abandoned, |admission| {
+                crate::shell::search::invocation_wake::poll(admission, &waker)
+            });
         if !matches!(polled, PendingPoll::Waiting) || Instant::now() >= deadline {
             admission.borrow_mut().take();
         }
@@ -489,6 +497,31 @@ impl LiveAppActionsProvider {
         let mut provider = Self::new(broker.clone());
         provider.action_sessions = ActionSessionSource::fixture(broker);
         provider
+    }
+
+    /// Settles on the next change to any invocation's status after this
+    /// call. A control reply waiting for its job to settle sleeps on this
+    /// rather than polling the broker; polled with
+    /// [`invocation_wake`](crate::shell::search::invocation_wake), it wakes
+    /// the loop. `None` without a session runtime to watch from.
+    pub fn next_invocation_change(&self) -> Option<Pending<()>> {
+        // Subscribed before the caller reads the status, so a change racing
+        // that read still settles this.
+        let mut statuses = self.broker.invocation_changes();
+        let runtime = crate::session_runtime::runtime().ok()?;
+        let (signal, change) = tilo_actions::remote::pending();
+        drop(runtime.spawn(async move {
+            let moved = tokio::select! {
+                result = statuses.changed() => result.is_ok(),
+                () = signal.abandoned() => false,
+            };
+            // Otherwise the completer drops unanswered, which wakes a waiter
+            // still there all the same.
+            if moved {
+                signal.complete(());
+            }
+        }));
+        Some(change)
     }
 
     fn local_start(

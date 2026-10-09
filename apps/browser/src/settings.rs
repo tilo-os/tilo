@@ -147,10 +147,9 @@ impl Default for Settings {
 /// present the action-applied result in this window.
 pub struct SettingsPane {
     notices: Vec<crate::notice::Notice>,
-    rect: Rect,
     presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     actions: SettingsActionBindings,
     /// A device-local persistence failure supplied by Browser after a clear
     /// action. It is deliberately not a CRDT value: other collaborators
@@ -170,9 +169,8 @@ impl SettingsPane {
     pub fn with_settings(settings: &Settings) -> Self {
         Self {
             notices: Vec::new(),
-            rect: Rect::ZERO,
             presentation: SettingsPresentation::from_settings(settings),
-            composed: None,
+            composed: ui::widget::Composed::default(),
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
             private_window_request: None,
@@ -497,9 +495,10 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let child_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         let style = Style {
             display: taffy::Display::Flex,
@@ -522,16 +521,7 @@ impl Widget for SettingsPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(layout, origin);
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child_node) = children.first()
-        {
-            c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
+        self.composed.apply_layout(taffy, node, origin);
     }
 
     fn draw(
@@ -542,9 +532,8 @@ impl Widget for SettingsPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.composed
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(
@@ -552,28 +541,15 @@ impl Widget for SettingsPane {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child_node) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-        }
+        self.composed.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn name(&self) -> &'static str {
@@ -581,7 +557,7 @@ impl Widget for SettingsPane {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.composed.rect()
     }
 
     fn test_id(&self) -> Option<&str> {

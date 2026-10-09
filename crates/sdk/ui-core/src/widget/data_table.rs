@@ -3430,13 +3430,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if self.fill_height {
             // The rows scroll inside whatever height the parent gave.
             let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
