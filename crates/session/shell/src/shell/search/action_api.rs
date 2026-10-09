@@ -542,9 +542,7 @@ mod tests {
     use crate::shell::search::providers::{ActionsProvider, ApplicationsProvider};
     use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::rc::Rc;
-    use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
         let mut tree = WorkspaceTree::default();
@@ -553,7 +551,7 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = id;
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
     }
 

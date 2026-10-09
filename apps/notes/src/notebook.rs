@@ -561,6 +561,14 @@ pub(crate) fn assets_complete(
         .all(|digest| snapshot.contains_key(&format!("asset:{digest}"))))
 }
 
+/// Strictly validate the current body of an existing canonical page.
+pub(crate) fn validated_page_body(doc: &AutoCommit, id: PageId) -> Result<ObjId, String> {
+    let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
+    let page = object(doc, &pages, &id.to_string(), ObjType::Map)?;
+    validate_body(doc, &page)?;
+    object(doc, &page, "body", ObjType::Map)
+}
+
 /// A page's body: rich text.
 fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
     let body = object(doc, page, "body", ObjType::Map)?;

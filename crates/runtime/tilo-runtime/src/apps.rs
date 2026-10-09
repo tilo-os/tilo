@@ -196,11 +196,11 @@ impl Apps {
             blobs: self.root.join(BLOB_SOCKET),
         };
         #[cfg(target_os = "linux")]
-        let launch = linux::launch(self, &app, &sockets)?;
+        let mut launch = linux::launch(self, &app, &sockets)?;
         #[cfg(target_os = "macos")]
-        let launch = macos::launch(self, &app, &sockets)?;
+        let mut launch = macos::launch(self, &app, &sockets)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let launch: Launch = {
+        let mut launch: Launch = {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
@@ -209,6 +209,13 @@ impl Apps {
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
             ));
+        }
+        // Only now may the launcher go on and connect: the broker attests it
+        // once, against the record just made.
+        if let Err(error) = launch.release_registration() {
+            self.launched.forget(launch.pid);
+            launch.kill();
+            return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
         Ok(launch)
     }
@@ -275,11 +282,25 @@ pub struct Launch {
     pid: u32,
     #[cfg(target_os = "linux")]
     child: std::process::Child,
+    /// Holds the launcher before it connects anywhere until the launch is
+    /// recorded; `None` once released.
+    #[cfg(target_os = "linux")]
+    registration: Option<launcher::registration_gate::RegistrationGate>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
 }
 
 impl Launch {
+    /// Let a launcher held at its registration gate go on. Call once the
+    /// launch is recorded for attestation.
+    fn release_registration(&mut self) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some(gate) = self.registration.take() {
+            return gate.release();
+        }
+        Ok(())
+    }
+
     /// Wait for the process to exit; its exit code, when it exited normally.
     pub fn wait(self) -> Option<i32> {
         #[cfg(target_os = "linux")]

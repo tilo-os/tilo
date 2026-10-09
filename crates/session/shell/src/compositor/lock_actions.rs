@@ -66,11 +66,13 @@ pub(super) fn dispatch(
         Command::ActionsEnumerate { query, .. } if locked => Some(Response::Answer(
             console_control::enumerate(PROVIDER, &resources(locked, lock), query),
         )),
+        // Answered at once, so there is nothing for `wait_ms` to wait for.
         Command::ActionsInvoke {
             provider,
             id,
             args,
             device: None,
+            wait_ms: _,
         } if provider == PROVIDER => {
             let admitted =
                 console_control::admit(PROVIDER, &resources(locked, lock), provider, id, args);
@@ -122,6 +124,7 @@ mod tests {
             id: "unlock@session-lock".into(),
             args: json!({"password":password}).as_object().unwrap().clone(),
             device: None,
+            wait_ms: None,
         }
     }
 

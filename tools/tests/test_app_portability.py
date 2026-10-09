@@ -25,7 +25,7 @@ class AppPortabilityTests(unittest.TestCase):
         self.write(
             "Cargo.toml",
             '[workspace]\nmembers = ["apps/*"]\n\n[workspace.dependencies]\n'
-            'serde = "1"\ntilo-xdg-paths = { path = "crates/system/xdg-paths" }\n',
+            'serde = "1"\nprivate-fs = { path = "crates/system/private-fs" }\n',
         )
 
     def write(self, relative: str, text: str) -> Path:
@@ -139,12 +139,12 @@ class AppPortabilityTests(unittest.TestCase):
         self.assertEqual([f.line for f in self.findings() if f.rule == "R4"], [2, 4])
 
     def test_dependencies_are_d1_and_d2_but_dev_dependencies_and_the_sdk_are_not(self):
-        self.write("crates/system/xdg-paths/Cargo.toml", '[package]\nname = "tilo-xdg-paths"\n')
+        self.write("crates/system/private-fs/Cargo.toml", '[package]\nname = "private-fs"\n')
         self.app(
             "backups",
             dependencies=UI
             + 'libc = "0.2"\n'
-            + "tilo-xdg-paths.workspace = true\n"
+            + "private-fs.workspace = true\n"
             + 'tilo-actions = { path = "../../crates/collab/actions" }\n'
             + 'tilo-files = { path = "../../crates/platform/tilo-files" }\n'
             + 'windows-sys = "0.59"\n',
@@ -154,11 +154,11 @@ class AppPortabilityTests(unittest.TestCase):
         found = self.findings()
         self.assertEqual(
             sorted(f.what for f in found if f.rule == "D1"),
-            ["depends on `libc`", "depends on `tilo-xdg-paths`", "depends on `windows-sys`"],
+            ["depends on `libc`", "depends on `private-fs`", "depends on `windows-sys`"],
         )
         self.assertEqual(
             sorted(f.what.split("`")[1] for f in found if f.rule == "D2"),
-            ["tilo-actions", "tilo-xdg-paths"],
+            ["private-fs", "tilo-actions"],
         )
 
     def test_sdk_backend_features_are_f1(self):

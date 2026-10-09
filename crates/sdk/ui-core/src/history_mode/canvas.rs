@@ -98,13 +98,7 @@ impl Widget for PreviewCanvas {
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = tree.layout(node).copied().unwrap_or_default();
-        let rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        let rect = crate::widget::placed(&layout, origin);
         if self.rect != rect {
             self.rect = rect;
             self.dirty = true;

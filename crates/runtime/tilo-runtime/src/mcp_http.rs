@@ -314,7 +314,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             ViewerCall::Issue => viewer.issue(&body),
             ViewerCall::Revoke(id) => viewer.revoke(&id),
             ViewerCall::Role(id) => viewer.set_role(&id, &body),
-            ViewerCall::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
+            ViewerCall::Renew(id) => viewer.renew(&id, &body, tilo_clock::unix_now_ms()),
         })
         .await;
         match result {

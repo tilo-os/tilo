@@ -289,7 +289,7 @@ impl SessionOwnership {
             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
         Self {
             owner_key: root.join("user-identity/pubkey.bin"),
-            registry: xdg_paths::xdg::config_home()
+            registry: tilo_paths::xdg::config_home()
                 .filter(|dir| dir.is_absolute())
                 .map(|config| config.join("tilo/identity/registry.json")),
         }

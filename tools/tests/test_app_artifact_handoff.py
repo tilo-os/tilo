@@ -31,6 +31,8 @@ class AppArtifactHandoffTests(unittest.TestCase):
         for relative in (
             "dist/apps/package-apps.sh", "dist/apps/assemble-collection.sh",
             "os/scripts/bake-runtime-bundle.sh", "tools/apps/app_release.py",
+            "os/scripts/collect-runtime-dependencies.py",
+            "os/scripts/verify-runtime-bundle-closure.sh",
             "os/scripts/stamp-runtime.sh", "tools/apps/pack-runtime-package.sh",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
@@ -51,8 +53,47 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
     log.write(json.dumps({'args': sys.argv[1:], 'flags': actual}) + '\\n')
 """)
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
+        self.write("tools/font-catalog.py", """#!/usr/bin/env python3
+import os, pathlib, sys
+a = sys.argv[1:]
+assert a[-2:] == ['--scope', 'product']
+if a[0] == 'prepare':
+    if os.environ.get('FIXTURE_INVALID_FONTS'):
+        raise SystemExit('invalid product font catalog')
+    out = pathlib.Path(a[2]); out.mkdir(parents=True)
+    (out/'manifest.toml').write_text('fixture product manifest')
+    (out/'fixture.ttf').write_bytes(b'product font payload')
+elif a[0] == 'verify':
+    root = pathlib.Path(a[1])
+    assert (root/'manifest.toml').read_text() == 'fixture product manifest'
+    assert (root/'fixture.ttf').read_bytes() == b'product font payload'
+else:
+    raise SystemExit('unexpected font fixture invocation')
+""")
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
-        self.write("stdlib/libstd-fixture.so", "fixture standard library")
+        self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
+        self.write("native/libc.so.6", "\x7fELF fixture native dependency")
+        self.write("keyboard/libxkbcommon.so.0", "\x7fELF fixture default keyboard library")
+        self.write("bin/pkg-config", """#!/usr/bin/env python3
+import pathlib, sys
+assert sys.argv[1:] == ['--variable=libdir', 'xkbcommon']
+print(pathlib.Path('keyboard').resolve())
+""")
+        self.write("bin/ldd", """#!/usr/bin/env python3
+import pathlib, sys
+dependency = pathlib.Path('native/libc.so.6').resolve()
+for object in sys.argv[1:]:
+    assert pathlib.Path(object).is_file()
+    print(f'{object}:')
+    print(f'libc.so.6 => {dependency} (0x1000)')
+""")
+        self.write("bin/readelf", """#!/usr/bin/env python3
+import pathlib, sys
+object = pathlib.Path(sys.argv[-1])
+assert object.read_bytes().startswith(b'\\x7fELF')
+if object.name != 'libc.so.6':
+    print(' 0x0000000000000001 (NEEDED) Shared library: [libc.so.6]')
+""")
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
 [[ "$BUILD_PACKAGES" == calculator ]]
@@ -67,11 +108,11 @@ header[18:20] = (62 if os.environ['FIXTURE_ARCH'] == 'x86_64' else 183).to_bytes
 pathlib.Path('target/thin-app/calculator').write_bytes(header)
 ELF
 chmod +x target/thin-app/calculator
-printf 'fixture runtime dylib' > target/thin-app/libruntime_dylib.so
+printf '\\177ELF fixture runtime dylib' > target/thin-app/libruntime_dylib.so
 """)
         self.write("os/scripts/verify-elf-hardening.sh", "#!/bin/bash\nset -euo pipefail\nfor f; do test -x \"$f\"; done\n")
         self.write("target/release/tilo-runtime-bundle", """#!/usr/bin/env python3
-import pathlib, sys
+import pathlib, shutil, sys
 a = sys.argv[1:]
 if a[:2] == ['key', 'generate']:
     pathlib.Path(a[a.index('--out')+1]).write_text('PRIVATE_TEST_IDENTITY')
@@ -83,6 +124,13 @@ elif a[0] == 'build':
     arch = a[a.index('--arch')+1]
     (out/'bundle.toml').write_text(f'version = "{version}"\\narch = "{arch}"\\nroot_hash = "'+'cd'*32+'"\\n')
     (out/'lib').mkdir(); (out/'lib/runtime.so').write_bytes(b'runtime payload')
+    for index, argument in enumerate(a):
+        if argument == '--include':
+            source = pathlib.Path(a[index+1])
+            if source.is_dir():
+                shutil.copytree(source, out/'lib'/source.name)
+            else:
+                shutil.copyfile(source, out/'lib'/source.name)
     pathlib.Path(a[a.index('--version-out')+1]).write_text(version + '\\n')
 elif a[0] == 'verify':
     assert (pathlib.Path(a[1])/'bundle.toml').is_file()
@@ -259,6 +307,8 @@ exit 99
                     abi = "2026.07+native." + "ab" * 16
                     self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "bundle.toml").is_file(),
                                     "workflow did not transport the produced runtime")
+                    self.assertTrue((artifact / "runtime/tilo-runtime" / abi / "lib/libxkbcommon.so.0").is_file(),
+                                    "a partial calculator release omitted the default SDK keyboard dependency")
                     self.assertTrue((artifact / f"runtime-package/runtime-0.1.0-{architecture}.tapp").is_file(),
                                     "workflow did not transport the runtime package")
                     self.assertTrue(list((artifact / "runtime-package").glob("*.blob")),
@@ -293,6 +343,56 @@ exit 99
                     with tarfile.open(out / f"tilo-apps-{architecture}.tar.gz") as bundle:
                         self.assertIn("runtime/runtime-bundle-publisher.hex", bundle.getnames())
                         self.assertNotIn("work", bundle.getnames())
+
+    def test_missing_signed_native_dependency_fails_before_app_pack(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        tool = self.root / "target/release/tilo-runtime-bundle"
+        tool.write_text(tool.read_text().replace(
+            "shutil.copyfile(source, out/'lib'/source.name)",
+            "if source.name != 'libc.so.6': shutil.copyfile(source, out/'lib'/source.name)"))
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signed runtime is missing libc.so.6", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+
+    def test_missing_default_keyboard_library_fails_even_for_partial_selection(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        (self.root / "keyboard/libxkbcommon.so.0").unlink()
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("default SDK keyboard library is missing", result.stderr)
+        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
+
+    def test_partial_release_carries_its_verified_sdk_fonts(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(architecture=arch):
+                self.env['FIXTURE_ARCH'] = arch
+                self.command('bash', 'dist/apps/package-apps.sh')
+                fonts = next((self.root / 'dist/app-release/runtime/tilo-runtime').glob('*/lib/fonts'))
+                self.assertEqual((fonts / 'fixture.ttf').read_bytes(), b'product font payload')
+                with tarfile.open(self.root / f'dist/app-release/tilo-apps-{arch}.tar.gz') as archive:
+                    self.assertTrue(any(name.endswith('/lib/fonts/fixture.ttf') for name in archive.getnames()))
+
+    def test_invalid_product_fonts_stop_before_signing_app_packages(self):
+        self.env.update(FIXTURE_ARCH='aarch64', FIXTURE_INVALID_FONTS='1')
+        result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid product font catalog', result.stderr)
+        self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))
+
+    def test_dropped_product_fonts_stop_before_signing_app_packages(self):
+        self.env['FIXTURE_ARCH'] = 'aarch64'
+        tool = self.root / 'target/release/tilo-runtime-bundle'
+        tool.write_text(tool.read_text().replace(
+            "shutil.copytree(source, out/'lib'/source.name)", 'pass'))
+        result = subprocess.run(['bash', 'dist/apps/package-apps.sh'], cwd=self.root,
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('signed SDK is missing its verified product font catalog', result.stderr)
+        self.assertFalse(list((self.root / 'dist/app-release/tapp').glob('*.tapp')))
 
 
 if __name__ == "__main__":

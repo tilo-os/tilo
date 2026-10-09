@@ -28,7 +28,8 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 grep -Fqx 'Wants=tilo-ush.service' "$target"
 for socket in \
   "$repo/os/usr/lib/systemd/user/tilo-models.socket" \
-  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"; do
+  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket" \
+  "$repo/os/usr/lib/systemd/user/tilo-projector.socket"; do
   grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
@@ -174,6 +175,18 @@ if [ "${1:-}" = --provision-identity ]; then
   printf 'provision\n' >>"$TILO_SESSION_TEST_LOG"
   exit "${TILO_SESSION_PROVISION_STATUS:-0}"
 fi
+# Exercise the wrapper's path contract with a create_new writer, like shell.
+if [ -n "${TILO_FRAME_CPU_TRACE:-}" ]; then
+  python3 - "$TILO_FRAME_CPU_TRACE" <<'PYTHON'
+import os, sys
+path = sys.argv[1]
+fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+os.close(fd)
+assert os.stat(os.path.dirname(path)).st_mode & 0o777 == 0o700
+assert os.stat(path).st_mode & 0o777 == 0o600
+PYTHON
+fi
+printf '%s\n' "${TILO_FRAME_CPU_TRACE:-disabled}" >>"$TILO_SESSION_TEST_LOG.cpu-paths"
 printf 'desktop %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
 runs_file="$TILO_SESSION_TEST_LOG.runs"
 runs=0
@@ -228,11 +241,13 @@ grep -Fqx "readonly SHELL_BIN=$fake_shell" "$test_wrapper"
 export XDG_STATE_HOME="$tmp/state"
 flight_dir="$XDG_STATE_HOME/tilo/session-logs"
 set +e
-XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_DESKTOP_STATUS=7 \
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_DESKTOP_STATUS=7 TILO_FRAME_CPU_TRACE=/stale/untrusted \
   "$test_wrapper" --backend drm >"$tmp/stdout"
 status=$?
 set -e
 [ "$status" = 7 ]
+grep -Fqx disabled "$log.cpu-paths"
+[ ! -e "$flight_dir/frame-cpu-path" ]
 # The compositor's output still reaches the journal (the wrapper's stdout),
 # and the flight record keeps it with a start and an end record.
 grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$tmp/stdout"
@@ -388,11 +403,11 @@ grep -Fqx 'desktop-term' "$log"
 # restarted run's record becomes previous.log. The second compositor exiting
 # by itself ends the session: only a requested restart starts another.
 : >"$log"
-rm -f "$log.runs" "$log.holding"
+rm -f "$log.runs" "$log.holding" "$log.cpu-paths"
 restart_state="$tmp/restart-state"
 rm -f "$log.recovery"
 XDG_STATE_HOME="$restart_state" XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" \
-  TILO_SESSION_HOLD_FIRST=1 TILO_SESSION_DESKTOP_STATUS=7 \
+  TILO_SESSION_HOLD_FIRST=1 TILO_SESSION_DESKTOP_STATUS=7 TILO_VM_FRAME_CPU_TRACE=1 \
   "$test_wrapper" --backend drm >/dev/null &
 session_pid=$!
 # The signal goes to the wrapper alone (timeout(1) would pass it on to the
@@ -425,6 +440,16 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 EOF
 cmp "$tmp/expected" "$log"
 restart_dir="$restart_state/tilo/session-logs"
+[ "$(wc -l <"$log.cpu-paths")" = 2 ]
+[ "$(sort -u "$log.cpu-paths" | wc -l)" = 2 ]
+[ "$(cat "$restart_dir/frame-cpu-path")" = "$(tail -n 1 "$log.cpu-paths")" ]
+[ "$(stat -c %a "$restart_dir/frame-cpu-path")" = 600 ]
+while IFS= read -r cpu_path; do
+  [ -f "$cpu_path" ]
+  [ "$(stat -c %a "$cpu_path")" = 600 ]
+  [ "$(stat -c %a "$(dirname "$cpu_path")")" = 700 ]
+done <"$log.cpu-paths"
+
 tail -n 1 "$restart_dir/previous.log" \
   | grep -Eq '^tilo-flight-record-v1 end=.* status=0 logout_request=no restart_request=yes$'
 head -n 1 "$restart_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='

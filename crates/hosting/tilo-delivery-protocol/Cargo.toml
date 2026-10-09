@@ -8,7 +8,8 @@ license = "MIT OR Apache-2.0"
 
 # Browsers, the action broker and both hosts speak these records without
 # linking the relay daemon. Keep this crate wasm-clean: no filesystem, process,
-# endpoint or runtime dependencies. The Iroh join transport stays in `tilo-relay`.
+# endpoint or runtime dependencies. The Iroh join transport is in
+# `tilo-relay-session` (client) and `tilo-relay` (host).
 [package.metadata.cargo-machete]
 # getrandom 0.3 is a feature-only edge that selects JS entropy for transitive
 # WASM cryptography.

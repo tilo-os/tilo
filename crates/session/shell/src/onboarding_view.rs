@@ -9,11 +9,13 @@
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
-//! On a Tilo system that has not opted in yet, setup also offers the media
-//! codecs pack after the backup step ([`CodecSetup`]). It is an explicit
-//! opt-in (a button, nothing pre-selected), runs through the same polkit-
-//! allowed unit as Settings, and never blocks setup: the download continues in
-//! the background and the result arrives as a notification.
+//! On a Tilo system that has not opted in yet, setup also offers to play more
+//! video and audio formats after the backup step ([`CodecSetup`]): a page
+//! with one large Install button that downloads the media codecs extension
+//! only when pressed; nothing is chosen in advance. It runs
+//! through the same polkit-allowed unit as Settings and never blocks setup:
+//! the download continues in the background and the result arrives as a
+//! notification.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -72,6 +74,11 @@ const INTRO_PANEL_HEIGHT: f32 = 520.0;
 /// on ordinary laptop displays; the inner viewport still scrolls when large
 /// text or a short window cannot fit that content.
 const READY_PANEL_PREFERRED_HEIGHT: f32 = 552.0;
+/// The formats step is a full page like the hand-off: a title, a line and one
+/// large Install button; its results add a banner and a progress bar. One
+/// height for all of them, so choosing does not make the card jump.
+const CODECS_PANEL_PREFERRED_HEIGHT: f32 = READY_PANEL_PREFERRED_HEIGHT;
+/// The formats step's Install button: the page's single, deliberate action.
 const VIEWPORT_GUTTER: f32 = 24.0;
 /// A 40 px action plus the footer's 17 px bottom inset. The gap above the
 /// footer belongs to the parent column and must not be reserved twice; doing
@@ -317,25 +324,11 @@ pub fn codecs_title() -> String {
     t("onboarding-codecs-title")
 }
 
+/// The one short line under the offer: where the formats come from, and that
+/// the choice can be undone.
 #[must_use]
-pub fn codecs_body() -> String {
-    t("onboarding-codecs-body")
-}
-
-/// What the pack enables, in the owner's terms.
-#[must_use]
-pub fn codecs_enables() -> Vec<String> {
-    vec![
-        t("onboarding-codecs-enables-hardware"),
-        t("onboarding-codecs-enables-playback"),
-        t("onboarding-codecs-enables-encoding"),
-    ]
-}
-
-/// Where it comes from, and what Tilo does not do.
-#[must_use]
-pub fn codecs_source() -> String {
-    t("onboarding-codecs-source")
+pub fn codecs_note() -> String {
+    t("onboarding-codecs-note")
 }
 
 #[must_use]
@@ -968,9 +961,7 @@ impl OnboardingView {
 
     /// The media codecs page's text, in reading order (headless tests).
     pub fn codec_page_lines(&self) -> Vec<String> {
-        let mut lines = vec![codecs_title(), codecs_body()];
-        lines.extend(codecs_enables());
-        lines.push(codecs_source());
+        let mut lines = vec![codecs_title(), codecs_note()];
         if let Some((title, message)) = self.codec_outcome() {
             lines.push(title);
             lines.extend(message);
@@ -981,11 +972,10 @@ impl OnboardingView {
                 &[("percent", format!("{:.0}", fraction * 100.0).into())],
             ));
         }
-        lines.extend(
-            self.codec_page_buttons()
-                .into_iter()
-                .map(|(_, label, _, _)| label),
-        );
+        match self.codec_choice() {
+            Some(choice) => lines.extend(choice.into_iter().map(|(_, label, _)| label)),
+            None => lines.push(t("onboarding-continue")),
+        }
         lines
     }
 
@@ -1052,47 +1042,41 @@ impl OnboardingView {
         }
     }
 
-    /// (id, label, key, primary) of the page's footer actions.
-    fn codec_page_buttons(&self) -> Vec<(&'static str, String, &'static str, bool)> {
+    /// The page's own choice while nothing runs: (id, label, key) of the
+    /// one large Install (or Try again) button, then the quiet way past it.
+    /// `None` once a request is underway or done; the footer then offers
+    /// Continue.
+    fn codec_choice(&self) -> Option<[(&'static str, String, &'static str); 2]> {
         let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
         if failed && self.codec_running.is_none() {
-            return vec![
-                (
-                    "onboarding.codecs.skip.button",
-                    t("onboarding-codecs-skip"),
-                    KEY_CODECS_SKIP,
-                    false,
-                ),
+            return Some([
                 (
                     "onboarding.codecs.install.button",
                     t("onboarding-codecs-retry"),
                     KEY_CODECS_INSTALL,
-                    true,
                 ),
-            ];
+                (
+                    "onboarding.codecs.skip.button",
+                    t("onboarding-codecs-skip"),
+                    KEY_CODECS_SKIP,
+                ),
+            ]);
         }
         if self.codec_install_requested() {
-            return vec![(
-                "onboarding.codecs.continue.button",
-                t("onboarding-continue"),
-                KEY_CODECS_CONTINUE,
-                true,
-            )];
+            return None;
         }
-        vec![
-            (
-                "onboarding.codecs.skip.button",
-                t("onboarding-codecs-not-now"),
-                KEY_CODECS_SKIP,
-                false,
-            ),
+        Some([
             (
                 "onboarding.codecs.install.button",
                 t("onboarding-codecs-install"),
                 KEY_CODECS_INSTALL,
-                true,
             ),
-        ]
+            (
+                "onboarding.codecs.skip.button",
+                t("onboarding-codecs-not-now"),
+                KEY_CODECS_SKIP,
+            ),
+        ])
     }
 
     fn start_codec_install(&mut self) {
@@ -1458,16 +1442,16 @@ impl OnboardingView {
                 self.codec_page = true;
                 self.codec_status = CodecPackStatus::parse(match state {
                     OnboardingVisualState::CodecsInstalling => {
-                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#
+                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":14000000,"total":38000000}}"#
                     }
                     OnboardingVisualState::CodecsWaitingForNetwork => {
                         r#"{"state":"waiting-for-network","desired":true}"#
                     }
                     OnboardingVisualState::CodecsInstalled => {
-                        r#"{"state":"installed","mesa":"enabled","desired":true}"#
+                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#
                     }
                     OnboardingVisualState::CodecsFailed => {
-                        r#"{"state":"failed","desired":true,"last_error":"rpmfusion-free: could not download repository metadata (connection reset)."}"#
+                        r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
                     }
                     _ => r#"{"state":"not-installed"}"#,
                 });
@@ -2579,28 +2563,55 @@ impl OnboardingView {
         Box::new(page)
     }
 
-    /// The media codecs offer: what it enables, where it comes from, and the
-    /// live result once the owner chose to install.
+    /// The offer to play more formats: a centred title and one short line
+    /// over a single large Install button, with a quiet way past it. Nothing
+    /// is chosen until the person presses Install; once they did, the live
+    /// result takes the button's place.
     fn codecs(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let enables = fact_list(
-            [
-                ui::icons::Icon::Monitor,
-                ui::icons::Icon::Play,
-                ui::icons::Icon::Camera,
-            ]
-            .into_iter()
-            .zip(codecs_enables()),
-            theme,
-        );
-        // Once the owner chose, the live result leads the page, above the
-        // explanation, so it is visible without scrolling at every size.
+        let centred = |widget: Box<dyn Widget>| -> Box<dyn Widget> {
+            Box::new(
+                Row::new()
+                    .with_padding(0.0, 0.0)
+                    .no_wrap()
+                    .push(Box::new(Spacer::new()))
+                    .push(widget)
+                    .push(Box::new(Spacer::new())),
+            )
+        };
+        let outcome = self.codec_outcome();
+        // The bare offer sits in the middle of the page; a result needs the
+        // room for its banner.
+        let top = if outcome.is_some() {
+            spacing.s2
+        } else if theme.text_scale > 1.0 {
+            spacing.s6
+        } else {
+            spacing.s8 * 2.0
+        };
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
+            .with_extra_top_padding(top)
             .with_gap(spacing.s4)
-            .push(heading(&codecs_title(), theme));
-        if let Some((title, message)) = self.codec_outcome() {
+            .push(centred(Box::new(
+                ui::widget::IconWidget::new(ui::icons::Icon::Film)
+                    .sized(ui::widget::IconSize::Large)
+                    .accent(),
+            )))
+            .push(Box::new(
+                Text::new(&codecs_title())
+                    .with_role(ui::tokens::typography::TextRole::Display)
+                    .with_align(ui::ParagraphAlign::Center),
+            ))
+            .push(Box::new(
+                Text::new(&codecs_note())
+                    .with_id("onboarding.codecs.note")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_align(ui::ParagraphAlign::Center),
+            ));
+        if let Some((title, message)) = outcome {
             let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
             let banner = match self.codec_status.state {
                 _ if failed => Banner::error(title),
@@ -2619,44 +2630,47 @@ impl OnboardingView {
                 ProgressBar::new(fraction).with_label(t("onboarding-codecs-installing-title")),
             ));
         }
-        page = page
-            .push(paragraph_with_id(
-                &codecs_body(),
-                theme,
-                "onboarding.codecs.body",
-            ))
-            .push(Box::new(Section::titled(
-                t("onboarding-codecs-enables-title"),
-                vec![enables],
-            )))
-            .push(Box::new(Section::titled(
-                t("onboarding-codecs-source-title"),
-                vec![paragraph_with_id(
-                    &codecs_source(),
-                    theme,
-                    "onboarding.codecs.source",
-                )],
-            )));
+        if let Some([(id, label, key), (quiet_id, quiet_label, quiet_key)]) = self.codec_choice() {
+            // The one way in is this button. It holds keyboard focus so
+            // Enter is the same deliberate press; it starts the download and
+            // never moves past the page by itself.
+            let install = self
+                .pressed
+                .button(id, &label, key)
+                .control_size(ui::widget::ControlSize::Large)
+                .with_icon(ui::icons::Icon::Download)
+                .role(ButtonRole::Primary)
+                .with_default_focus();
+            let skip = self
+                .pressed
+                .button(quiet_id, &quiet_label, quiet_key)
+                .role(ButtonRole::Plain);
+            if self.codec_outcome().is_none() {
+                page = page.push(Box::new(Spacer::fixed(spacing.s2)));
+            }
+            page = page
+                .push(centred(Box::new(install)))
+                .push(centred(Box::new(skip)));
+        }
         Box::new(page)
     }
 
     fn codec_actions(&self) -> Box<dyn Widget> {
-        footer_actions(
-            self.codec_page_buttons()
-                .into_iter()
-                .map(|(id, label, key, primary)| {
-                    let button = self.pressed.button(id, &label, key);
-                    let button = if primary {
-                        button
-                            .with_icon(ui::icons::Icon::ArrowRight)
-                            .role(ButtonRole::Primary)
-                    } else {
-                        button
-                    };
-                    Box::new(button) as Box<dyn Widget>
-                })
-                .collect(),
-        )
+        if self.codec_choice().is_some() {
+            return footer_actions(Vec::new());
+        }
+        footer_actions(vec![Box::new(
+            self.pressed
+                .button(
+                    "onboarding.codecs.continue.button",
+                    &t("onboarding-continue"),
+                    KEY_CODECS_CONTINUE,
+                )
+                .control_size(ui::widget::ControlSize::Large)
+                .with_icon(ui::icons::Icon::ArrowRight)
+                .role(ButtonRole::Primary)
+                .with_default_focus(),
+        )])
     }
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
@@ -3591,6 +3605,7 @@ impl Widget for OnboardingView {
         // The introduction's pinned cards take a fixed share of the panel, so
         // it keeps one stable height instead of measuring its explanation.
         let intro_page = self.tour_page.is_none() && self.flow.screen() == Screen::Intro;
+        let codecs_page = ready_identity_page && self.codec_page;
         let dense_identity_page = self.tour_page.is_none()
             && (accessibility_expanded
                 || matches!(
@@ -3606,6 +3621,8 @@ impl Widget for OnboardingView {
             ACCESSIBLE_PANEL_HEIGHT
         } else if dense_identity_page {
             DENSE_PANEL_PREFERRED_HEIGHT
+        } else if codecs_page {
+            CODECS_PANEL_PREFERRED_HEIGHT
         } else if ready_identity_page {
             READY_PANEL_PREFERRED_HEIGHT
         } else {
@@ -3627,6 +3644,8 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(ACCESSIBLE_PANEL_HEIGHT)
             } else if dense_identity_page {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
+            } else if codecs_page {
+                taffy::Dimension::length(CODECS_PANEL_PREFERRED_HEIGHT)
             } else if ready_identity_page {
                 taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
             } else if intro_page {
@@ -5436,6 +5455,17 @@ mod tests {
         let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    /// The label of the control a focus reset lands on.
+    fn default_focus_label(view: &OnboardingView) -> Option<String> {
+        fn find(widget: &dyn Widget) -> Option<String> {
+            if widget.is_default_keyboard_focus() {
+                return widget.accessibility().and_then(|node| node.name);
+            }
+            widget.children().into_iter().find_map(find)
+        }
+        view.composed.as_deref().and_then(find)
+    }
+
     fn stage_label(view: &OnboardingView) -> Option<String> {
         view.composed
             .as_deref()
@@ -5444,7 +5474,7 @@ mod tests {
     }
 
     #[test]
-    fn the_codecs_step_explains_the_choice_and_nothing_is_preselected() {
+    fn the_codecs_step_is_one_install_button_with_nothing_chosen() {
         let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
         let (view, _) = view();
         let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
@@ -5454,30 +5484,26 @@ mod tests {
         layout(&mut view);
         assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5"));
         let lines = view.codec_page_lines();
-        for needle in [
-            "AMD and Intel",
-            "screen sharing, recording and calls",
-            "RPM Fusion",
-            "Cisco (OpenH264)",
-            "Tilo does not host or distribute them",
-            "OpenH264 Video Codec provided by Cisco Systems, Inc.",
-            "https://www.openh264.org/BINARY_LICENSE.txt",
-        ] {
-            assert!(
-                lines.iter().any(|line| line.contains(needle)),
-                "{needle}: {lines:?}"
-            );
-        }
-        let source = accessibility_for_id(
+        let note = accessibility_for_id(
             view.composed.as_deref().expect("rendered codecs page"),
-            "onboarding.codecs.source",
+            "onboarding.codecs.note",
         )
-        .expect("codec licensing explanation must be accessible");
-        assert_eq!(source.name.as_deref(), Some(codecs_source().as_str()));
+        .expect("the formats source explanation must be accessible");
+        assert_eq!(note.name.as_deref(), Some(codecs_note().as_str()));
         assert_eq!(
-            &lines[lines.len() - 2..],
-            ["Not now", "Install media codecs"],
-            "an explicit button, not a pre-ticked box"
+            lines,
+            [
+                "Play more video and audio formats",
+                "Downloaded to this device from the formats' publishers. You can turn it off in Settings.",
+                "Install",
+                "Not now",
+            ],
+            "a title, one short line, the Install button and a way past it; no essay"
+        );
+        assert_eq!(
+            default_focus_label(&view).as_deref(),
+            Some("Install"),
+            "Enter is the same deliberate press as clicking Install"
         );
         assert!(fake.runs().is_empty(), "reaching the step installs nothing");
         // The step blocks neither the tour nor finishing only by accident:
@@ -5493,7 +5519,7 @@ mod tests {
         let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
         let (view, _) = view();
         let mut view = view.with_codec_setup(fake.setup(
-            r#"{"state":"installed","mesa":"enabled","desired":true}"#,
+            r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#,
             Ok(()),
         ));
         let mut doc = AutoCommit::new();
@@ -5503,14 +5529,18 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         assert_eq!(fake.runs(), vec![CodecAction::Install]);
+        assert!(
+            view.codec_page_visible(),
+            "Install never moves past the page by itself"
+        );
         assert_eq!(view.codec_status().state, PackState::Installed);
         layout(&mut view);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs installed".to_string()));
+        assert!(lines.contains(&"More video and audio formats are on".to_string()));
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("sign out and back in")),
+                .any(|line| line.contains("Sign out and back in")),
             "{lines:?}"
         );
         assert_eq!(lines.last().map(String::as_str), Some("Continue"));
@@ -5553,7 +5583,7 @@ mod tests {
         let mut view = view.with_codec_setup(CodecSetup::with(
             Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
             Arc::new(move |_| {
-                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#.to_string();
+                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#.to_string();
                 let _ = started_tx.lock().unwrap().send(());
                 let _ = gate.lock().unwrap().recv();
                 Ok(())
@@ -5580,7 +5610,7 @@ mod tests {
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
         assert_eq!(view.codec_status().state, PackState::Installing);
-        assert!(lines.contains(&"Installing media codecs".to_string()));
+        assert!(lines.contains(&"Installing more formats".to_string()));
         assert!(lines.contains(&"Progress: 29%".to_string()), "{lines:?}");
         assert!(
             lines.iter().any(|line| line.contains("Setup can continue")),
@@ -5613,7 +5643,7 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs will install once you are online".to_string()));
+        assert!(lines.contains(&"Installs once you are online".to_string()));
         assert!(
             lines
                 .iter()
@@ -5638,9 +5668,9 @@ mod tests {
         view.wait_for_codec_install();
         view.sync(&doc, &automerge::ROOT);
         let lines = view.codec_page_lines();
-        assert!(lines.contains(&"Media codecs could not be installed".to_string()));
+        assert!(lines.contains(&"Could not install more formats".to_string()));
         assert!(lines.contains(&"Access denied: not an administrator".to_string()));
-        assert_eq!(&lines[lines.len() - 2..], ["Skip", "Try again"]);
+        assert_eq!(&lines[lines.len() - 2..], ["Try again", "Skip"]);
         layout(&mut view);
         press(&view, &mut doc, KEY_CODECS_INSTALL);
         view.sync(&doc, &automerge::ROOT);

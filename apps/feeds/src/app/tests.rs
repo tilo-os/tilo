@@ -279,6 +279,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             feed_id,
             title: None,
             articles: vec![fresh.clone()],
+            certificate_pin: None,
         })
         .unwrap();
         assert!(a.core_mut().drain_fetches_live());
@@ -312,6 +313,40 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         );
     }
 
+    // --- phase: a feed pins the certificate of its first fetch, and only that ---
+    {
+        let mut a = app();
+        let mut doc = synced(&mut a);
+        let (worker, tx) = FetchWorker::for_test();
+        a.core_mut().worker = Some(worker);
+        let feed_id = a.core().store.feeds[0].id;
+        assert_eq!(a.core().store.feeds[0].certificate_pin, None);
+        for presented in ["first", "impostor"] {
+            tx.send(FetchResult::Articles {
+                feed_id,
+                title: None,
+                articles: vec![],
+                certificate_pin: Some(presented.into()),
+            })
+            .unwrap();
+            a.core_mut().drain_fetches_live();
+        }
+        a.core_mut()
+            .flush_doc_writes(&mut ui::widget::Edits::lend(&mut doc));
+        let pinned = |feeds: &[Feed]| {
+            feeds
+                .iter()
+                .find(|f| f.id == feed_id)
+                .and_then(|f| f.certificate_pin.clone())
+        };
+        assert_eq!(pinned(&a.core().store.feeds).as_deref(), Some("first"));
+        assert_eq!(
+            pinned(&FeedsDoc::load(&doc).feeds).as_deref(),
+            Some("first"),
+            "the pin syncs with the subscription"
+        );
+    }
+
     // --- phase: a large batch persists at most FLUSH_BUDGET writes a frame ---
     {
         let mut a = app();
@@ -338,6 +373,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
                 feed_id: *fid,
                 title: None,
                 articles,
+                certificate_pin: None,
             })
             .unwrap();
         }
@@ -375,6 +411,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
                     feed_id: f.id,
                     title: None,
                     articles: vec![],
+                    certificate_pin: None,
                 }
             } else {
                 FetchResult::Failed {

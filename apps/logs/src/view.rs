@@ -157,6 +157,7 @@ fn journal_table() -> DataTable<JournalRow> {
             .with_text(|row: &JournalRow| row.unit.clone())
             .priority(1),
         ColumnDef::new("message", "Message", ColumnWidth::Flex(1.0))
+            .min_width(240.0)
             .with_text(|row: &JournalRow| row.message.clone()),
     ];
     DataTable::new(columns)

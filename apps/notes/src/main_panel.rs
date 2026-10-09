@@ -1324,12 +1324,7 @@ impl Widget for MainPanel {
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
-        let new_rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let new_rect = ui::widget::placed(layout, origin);
         if (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
             || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON
         {
@@ -1511,10 +1506,26 @@ impl Widget for MainPanel {
                 transform,
                 &body_clip,
             );
-            if let Some(header) = self.header.built_mut() {
-                header.draw(scene, transform, text_renderer, theme, presence);
-            }
+            // Metadata can change while typing crosses a clock boundary.
+            // Keep its actual draw separate so that repainting the date does
+            // not invalidate every paragraph in the scrolling document.
+            let mut parts = Vec::new();
             let mut outside = scene.clone();
+            if let Some(header) = self.header.built_mut() {
+                let mut header_scene = Scene::new();
+                header.draw(&mut header_scene, transform, text_renderer, theme, presence);
+                scene.append(&header_scene, None);
+                let rect = header.get_rect();
+                parts.push(ui::widget::paint_damage::PaintPart::new(
+                    "note-header".into(),
+                    rect,
+                    header_scene,
+                    vec![rect.inflate(
+                        f64::from(theme.tokens.spacing.s2),
+                        f64::from(theme.tokens.spacing.s2),
+                    )],
+                ));
+            }
             let mut editor_scene = Scene::new();
             self.editor
                 .draw(&mut editor_scene, transform, text_renderer, theme, presence);
@@ -1544,6 +1555,12 @@ impl Widget for MainPanel {
             *scene = complete;
             let mut editor_damage = Vec::new();
             self.editor.collect_damage(&mut editor_damage);
+            parts.push(ui::widget::paint_damage::PaintPart::new(
+                page_id.to_string(),
+                self.editor.get_rect(),
+                editor_scene,
+                editor_damage,
+            ));
             self.paint_damage.record(
                 self.rect,
                 Some(ui::widget::paint_damage::PaintFrame::new(
@@ -1551,12 +1568,7 @@ impl Widget for MainPanel {
                     transform,
                     theme,
                     outside,
-                    vec![ui::widget::paint_damage::PaintPart::new(
-                        page_id.to_string(),
-                        self.editor.get_rect(),
-                        editor_scene,
-                        editor_damage,
-                    )],
+                    parts,
                 )),
             );
         } else {

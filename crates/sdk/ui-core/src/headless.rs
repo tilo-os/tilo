@@ -306,6 +306,8 @@ pub struct Spec {
     pub targets: Option<std::path::PathBuf>,
     /// Write one semantic widget/accessibility snapshot here as JSON.
     pub inspect: Option<std::path::PathBuf>,
+    /// Retain actual semantic invocation outputs and refusals, without input arguments.
+    pub results: Option<std::path::PathBuf>,
 }
 
 /// One node in a developer inspection snapshot.
@@ -494,6 +496,7 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod invocation_results;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -596,6 +599,7 @@ pub struct FrameHarness {
     /// The invoker each job started for someone else runs for, while it
     /// runs ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
+    invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -1608,6 +1612,7 @@ impl FrameHarness {
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
+            invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
             pointer_redraw_diagnostics: false,
@@ -6879,10 +6884,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self
-                    .permissions
-                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
-                {
+                if !self.permissions.permits_invocation(
+                    &app_id,
+                    &address.resource,
+                    spec,
+                    arguments.as_ref(),
+                    argument,
+                ) {
                     return Err(crate::bound_dispatch::denied(spec));
                 }
                 crate::invocation_scope::check_continuation(
@@ -7023,6 +7031,7 @@ impl FrameHarness {
                 if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
+                    &intent.address.resource,
                     spec,
                     arguments.as_ref(),
                     None,
@@ -7132,6 +7141,7 @@ impl FrameHarness {
         if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
+            &address.resource,
             spec,
             arguments.as_ref(),
             None,
@@ -7896,6 +7906,7 @@ impl FrameHarness {
             invocation.confirm,
             invocation.confirmation_phrase.as_deref(),
         );
+        self.retain_invocation_outcome(invocation, &result)?;
         match (result, invocation.expect_error.as_deref()) {
             (Ok(_), None) => Ok(()),
             (Ok(_), Some(code)) => Err(format!(
@@ -8744,6 +8755,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         dump: wire.dump.map(Into::into),
         targets: wire.targets.map(Into::into),
         inspect: wire.inspect.map(Into::into),
+        results: wire.results.map(Into::into),
     })
 }
 
@@ -8820,6 +8832,9 @@ fn drive_spec_actions(
     driver: &mut Driver,
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
+    if spec.results.is_some() {
+        driver.retain_invocation_results();
+    }
     tilo_startup_metrics::mark("headless-actions-start");
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
@@ -8881,6 +8896,11 @@ fn audit_spec(spec: &Spec, driver: &Driver, failure: &mut Option<String>) -> Res
 }
 
 fn write_spec_outputs(spec: &Spec, driver: &mut Driver) -> Result<(), String> {
+    if let Some(path) = &spec.results {
+        write_headless_output(path, driver.invocation_results_json()?).map_err(|error| {
+            format!("writing invocation results to {}: {error}", path.display())
+        })?;
+    }
     if let Some(path) = &spec.targets {
         let mut names: Vec<(String, [f64; 4])> = driver
             .targets()
@@ -9093,15 +9113,14 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style {
+            let style = Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::percent(1.0),
                 },
                 ..Style::default()
-            });
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy
@@ -9246,9 +9265,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
         fn draw(
@@ -13635,12 +13652,7 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-                origin.x + f64::from(layout.location.x + layout.size.width),
-                origin.y + f64::from(layout.location.y + layout.size.height),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(
@@ -13772,13 +13784,7 @@ mod framed_tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
-            self.rect = Rect::from_origin_size(
-                (
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
+            self.rect = crate::widget::placed(layout, origin);
         }
 
         fn draw(

@@ -133,5 +133,10 @@ RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service @mount
 SystemCallFilter=fanotify_init fanotify_mark name_to_handle_at open_by_handle_at
+# The qdoc conflict merge decodes peer versions only in Automerge workers
+# (tilo-automerge-isolate): re-executions of this binary that confine
+# themselves with Landlock and a seccomp allow-list before reading any input.
+# A worker that cannot confine itself never starts, and the merge is refused.
+SystemCallFilter=seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
 SystemCallErrorNumber=EPERM

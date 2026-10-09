@@ -11,6 +11,8 @@
     )
 )]
 
+mod workspace_startup;
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
@@ -369,8 +371,16 @@ fn parse_owner(spec: &str) -> Result<(u32, u32)> {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Inspect saved workspace bindings without starting transport or exposing tickets.
+    WorkspaceStatus {
+        #[arg(long)]
+        cache_dir: PathBuf,
+    },
     /// Host a collaborative workspace and mount it locally.
     Serve {
+        /// Refuse a fresh namespace; resume saved state or an authenticated discovered workspace only.
+        #[arg(long)]
+        require_existing_workspace: bool,
         /// Where to mount the workspace.
         #[arg(short, long)]
         mount_point: PathBuf,
@@ -482,6 +492,17 @@ enum Command {
         /// Filesystem executable used for supervised `mount-cloud` children.
         #[arg(long)]
         fs_binary: Option<PathBuf>,
+        /// Where to serve account control (list, sync now, pause, resume;
+        /// no file requests); defaults to
+        /// `$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`.
+        #[arg(long)]
+        control_socket: Option<PathBuf>,
+        /// Where to serve file requests (revisions, restore, share links)
+        /// as well as account control; defaults to
+        /// `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`. Keep it out
+        /// of `--control-socket`'s directory.
+        #[arg(long)]
+        file_socket: Option<PathBuf>,
     },
     /// Serve one cloud account at `--mount-point`. The mount specification
     /// and credential arrive on stdin from `cloud-service`, never in argv.
@@ -523,9 +544,8 @@ enum Command {
         relay_workspace_ids: Vec<u64>,
     },
     /// Sign and atomically publish the current workspace capability policy.
+    /// Exits with status 77 on a device that holds no governor key.
     PublishAuthority {
-        #[arg(long)]
-        cache_dir: PathBuf,
         #[arg(long)]
         acl: PathBuf,
     },
@@ -550,10 +570,44 @@ enum Command {
     },
 }
 
+/// Exit status of `publish-authority` when this device holds no governor key:
+/// only the person's primary device signs the workspace's authority, so a
+/// joined device has nothing to publish and its desktop stops retrying.
+const PUBLISH_AUTHORITY_NOT_GOVERNOR_EXIT: i32 = 77;
+
+/// `publish-authority` found no governor key on this device.
+#[derive(Debug)]
+struct NotGovernor(std::io::Error);
+
+impl std::fmt::Display for NotGovernor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "this device holds no workspace governor key ({}); only the primary device publishes \
+             workspace authority",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for NotGovernor {}
+
 fn main() -> Result<()> {
+    // Before the runtime starts any thread: this executable also serves as
+    // the Automerge worker the conflict merge decodes peer versions in.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // FUSE callbacks poll their futures on the fuser threads via the
     // runtime handle; the workers only serve iroh, sockets and timers.
-    tilo_rt::daemon("tilo-fs").run(run_command())?
+    let result = tilo_rt::daemon("tilo-fs").run(run_command())?;
+    if let Err(error) = &result
+        && error.downcast_ref::<NotGovernor>().is_some()
+    {
+        eprintln!("{error}");
+        std::process::exit(PUBLISH_AUTHORITY_NOT_GOVERNOR_EXIT);
+    }
+    result
 }
 
 #[allow(
@@ -566,7 +620,15 @@ async fn run_command() -> Result<()> {
         fs::clock::install_test_clock_file(path).context("configuring deterministic test clock")?;
     }
     match cli.command {
+        Command::WorkspaceStatus { cache_dir } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&workspace_startup::inspect(&cache_dir)?)?
+            );
+            Ok(())
+        }
         Command::Serve {
+            require_existing_workspace,
             mount_point,
             cache_dir,
             seed,
@@ -576,6 +638,12 @@ async fn run_command() -> Result<()> {
             acl,
             data_plane,
         } => {
+            if require_existing_workspace {
+                let cache = cache_dir
+                    .as_deref()
+                    .context("recovery requires --cache-dir")?;
+                workspace_startup::inspect(cache)?.require_existing()?;
+            }
             serve(
                 mount_point,
                 cache_dir,
@@ -643,7 +711,11 @@ async fn run_command() -> Result<()> {
             state_root,
             config_root,
             fs_binary,
+            control_socket,
+            file_socket,
         } => {
+            let control_socket = control_socket.or_else(runtime_fs::cloud::default_socket);
+            let file_socket = file_socket.or_else(runtime_fs::cloud::default_files_socket);
             let executable = match fs_binary {
                 Some(path) => path,
                 None => std::env::current_exe()?,
@@ -660,6 +732,8 @@ async fn run_command() -> Result<()> {
                         config_root,
                         mounts_root,
                         state_root,
+                        control_socket,
+                        file_socket,
                     },
                     Box::new(fs::cloud::ProcessLauncher {
                         executable,
@@ -704,7 +778,7 @@ async fn run_command() -> Result<()> {
             principals,
             relay_workspace_ids,
         ),
-        Command::PublishAuthority { cache_dir, acl } => publish_authority(cache_dir, acl).await,
+        Command::PublishAuthority { acl } => publish_authority(acl).await,
         Command::RegisterContentPeer {
             cache_dir,
             endpoint_stdin,
@@ -716,33 +790,40 @@ async fn run_command() -> Result<()> {
     }
 }
 
-async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
-    let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
-    let capabilities = serde_json::from_slice(&std::fs::read(&acl)?)?;
+/// Sign `acl` as the workspace governor and hand it to the local daemon.
+/// Runs in the person's session: it reads only the person's governor key and
+/// the group-reachable socket directory, never the daemon's root-only cache.
+async fn publish_authority(acl: PathBuf) -> Result<()> {
     let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
-    let socket = local_authority_socket_path(ticket.workspace_id());
+    let governor = match tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey) {
+        Ok(governor) => governor,
+        Err(tilo_user_identity::persist::PersistError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(NotGovernor(error).into());
+        }
+        Err(error) => return Err(error).context("read workspace governor key"),
+    };
+    let capabilities = serde_json::from_slice(
+        &std::fs::read(&acl).with_context(|| format!("read capability list {}", acl.display()))?,
+    )?;
+    let (workspace, socket) = fs::workspace_authority::find_local_authority().await?;
     let current = local_authority_request(
         &socket,
         AuthorityRequest {
-            workspace: ticket.workspace_id(),
+            workspace,
             publish: None,
         },
     )
     .await?
     .authority;
     let revision = current.map_or(1, |current| current.revision.saturating_add(1));
-    let envelope = WorkspaceAuthorityEnvelope::sign(
-        ticket.workspace_id(),
-        revision,
-        capabilities,
-        false,
-        &governor,
-    )?;
+    let envelope =
+        WorkspaceAuthorityEnvelope::sign(workspace, revision, capabilities, false, &governor)?;
     let accepted = local_authority_request(
         &socket,
         AuthorityRequest {
-            workspace: ticket.workspace_id(),
+            workspace,
             publish: Some(envelope.clone()),
         },
     )
@@ -1690,38 +1771,30 @@ async fn serve(
     // The serving owner is the authority publisher. A capability file may
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
-    if remote_ticket.is_none()
-        && let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
-            record_services.as_mut(),
-            cache_dir.as_ref(),
-            acl_args.acl.as_ref(),
-            share_issuer.as_ref(),
-        )
-    {
-        let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
-            .context("parse workspace authority bootstrap capabilities")?;
+    if let (Some(records), Some(cache_dir)) = (record_services.as_mut(), cache_dir.as_ref()) {
         let principals = acl_args
             .principals
             .iter()
             .map(|principal| parse_principal(principal))
             .collect::<Result<Vec<_>>>()?;
-        let authority = Arc::new(WorkspaceAuthority::open(
-            cache_dir.join("workspace-authority.bin"),
+        let bootstrap = acl_args
+            .acl
+            .as_ref()
+            .filter(|_| remote_ticket.is_none())
+            .zip(share_issuer.as_ref())
+            .map(|(path, signer)| -> Result<_> {
+                let capabilities = serde_json::from_slice(&std::fs::read(path)?)
+                    .context("parse workspace authority bootstrap capabilities")?;
+                Ok((capabilities, signer))
+            })
+            .transpose()?;
+        records.workspace_authority = workspace_startup::owner_authority(
+            cache_dir,
             workspace_id,
-            governor.verifying_key().to_bytes(),
             credentials.user_public_key(),
             principals,
-        )?);
-        if authority.current().is_none() {
-            authority.apply(WorkspaceAuthorityEnvelope::sign(
-                workspace_id,
-                1,
-                capabilities,
-                false,
-                governor,
-            )?)?;
-        }
-        records.workspace_authority = Some(authority);
+            bootstrap,
+        )?;
     }
     let record_publisher = record_repository
         .clone()
@@ -3473,6 +3546,16 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
                 fs
             }
         },
+        None => fs,
+    };
+
+    // Written bytes of open files are staged in sparse files beside the
+    // cache rather than in memory, so a large write never has to fit in RAM.
+    let fs = match predictive_cache_root.as_ref().filter(|_| !read_only) {
+        Some(root) => fs.with_write_stage_dir(
+            root.join("write-stage")
+                .join(checked_history_workspace.to_string()),
+        ),
         None => fs,
     };
 

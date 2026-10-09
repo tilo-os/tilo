@@ -821,6 +821,17 @@ impl EmptyState {
         paint_empty_state(ctx, rect, content, hover, false, false, None)
     }
 
+    /// Paint a state whose action has keyboard focus, using the shared focus ring.
+    pub fn paint_focused(
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+        hover: Point,
+        focused: bool,
+    ) -> Option<Rect> {
+        paint_empty_state(ctx, rect, content, hover, focused, false, None)
+    }
+
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: if self.busy {
@@ -868,7 +879,7 @@ impl Widget for EmptyState {
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
         // An inline empty state hugs its content.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_grow: if self.inline { 0.0 } else { 1.0 },
             flex_shrink: if self.inline { 0.0 } else { 1.0 },
             size: taffy::Size {
@@ -884,9 +895,8 @@ impl Widget for EmptyState {
                 },
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

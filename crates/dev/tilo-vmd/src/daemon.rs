@@ -567,6 +567,15 @@ impl Daemon {
         }
         match request {
             Request::Hello(_) => Err(DaemonError::HelloRequired),
+            Request::DeviceActions(p) => self.device_actions(&p.line),
+            Request::DeviceUnlockEnrol(p) => {
+                p.validate().map_err(DaemonError::InvalidParams)?;
+                let _locks = self.slot_locks(DEVICE_SLOT)?;
+                let (_, session) = self.user_slot(DEVICE_SLOT)?;
+                self.require_device_action_owner(&session)?;
+                let uid = self.apply.account_uid(&session.user)?;
+                to_value(&self.apply.enroll_device_unlock(uid, &p)?)
+            }
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
@@ -590,13 +599,19 @@ impl Daemon {
                 to_value(&self.remove(&p.name)?)
             }
             Request::SlotShow(p) => to_value(&self.show(&p.name)?),
-            Request::LayerUploadBegin(_) => to_value(&self.upload_begin()?),
+            Request::LayerUploadBinary(_) | Request::LayerUploadBegin(_) => {
+                to_value(&self.upload_begin()?)
+            }
             Request::LayerUploadChunk(p) => to_value(&self.upload_chunk(&p.upload, &p.data)?),
             Request::LayerImport(p) => {
                 let _vm = self.locks.vm_shared()?;
                 to_value(&self.import(p.source, &p.provenance)?)
             }
             Request::LayerList(_) => to_value(&self.layers.list()?),
+            Request::LayerVerify(p) => {
+                let _vm = self.locks.vm_shared()?;
+                to_value(&self.layers.verify(&p.hash)?)
+            }
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info)?)
@@ -668,6 +683,21 @@ impl Daemon {
         expect_version: Option<&str>,
     ) -> Result<BootConfirmResult, DaemonError> {
         self.apply.confirm_boot(expect_version)
+    }
+
+    pub(crate) fn user_device_action_session(&mut self) -> Result<(), DaemonError> {
+        let (_, session) = self.user_slot(DEVICE_SLOT)?;
+        self.require_device_action_owner(&session)
+    }
+
+    fn require_device_action_owner(&mut self, session: &Session) -> Result<(), DaemonError> {
+        if self.apply.device_action_owner(session) {
+            Ok(())
+        } else {
+            Err(DaemonError::InvalidParams(
+                "the device owner's signed-in session is required".into(),
+            ))
+        }
     }
 
     fn input(&mut self, name: &str, actions: &[InputAction]) -> Result<InputResult, DaemonError> {
@@ -818,6 +848,36 @@ impl Daemon {
         fs::File::create(&path).map_err(DaemonError::io("create upload"))?;
         self.uploads.insert(id.clone(), path);
         Ok(LayerUploadBeginResult { upload: id })
+    }
+
+    pub(crate) fn cancel_upload(&mut self, id: &str) {
+        if let Some(path) = self.uploads.remove(id) {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    pub(crate) fn receive_binary(
+        &mut self,
+        id: &str,
+        input: impl std::io::Read,
+    ) -> (std::io::Result<u64>, bool) {
+        let Some(path) = self.uploads.get(id) else {
+            return (Err(std::io::Error::other("binary upload missing")), false);
+        };
+        let mut reader = tilo_vm_protocol::binary::Reader::new(input);
+        let result = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|mut file| {
+                let bytes = std::io::copy(&mut reader, &mut file)?;
+                file.flush()?;
+                Ok(bytes)
+            });
+        let boundary = reader.decoder.at_boundary();
+        if result.is_err() {
+            self.cancel_upload(id);
+        }
+        (result, boundary)
     }
 
     fn upload_chunk(

@@ -1584,7 +1584,7 @@ fn start_egress_gate(
             Ok((Some(bind), Some(gate)))
         }
         Err(source) => Err(RunError::EgressGate {
-            hosts: policy.hosts().to_vec(),
+            hosts: policy.describe(),
             source,
         }),
     }
@@ -1822,6 +1822,7 @@ fn splice_app_dir(
             "a granted bind covers the user's home; telling the app where it is"
         );
     }
+    crate::sandbox::push_user_data(argv, capabilities);
     // And where the room's shared mounts are, on the same terms: a
     // workspace the app cannot read is not one it should be told about.
     if let Some(roots) = crate::sandbox::push_workspace_roots(argv, capabilities) {
@@ -1841,7 +1842,7 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     if package_id != "so.tilo.settings" {
         return Ok(());
     }
-    let Some(host) = xdg_paths::xdg::config_home() else {
+    let Some(host) = tilo_paths::xdg::config_home() else {
         return Ok(());
     };
     let host = host.join("tilo");
@@ -2167,6 +2168,12 @@ fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &
         let rt = crate::sandbox::runtime_mount_for(ver);
         argv.push("--ro".to_string());
         argv.push(rt.display().to_string());
+        if rt_root.join("lib/fonts").is_dir() {
+            argv.extend([
+                "--ro".to_string(),
+                crate::sandbox::RUNTIME_FONT_CATALOG_PATH.to_string(),
+            ]);
+        }
         // Also allow the canonical loader paths re-bound out of the bundle —
         // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
         for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
@@ -2459,7 +2466,7 @@ fn spawn_and_wait(
     tracing::info!(
         target: "tilo_launcher::netgate",
         gated = net_gate.is_some(),
-        hosts = ?egress.policy().map(super::netgate::EgressPolicy::hosts),
+        hosts = ?egress.policy().map(super::netgate::EgressPolicy::describe),
         shares_host_network = egress.shares_host_network(),
         "egress resolved",
     );
@@ -2879,52 +2886,17 @@ pub(crate) fn run_with_context(
     // bug, not a policy one. Checked at launch too, not just install.
     crate::manifest::enforce_fs_policy(manifest)?;
 
-    // 1. Service sockets.
-    let package_id = manifest.package_id.as_str();
-    let resolved = if let Some((services, _)) = enrolled.as_mut() {
-        let binding = services.binding().clone();
-        services
-            .take_for_launch(&binding, &manifest.sandbox.services)
-            .map_err(RunError::InvalidServiceLaunch)?
-    } else {
-        let mut resolved = resolve_service_binds_for_launch(
-            &manifest.sandbox.services,
-            opts.no_services,
-            ServiceLaunchContext {
-                app_id: package_id,
-                workspace_id: opts.workspace_id.as_deref(),
-            },
-        )?;
-        crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
-        if let Some(identity) =
-            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(identity);
-        }
-        if let Some(blobs) =
-            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(blobs);
-        }
-        if let Some(chooser) =
-            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
-            resolved.push(chooser);
-        }
-        resolved
-    };
-    let binds = to_service_binds(&resolved);
-
-    // 2. Seccomp baseline → tmpfile → fd.
+    // Host preflight precedes connected service custody.
+    // Seccomp baseline → tmpfile → fd.
     let seccomp_fds = stage_seccomp(manifest)?;
 
-    // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
+    // D-Bus proxy decision. Failure leaves the bus unavailable; there is
     // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
     // waited on so Drop can SIGTERM the proxies.
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
 
-    // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
+    // Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
     let resolved_runtime = if enrolled.is_some() {
         Some(
@@ -2974,6 +2946,45 @@ pub(crate) fn run_with_context(
         capabilities.participation = crate::capabilities::Participation::Author;
     }
 
+    // Connect only after cold runtime verification, loader preflight and host
+    // preparation. The broker starts its executing-task deadline at handoff;
+    // those checks must not consume the sandboxed app's response window.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let package_id = manifest.package_id.as_str();
+    let resolved = if let Some((services, _)) = enrolled.as_mut() {
+        let binding = services.binding().clone();
+        services
+            .take_for_launch(&binding, &manifest.sandbox.services)
+            .map_err(RunError::InvalidServiceLaunch)?
+    } else {
+        let mut resolved = resolve_service_binds_for_launch(
+            &manifest.sandbox.services,
+            opts.no_services,
+            ServiceLaunchContext {
+                app_id: package_id,
+                workspace_id: opts.workspace_id.as_deref(),
+            },
+        )?;
+        crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+        if let Some(identity) =
+            resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(identity);
+        }
+        if let Some(blobs) =
+            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(blobs);
+        }
+        if let Some(chooser) =
+            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(chooser);
+        }
+        resolved
+    };
+    let binds = to_service_binds(&resolved);
+
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
     // marker for the argv builder; it is never mounted.
@@ -2992,7 +3003,6 @@ pub(crate) fn run_with_context(
     // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
     // mode shares the host network with no allowlist to enforce, so neither
     // needs a gate. Guard bound here (not in the `if let`) so it outlives the child.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
@@ -3570,34 +3580,6 @@ fn run_with_capture_spawn<T>(
     validate_interfaces(manifest)?;
     crate::manifest::enforce_fs_policy(manifest)?;
 
-    // Service sockets.
-    let package_id = manifest.package_id.as_str();
-    let mut resolved = resolve_service_binds_for_launch(
-        &manifest.sandbox.services,
-        opts.no_services,
-        ServiceLaunchContext {
-            app_id: package_id,
-            workspace_id: opts.workspace_id.as_deref(),
-        },
-    )?;
-    crate::services::authenticate_shell_ui_bind(&resolved, package_id)?;
-    if let Some(identity) =
-        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(identity);
-    }
-    if let Some(blobs) =
-        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(blobs);
-    }
-    if let Some(chooser) =
-        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
-        resolved.push(chooser);
-    }
-    let binds = to_service_binds(&resolved);
-
     // Seccomp baseline resolved identically to `run_with` — two paths
     // reaching different conclusions would make capture a way around the filter.
     let seccomp_fds = SeccompFds {
@@ -3617,6 +3599,36 @@ fn run_with_capture_spawn<T>(
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let capabilities = resolve_capabilities(manifest, opts);
+    // As in `run_with_context`, cold runtime checks precede service handoff.
+    // Capture must not start the executing-task deadline during verification.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let package_id = manifest.package_id.as_str();
+    let mut resolved = resolve_service_binds_for_launch(
+        &manifest.sandbox.services,
+        opts.no_services,
+        ServiceLaunchContext {
+            app_id: package_id,
+            workspace_id: opts.workspace_id.as_deref(),
+        },
+    )?;
+    crate::services::authenticate_shell_ui_bind(&resolved, package_id, &egress)?;
+    if let Some(identity) =
+        resolve_identity_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(identity);
+    }
+    if let Some(blobs) =
+        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(blobs);
+    }
+    if let Some(chooser) =
+        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(chooser);
+    }
+    let binds = to_service_binds(&resolved);
+
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         resolve_identity_broker(&capabilities, opts)?;
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
@@ -3627,7 +3639,6 @@ fn run_with_capture_spawn<T>(
     // Same egress decision as `run_with`: without the gate spliced in here
     // too, a host-scoped grant would be silently offline. No shim on this
     // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
-    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with`
     // does — both entries must agree on binary and arguments.
@@ -4762,5 +4773,63 @@ mod mesa_seed_software_tests {
             );
         }
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+    }
+}
+
+#[cfg(test)]
+mod launch_preflight_tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    fn assert_runtime_refusal_precedes_handoff(captured: bool) {
+        let root = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", root.path());
+        let socket = crate::services::collab_socket();
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let manifest: MinimalManifest = toml::from_str(
+            r#"[package]
+id = "so.tilo.preflight"
+version = "1"
+[entrypoint]
+bin = "bin/preflight"
+type = "gui"
+[sandbox.services]
+collab = "required@1"
+"#,
+        )
+        .unwrap();
+        let missing_runtime = root.path().join("missing-runtime");
+        let options = RunOptions {
+            runtime_root: Some(missing_runtime.clone()),
+            workspace_id: Some("preflight-room".into()),
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        let error = if captured {
+            run_with_captured(&manifest, root.path(), &options).unwrap_err()
+        } else {
+            run_with(&manifest, root.path(), &options).unwrap_err()
+        };
+        assert!(
+            matches!(error, RunError::RuntimeBundleSignature { ref path, .. } if path == &missing_runtime),
+            "runtime verification must refuse the actual launch: {error}"
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "runtime preflight contacted the live broker and started its launch deadline"
+        );
+    }
+
+    #[test]
+    fn native_runtime_preflight_precedes_service_handoff() {
+        assert_runtime_refusal_precedes_handoff(false);
+    }
+
+    #[test]
+    fn captured_runtime_preflight_precedes_service_handoff() {
+        assert_runtime_refusal_precedes_handoff(true);
     }
 }

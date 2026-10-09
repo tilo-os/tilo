@@ -21,9 +21,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
+use launcher::registration_gate::LAUNCH_REGISTRATION_FD_ENV;
 use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
-
-const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
 fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     if fd < 3 {

@@ -3,11 +3,12 @@
 //! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
+mod anthropic_stream;
 mod subject;
 
 use std::fs;
 #[cfg(test)]
-use std::io::{BufRead, Read};
+use std::io::Read;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
@@ -749,9 +750,9 @@ async fn plan_dispatch(
 ) -> Result<String, String> {
     let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
     let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
-    // Only the OpenAI-compatible stream is parsed here; an Anthropic Plan is
-    // always answered with one final frame, which streaming clients accept.
-    let streaming = call.stream && profile.protocol == ProviderProtocol::OpenAiCompatible;
+    // Both dialects stream: each tool call is reported the moment it is
+    // complete, then the body is assembled in its non-streamed shape.
+    let streaming = call.stream;
     timing.stream = streaming;
     let ceiling = profile
         .models
@@ -797,7 +798,8 @@ async fn plan_dispatch(
         timing.status = Some(response.status().as_u16());
         timing.first_byte = Some(timing.started.elapsed());
         if streaming {
-            read_stream(response, emit, timing, call.deltas).await
+            let sse = SseReader::new(profile.protocol, call.deltas);
+            read_stream(response, sse, emit, timing).await
         } else {
             let text = response.text().await.map_err(|_| ProviderFailure {
                 why: "provider response was unreadable".into(),
@@ -946,8 +948,15 @@ fn outbound_body(
             }
         }
         ProviderProtocol::Anthropic => {
-            object.remove("stream");
+            if streaming {
+                object.insert("stream".into(), serde_json::Value::Bool(true));
+            } else {
+                object.remove("stream");
+            }
         }
+    }
+    if profile.protocol == ProviderProtocol::Anthropic {
+        apply_anthropic_cache_breakpoints(profile, &mut object);
     }
     // Apply the model-owned cap after provider shaping and optional omission.
     // A caller cannot suppress or duplicate the enforced token-limit field.
@@ -959,19 +968,188 @@ fn outbound_body(
     Ok(serde_json::Value::Object(object))
 }
 
+/// Anthropic's limit on `cache_control` breakpoints in one request.
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
+/// Mark an Anthropic request's stable prefixes for prompt caching.
+///
+/// Anthropic caches only up to an explicit `cache_control` breakpoint (an
+/// OpenAI-compatible provider caches a repeated prefix by itself), so without
+/// these every agent turn re-prefills the tools, the system prompt and the
+/// whole conversation. In order of value, each only while a breakpoint is
+/// left and only where none is already set:
+///
+/// 1. the last `system` block (a string becomes one text block): tools and
+///    system render first, so this one entry holds both, across turns and
+///    tasks;
+/// 2. the last cacheable block of the last `user` message, so the growing
+///    conversation is read back incrementally on the next turn — skipped
+///    when the caller asked for automatic caching (top-level
+///    `cache_control`), which places that breakpoint itself;
+/// 3. the last tool, which still holds when the system prompt changes.
+///
+/// A caller's own breakpoints count against the limit and are never moved or
+/// duplicated. A caller that chose a non-default TTL owns the whole layout
+/// (a shorter-lived entry may not precede a longer one), so nothing is
+/// added. A profile listing `cache_control` in `omit_params` (an
+/// Anthropic-compatible endpoint that rejects it) gets no breakpoints and
+/// loses a top-level `cache_control`, as every omitted field does.
+fn apply_anthropic_cache_breakpoints(
+    profile: &ProviderProfile,
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    if profile
+        .omit_params
+        .iter()
+        .any(|param| param == "cache_control")
+    {
+        object.remove("cache_control");
+        return;
+    }
+    let existing = cache_markers(object);
+    if existing.iter().any(|marker| {
+        marker
+            .get("ttl")
+            .is_some_and(|ttl| ttl.as_str() != Some("5m"))
+    }) {
+        return;
+    }
+    let mut free = MAX_CACHE_BREAKPOINTS.saturating_sub(existing.len());
+    let automatic = object.contains_key("cache_control");
+    if free > 0 && object.get_mut("system").is_some_and(mark_last_cacheable) {
+        free = free.saturating_sub(1);
+    }
+    if free > 0 && !automatic && mark_conversation_tail(object) {
+        free = free.saturating_sub(1);
+    }
+    if free > 0 {
+        mark_last_tool(object);
+    }
+}
+
+/// Every `cache_control` already in an Anthropic request: top-level
+/// (automatic caching), on tools, on system blocks, on message blocks and on
+/// the blocks inside a `tool_result`. Structural, so a tool schema or a tool
+/// input that merely has a `cache_control` key is not counted.
+fn cache_markers(object: &serde_json::Map<String, serde_json::Value>) -> Vec<&serde_json::Value> {
+    fn items(value: Option<&serde_json::Value>) -> impl Iterator<Item = &serde_json::Value> {
+        value
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+    }
+    let mut markers: Vec<&serde_json::Value> = object.get("cache_control").into_iter().collect();
+    for item in items(object.get("tools")).chain(items(object.get("system"))) {
+        markers.extend(item.get("cache_control"));
+    }
+    for message in items(object.get("messages")) {
+        for block in items(message.get("content")) {
+            markers.extend(block.get("cache_control"));
+            if block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result") {
+                for inner in items(block.get("content")) {
+                    markers.extend(inner.get("cache_control"));
+                }
+            }
+        }
+    }
+    markers
+}
+
+/// Whether a content block may carry `cache_control`. Thinking blocks cannot,
+/// and an empty text block is refused with or without a marker.
+fn cacheable_block(block: &serde_json::Value) -> bool {
+    match block.get("type").and_then(serde_json::Value::as_str) {
+        Some("text") => block
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty()),
+        Some("image" | "document" | "search_result" | "tool_use" | "tool_result") => true,
+        _ => false,
+    }
+}
+
+/// Put a breakpoint on the last cacheable block of `content` (a `system`
+/// value or a message's `content`), turning a plain string into one text
+/// block. False when there is no such block or it is already marked.
+fn mark_last_cacheable(content: &mut serde_json::Value) -> bool {
+    match content {
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            let text = std::mem::take(text);
+            *content = serde_json::json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+            true
+        }
+        serde_json::Value::Array(blocks) => {
+            let Some(block) = blocks
+                .iter_mut()
+                .rev()
+                .find(|block| cacheable_block(block))
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                return false;
+            };
+            if block.contains_key("cache_control") {
+                return false;
+            }
+            block.insert(
+                "cache_control".into(),
+                serde_json::json!({ "type": "ephemeral" }),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Put a breakpoint at the end of the last `user` message.
+fn mark_conversation_tail(object: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    object
+        .get_mut("messages")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|messages| {
+            messages.iter_mut().rev().find(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+            })
+        })
+        .and_then(|message| message.get_mut("content"))
+        .is_some_and(mark_last_cacheable)
+}
+
+/// Put a breakpoint on the last tool sent with the request (a deferred tool
+/// is not part of the prompt prefix).
+fn mark_last_tool(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(tool) = object
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|tools| {
+            tools.iter_mut().rev().find(|tool| {
+                tool.get("defer_loading")
+                    .and_then(serde_json::Value::as_bool)
+                    != Some(true)
+            })
+        })
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    tool.entry("cache_control")
+        .or_insert_with(|| serde_json::json!({ "type": "ephemeral" }));
+}
+
 /// The largest provider stream read for one Plan.
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
 
-/// Consume an OpenAI-compatible SSE stream, emitting each tool call as soon
-/// as it is complete, and return the assembled non-streaming body.
+/// Consume a provider's SSE stream, emitting each tool call as soon as it is
+/// complete, and return the assembled non-streaming body.
 async fn read_stream(
     mut response: reqwest::Response,
+    mut sse: SseReader,
     emit: Emit<'_>,
     timing: &mut PlanTiming,
-    deltas: bool,
 ) -> Result<String, ProviderFailure> {
-    let mut sse = SseReader::new(deltas);
-    let mut pending = Vec::new();
     let mut read = 0_usize;
     while read < MAX_STREAM_BYTES {
         let chunk = response.chunk().await.map_err(|error| {
@@ -986,25 +1164,12 @@ async fn read_stream(
         };
         let take = chunk.len().min(MAX_STREAM_BYTES.saturating_sub(read));
         read = read.saturating_add(take);
-        pending.extend(chunk.iter().take(take));
-        let mut consumed = 0_usize;
-        for line in pending.split_inclusive(|byte| *byte == b'\n') {
-            if line.last() != Some(&b'\n') {
-                // A partial line waits for the rest of it.
-                break;
-            }
-            consumed = consumed.saturating_add(line.len());
-            if sse.line(line, emit, timing, &mut Instant::now)? == Flow::Done {
-                return sse.finish(emit, timing);
-            }
+        let bytes = chunk.get(..take).unwrap_or_default();
+        if sse.feed(bytes, emit, timing, &mut Instant::now)? == Flow::Done {
+            return sse.finish(emit, timing);
         }
-        pending.drain(..consumed);
     }
-    // A last line without its newline, as a buffered line reader returns it.
-    if !pending.is_empty() {
-        sse.line(&pending, emit, timing, &mut Instant::now)?;
-    }
-    sse.finish(emit, timing)
+    sse.end(emit, timing, &mut Instant::now)
 }
 
 fn stream_failure(why: &str) -> ProviderFailure {
@@ -1016,28 +1181,23 @@ fn stream_failure(why: &str) -> ProviderFailure {
     }
 }
 
-/// The SSE loop of [`read_stream`] over any reader, with an injectable clock
-/// for the delta coalescing window.
+/// The SSE loop of [`read_stream`] over the stream's bytes as the transport
+/// split them into `pieces`, with an injectable clock for the delta
+/// coalescing window.
 #[cfg(test)]
 fn read_sse(
-    reader: &mut dyn BufRead,
+    mut sse: SseReader,
+    pieces: &[&[u8]],
     emit: Emit<'_>,
     timing: &mut PlanTiming,
-    deltas: bool,
     clock: &mut dyn FnMut() -> Instant,
 ) -> Result<String, ProviderFailure> {
-    let mut sse = SseReader::new(deltas);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|_| stream_failure("provider response was unreadable"))?;
-        if read == 0 || sse.line(&line, emit, timing, clock)? == Flow::Done {
-            break;
+    for piece in pieces {
+        if sse.feed(piece, emit, timing, clock)? == Flow::Done {
+            return sse.finish(emit, timing);
         }
     }
-    sse.finish(emit, timing)
+    sse.end(emit, timing, clock)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1046,20 +1206,126 @@ enum Flow {
     Done,
 }
 
-/// The state of one SSE stream, fed a line at a time.
+/// What one stream is rebuilt into, by the provider's dialect.
+enum Wire {
+    /// OpenAI-compatible `chat.completion.chunk`s.
+    Chat(StreamAssembly),
+    /// Anthropic Messages events.
+    Messages(anthropic_stream::MessageAssembly),
+}
+
+impl Wire {
+    fn calls(&self) -> &[StreamCall] {
+        match self {
+            Self::Chat(assembly) => &assembly.calls,
+            Self::Messages(assembly) => &assembly.calls,
+        }
+    }
+
+    /// How many leading tool calls are complete.
+    fn complete(&self) -> usize {
+        match self {
+            Self::Chat(assembly) => assembly.complete(),
+            Self::Messages(assembly) => assembly.complete(),
+        }
+    }
+
+    /// Reasoning chunks and bytes seen, for the content-free progress log.
+    const fn reasoning(&self) -> (u64, u64) {
+        match self {
+            Self::Chat(assembly) => (assembly.reasoning_chunks, assembly.reasoning_bytes),
+            Self::Messages(assembly) => (assembly.reasoning_chunks, assembly.reasoning_bytes),
+        }
+    }
+
+    /// Fold one parsed event in: whether it carried output, and whether it
+    /// ended the stream.
+    fn fold(&mut self, chunk: &serde_json::Value) -> Result<(bool, Flow), ProviderFailure> {
+        match self {
+            Self::Chat(assembly) => {
+                let visible_output = assembly.push(chunk);
+                if assembly.malformed_reasoning_content {
+                    return Err(stream_failure(
+                        "provider reasoning_content was not a string",
+                    ));
+                }
+                Ok((visible_output, Flow::More))
+            }
+            Self::Messages(assembly) => {
+                let folded = assembly.fold(chunk)?;
+                let flow = if folded.stop { Flow::Done } else { Flow::More };
+                Ok((folded.output, flow))
+            }
+        }
+    }
+}
+
+/// The state of one SSE stream, fed its bytes as they arrive.
 struct SseReader {
-    assembly: StreamAssembly,
+    wire: Wire,
     emitted: usize,
     coalescer: Option<DeltaCoalescer>,
+    /// The start of a line whose newline has not arrived yet.
+    partial: Vec<u8>,
 }
 
 impl SseReader {
-    fn new(deltas: bool) -> Self {
+    fn new(protocol: ProviderProtocol, deltas: bool) -> Self {
         Self {
-            assembly: StreamAssembly::default(),
+            wire: match protocol {
+                ProviderProtocol::OpenAiCompatible => Wire::Chat(StreamAssembly::default()),
+                ProviderProtocol::Anthropic => {
+                    Wire::Messages(anthropic_stream::MessageAssembly::default())
+                }
+            },
             emitted: 0,
             coalescer: deltas.then(DeltaCoalescer::default),
+            partial: Vec::new(),
         }
+    }
+
+    /// Take the next bytes of the stream, however the transport split them:
+    /// every line they complete is read; the rest waits for its newline.
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        emit: Emit<'_>,
+        timing: &mut PlanTiming,
+        clock: &mut dyn FnMut() -> Instant,
+    ) -> Result<Flow, ProviderFailure> {
+        let mut pending = std::mem::take(&mut self.partial);
+        pending.extend_from_slice(bytes);
+        let mut consumed = 0_usize;
+        let mut flow = Flow::More;
+        for line in pending.split_inclusive(|byte| *byte == b'\n') {
+            if line.last() != Some(&b'\n') {
+                // A partial line waits for the rest of it.
+                break;
+            }
+            consumed = consumed.saturating_add(line.len());
+            if self.line(line, emit, timing, clock)? == Flow::Done {
+                flow = Flow::Done;
+                break;
+            }
+        }
+        pending.drain(..consumed);
+        self.partial = pending;
+        Ok(flow)
+    }
+
+    /// The stream closed: read a last line without its newline, as a
+    /// buffered line reader returns it, then finish.
+    fn end(
+        mut self,
+        emit: Emit<'_>,
+        timing: &mut PlanTiming,
+        clock: &mut dyn FnMut() -> Instant,
+    ) -> Result<String, ProviderFailure> {
+        let last = std::mem::take(&mut self.partial);
+        if !last.is_empty() {
+            self.line(&last, emit, timing, clock)?;
+        }
+        self.finish(emit, timing)
     }
 
     fn line(
@@ -1069,6 +1335,7 @@ impl SseReader {
         timing: &mut PlanTiming,
         clock: &mut dyn FnMut() -> Instant,
     ) -> Result<Flow, ProviderFailure> {
+        // Anthropic's `event:` lines repeat the `type` its data carries.
         let Some(data) = line.trim_ascii().strip_prefix(b"data:") else {
             return Ok(Flow::More);
         };
@@ -1078,62 +1345,72 @@ impl SseReader {
         }
         let chunk: serde_json::Value = serde_json::from_slice(data)
             .map_err(|_| stream_failure("provider stream was unreadable"))?;
-        // Some providers (OpenRouter) report a failure after a 200 status as
-        // an error chunk inside the stream.
+        // A failure after a 200 status arrives inside the stream: an error
+        // chunk (OpenRouter) or an `error` event (Anthropic, e.g. overloaded).
         if chunk.get("error").is_some() {
             return Err(stream_failure(&format!(
                 "provider stream failed{}",
                 provider_error_detail(data)
             )));
         }
-        let assembly = &mut self.assembly;
-        let visible_output = assembly.push(&chunk);
-        if assembly.malformed_reasoning_content {
-            return Err(stream_failure(
-                "provider reasoning_content was not a string",
-            ));
-        }
-        timing.observe_stream(assembly);
+        let (visible_output, flow) = self.wire.fold(&chunk)?;
+        let (reasoning_chunks, reasoning_bytes) = self.wire.reasoning();
+        timing.observe_stream(reasoning_chunks, reasoning_bytes);
         if visible_output && timing.first_token.is_none() {
             timing.first_token = Some(timing.started.elapsed());
         }
-        if assembly.reasoning_seen && timing.first_reasoning.is_none() {
+        if reasoning_chunks > 0 && timing.first_reasoning.is_none() {
             timing.first_reasoning = Some(timing.started.elapsed());
         }
-        let complete = assembly.complete();
+        let calls = self.wire.calls();
         self.emitted = emit_complete(
-            assembly,
+            calls,
             self.emitted,
-            complete,
+            self.wire.complete(),
             emit,
             timing,
             self.coalescer.as_mut(),
         )?;
         if let Some(coalescer) = self.coalescer.as_mut() {
-            coalescer.pending(assembly, self.emitted, clock(), false, emit)?;
+            coalescer.pending(calls, self.emitted, clock(), false, emit)?;
         }
-        Ok(Flow::More)
+        Ok(flow)
     }
 
-    fn finish(
-        mut self,
-        emit: Emit<'_>,
-        timing: &mut PlanTiming,
-    ) -> Result<String, ProviderFailure> {
-        if self.assembly.finish.is_none() {
+    fn finish(self, emit: Emit<'_>, timing: &mut PlanTiming) -> Result<String, ProviderFailure> {
+        let Self {
+            wire,
+            emitted,
+            mut coalescer,
+            ..
+        } = self;
+        let ended = match &wire {
+            Wire::Chat(assembly) => assembly.finish.is_some(),
+            Wire::Messages(assembly) => assembly.stopped(),
+        };
+        if !ended {
             return Err(stream_failure("provider stream ended early"));
         }
+        let calls = wire.calls();
         emit_complete(
-            &self.assembly,
-            self.emitted,
-            self.assembly.calls.len(),
+            calls,
+            emitted,
+            calls.len(),
             emit,
             timing,
-            self.coalescer.as_mut(),
+            coalescer.as_mut(),
         )?;
-        timing.observe_usage(self.assembly.usage.as_ref());
-        timing.tool_calls = self.assembly.calls.len();
-        Ok(self.assembly.into_completion().to_string())
+        timing.tool_calls = calls.len();
+        match wire {
+            Wire::Chat(assembly) => {
+                timing.observe_usage(assembly.usage.as_ref());
+                Ok(assembly.into_completion().to_string())
+            }
+            Wire::Messages(assembly) => {
+                timing.observe_usage(assembly.usage().as_ref());
+                Ok(assembly.into_message()?.to_string())
+            }
+        }
     }
 }
 
@@ -1155,27 +1432,27 @@ impl DeltaCoalescer {
     /// `from`; `force` flushes every buffered byte (before a `tool_call`).
     fn pending(
         &mut self,
-        assembly: &StreamAssembly,
+        calls: &[StreamCall],
         from: usize,
         now: Instant,
         force: bool,
         emit: Emit<'_>,
     ) -> Result<(), ProviderFailure> {
-        for index in from..assembly.calls.len() {
-            self.flush(assembly, index, now, force, emit)?;
+        for index in from..calls.len() {
+            self.flush(calls, index, now, force, emit)?;
         }
         Ok(())
     }
 
     fn flush(
         &mut self,
-        assembly: &StreamAssembly,
+        calls: &[StreamCall],
         index: usize,
         now: Instant,
         force: bool,
         emit: Emit<'_>,
     ) -> Result<(), ProviderFailure> {
-        let Some(call) = assembly.calls.get(index) else {
+        let Some(call) = calls.get(index) else {
             return Ok(());
         };
         while self.sent.len() <= index {
@@ -1228,7 +1505,7 @@ impl DeltaCoalescer {
 }
 
 fn emit_complete(
-    assembly: &StreamAssembly,
+    calls: &[StreamCall],
     emitted: usize,
     complete: usize,
     emit: Emit<'_>,
@@ -1237,7 +1514,7 @@ fn emit_complete(
 ) -> Result<usize, ProviderFailure> {
     let mut emitted = emitted;
     while emitted < complete {
-        let Some(call) = assembly.calls.get(emitted) else {
+        let Some(call) = calls.get(emitted) else {
             break;
         };
         let now = timing.started.elapsed();
@@ -1247,7 +1524,7 @@ fn emit_complete(
         }
         if let Some(coalescer) = coalescer.as_deref_mut() {
             // Every argument byte goes out as a delta before its call.
-            coalescer.flush(assembly, emitted, Instant::now(), true, emit)?;
+            coalescer.flush(calls, emitted, Instant::now(), true, emit)?;
         }
         if emitted < MAX_STREAM_EVENTS {
             let event = Response {
@@ -1489,6 +1766,9 @@ struct PlanTiming {
     reasoning_tokens: Option<u64>,
     /// Prompt tokens the provider served from its prompt cache.
     cached_tokens: Option<u64>,
+    /// Prompt tokens written to the prompt cache (Anthropic reports these;
+    /// its `input_tokens` is only the remainder neither read nor written).
+    cache_write_tokens: Option<u64>,
     tool_calls: usize,
     output_allowance: Option<u64>,
     runtime_context: Option<u32>,
@@ -1517,6 +1797,7 @@ impl PlanTiming {
             completion_tokens: None,
             reasoning_tokens: None,
             cached_tokens: None,
+            cache_write_tokens: None,
             tool_calls: 0,
             output_allowance: None,
             runtime_context: None,
@@ -1530,15 +1811,17 @@ impl PlanTiming {
         }
     }
 
-    fn observe_stream(&mut self, assembly: &StreamAssembly) {
+    /// One stream event arrived; the stream has carried `reasoning_chunks`
+    /// reasoning chunks of `reasoning_bytes` bytes so far.
+    fn observe_stream(&mut self, reasoning_chunks: u64, reasoning_bytes: u64) {
         let elapsed = self.started.elapsed();
         self.stream_chunks = self.stream_chunks.saturating_add(1);
         self.last_stream = Some(elapsed);
-        if assembly.reasoning_chunks > self.reasoning_chunks {
+        if reasoning_chunks > self.reasoning_chunks {
             self.last_reasoning = Some(elapsed);
         }
-        self.reasoning_chunks = assembly.reasoning_chunks;
-        self.reasoning_bytes = assembly.reasoning_bytes;
+        self.reasoning_chunks = reasoning_chunks;
+        self.reasoning_bytes = reasoning_bytes;
     }
 
     /// Only counters/times: provider text is never retained in diagnostics.
@@ -1587,6 +1870,7 @@ impl PlanTiming {
         // OpenAI-compatible (Cerebras, OpenAI) and Anthropic spellings.
         self.cached_tokens = number("/prompt_tokens_details/cached_tokens")
             .or_else(|| number("/cache_read_input_tokens"));
+        self.cache_write_tokens = number("/cache_creation_input_tokens");
     }
 
     fn log(&self, call: &PlanCall<'_>, outcome: Result<(), &String>) {
@@ -1605,7 +1889,7 @@ impl PlanTiming {
             "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
              start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
              plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
-             reasoning_tokens={} cached_tokens={} tool_calls={} output_allowance={} \
+             reasoning_tokens={} cached_tokens={} cache_write_tokens={} tool_calls={} output_allowance={} \
              source_context={} runtime_context={} timeout_ms={} {} outcome={}",
             log_token(call.profile_id),
             log_token(call.model_id),
@@ -1623,6 +1907,7 @@ impl PlanTiming {
             count(self.completion_tokens),
             count(self.reasoning_tokens),
             count(self.cached_tokens),
+            count(self.cache_write_tokens),
             self.tool_calls,
             count(self.output_allowance),
             count(self.source_context.map(u64::from)),
@@ -2765,16 +3050,17 @@ mod tests {
         anthropic.reasoning = Some(reasoning(ReasoningParam::ReasoningEffort, "low"));
         anthropic.token_limit_param =
             Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
-        let body = outbound_body(
-            &anthropic,
-            "claude-x",
-            serde_json::json!({"model": "other", "max_tokens": 9, "stream": true}),
-            true,
-        )
-        .unwrap();
+        let caller = serde_json::json!({"model": "other", "max_tokens": 9, "stream": true});
+        let body = outbound_body(&anthropic, "claude-x", caller.clone(), false).unwrap();
         assert_eq!(body["model"], "claude-x");
         assert_eq!(body["max_tokens"], 9);
         assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
+        // A streamed Anthropic Plan asks for the event stream, and nothing
+        // of the OpenAI-compatible stream options.
+        let streamed = outbound_body(&anthropic, "claude-x", caller, true).unwrap();
+        assert_eq!(streamed["stream"], true);
+        assert!(streamed.get("stream_options").is_none());
+        assert!(streamed.get("reasoning_effort").is_none());
 
         assert!(
             outbound_body(
@@ -2984,6 +3270,9 @@ mod tests {
         drop(stalled);
     }
 }
+
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod plan_tests;

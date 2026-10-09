@@ -449,6 +449,8 @@ fn duplicate_subtree_from_workspace(
 // Projection captures only existing stable identities. Destination UUIDs are
 // authored once by the final admitted builder, never by resource discovery.
 fn duplicate_sources(source: PageId, workspace: &crate::Workspace) -> Result<Vec<PageId>, String> {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("duplicate_sources");
     if workspace.get(source).is_none() {
         return Err("source note no longer exists".into());
     }
@@ -1539,6 +1541,8 @@ impl<'a> PageTreeSnapshot<'a> {
             )
             .ok()?
         };
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("tree_metadata_spec");
         Some(
             ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
                 .reversible(),
@@ -1615,6 +1619,8 @@ impl<'a> PageTreeSnapshot<'a> {
             )
             .ok()?
         };
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("tree_metadata_spec");
         Some(
             ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded)
                 .reversible(),
@@ -1886,6 +1892,8 @@ fn page_resource_from_index(
 }
 
 fn page_preview_detail(bodies: &Bodies, page: PageId) -> Option<String> {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("page_preview");
     let text = bodies
         .get(&page)?
         .iter()
@@ -2033,6 +2041,8 @@ pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resour
 /// lack one (`apply` / `group` and rich-text catalogue builders). Fixed
 /// encodings and already-stamped specs are left alone.
 fn stamp_published_dynamic_continuations(resource: &mut Resource, scope: &[u8]) {
+    #[cfg(test)]
+    let _profile = crate::cpu_profile::Phase::start("continuation_stamp");
     let actions = std::mem::take(&mut resource.actions);
     resource.actions = actions
         .into_iter()
@@ -2067,10 +2077,16 @@ pub(crate) fn notebook_children(workspace: &crate::Workspace) -> Vec<Resource> {
     let ctx = NotesResourceCtx::of(workspace);
     let mut children = notebook_page_children(workspace, &workspace.bodies);
     children.push(tags_resource(&ctx));
-    let backlink_targets = canonical_backlink_index(&workspace.bodies, workspace.pages())
-        .into_keys()
-        .collect::<HashSet<_>>();
+    let backlink_targets = {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("publication_backlinks");
+        canonical_backlink_index(&workspace.bodies, workspace.pages())
+            .into_keys()
+            .collect::<HashSet<_>>()
+    };
     for child in &mut children {
+        #[cfg(test)]
+        let _profile = crate::cpu_profile::Phase::start("page_decoration");
         decorate_tag_actions(child, &ctx);
         decorate_backlinks(child, &backlink_targets);
         let scope = child.id.as_str().as_bytes().to_vec();
@@ -2224,7 +2240,7 @@ pub(crate) fn notebook_bound_actions(workspace: &crate::Workspace) -> Vec<Action
 }
 
 /// The title of today's note: the local date.
-fn today_title() -> String {
+pub(crate) fn today_title() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 

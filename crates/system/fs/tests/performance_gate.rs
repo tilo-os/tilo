@@ -6,10 +6,12 @@
 //! no polling, sleeps, peer discovery, or remote requests.
 
 use std::io::Cursor;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fs::{ContentStore, Hydrator, Namespace, ROOT_INO, ThumbProvider};
+use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use thumbnail::FileCategory;
@@ -20,6 +22,8 @@ const DIRECTORY_ENTRIES: usize = 1_000;
 const LARGE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const RANGE_BYTES: u64 = 256 * 1024;
 const RANGE_READS: usize = 64;
+/// Remote renames a sync peer applies while the mount serves ranged reads.
+const REMOTE_APPLY_DELTAS: usize = 512;
 const WARM_DIRECTORY_PASSES: usize = 8;
 const WARM_THUMB_LOOKUPS: usize = 1_000;
 
@@ -95,6 +99,99 @@ fn thumbnail_fixture() -> Vec<u8> {
         "encode deterministic image fixture"
     );
     encoded
+}
+
+/// The ranged reads of the local-residency scenario, through the mount's
+/// read path, while a sync peer's remote namespace changes are applied under
+/// the namespace lock that read path shares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mount_ranged_read_under_remote_apply_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let store = Arc::new(ContentStore::memory());
+    let large_file = deterministic_bytes(LARGE_FILE_BYTES);
+    let manifest = store
+        .write_content(&large_file)
+        .await
+        .expect("write chunked fixture")
+        .expect("non-empty fixture has a manifest");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind local hydration endpoint");
+    let router = Router::builder(endpoint.clone()).spawn();
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+
+    let mut source = Namespace::new("perf-source").unwrap();
+    source
+        .create_file(
+            ROOT_INO,
+            "large.dat",
+            Some(&manifest),
+            LARGE_FILE_BYTES as u64,
+            1_700_000_000,
+        )
+        .expect("create large file entry");
+    source
+        .create_file(ROOT_INO, "churn-0", None, 0, 1_700_000_000)
+        .expect("create churn entry");
+    let namespace = Arc::new(Mutex::new(
+        Namespace::from_bytes("perf-mount", &source.save()).expect("open mount namespace"),
+    ));
+    let deltas: Vec<Vec<u8>> = (0..REMOTE_APPLY_DELTAS)
+        .map(|index| {
+            let (from, to) = (format!("churn-{index}"), format!("churn-{}", index + 1));
+            assert!(source.rename(ROOT_INO, from, ROOT_INO, to, 1_700_000_001));
+            source.save_incremental()
+        })
+        .collect();
+    let mount = QuickFS::new(
+        Arc::clone(&namespace),
+        Arc::clone(&hydrator),
+        Arc::new(Heuristics::new(Arc::clone(&hydrator))),
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let applier = {
+        let (namespace, stop) = (Arc::clone(&namespace), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let mut applied = 0_usize;
+            for delta in &deltas {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .apply_remote_and_resolve(delta)
+                    .expect("apply remote namespace delta");
+                applied += 1;
+            }
+            applied
+        })
+    };
+    let started = Instant::now();
+    for index in 0..RANGE_READS {
+        let max_offset = (LARGE_FILE_BYTES as u64) - RANGE_BYTES;
+        let offset = ((index as u64 * 1_000_003) % max_offset) & !4095;
+        let bytes = mount
+            .read_path_range(Path::new("large.dat"), offset, RANGE_BYTES)
+            .expect("read locally resident range through the mount");
+        let start = usize::try_from(offset).expect("fixture offset fits usize");
+        let end =
+            usize::try_from(offset.saturating_add(RANGE_BYTES)).expect("fixture end fits usize");
+        assert_eq!(bytes, large_file[start..end]);
+    }
+    let under_apply = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    let applied_deltas = applier.join().expect("remote apply thread");
+    eprintln!("PERF remote deltas applied during the mount reads: {applied_deltas}");
+    report(
+        "mount-64x256k-ranged-read-under-remote-apply",
+        under_apply,
+        RANGED_READ_SLO,
+    );
+    drop(mount);
+    router.shutdown().await.expect("stop local endpoint");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

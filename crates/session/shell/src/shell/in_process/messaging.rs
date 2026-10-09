@@ -22,6 +22,8 @@ use ui::launch::LaunchError;
 pub(crate) mod activation;
 mod enrollment;
 pub(super) mod first_account;
+pub(crate) mod native;
+pub(crate) mod native_first;
 pub(super) mod network;
 pub(super) mod provider;
 pub mod records;
@@ -31,7 +33,6 @@ pub use working_profile::NativeSignalWorkingProfile;
 pub(super) mod sms;
 mod sms_first;
 pub mod whatsapp;
-mod whatsapp_first;
 pub use activation::NativeSignalActivation;
 pub use enrollment::{NativeSignalEnrollment, NativeVerifiedSignalEnrollment};
 

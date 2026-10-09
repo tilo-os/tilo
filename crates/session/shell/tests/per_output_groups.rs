@@ -960,6 +960,8 @@ impl Collaborator {
         tree.set_salt_override(SALT.wrapping_add(1));
         let ws = tree.append_empty_workspace("Joined");
         assert!(tree.set_room(ws, room));
+        // The desk's invite names it as the room's governor.
+        assert!(tree.pin_room_authority(room, PeerOrigin::peer_id("docked-laptop")));
         let mut collaborator = Self { tree, room };
         collaborator.receive(desk);
         collaborator

@@ -1030,8 +1030,8 @@ impl VideoPlayer {
 
     /// Keep the embedding observation channel bounded under normal playback.
     /// Position/buffering/duration events have already been reflected into the
-    /// widget's state by the caller, while the two terminal cases require an
-    /// app-level outcome.
+    /// widget's state by the caller, while the terminal cases (and the missing
+    /// decoder that explains an error) require an app-level outcome.
     fn record_terminal_media_events(
         &mut self,
         events: impl IntoIterator<Item = media::MediaEvent>,
@@ -1039,7 +1039,9 @@ impl VideoPlayer {
         self.media_events.extend(events.into_iter().filter(|event| {
             matches!(
                 event,
-                media::MediaEvent::Ended | media::MediaEvent::Error(_)
+                media::MediaEvent::Ended
+                    | media::MediaEvent::Error(_)
+                    | media::MediaEvent::MissingDecoder { .. }
             )
         }));
     }
@@ -2385,7 +2387,7 @@ impl Widget for VideoPlayer {
         // `ImageViewer`. `auto` only fills when a flex parent stretches the
         // node; as the root of a tree (a gallery cell, a harness) it
         // resolved to 0×0 and the placeholder glyph landed on the origin.
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::percent(1.0),
@@ -2393,19 +2395,12 @@ impl Widget for VideoPlayer {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -3560,11 +3555,14 @@ mod tests {
             let mut vp = VideoPlayer::new();
             vp.record_terminal_media_events([
                 media::MediaEvent::Ended,
+                media::MediaEvent::MissingDecoder {
+                    codec: "HEVC".into(),
+                },
                 media::MediaEvent::Error("decoder stopped".into()),
             ]);
             let events = vp.take_media_events();
             assert!(
-                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
+                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::MissingDecoder { codec }, media::MediaEvent::Error(message)] if codec == "HEVC" && message == "decoder stopped")
             );
             assert!(
                 vp.take_media_events().is_empty(),

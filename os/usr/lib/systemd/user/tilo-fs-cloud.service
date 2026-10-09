@@ -22,7 +22,12 @@ Type=simple
 # with PrivateIPC=yes cannot start a second sandboxed process (its IPC
 # namespace setup fails with EPERM and the next exec exits 226/NAMESPACE).
 Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
-ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud
+# Two control sockets, each the user's alone and carrying no credential.
+# Settings' sandbox is granted tilo-fs-cloud/, whose account socket lists the
+# mounts and syncs, pauses and resumes them, and refuses file requests.
+# File requests (revisions, restore, share links) are served only on the file
+# socket in a sibling directory, so that grant never reaches them.
+ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud --control-socket %t/tilo-fs-cloud/control.sock --file-socket %t/tilo-fs-cloud-files/files.sock
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=20s
@@ -41,6 +46,12 @@ ProtectHome=read-only
 ReadWritePaths=%h/Remote %S/tilo %E/tilo %E/tilo/accounts
 ConfigurationDirectory=tilo/accounts
 StateDirectory=tilo/cloud
+# Kept across restarts (and created at login by user-tmpfiles.d): Settings'
+# sandbox binds tilo-fs-cloud, so a restarted service's socket shows through.
+# tilo-fs-cloud-files holds the file socket, outside that grant.
+RuntimeDirectory=tilo-fs-cloud tilo-fs-cloud-files
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

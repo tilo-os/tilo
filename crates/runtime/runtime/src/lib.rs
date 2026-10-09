@@ -20,7 +20,7 @@
 //!
 //! ```text
 //!                +------------------------+
-//!                |      tilo-runtime       |   (this crate — umbrella)
+//!                |        runtime         |   (this crate — SDK umbrella)
 //!                +------------------------+
 //!                     |    |   |    |
 //!         portal ---+ |    |   |    +--- identity

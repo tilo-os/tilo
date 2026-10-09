@@ -67,6 +67,14 @@ pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+/// The host distinguishes local UI intent from continuation of a published action.
+/// A published id is resolved only against broker-retained original custody.
+#[derive(Clone, Copy, Debug)]
+pub enum DisplayOrigin {
+    LocalHost,
+    Published([u8; 16]),
+}
+
 pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
@@ -78,103 +86,6 @@ pub mod settings;
 pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]
 pub use settings::{AppSettingsHandle, MAX_SETTINGS_WIRE_BYTES, SettingsView};
-
-/// Opaque capability naming MLS state held by the shell's vault provider.
-/// Bytes are useful only while registered in that provider; this type carries
-/// neither a key nor a filesystem path.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsVaultHandle([u8; 32]);
-
-impl MlsVaultHandle {
-    /// Wrap a freshly random identifier issued by a trusted broker/vault.
-    /// Possession alone is insufficient: the receiving provider must have the
-    /// identifier in its capability registry.
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque handle for one vault-registered MLS key package.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsKeyPackageHandle([u8; 32]);
-
-impl MlsKeyPackageHandle {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Opaque broker receipt proving an encrypted snapshot reached durable
-/// document history. It resolves to a digest only in the issuing broker.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct MlsSnapshotReceipt([u8; 32]);
-
-impl MlsSnapshotReceipt {
-    pub fn from_issued_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Broker-internal MLS membership command. This is not exposed
-/// as a `CollabService` RPC: applications never submit governance commands.
-/// The shell's authenticated workspace authority constructs it from live
-/// membership state and vault-issued handles.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MlsAuthorityTransaction {
-    pub idempotency_key: [u8; 32],
-    pub channel: [u8; 16],
-    pub workspace: String,
-    pub expected_membership_revision: u64,
-    pub vault: MlsVaultHandle,
-    pub action: MlsAuthorityAction,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum MlsAuthorityAction {
-    Admit {
-        recipient: [u8; 32],
-        role: MlsWorkspaceRole,
-        key_package: MlsKeyPackageHandle,
-    },
-    Remove {
-        recipient: [u8; 32],
-        leaf_index: u32,
-    },
-    EnableEncryption {
-        snapshot: MlsSnapshotReceipt,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MlsWorkspaceRole {
-    Admin,
-    Editor,
-    Commenter,
-    Viewer,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceControlRoute {
@@ -2873,6 +2784,9 @@ pub struct TaskRunEnvelope {
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,
+    /// Only the broker may mint a policy from the native task owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     pub action_context: serde_json::Value,
 }
 
@@ -2939,6 +2853,7 @@ mod task_run_tests {
             run_id: 7,
             lease: "broker-lease".into(),
             planning: TaskRunPlanning::RulesOnly,
+            execution_budget: None,
             action_context: serde_json::json!({"purpose": "Review proposal"}),
         };
         let json = serde_json::to_string(&envelope).unwrap();
@@ -3827,6 +3742,7 @@ mod enrolled_tests {
                 run_id: 9,
                 lease: "lease-1".into(),
                 planning: TaskRunPlanning::Model,
+                execution_budget: None,
                 action_context: serde_json::json!({}),
             },
         }
@@ -3852,6 +3768,37 @@ mod enrolled_tests {
         changed.task.task_id = "other-task".into();
         assert!(custody.accept(&changed).is_err());
     }
+    #[test]
+    fn enrolled_budget_is_bounded_and_same_message_cannot_rewrite_it() {
+        use collab_types::task_budget::TaskExecutionBudget;
+        let mut first = envelope();
+        assert!(
+            serde_json::to_value(&first).unwrap()["task"]
+                .get("execution_budget")
+                .is_none()
+        );
+        first.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 900_000,
+            total_ms: 7_200_000,
+        });
+        let mut custody =
+            EnrolledRecipientCustody::new("agent-1", "launch-1", "epoch-1", "channel-1").unwrap();
+        assert!(custody.accept(&first).unwrap().execute);
+        assert!(!custody.accept(&first).unwrap().execute);
+        let mut changed = first.clone();
+        changed.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 1,
+            total_ms: 1,
+        });
+        assert!(custody.accept(&changed).is_err());
+        changed.task.execution_budget = Some(TaskExecutionBudget {
+            turn_ms: 900_001,
+            total_ms: 7_200_000,
+        });
+        assert!(changed.validate().is_err());
+        assert!(custody.accept(&changed).is_err());
+    }
+
     #[test]
     fn enrolled_full_private_input_and_retention_bounds_fail_closed() {
         let mut first = envelope();
@@ -4050,6 +3997,9 @@ impl EnrolledTaskEnvelope {
             || serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > Self::MAX_JSON_BYTES
         {
             return Err("invalid enrolled task envelope".into());
+        }
+        if let Some(budget) = self.task.execution_budget {
+            budget.validate().map_err(str::to_owned)?;
         }
         Ok(())
     }
