@@ -97,18 +97,23 @@ impl<R: Resource> Live<R> {
             return;
         }
         let state = self.get();
-        let mut places = self.places.borrow_mut();
         for (participant, action) in applied {
-            let Some(place) = R::lands(&state, &action) else {
-                continue;
-            };
-            let number = places.next;
-            places.next = number.saturating_add(1);
-            places.at.insert(participant.clone(), place.clone());
-            places.log.push_back((number, participant, place));
-            if places.log.len() > LANDINGS_KEPT {
-                places.log.pop_front();
+            if let Some(place) = R::lands(&state, &action) {
+                self.land(participant, place);
             }
+        }
+    }
+
+    /// Place `participant` at `place`: where an effect they told where to
+    /// act acted ([`EffectCx::place`](super::EffectCx::place)).
+    pub(crate) fn land(&self, participant: tilo_actions::ParticipantId, place: Place) {
+        let mut places = self.places.borrow_mut();
+        let number = places.next;
+        places.next = number.saturating_add(1);
+        places.at.insert(participant.clone(), place.clone());
+        places.log.push_back((number, participant, place));
+        if places.log.len() > LANDINGS_KEPT {
+            places.log.pop_front();
         }
     }
 

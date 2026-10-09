@@ -140,8 +140,8 @@ pub use outcome::{
     InvocationUpdate, content_hash, content_resource,
 };
 pub use params::{
-    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType,
-    validate_json_schema,
+    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, PLACE_ANNOTATION,
+    ParamType, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;

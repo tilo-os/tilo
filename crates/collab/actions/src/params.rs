@@ -90,6 +90,29 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation marking a parameter as a place inside the resource the
+/// action is on (an item, a caret in it, a range of it); see
+/// [`ActionParam::as_place`].
+pub const PLACE_ANNOTATION: &str = "place";
+
+/// The schema of a place inside a resource ([`ActionParam::as_place`]).
+#[must_use]
+pub fn place_schema() -> serde_json::Value {
+    let offset = || serde_json::json!({ "type": "integer", "minimum": 0 });
+    serde_json::json!({
+        "type": "object",
+        PLACE_ANNOTATION: true,
+        "properties": {
+            "item": { "type": "string", "minLength": 1 },
+            "at": offset(),
+            "start": offset(),
+            "end": offset(),
+        },
+        "required": ["item"],
+        "additionalProperties": false,
+    })
+}
+
 /// One typed parameter an action declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -235,6 +258,33 @@ impl ActionParam {
             .get(RESOURCE_KIND_ANNOTATION)?
             .as_str()
             .filter(|kind| !kind.is_empty())
+    }
+
+    /// Make this a place inside the resource the action is on: an object
+    /// naming one of its items (`{"item": id}`), a caret in it
+    /// (`{"item": id, "at": n}`) or a range of it
+    /// (`{"item": id, "start": n, "end": n}`). Marked with the
+    /// [`PLACE_ANNOTATION`], so a palette or an agent offers the resource's
+    /// items rather than free text. An action given one acts there instead
+    /// of at the invoker's caret.
+    #[must_use]
+    pub fn as_place(mut self) -> Self {
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(place_schema()));
+        self
+    }
+
+    /// Whether this parameter is a place inside the resource
+    /// ([`Self::as_place`]).
+    #[must_use]
+    pub fn is_place(&self) -> bool {
+        self.ty == ParamType::Object
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(PLACE_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
     }
 
     #[must_use]
@@ -1110,6 +1160,8 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     "deprecated",
     "readOnly",
     "writeOnly",
+    RESOURCE_KIND_ANNOTATION,
+    PLACE_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.

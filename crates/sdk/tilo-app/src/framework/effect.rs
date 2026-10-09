@@ -323,6 +323,19 @@ pub struct EffectCx<R: Resource, H = ()> {
     custody: Option<ResourceInvocationScope>,
     worker_custody: Option<ResourceEffectScope>,
     target: Option<ui_core::host_operation::OperationTarget>,
+    /// Where the invoker asked the effect to act (`#[param(place)]`).
+    place: Option<tilo_resource::Place>,
+}
+
+/// The place `effect` was told to act at: its argument declared
+/// `#[param(place)]`, when given.
+fn place_of<E: Effect>(
+    decl: &tilo_resource::effect::EffectDecl,
+    effect: &E,
+) -> Option<tilo_resource::Place> {
+    let param = decl.params.iter().find(|param| param.is_place())?;
+    let value = effect.arguments().remove(param.name.as_ref())?;
+    serde_json::from_value(value).ok()
 }
 
 /// The resource as it was at a past version a view asked for: its
@@ -345,7 +358,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             custody: None,
             worker_custody: None,
             target: None,
+            place: None,
         }
+    }
+
+    /// Where the invoker asked this effect to act (its `#[param(place)]`
+    /// argument): act there instead of at their caret. Once it succeeds
+    /// for a participant, they land there ([`Live::place_of`]).
+    pub fn place(&self) -> Option<&tilo_resource::Place> {
+        self.place.as_ref()
     }
 
     fn with_custody(mut self, custody: Option<ResourceInvocationScope>) -> Result<Self, String> {
@@ -1286,10 +1307,14 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         if declaration.as_ref().map(|decl| decl.kind) != Some(request.kind) {
             return Err(format!("`{id}` was invoked as another kind of operation"));
         }
+        let place = declaration
+            .as_ref()
+            .and_then(|decl| place_of(decl, &effect));
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
             .with_custody(custody.cloned())?;
         cx.target = op.target().cloned();
+        cx.place.clone_from(&place);
         // Keep an immutable snapshot for this effect invocation, including any
         // pending edits. The effect may also read a historical version; neither
         // read borrows the author's document mutably.
@@ -1317,6 +1342,12 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 return Err(error);
             }
         };
+        // A participant told where to act is there now.
+        if let (Some(place), Some(participant)) =
+            (place, ui_core::invocation_scope::current_participant())
+        {
+            self.env.live.land(participant, place);
+        }
         match (answer, started, job) {
             (Effected::Done(output), started, false) => {
                 if let Some(started) = started {

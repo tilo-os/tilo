@@ -11,10 +11,13 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 /// argument is a secret (an invite, a password) the host keeps out of logs,
 /// history and confirmations, and then `choices = EXPR` when the values it
 /// takes are a fixed list (any expression yielding strings, such as a
-/// constant table).
+/// constant table). `place,` marks a place inside the resource
+/// (`at: Option<Place>`): the effect acts there instead of at the invoker's
+/// caret.
 #[derive(Default)]
 struct Param {
     secret: bool,
+    place: bool,
     /// A documented struct whose fields are the effect's arguments
     /// (`#[param(flatten)]`, the effect's only field).
     flatten: bool,
@@ -31,10 +34,12 @@ impl syn::parse::Parse for Param {
                 param.flatten = true;
             } else if flag == "secret" {
                 param.secret = true;
+            } else if flag == "place" {
+                param.place = true;
             } else {
                 return Err(syn::Error::new(
                     flag.span(),
-                    "expected `secret` or `flatten`",
+                    "expected `secret`, `place` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -331,6 +336,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             let declared = match &described.choices {
                 Some(choices) => quote!(#declared.with_choices(#choices)),
                 None => declared,
+            };
+            let declared = if described.place {
+                quote!(#declared.as_place())
+            } else {
+                declared
             };
             quote!(::std::vec![#declared])
         });

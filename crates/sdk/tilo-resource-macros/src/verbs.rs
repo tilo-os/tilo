@@ -226,6 +226,23 @@ struct ParamOptions {
     example: Option<Expr>,
     content: bool,
     flatten: bool,
+    /// A place inside the record (`#[param(place)] at: Option<Place>`).
+    place: bool,
+}
+
+impl ParamOptions {
+    /// The part the parameter plays, as its options say.
+    fn role(&self) -> Role {
+        if self.content {
+            Role::Content
+        } else if self.flatten {
+            Role::Flatten
+        } else if self.place {
+            Role::Place
+        } else {
+            Role::Plain
+        }
+    }
 }
 
 impl syn::parse::Parse for ParamOptions {
@@ -240,9 +257,11 @@ impl syn::parse::Parse for ParamOptions {
         }
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
-            if key == "content" || key == "flatten" {
+            if key == "content" || key == "flatten" || key == "place" {
                 if key == "content" {
                     options.content = true;
+                } else if key == "place" {
+                    options.place = true;
                 } else {
                     options.flatten = true;
                 }
@@ -260,7 +279,7 @@ impl syn::parse::Parse for ParamOptions {
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `content` or `flatten`",
+                    "expected `\"description\"`, `name = \"...\"`, `example = ...`, `content`, `place` or `flatten`",
                 ));
             }
             if input.is_empty() {
@@ -279,11 +298,22 @@ struct Param {
     by_ref: bool,
     description: String,
     example: Option<Expr>,
+    /// What part the parameter plays beyond carrying a value.
+    role: Role,
+}
+
+/// What part a verb's parameter plays.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// A value.
+    Plain,
     /// Content another action produced, carried by its callers as a hash.
-    content: bool,
+    Content,
     /// A struct whose fields are the action's parameters
     /// (`#[param(flatten)]`, the only parameter).
-    flatten: bool,
+    Flatten,
+    /// A place inside the record the verb acts at.
+    Place,
 }
 
 enum Input {
@@ -332,7 +362,7 @@ struct Verb {
 /// The rules a verb's parameters keep: a content or flattened parameter is
 /// the only one.
 fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
-    if params.iter().any(|param| param.content)
+    if params.iter().any(|param| param.role == Role::Content)
         && !(params.len() == 1
             && params.first().is_some_and(|param| {
                 last_ident(&param.ty).is_some_and(|(name, _)| name == "String")
@@ -343,7 +373,7 @@ fn check_params(params: &[Param], span: Span) -> syn::Result<()> {
             "a `#[param(content)]` is the action's only parameter, a `String` holding the content's hash",
         ));
     }
-    if params.iter().any(|param| param.flatten) && params.len() != 1 {
+    if params.iter().any(|param| param.role == Role::Flatten) && params.len() != 1 {
         return Err(syn::Error::new(
             span,
             "a `#[param(flatten)]` is the action's only parameter: its fields are the parameters",
@@ -386,8 +416,7 @@ fn item_param(ident: &syn::Ident) -> Param {
         by_ref: true,
         description: format!("The {} it acts on", humanize(&name)),
         example: None,
-        content: false,
-        flatten: false,
+        role: Role::Plain,
     }
 }
 
@@ -460,6 +489,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                 }
                 let (owned, by_ref) = owned_type(&typed.ty);
                 let name = pat.ident.to_string();
+                let role = param_options.role();
                 inputs.push(Input::Param(params.len()));
                 params.push(Param {
                     ident: pat.ident.clone(),
@@ -468,8 +498,7 @@ fn read_verb(method: &mut syn::ImplItemFn, attr: &Attribute) -> syn::Result<Verb
                     by_ref,
                     description: param_options.description.unwrap_or_else(|| humanize(&name)),
                     example: param_options.example,
-                    content: param_options.content,
-                    flatten: param_options.flatten,
+                    role,
                 });
             }
         }
@@ -520,7 +549,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
         let default = last_ident(ty)
             .is_some_and(|(name, _)| name == "Option")
             .then(|| quote!(#[serde(default, skip_serializing_if = "Option::is_none")]));
-        if param.flatten {
+        if param.role == Role::Flatten {
             return quote! {
                 #[doc = #description]
                 #[serde(flatten)]
@@ -564,7 +593,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
     let path_inits = verb.params.iter().map(|param| {
         let ident = &param.ident;
         let public = &param.public;
-        if param.flatten {
+        if param.role == Role::Flatten {
             return quote!(#ident: #krate::Path::<#name, #name>::root().cast());
         }
         quote!(#ident: #krate::Path::<#name, #name>::root().child(
@@ -619,7 +648,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
     let schema_body = verb
         .params
         .first()
-        .filter(|param| param.flatten)
+        .filter(|param| param.role == Role::Flatten)
         .map_or_else(
             || {
                 quote! {
@@ -1031,7 +1060,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             let name = &param.public;
             let ty = &param.ty;
             let description = &param.description;
-            if param.flatten {
+            if param.role == Role::Flatten {
                 return quote!(#krate::__private::flat_params(
                     &<#ty as #krate::JsonSchema>::json_schema()
                 ));
@@ -1050,13 +1079,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             } else {
                 quote!(required_owned)
             };
+            let place = (param.role == Role::Place).then(|| quote!(.as_place()));
             quote! {
                 ::std::vec![#krate::__private::ActionParam::#constructor(#name, #param_ty, #description)
                     .with_schema(#krate::__private::param_schema(
                         <#ty as #krate::JsonSchema>::json_schema(),
                         #description,
                         #example,
-                    ))]
+                    ))
+                    #place]
             }
         });
         let destructive = verb.options.destructive.then(|| quote!(.destructive()));
@@ -1068,23 +1099,24 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             .prepare
             .as_ref()
             .map(|path| quote!(#path(&mut params)?;));
-        let (collects, prompted) = match verb.params.iter().find(|param| param.content) {
-            Some(param) => {
-                let description = &param.description;
-                let public = &param.public;
-                (
-                    quote!(.collecting_content(#description)),
-                    quote! {
-                        if let ::core::option::Option::Some(hash) =
-                            arguments.remove(#krate::__private::PROMPTED_PARAM)
-                        {
-                            arguments.insert(::std::string::String::from(#public), hash);
-                        }
-                    },
-                )
-            }
-            None => (quote!(), quote!()),
-        };
+        let (collects, prompted) =
+            match verb.params.iter().find(|param| param.role == Role::Content) {
+                Some(param) => {
+                    let description = &param.description;
+                    let public = &param.public;
+                    (
+                        quote!(.collecting_content(#description)),
+                        quote! {
+                            if let ::core::option::Option::Some(hash) =
+                                arguments.remove(#krate::__private::PROMPTED_PARAM)
+                            {
+                                arguments.insert(::std::string::String::from(#public), hash);
+                            }
+                        },
+                    )
+                }
+                None => (quote!(), quote!()),
+            };
         let describe = (!verb.description.is_empty()).then(|| {
             let description = &verb.description;
             quote!(.describe(#description))

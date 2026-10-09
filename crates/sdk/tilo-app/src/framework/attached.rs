@@ -337,6 +337,44 @@ impl AttachedView {
         )
     }
 
+    /// [`Self::invoke`] acting at `place` instead of at the participant's
+    /// caret: `place` is given as the operation's place parameter
+    /// (`#[param(place)]`), and the participant lands there.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`]; refused as invalid arguments when the operation
+    /// takes no place.
+    pub fn invoke_at(
+        &mut self,
+        place: &tilo_resource::Place,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        let resources = self.resources();
+        let param = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .find(|entry| &entry.address == address)
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?
+            .params
+            .iter()
+            .find(|param| param.is_place())
+            .map(|param| param.name.to_string())
+            .ok_or_else(|| {
+                DoorError::InvalidArguments(format!(
+                    "`{}` takes no place to act at",
+                    address.action
+                ))
+            })?;
+        let mut arguments = arguments.clone();
+        arguments.insert(
+            param,
+            serde_json::to_value(place)
+                .map_err(|error| DoorError::InvalidArguments(error.to_string()))?,
+        );
+        self.invoke(address, &arguments, confirmed)
+    }
+
     /// The task the participant carries out from now on (`None`: none),
     /// recorded with each thing it does.
     pub fn set_context(&mut self, context: Option<tilo_actions::ActionContext>) {

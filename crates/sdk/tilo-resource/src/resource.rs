@@ -1155,7 +1155,12 @@ impl SearchEntry {
 
 /// Where a participant is inside a resource, in the resource's own terms:
 /// the same on every collaborator's screen whatever its layout.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Also what an action is told to act at (`#[param(place)] at:
+/// Option<Place>`): it travels as `{"item": id}`, `{"item": id, "at": n}` or
+/// `{"item": id, "start": n, "end": n}`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(into = "PlaceWire", try_from = "PlaceWire")]
 pub enum Place {
     /// An item (a paragraph, a clip, a row).
     Item(String),
@@ -1167,6 +1172,85 @@ pub enum Place {
         start: usize,
         end: usize,
     },
+}
+
+impl Place {
+    /// The item the place is in.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            Self::Item(item) | Self::Caret { item, .. } | Self::Range { item, .. } => item,
+        }
+    }
+}
+
+impl crate::JsonSchema for Place {
+    fn json_schema() -> serde_json::Value {
+        tilo_actions::place_schema()
+    }
+}
+
+/// [`Place`] as it travels.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaceWire {
+    item: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    end: Option<usize>,
+}
+
+impl From<Place> for PlaceWire {
+    fn from(place: Place) -> Self {
+        match place {
+            Place::Item(item) => Self {
+                item,
+                at: None,
+                start: None,
+                end: None,
+            },
+            Place::Caret { item, at } => Self {
+                item,
+                at: Some(at),
+                start: None,
+                end: None,
+            },
+            Place::Range { item, start, end } => Self {
+                item,
+                at: None,
+                start: Some(start),
+                end: Some(end),
+            },
+        }
+    }
+}
+
+impl TryFrom<PlaceWire> for Place {
+    type Error = String;
+
+    fn try_from(wire: PlaceWire) -> Result<Self, String> {
+        if wire.item.is_empty() {
+            return Err("a place names its item".into());
+        }
+        match (wire.at, wire.start, wire.end) {
+            (None, None, None) => Ok(Self::Item(wire.item)),
+            (Some(at), None, None) => Ok(Self::Caret {
+                item: wire.item,
+                at,
+            }),
+            (None, Some(start), Some(end)) if start <= end => Ok(Self::Range {
+                item: wire.item,
+                start,
+                end,
+            }),
+            _ => {
+                Err("a place is an item, a caret `at` in it, or a range `start..end` of it".into())
+            }
+        }
+    }
 }
 
 /// Builds a resource's action from arguments already bound against the
