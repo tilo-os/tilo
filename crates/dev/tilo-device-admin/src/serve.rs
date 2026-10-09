@@ -307,7 +307,7 @@ async fn admitted(
         &hello.cert,
         &own.user_public_key,
         &revocations,
-        net::now_ns(),
+        tilo_clock::unix_now_ns(),
     ) {
         refused(reason);
         refuse(send, Answer::Refused(reason)).await;
