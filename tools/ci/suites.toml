@@ -446,6 +446,7 @@ suites = [
   "tools/perf/test_adapters.py",
   "tools/perf/test_compare.py",
   "tools/perf/test_record.py",
+  "tools/perf/test_runtime_size_ratchet.py",
   "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
 ]
