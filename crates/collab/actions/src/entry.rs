@@ -203,7 +203,13 @@ pub enum HistoryOp {
     Undo,
     Redo,
     Restore,
-    Checkpoint { name: String },
+    Checkpoint {
+        name: String,
+    },
+    /// The document was brought to the storage version `to`.
+    Migrate {
+        to: u32,
+    },
 }
 
 /// The item an action addressed, with its label at the time.

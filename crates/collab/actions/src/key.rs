@@ -28,23 +28,4 @@ impl std::fmt::Display for ActionKey {
     }
 }
 
-/// What an action is able to do, derived by the framework from its code and
-/// never declared by an app. Grants are given by kind.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
-pub enum ActionKind {
-    /// Shows or reads; nothing to undo.
-    Read,
-    /// Changes the document and nothing outside it; undone by construction.
-    #[default]
-    Undoable,
-    /// Reaches outside the document: sends, writes a device, calls a server.
-    Outside,
-}
-
-impl ActionKind {
-    pub const fn is_undoable(&self) -> bool {
-        matches!(self, Self::Undoable)
-    }
-}
+pub use tilo_action_policy::ActionKind;

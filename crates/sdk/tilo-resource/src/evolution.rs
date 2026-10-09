@@ -93,11 +93,12 @@ pub fn migrate<R: Resource>(doc: &mut Doc) -> Result<bool, ModelError> {
     migrated.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(to)))?;
     let context = tilo_actions::ActionContext {
         change: tilo_actions::ChangeKind::Housekeeping,
-        ..tilo_actions::ActionContext::for_resource(
-            format!("Update to storage version {to}"),
-            R::KIND,
-            R::KIND,
-            R::LABEL,
+        ..tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL).with_described(
+            tilo_actions::Described::new(tilo_actions::Did::history(
+                tilo_actions::HistoryOp::Migrate { to },
+                0,
+                None,
+            )),
         )
     };
     let mut options = CommitOptions::default().with_time(0);

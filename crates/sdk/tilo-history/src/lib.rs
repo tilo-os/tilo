@@ -129,7 +129,7 @@ fn framework(locale: &str) -> Rc<Catalogue> {
 }
 
 /// Who did something, as the reader names them.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Who<'a> {
     /// The actor's display name.
     pub actor: &'a str,
@@ -460,6 +460,10 @@ impl<'a> Reader<'a> {
             }
             (HistoryOp::Redo, None) => self.framework_message("history-redo-steps", &args),
             (HistoryOp::Restore, _) => self.framework_message("history-restore", &args),
+            (HistoryOp::Migrate { to }, _) => {
+                args.set("to", *to);
+                self.framework_message("history-migrate", &args)
+            }
             (HistoryOp::Checkpoint { name }, _) => {
                 args.set("name", name.clone());
                 self.framework_message("history-checkpoint", &args)

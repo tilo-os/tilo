@@ -108,10 +108,9 @@ pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
 };
 pub use context::{
-    AGENT_PRINCIPAL_PREFIX, AGENT_TASK_PARTICIPANT_PREFIX, APP_PRINCIPAL_PREFIX, ActionApp,
-    ActionContext, ActionFacet, ActionGroup, ActionInvoker, ActionResource, ActorKind,
-    CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES, ParticipantId,
-    SHORTCUT_PRINCIPAL_PREFIX,
+    AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
+    ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, ChangeKind, MAX_PARTICIPANT_ID_BYTES,
+    ParticipantId,
 };
 pub use contract::{
     ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,

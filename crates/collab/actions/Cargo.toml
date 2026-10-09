@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

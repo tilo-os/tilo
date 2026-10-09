@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::InvocationId;
 use crate::entry::{ActionItem, Described, Did};
+use crate::interaction::ActorKind;
 use crate::key::ActionKind;
 
 /// Prefix used when an entry is embedded in an Automerge change message.
@@ -36,8 +37,8 @@ pub struct ActionContext {
     pub what: Option<Did>,
     /// What the action is able to do (read, change the document, reach
     /// outside it). Written by the executor from the action.
-    #[serde(skip_serializing_if = "ActionKind::is_undoable")]
-    pub kind: ActionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ActionKind>,
     /// What the actor says they are trying to accomplish. Never inferred.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
@@ -254,28 +255,32 @@ impl ActionContext {
     }
 
     /// Host-side rewrite of a caller-supplied context: the invoker becomes
-    /// exactly the authenticated `actor` and the host-derived `participant`,
-    /// discarding whatever invoker the caller put in the envelope. The
-    /// actor's kind follows from the authenticated principal; the person it
-    /// acts for is kept only when it was set by the host for this actor.
+    /// exactly the authenticated person `actor` and the host-derived
+    /// `participant`, discarding whatever invoker the caller put in the
+    /// envelope.
     #[must_use]
     pub fn with_host_invoker(
-        mut self,
+        self,
         actor: impl Into<String>,
         participant: Option<ParticipantId>,
     ) -> Self {
-        let actor = actor.into();
-        let on_behalf_of = self
-            .invoker
-            .as_ref()
-            .filter(|invoker| invoker.actor == actor)
-            .and_then(|invoker| invoker.on_behalf_of.clone());
-        self.invoker = Some(ActionInvoker {
-            kind: ActorKind::of_principal(&actor),
-            actor,
-            on_behalf_of,
+        self.with_host_actor(
+            &crate::InteractionActor::new(actor, ActorKind::Person),
             participant,
-        });
+        )
+    }
+
+    /// [`Self::with_host_invoker`] for any admitted actor: an agent, a
+    /// Shortcut or an app, with the person it acts for.
+    #[must_use]
+    pub fn with_host_actor(
+        mut self,
+        actor: &crate::InteractionActor,
+        participant: Option<ParticipantId>,
+    ) -> Self {
+        let mut invoker = ActionInvoker::admitted(actor);
+        invoker.participant = participant;
+        self.invoker = Some(invoker);
         self
     }
 
@@ -438,53 +443,6 @@ impl std::fmt::Display for ParticipantId {
     }
 }
 
-/// What kind of actor performed an action.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActorKind {
-    #[default]
-    Person,
-    Agent,
-    Shortcut,
-    App,
-}
-
-impl ActorKind {
-    /// The kind of an authenticated principal by its namespace
-    /// (`agent:`, `shortcut:`, `app:`); anything else is a person.
-    pub fn of_principal(actor: &str) -> Self {
-        if actor.starts_with(AGENT_PRINCIPAL_PREFIX) {
-            Self::Agent
-        } else if actor.starts_with(SHORTCUT_PRINCIPAL_PREFIX) {
-            Self::Shortcut
-        } else if actor.starts_with(APP_PRINCIPAL_PREFIX) {
-            Self::App
-        } else {
-            Self::Person
-        }
-    }
-
-    pub const fn is_person(&self) -> bool {
-        matches!(self, Self::Person)
-    }
-
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Person => "person",
-            Self::Agent => "agent",
-            Self::Shortcut => "shortcut",
-            Self::App => "app",
-        }
-    }
-}
-
-/// Namespace of agent principals.
-pub const AGENT_PRINCIPAL_PREFIX: &str = "agent:";
-/// Namespace of Shortcut principals.
-pub const SHORTCUT_PRINCIPAL_PREFIX: &str = "shortcut:";
-/// Namespace of app principals.
-pub const APP_PRINCIPAL_PREFIX: &str = "app:";
-
 /// The invoker of one action: the authenticated actor, its kind, the person
 /// it acts for, and optionally the participant whose view the invocation
 /// resolves against.
@@ -497,7 +455,7 @@ pub struct ActionInvoker {
     /// Authenticated principal, the same string the host admitted
     /// (`PublishedInvocationRequest::actor` in ui-core).
     pub actor: String,
-    #[serde(skip_serializing_if = "ActorKind::is_person")]
+    #[serde(skip_serializing_if = "is_person")]
     pub kind: ActorKind,
     /// The person an agent, Shortcut or app acted for.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -506,14 +464,35 @@ pub struct ActionInvoker {
     pub participant: Option<ParticipantId>,
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+fn is_person(kind: &ActorKind) -> bool {
+    matches!(kind, ActorKind::Person)
+}
+
 impl ActionInvoker {
-    /// An authenticated actor, its kind read from its principal.
+    /// A person the host authenticated, acting for themselves.
     pub fn actor(actor: impl Into<String>) -> Self {
-        let actor = actor.into();
         Self {
-            kind: ActorKind::of_principal(&actor),
-            actor,
+            actor: actor.into(),
+            kind: ActorKind::Person,
             on_behalf_of: None,
+            participant: None,
+        }
+    }
+
+    /// The actor the host admitted: its id, its kind, and the person it acts
+    /// for.
+    pub fn admitted(actor: &crate::InteractionActor) -> Self {
+        Self {
+            actor: actor.id.clone(),
+            kind: actor.kind,
+            on_behalf_of: actor
+                .for_person
+                .clone()
+                .filter(|person| *person != actor.id),
             participant: None,
         }
     }
@@ -552,7 +531,7 @@ impl ActionInvoker {
             .filter(|invoker| invoker.actor == actor);
         Self {
             actor: actor.to_owned(),
-            kind: named.map_or_else(|| ActorKind::of_principal(actor), |invoker| invoker.kind),
+            kind: named.map_or(ActorKind::Person, |invoker| invoker.kind),
             on_behalf_of: named.and_then(|invoker| invoker.on_behalf_of.clone()),
             participant: named.and_then(|invoker| invoker.participant.clone()),
         }
@@ -628,7 +607,11 @@ mod tests {
             .with_app("org.tilo.Snippets", "Snippets")
             .with_described(starred())
             .with_group("run:7", "Tidy snippets", "agent-run")
-            .with_invoker(ActionInvoker::actor("agent:claude").acting_for("person:quinten"))
+            .with_invoker(
+                ActionInvoker::actor("agent:claude")
+                    .with_kind(ActorKind::Agent)
+                    .acting_for("person:quinten"),
+            )
             .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
         let message = entry.change_message().unwrap();
         let read = ActionContext::from_change_message(&message).unwrap();
@@ -664,9 +647,9 @@ mod tests {
         assert_eq!(ActionContext::from_change_message(&message), Some(context));
         let outside = ActionContext::default().with_change(ChangeKind::External);
         let mut outside = outside;
-        outside.kind = ActionKind::Outside;
+        outside.kind = Some(ActionKind::Outside);
         let read = ActionContext::from_change_message(&outside.change_message().unwrap()).unwrap();
-        assert_eq!(read.kind, ActionKind::Outside);
+        assert_eq!(read.kind, Some(ActionKind::Outside));
         assert!(
             !read.is_activity(),
             "what came from outside is not activity"
@@ -688,21 +671,18 @@ mod tests {
     }
 
     #[test]
-    fn actor_kinds_follow_the_principal() {
-        assert_eq!(ActorKind::of_principal("agent:a"), ActorKind::Agent);
-        assert_eq!(ActorKind::of_principal("shortcut:s"), ActorKind::Shortcut);
-        assert_eq!(
-            ActorKind::of_principal("app:org.tilo.Notes"),
-            ActorKind::App
-        );
-        assert_eq!(ActorKind::of_principal("quinten"), ActorKind::Person);
+    fn a_person_acting_for_themselves_records_nobody() {
         assert_eq!(
             ActionInvoker::actor("quinten")
                 .acting_for("quinten")
                 .on_behalf_of,
-            None,
-            "a person acting for themselves records nobody"
+            None
         );
+        let agent = ActionInvoker::admitted(
+            &crate::InteractionActor::new("agent:claude", ActorKind::Agent).acting_for("quinten"),
+        );
+        assert_eq!(agent.kind, ActorKind::Agent);
+        assert_eq!(agent.on_behalf_of.as_deref(), Some("quinten"));
     }
 
     #[test]
@@ -713,7 +693,9 @@ mod tests {
                 .with_participant(ParticipantId::new("owner-window").unwrap()),
         );
         let task = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
-        let rewritten = forged.with_host_invoker("agent:alpha", Some(task.clone()));
+        let rewritten = forged
+            .clone()
+            .with_host_invoker("agent:alpha", Some(task.clone()));
         assert_eq!(
             rewritten.invoker,
             Some(ActionInvoker::actor("agent:alpha").with_participant(task.clone()))
@@ -726,13 +708,17 @@ mod tests {
             ParticipantId::new("owner-window").unwrap().agent_task(),
             None
         );
-        let kept = ActionContext::default()
-            .with_invoker(ActionInvoker::actor("agent:alpha").acting_for("person:owner"))
-            .with_host_invoker("agent:alpha", None);
+        let delegated = forged.with_host_actor(
+            &crate::InteractionActor::new("agent:alpha", ActorKind::Agent)
+                .acting_for("person:owner"),
+            None,
+        );
+        let invoker = delegated.invoker.unwrap();
+        assert_eq!(invoker.kind, ActorKind::Agent);
         assert_eq!(
-            kept.invoker.unwrap().on_behalf_of.as_deref(),
+            invoker.on_behalf_of.as_deref(),
             Some("person:owner"),
-            "the host keeps the person it recorded for this actor"
+            "the host records whom the admitted actor acts for"
         );
     }
 

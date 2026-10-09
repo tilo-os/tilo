@@ -55,6 +55,7 @@ history-redo-steps = { $count ->
 history-undo-some = Undid earlier steps
 history-redo-some = Redid earlier steps
 history-restore = Restored an earlier version
+history-migrate = Updated to storage version { $to }
 history-checkpoint = Saved checkpoint “{ $name }”
 
 history-changed = Changed { $item }

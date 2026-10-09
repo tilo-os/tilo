@@ -191,7 +191,9 @@ fn groups_and_history_steps_read_as_sentences() {
 #[test]
 fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
-    let agent = ActionInvoker::actor("agent:claude").acting_for("person:quinten");
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("person:quinten");
     assert_eq!(agent.kind, ActorKind::Agent);
     assert_eq!(
         reader.actor(&Who {

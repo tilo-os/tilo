@@ -50,6 +50,7 @@ history-redo-steps = { $count ->
 history-undo-some = Frühere Schritte rückgängig gemacht
 history-redo-some = Frühere Schritte wiederhergestellt
 history-restore = Eine frühere Version wiederhergestellt
+history-migrate = Auf Speicherversion { $to } aktualisiert
 history-checkpoint = Zwischenstand „{ $name }“ gespeichert
 
 history-changed = { $item } geändert

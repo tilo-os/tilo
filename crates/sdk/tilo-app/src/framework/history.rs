@@ -536,7 +536,7 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
     if let Some(invoker) = &context.invoker {
         let mut actor = serde_json::Map::new();
         actor.insert("id".into(), invoker.actor.clone().into());
-        actor.insert("kind".into(), invoker.kind.as_str().into());
+        actor.insert("kind".into(), json!(invoker.kind));
         if let Some(person) = &invoker.on_behalf_of {
             actor.insert("for".into(), person.clone().into());
         }
@@ -547,8 +547,8 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         out.insert("run_id".into(), group.id.clone().into());
         out.insert("run_kind".into(), group.kind.clone().into());
     }
-    if context.kind != tilo_actions::ActionKind::Undoable {
-        out.insert("kind".into(), json!(context.kind));
+    if let Some(kind) = context.kind {
+        out.insert("kind".into(), json!(kind));
     }
     if !context.change.is_content() {
         out.insert("change_kind".into(), json!(context.change));

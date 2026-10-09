@@ -74,7 +74,7 @@ fn envelope_for(
     if change != ChangeKind::Content {
         context.change = change;
     }
-    context.kind = action.action_kind();
+    context.kind = Some(action.action_kind());
     // What history records the step did: described by the value itself from
     // the document before it applies, else as the published action the door
     // resolved, else as the verb its encoded form names.

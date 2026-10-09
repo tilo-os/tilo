@@ -22,9 +22,10 @@ pub const MAX_DETAIL_BYTES: usize = 2 * 1024;
 /// What kind of actor did something: in presence, in history and at every
 /// door. Assigned by the host that authenticated the actor, never inferred
 /// from a display name or an `agent:` string prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorKind {
+    #[default]
     Person,
     Agent,
     /// A Shortcut running steps for a person.
