@@ -131,6 +131,7 @@ type = "String"
 [[resources.fields]]
 owner = "appearance-prefs"
 path = "distribution_defaults"
+readonly = true
 stored = "value"
 title = "Palette and pins shipped with the OS image"
 type = "Option<ui::theme::DistributionDefaults>"
@@ -311,6 +312,7 @@ version = 1
 [[resources.fields]]
 owner = "input-prefs"
 path = "natural_scroll"
+readonly = true
 stored = "value"
 title = "Compatibility fallback for pre per-device input documents"
 type = "bool"
@@ -367,6 +369,7 @@ type = "f64"
 [[resources.fields]]
 owner = "input-prefs"
 path = "key_repeat_delay_ms"
+readonly = true
 stored = "value"
 title = "Exact host-imported repeat pair. A Tilo slider selection clears both"
 type = "Option<u32>"
@@ -374,6 +377,7 @@ type = "Option<u32>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "key_repeat_rate_hz"
+readonly = true
 stored = "value"
 title = "Key repeat rate hz"
 type = "Option<u32>"
@@ -509,6 +513,7 @@ KeyboardProfile>"""
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_preview"
+readonly = true
 stored = "value"
 title = "Layout being inspected without changing the active input source"
 type = "Option<String>"
@@ -516,6 +521,7 @@ type = "Option<String>"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_preview_extra_levels"
+readonly = true
 stored = "value"
 title = "Inspect the higher native XKB levels without changing typed input"
 type = "bool"
@@ -523,6 +529,7 @@ type = "bool"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_preview_level"
+readonly = true
 stored = "value"
 title = "Ordered native level inspected without changing the live seat"
 type = "usize"
@@ -530,6 +537,7 @@ type = "usize"
 [[resources.fields]]
 owner = "input-prefs"
 path = "keyboard_inspected_key"
+readonly = true
 stored = "value"
 title = "Explicit physical position inspected; never follows or records key presses"
 type = "String"
@@ -542,6 +550,33 @@ title = "Per-tablet mapping, pressure and buttons, keyed by device identity"
 type = """
 std::collections::BTreeMap<String, settings_store::hardware ::
 TabletConfig>"""
+
+[[resources]]
+kind = "settings.text-assistance"
+label = "Spelling and text"
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "check_spelling"
+stored = "value"
+title = "Check spelling"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "auto_correct"
+stored = "value"
+title = "Auto correct"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "spelling_language"
+stored = "value"
+title = "The language words are checked in (`en_US`, `de_DE`); empty for the"
+type = "String"
 
 [[resources]]
 kind = "settings.power"
@@ -649,6 +684,7 @@ type = "bool"
 [[resources.fields]]
 owner = "update-prefs"
 path = "channel"
+readonly = true
 stored = "value"
 title = "Legacy serialized field. The actual image reference is managed by"
 type = "String"
@@ -656,6 +692,7 @@ type = "String"
 [[resources.fields]]
 owner = "update-prefs"
 path = "last_checked"
+readonly = true
 stored = "value"
 title = 'Human-readable timestamp of the last successful check, or `"Never"`'
 type = "String"
@@ -989,6 +1026,7 @@ version = 1
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "enabled"
+readonly = true
 stored = "value"
 title = "Enabled"
 type = "bool"
@@ -996,6 +1034,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "clipboard"
+readonly = true
 stored = "value"
 title = "Clipboard"
 type = "bool"
@@ -1003,6 +1042,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "notifications"
+readonly = true
 stored = "value"
 title = "Notifications"
 type = "bool"
@@ -1010,6 +1050,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "wifi_settings"
+readonly = true
 stored = "value"
 title = "Wifi settings"
 type = "bool"
@@ -1017,6 +1058,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "media"
+readonly = true
 stored = "value"
 title = "Media"
 type = "bool"
@@ -1024,6 +1066,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "display_input"
+readonly = true
 stored = "value"
 title = "Display input"
 type = "bool"
@@ -1031,6 +1074,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "file_transfer"
+readonly = true
 stored = "value"
 title = "File transfer"
 type = "bool"
@@ -1038,6 +1082,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "realtime_sessions"
+readonly = true
 stored = "value"
 title = "Realtime sessions"
 type = "bool"
@@ -1045,6 +1090,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "typed_gamepad"
+readonly = true
 stored = "value"
 title = "Typed gamepad"
 type = "bool"
@@ -1052,6 +1098,7 @@ type = "bool"
 [[resources.fields]]
 owner = "continuity-privacy"
 path = "app_continuations"
+readonly = true
 stored = "value"
 title = "App continuations"
 type = "bool"

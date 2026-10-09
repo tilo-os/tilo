@@ -100,51 +100,24 @@ fn labels<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'stat
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccessibilityEffect {
-    /// Turn the large cursor on or off.
-    #[effect(idempotent)]
-    SetLargeCursor { on: bool },
     /// Set the size of the large cursor.
     #[effect(idempotent)]
     SetCursorSize {
         #[param("The cursor size", choices = labels(AccessibilityPrefs::CURSOR_SIZES))]
         size: String,
     },
-    /// Turn the pointer crosshair on or off.
-    #[effect(idempotent)]
-    SetPointerCrosshair { on: bool },
-    /// Turn the thicker text cursor on or off.
-    #[effect(idempotent)]
-    SetThickTextCaret { on: bool },
-    /// Turn mouse keys on or off.
-    #[effect(idempotent)]
-    SetMouseKeys { on: bool },
-    /// Turn sticky keys on or off.
-    #[effect(idempotent)]
-    SetStickyKeys { on: bool },
-    /// Turn slow keys on or off.
-    #[effect(idempotent)]
-    SetSlowKeys { on: bool },
-    /// Turn bounce keys on or off.
-    #[effect(idempotent)]
-    SetBounceKeys { on: bool },
     /// Set how long bounce keys ignores a repeated key.
     #[effect(idempotent)]
     SetBounceKeysDelay {
         #[param("The delay", choices = labels(AccessibilityPrefs::BOUNCE_DELAYS))]
         delay: String,
     },
-    /// Flash the screen when bounce keys ignores a key, or stop.
-    #[effect(idempotent)]
-    SetBounceKeysAlert { on: bool },
     /// Set when the on-screen keyboard shows.
     #[effect(idempotent)]
     SetOnScreenKeyboard {
         #[param("When it shows", choices = OnScreenKeyboard::OPTIONS.iter().copied())]
         mode: String,
     },
-    /// Turn switch control on or off.
-    #[effect(idempotent)]
-    SetSwitchControl { on: bool },
     /// Set the keys switch control listens to.
     #[effect(idempotent)]
     SetSwitchKeys {
@@ -190,9 +163,6 @@ pub enum AccessibilityEffect {
         #[param("The voice", choices = ScreenReaderVoice::OPTIONS.iter().copied())]
         voice: String,
     },
-    /// Turn visual alerts on or off.
-    #[effect(idempotent)]
-    SetVisualAlerts { on: bool },
 }
 
 /// Answer `effect`.
@@ -204,30 +174,21 @@ pub(crate) fn answer(
     use AccessibilityEffect as E;
     let not = |value: &str, what: &str| format!("`{value}` is not a {what}");
     let change: Box<dyn FnOnce(&mut AccessibilityPrefs)> = match effect {
-        E::SetLargeCursor { on } => Box::new(move |p| p.large_cursor = on),
         E::SetCursorSize { size } => {
             let px = AccessibilityPrefs::cursor_size_px(&size)
                 .ok_or_else(|| not(&size, "cursor size"))?;
             Box::new(move |p| p.cursor_size = px)
         }
-        E::SetPointerCrosshair { on } => Box::new(move |p| p.cursor_crosshair = on),
-        E::SetThickTextCaret { on } => Box::new(move |p| p.thick_text_caret = on),
-        E::SetMouseKeys { on } => Box::new(move |p| p.mouse_keys = on),
-        E::SetStickyKeys { on } => Box::new(move |p| p.sticky_keys = on),
-        E::SetSlowKeys { on } => Box::new(move |p| p.slow_keys = on),
-        E::SetBounceKeys { on } => Box::new(move |p| p.bounce_keys = on),
         E::SetBounceKeysDelay { delay } => {
             let ms = AccessibilityPrefs::bounce_delay_ms(&delay)
                 .ok_or_else(|| not(&delay, "bounce keys delay"))?;
             Box::new(move |p| p.bounce_keys_delay_ms = ms)
         }
-        E::SetBounceKeysAlert { on } => Box::new(move |p| p.bounce_keys_alert = on),
         E::SetOnScreenKeyboard { mode } => {
             let mode = OnScreenKeyboard::from_label(&mode)
                 .ok_or_else(|| not(&mode, "on-screen keyboard mode"))?;
             Box::new(move |p| p.on_screen_keyboard = mode)
         }
-        E::SetSwitchControl { on } => Box::new(move |p| p.switch_control = on),
         E::SetSwitchKeys { keys } => {
             let pair =
                 SwitchKeyPair::from_label(&keys).ok_or_else(|| not(&keys, "switch key pair"))?;
@@ -270,7 +231,6 @@ pub(crate) fn answer(
                 ScreenReaderVoice::from_label(&voice).ok_or_else(|| not(&voice, "voice"))?;
             Box::new(move |p| p.screen_reader_voice = voice)
         }
-        E::SetVisualAlerts { on } => Box::new(move |p| p.visual_alerts = on),
     };
     app.host().update(change)
 }
@@ -468,7 +428,19 @@ impl AccessibilityPane {
         self.appearance.get()
     }
 
-    fn toggle<E>(&self, id: &str, state: &LocalState<bool>, on: ActionRef<E, bool>) -> El {
+    fn toggle(
+        &self,
+        id: &str,
+        state: &LocalState<bool>,
+        field: ui::tilo_resource::Path<AccessibilityPrefs, bool>,
+    ) -> El {
+        Box::new(
+            self.cx
+                .bind_field(Toggle::from_state(state).with_id(id), field),
+        )
+    }
+
+    fn effect_toggle<E>(&self, id: &str, state: &LocalState<bool>, on: ActionRef<E, bool>) -> El {
         Box::new(
             self.cx
                 .bind(Toggle::from_state(state).with_id(id), effect(on)),
@@ -521,20 +493,18 @@ impl AccessibilityPane {
                 setting_row_described(
                     &t("a11y-high-contrast"),
                     &t("a11y-high-contrast-desc"),
-                    self.toggle(
-                        "a11y.high_contrast",
-                        &shown.high_contrast,
-                        AppearanceEffect::SET_HIGH_CONTRAST,
-                    ),
+                    Box::new(self.cx.bind_field(
+                        Toggle::from_state(&shown.high_contrast).with_id("a11y.high_contrast"),
+                        AppearancePrefs::paths().high_contrast,
+                    )),
                 ),
                 setting_row_described(
                     &t("a11y-reduce-motion"),
                     &t("a11y-reduce-motion-desc"),
-                    self.toggle(
-                        "a11y.reduce_motion",
-                        &shown.reduce_motion,
-                        AppearanceEffect::SET_REDUCE_MOTION,
-                    ),
+                    Box::new(self.cx.bind_field(
+                        Toggle::from_state(&shown.reduce_motion).with_id("a11y.reduce_motion"),
+                        AppearancePrefs::paths().reduce_motion,
+                    )),
                 ),
                 choice_row(&t("a11y-text-size"), size),
                 choice_row(
@@ -580,7 +550,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.mouse_keys",
                         &shown.mouse_keys,
-                        AccessibilityEffect::SET_MOUSE_KEYS,
+                        AccessibilityPrefs::paths().mouse_keys,
                     ),
                 ),
                 caption(&t("a11y-mouse-keys-caption")),
@@ -590,7 +560,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.large_cursor",
                         &shown.large_cursor,
-                        AccessibilityEffect::SET_LARGE_CURSOR,
+                        AccessibilityPrefs::paths().large_cursor,
                     ),
                 ),
                 choice_row(
@@ -608,7 +578,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.cursor_crosshair",
                         &shown.cursor_crosshair,
-                        AccessibilityEffect::SET_POINTER_CROSSHAIR,
+                        AccessibilityPrefs::paths().cursor_crosshair,
                     ),
                 ),
                 setting_row_described(
@@ -617,7 +587,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.thick_text_caret",
                         &shown.thick_text_caret,
-                        AccessibilityEffect::SET_THICK_TEXT_CARET,
+                        AccessibilityPrefs::paths().thick_text_caret,
                     ),
                 ),
             ]),
@@ -646,7 +616,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.sticky_keys",
                         &shown.sticky_keys,
-                        AccessibilityEffect::SET_STICKY_KEYS,
+                        AccessibilityPrefs::paths().sticky_keys,
                     ),
                 ),
                 setting_row_described(
@@ -655,7 +625,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.slow_keys",
                         &shown.slow_keys,
-                        AccessibilityEffect::SET_SLOW_KEYS,
+                        AccessibilityPrefs::paths().slow_keys,
                     ),
                 ),
                 setting_row_described(
@@ -664,7 +634,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.bounce_keys",
                         &shown.bounce_keys,
-                        AccessibilityEffect::SET_BOUNCE_KEYS,
+                        AccessibilityPrefs::paths().bounce_keys,
                     ),
                 ),
                 choice_row(
@@ -682,7 +652,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.bounce_keys_alert",
                         &shown.bounce_alert,
-                        AccessibilityEffect::SET_BOUNCE_KEYS_ALERT,
+                        AccessibilityPrefs::paths().bounce_keys_alert,
                     ),
                 ),
                 osk_row,
@@ -692,7 +662,7 @@ impl AccessibilityPane {
                     self.toggle(
                         "a11y.switch_control",
                         &shown.switch_control,
-                        AccessibilityEffect::SET_SWITCH_CONTROL,
+                        AccessibilityPrefs::paths().switch_control,
                     ),
                 ),
                 choice_row(
@@ -727,7 +697,7 @@ impl AccessibilityPane {
                 setting_row_described(
                     &t("a11y-screen-reader"),
                     &t("a11y-screen-reader-desc"),
-                    self.toggle(
+                    self.effect_toggle(
                         "a11y.screen_reader",
                         &shown.screen_reader,
                         AccessibilityEffect::SET_SCREEN_READER,
@@ -776,7 +746,7 @@ impl AccessibilityPane {
                             self.toggle(
                                 "a11y.visual_alerts",
                                 &shown.visual_alerts,
-                                AccessibilityEffect::SET_VISUAL_ALERTS,
+                                AccessibilityPrefs::paths().visual_alerts,
                             ),
                         ),
                         value_row(
@@ -841,6 +811,7 @@ impl Widget for AccessibilityPane {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use crate::host::testing::{ACCESSIBILITY, edit_field};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
@@ -856,7 +827,13 @@ mod tests {
     #[test]
     fn accessibility_effects_write_their_sections() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(&mut app, AppearanceEffect::SetHighContrast { on: true });
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::APPEARANCE,
+            "high_contrast",
+            true,
+        )
+        .unwrap();
         set(
             &mut app,
             AppearanceEffect::SetTextSize {
@@ -867,26 +844,23 @@ mod tests {
         assert!(appearance.high_contrast);
         assert_eq!(appearance.text_scale, 1.30);
 
-        set(&mut app, AccessibilityEffect::SetLargeCursor { on: true });
+        edit_field(&mut app, ACCESSIBILITY, "large_cursor", true).unwrap();
         set(
             &mut app,
             AccessibilityEffect::SetCursorSize {
                 size: "Largest".into(),
             },
         );
-        set(&mut app, AccessibilityEffect::SetStickyKeys { on: true });
-        set(&mut app, AccessibilityEffect::SetBounceKeys { on: true });
+        edit_field(&mut app, ACCESSIBILITY, "sticky_keys", true).unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "bounce_keys", true).unwrap();
         set(
             &mut app,
             AccessibilityEffect::SetBounceKeysDelay {
                 delay: "500 ms".into(),
             },
         );
-        set(
-            &mut app,
-            AccessibilityEffect::SetBounceKeysAlert { on: true },
-        );
-        set(&mut app, AccessibilityEffect::SetMouseKeys { on: true });
+        edit_field(&mut app, ACCESSIBILITY, "bounce_keys_alert", true).unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "mouse_keys", true).unwrap();
         set(
             &mut app,
             AccessibilityEffect::SetOnScreenKeyboard {

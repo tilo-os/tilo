@@ -63,12 +63,6 @@ pub enum DisplayEffect {
     /// Follow the ambient light.
     #[effect(returns, idempotent)]
     SetAutomaticBrightness { on: bool },
-    /// Warm the screen's colours.
-    #[effect(returns, idempotent)]
-    SetNightLight { on: bool },
-    /// Warm the colours from sunset to sunrise.
-    #[effect(returns, idempotent)]
-    SetNightLightSchedule { on: bool },
     /// How warm Night Light makes the screen.
     #[effect(returns, idempotent)]
     SetNightLightWarmth {
@@ -1520,16 +1514,6 @@ impl DisplayModel {
                     "Automatic brightness disabled.".into()
                 })
             }
-            DisplayEffect::SetNightLight { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light = on)?;
-                Ok(String::new())
-            }
-            DisplayEffect::SetNightLightSchedule { on } => {
-                let on = *on;
-                self.save(|prefs| prefs.night_light_schedule = on)?;
-                Ok(String::new())
-            }
             DisplayEffect::SetNightLightWarmth { warmth } => {
                 let kelvin = temperature_from_label(warmth)
                     .ok_or_else(|| format!("`{warmth}` is not a Night Light warmth"))?;
@@ -2241,10 +2225,10 @@ impl DisplayModel {
                 setting_row(
                     &t("display-night-light"),
                     Box::new(
-                        self.cx.bind(
+                        self.cx.bind_field(
                             Toggle::from_state(&LocalState::new(prefs.night_light))
                                 .with_id("display.night_light"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT),
+                            crate::prefs::DisplayPrefs::paths().night_light,
                         ),
                     ),
                 ),
@@ -2252,10 +2236,10 @@ impl DisplayModel {
                     &t("display-night-light-schedule"),
                     &t("display-night-light-schedule-desc"),
                     Box::new(
-                        self.cx.bind(
+                        self.cx.bind_field(
                             Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
                                 .with_id("display.night_light_schedule"),
-                            effect(DisplayEffect::SET_NIGHT_LIGHT_SCHEDULE),
+                            crate::prefs::DisplayPrefs::paths().night_light_schedule,
                         ),
                     ),
                 ),

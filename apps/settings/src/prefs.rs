@@ -158,6 +158,7 @@ impl Default for DisplayPrefs {
 )]
 pub struct InputPrefs {
     /// Compatibility fallback for pre per-device input documents.
+    #[model(readonly)]
     pub natural_scroll: bool,
     pub touchpad_natural_scroll: Option<bool>,
     pub mouse_natural_scroll: Option<bool>,
@@ -169,7 +170,9 @@ pub struct InputPrefs {
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
     /// Exact host-imported repeat pair. A Tilo slider selection clears both.
+    #[model(readonly)]
     pub key_repeat_delay_ms: Option<u32>,
+    #[model(readonly)]
     pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
@@ -208,12 +211,16 @@ pub struct InputPrefs {
     pub keyboard_assignments:
         std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
     /// Layout being inspected without changing the active input source.
+    #[model(readonly)]
     pub keyboard_preview: Option<String>,
     /// Inspect the higher native XKB levels without changing typed input.
+    #[model(readonly)]
     pub keyboard_preview_extra_levels: bool,
     /// Ordered native level inspected without changing the live seat.
+    #[model(readonly)]
     pub keyboard_preview_level: usize,
     /// Explicit physical position inspected; never follows or records key presses.
+    #[model(readonly)]
     pub keyboard_inspected_key: String,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
@@ -486,8 +493,10 @@ pub struct UpdatePrefs {
     pub auto: bool,
     /// Legacy serialized field. The actual image reference is managed by
     /// bootc; Settings never treats this string as an actionable channel.
+    #[model(readonly)]
     pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
+    #[model(readonly)]
     pub last_checked: String,
 }
 
@@ -592,6 +601,7 @@ pub struct AppearancePrefs {
     /// Palette and pins shipped with the OS image.
     /// Absent on a settings file written before the layer existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(readonly)]
     pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]

@@ -65,9 +65,6 @@ pub enum ShortcutEffect {
         #[param("The chord, such as `Super+K` or `Ctrl+Alt+T`")]
         chord: String,
     },
-    /// Add Vim-style keys for moving around the desktop, or stop.
-    #[effect(idempotent, label = "Set Vim-style desktop navigation")]
-    SetVimMode { on: bool },
 }
 
 /// Answer `effect`: a chord the catalogue refuses changes nothing and the
@@ -93,9 +90,6 @@ pub(crate) fn answer(
                 .update_section(SHORTCUTS_SECTION, section)
                 .map_err(|error| format!("the shortcut could not be saved: {error}"))?;
             Ok(Effected::done())
-        }
-        ShortcutEffect::SetVimMode { on } => {
-            host.update(|controls: &mut DesktopControls| controls.vim_mode = on)
         }
     }
 }
@@ -238,9 +232,9 @@ impl ShortcutPane {
                 if category == ShortcutCategory::Navigation {
                     body.push(setting_row(
                         &t("settings-shortcuts-vim"),
-                        Box::new(self.cx.bind(
+                        Box::new(self.cx.bind_field(
                             Toggle::from_state(&self.vim_mode).with_id("shortcuts.vim_mode"),
-                            effect(ShortcutEffect::SET_VIM_MODE),
+                            DesktopControls::paths().vim_mode,
                         )),
                     ));
                     if let Some(reason) = &self.refusal_shown {
@@ -417,10 +411,8 @@ mod tests {
             "Super+Shift+l"
         );
 
-        app.effect(&SettingsEffect::from(ShortcutEffect::SetVimMode {
-            on: true,
-        }))
-        .unwrap();
+        crate::host::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
+            .unwrap();
         assert!(app.settings::<DesktopControls>().get().vim_mode);
     }
 

@@ -903,7 +903,7 @@ impl MouseKeyboardPane {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct OskSourceSettings {
     layout: String,

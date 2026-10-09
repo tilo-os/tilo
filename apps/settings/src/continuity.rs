@@ -116,15 +116,25 @@ impl AuditEntry {
     reason = "each bool is an independently revocable, serialized privacy capability"
 )]
 pub struct ContinuityPrivacy {
+    #[model(readonly)]
     pub(crate) enabled: bool,
+    #[model(readonly)]
     pub(crate) clipboard: bool,
+    #[model(readonly)]
     pub(crate) notifications: bool,
+    #[model(readonly)]
     pub(crate) wifi_settings: bool,
+    #[model(readonly)]
     pub(crate) media: bool,
+    #[model(readonly)]
     pub(crate) display_input: bool,
+    #[model(readonly)]
     pub(crate) file_transfer: bool,
+    #[model(readonly)]
     pub(crate) realtime_sessions: bool,
+    #[model(readonly)]
     pub(crate) typed_gamepad: bool,
+    #[model(readonly)]
     pub(crate) app_continuations: bool,
     #[model(readonly)]
     pub(crate) audit: Vec<AuditEntry>,

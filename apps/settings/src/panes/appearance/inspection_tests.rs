@@ -20,6 +20,8 @@ fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
     .unwrap()
 }
 
+use crate::host::testing::{APPEARANCE, edit_field};
+
 fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
     app.effect(&SettingsEffect::from(effect)).unwrap();
 }
@@ -34,15 +36,11 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
         AppearanceEffect::SetDayNightSchedule {
             schedule: "custom".into(),
         },
-        AppearanceEffect::SetDayStart {
-            time: "06:30".into(),
-        },
-        AppearanceEffect::SetNightStart {
-            time: "21:00".into(),
-        },
     ] {
         set(&mut app, effect);
     }
+    edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
+    edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
     let original = read(&mut app);
     let preferences = app.settings::<AppearancePrefs>().get();
     assert_eq!(original["schema"], "tilo.settings.appearance.v1");
@@ -138,19 +136,15 @@ fn appearance_inspection_follows_current_shared_custom_choices_without_exporting
     assert!(!inspected.to_string().contains("never-export"));
     assert_eq!(app.settings::<AppearancePrefs>().get(), current);
     // Reversible accessibility changes preserve custom references/documents.
-    set(
+    edit_field(
         &mut app,
-        AppearanceEffect::SetHighContrast {
-            on: !current.high_contrast,
-        },
-    );
+        APPEARANCE,
+        "high_contrast",
+        !current.high_contrast,
+    )
+    .unwrap();
     assert_eq!(read(&mut app)["high_contrast"], !current.high_contrast);
-    set(
-        &mut app,
-        AppearanceEffect::SetHighContrast {
-            on: current.high_contrast,
-        },
-    );
+    edit_field(&mut app, APPEARANCE, "high_contrast", current.high_contrast).unwrap();
     assert_eq!(read(&mut app), inspected);
     assert_eq!(app.settings::<AppearancePrefs>().get(), current);
 }

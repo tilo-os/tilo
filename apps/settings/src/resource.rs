@@ -140,6 +140,7 @@ impl ResourceApp for SettingsShell {
             .settings::<crate::prefs::AppearancePrefs>()
             .settings::<crate::prefs::AccessibilityPrefs>()
             .settings::<crate::prefs::InputPrefs>()
+            .settings::<ui::text_assistance::TextAssistancePrefs>()
             .settings::<crate::prefs::PowerPrefs>()
             .settings::<crate::prefs::UpdatePrefs>()
             .settings::<crate::prefs::NotificationPrefs>()

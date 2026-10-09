@@ -2085,3 +2085,289 @@ display-shared-saved = Shared display arrangement saved.
 display-shared-move-stale = The device confirmed its position, but the shared arrangement changed. Refresh and try again.
 display-shared-auto-input = Allow automatic input from your devices
 display-shared-auto-description = While one of this device's displays is included, let your enrolled online devices control it. Continuity and Display/input must also be enabled. Devices you have declined stay declined. This choice applies only here.
+
+## History: what each change to a settings section did
+
+settings-appearance-prefs-high-contrast = { $new ->
+    [true] Turned on high contrast
+   *[false] Turned off high contrast
+}
+settings-appearance-prefs-reduce-motion = { $new ->
+    [true] Turned on reduced motion
+   *[false] Turned off reduced motion
+}
+settings-appearance-prefs-reduce-transparency = { $new ->
+    [true] Turned on reduced transparency
+   *[false] Turned off reduced transparency
+}
+settings-appearance-prefs-forced-colors = { $new ->
+    [true] Forced theme colours onto content
+   *[false] Stopped forcing theme colours onto content
+}
+settings-accessibility-prefs-large-cursor = { $new ->
+    [true] Turned on the large cursor
+   *[false] Turned off the large cursor
+}
+settings-accessibility-prefs-screen-reader = { $new ->
+    [true] Turned on the screen reader
+   *[false] Turned off the screen reader
+}
+settings-accessibility-prefs-sticky-keys = { $new ->
+    [true] Turned on sticky keys
+   *[false] Turned off sticky keys
+}
+settings-accessibility-prefs-slow-keys = { $new ->
+    [true] Turned on slow keys
+   *[false] Turned off slow keys
+}
+settings-accessibility-prefs-bounce-keys = { $new ->
+    [true] Turned on bounce keys
+   *[false] Turned off bounce keys
+}
+settings-accessibility-prefs-bounce-keys-alert = { $new ->
+    [true] Turned on the bounce keys alert
+   *[false] Turned off the bounce keys alert
+}
+settings-accessibility-prefs-mouse-keys = { $new ->
+    [true] Turned on mouse keys
+   *[false] Turned off mouse keys
+}
+settings-accessibility-prefs-visual-alerts = { $new ->
+    [true] Turned on visual alerts
+   *[false] Turned off visual alerts
+}
+settings-accessibility-prefs-cursor-crosshair = { $new ->
+    [true] Turned on the pointer crosshair
+   *[false] Turned off the pointer crosshair
+}
+settings-accessibility-prefs-thick-text-caret = { $new ->
+    [true] Turned on the thick text cursor
+   *[false] Turned off the thick text cursor
+}
+settings-accessibility-prefs-switch-control = { $new ->
+    [true] Turned on switch control
+   *[false] Turned off switch control
+}
+settings-input-prefs-tap-to-click = { $new ->
+    [true] Turned on tap to click
+   *[false] Turned off tap to click
+}
+settings-input-prefs-tap-drag = { $new ->
+    [true] Turned on tap and drag
+   *[false] Turned off tap and drag
+}
+settings-input-prefs-tap-drag-lock = { $new ->
+    [true] Turned on the drag lock
+   *[false] Turned off the drag lock
+}
+settings-input-prefs-disable-while-typing = { $new ->
+    [true] Turned off the touchpad while typing
+   *[false] Kept the touchpad on while typing
+}
+settings-input-prefs-middle-emulation = { $new ->
+    [true] Turned on middle-click emulation
+   *[false] Turned off middle-click emulation
+}
+settings-input-prefs-left-handed = { $new ->
+    [true] Swapped the mouse buttons for the left hand
+   *[false] Set the mouse buttons for the right hand
+}
+settings-input-prefs-touchpad-gestures = { $new ->
+    [true] Turned on touchpad gestures
+   *[false] Turned off touchpad gestures
+}
+settings-input-prefs-touchpad-enabled = { $new ->
+    [true] Turned on the touchpad
+   *[false] Turned off the touchpad
+}
+settings-input-prefs-touchpad-disabled-on-external-mouse = { $new ->
+    [true] Turned off the touchpad while a mouse is connected
+   *[false] Kept the touchpad on with a mouse connected
+}
+settings-text-assistance-prefs-check-spelling = { $new ->
+    [true] Turned on spell checking
+   *[false] Turned off spell checking
+}
+settings-text-assistance-prefs-auto-correct = { $new ->
+    [true] Turned on auto-correct
+   *[false] Turned off auto-correct
+}
+settings-power-prefs-auto-suspend = { $new ->
+    [true] Turned on automatic suspend
+   *[false] Turned off automatic suspend
+}
+settings-update-prefs-auto = { $new ->
+    [true] Turned on automatic updates
+   *[false] Turned off automatic updates
+}
+settings-notification-prefs-do-not-disturb = { $new ->
+    [true] Turned on Do Not Disturb
+   *[false] Turned off Do Not Disturb
+}
+settings-notification-prefs-show-banners = { $new ->
+    [true] Turned on notification banners
+   *[false] Turned off notification banners
+}
+settings-notification-prefs-show-previews = { $new ->
+    [true] Turned on notification previews
+   *[false] Turned off notification previews
+}
+settings-notification-prefs-play-sounds = { $new ->
+    [true] Turned on notification sounds
+   *[false] Turned off notification sounds
+}
+settings-notification-prefs-show-on-lock-screen = { $new ->
+    [true] Showed notifications on the lock screen
+   *[false] Hid notifications on the lock screen
+}
+settings-notification-prefs-show-badges = { $new ->
+    [true] Turned on notification badges
+   *[false] Turned off notification badges
+}
+settings-focus-schedule-enabled = { $new ->
+    [true] Turned on the focus schedule
+   *[false] Turned off the focus schedule
+}
+settings-focus-schedule-allow-priority = { $new ->
+    [true] Let priority apps through during focus
+   *[false] Stopped letting priority apps through during focus
+}
+settings-system-sound-prefs-enabled = { $new ->
+    [true] Turned on system sounds
+   *[false] Turned off system sounds
+}
+settings-system-sound-events-notification = { $new ->
+    [true] Turned on the notification sound
+   *[false] Turned off the notification sound
+}
+settings-system-sound-events-message = { $new ->
+    [true] Turned on the message sound
+   *[false] Turned off the message sound
+}
+settings-system-sound-events-volume-change = { $new ->
+    [true] Turned on the volume change sound
+   *[false] Turned off the volume change sound
+}
+settings-system-sound-events-screenshot = { $new ->
+    [true] Turned on the screenshot sound
+   *[false] Turned off the screenshot sound
+}
+settings-system-sound-events-device-connected = { $new ->
+    [true] Turned on the device connected sound
+   *[false] Turned off the device connected sound
+}
+settings-system-sound-events-device-disconnected = { $new ->
+    [true] Turned on the device disconnected sound
+   *[false] Turned off the device disconnected sound
+}
+settings-system-sound-events-low-battery = { $new ->
+    [true] Turned on the low battery sound
+   *[false] Turned off the low battery sound
+}
+settings-system-sound-events-error = { $new ->
+    [true] Turned on the error sound
+   *[false] Turned off the error sound
+}
+settings-audio-prefs-mono-output = { $new ->
+    [true] Turned on mono audio
+   *[false] Turned off mono audio
+}
+settings-audio-prefs-echo-cancellation = { $new ->
+    [true] Turned on echo cancellation
+   *[false] Turned off echo cancellation
+}
+settings-display-prefs-auto-brightness = { $new ->
+    [true] Turned on automatic brightness
+   *[false] Turned off automatic brightness
+}
+settings-display-prefs-night-light = { $new ->
+    [true] Turned on night light
+   *[false] Turned off night light
+}
+settings-display-prefs-night-light-schedule = { $new ->
+    [true] Let night light follow day and night
+   *[false] Stopped night light following day and night
+}
+settings-desktop-controls-vim-mode = { $new ->
+    [true] Turned on Vim keys for the desktop
+   *[false] Turned off Vim keys for the desktop
+}
+settings-automatic-display-prefs-automatic-display-input = { $new ->
+    [true] Turned on automatic display input
+   *[false] Turned off automatic display input
+}
+settings-appearance-prefs-theme = Chose the theme { $new }
+settings-appearance-prefs-mode = Set the appearance to { $new }
+settings-appearance-prefs-dark-theme = Chose { $new } for dark mode
+settings-appearance-prefs-light-theme = Chose { $new } for light mode
+settings-appearance-prefs-density = Changed the spacing density
+settings-appearance-prefs-text-scale = Changed the text size
+settings-appearance-prefs-ui-scale = Changed the interface size
+settings-appearance-prefs-schedule = Changed when day and night begin
+settings-appearance-prefs-sunrise = Set day to begin at { $new }
+settings-appearance-prefs-sunset = Set night to begin at { $new }
+settings-appearance-prefs-wallpaper-scope = Changed which workspaces a new wallpaper covers
+settings-appearance-prefs-wallpaper-target = Changed where a new wallpaper shows
+settings-appearance-prefs-distinct-letters = Changed how similar letters are told apart
+settings-accessibility-prefs-cursor-size = Set the cursor size to { $new }
+settings-accessibility-prefs-on-screen-keyboard = Changed when the on-screen keyboard shows
+settings-accessibility-prefs-bounce-keys-delay-ms = Changed the bounce keys delay
+settings-accessibility-prefs-color-filter = Changed the colour filter
+settings-accessibility-prefs-magnifier-zoom = Set the magnifier to { $new }×
+settings-accessibility-prefs-magnifier-view = Changed how the magnifier shows the screen
+settings-accessibility-prefs-switch-key-pair = Changed the switch control keys
+settings-accessibility-prefs-switch-scan-ms = Changed the switch control scan
+settings-accessibility-prefs-screen-reader-rate = Changed how fast the screen reader speaks
+settings-accessibility-prefs-screen-reader-voice = Changed the screen reader voice
+settings-input-prefs-touchpad-natural-scroll = Changed the touchpad scroll direction
+settings-input-prefs-mouse-natural-scroll = Changed the mouse scroll direction
+settings-input-prefs-pointer-speed = Changed the pointer speed
+settings-input-prefs-touchpad-pointer-speed = Changed the touchpad speed
+settings-input-prefs-mouse-pointer-speed = Changed the mouse speed
+settings-input-prefs-key-repeat = Changed the key repeat
+settings-input-prefs-keyboard-layout = Switched the keyboard layout to { $new }
+settings-input-prefs-accel-profile = Changed the pointer acceleration
+settings-input-prefs-touchpad-click-method = Changed how the touchpad clicks
+settings-input-prefs-touchpad-scroll-method = Changed how the touchpad scrolls
+settings-input-prefs-scroll-speed = Changed the scroll speed
+settings-input-prefs-compose-key = Changed the compose key
+settings-input-prefs-caps-lock = Changed what Caps Lock does
+settings-input-prefs-keyboard-layouts = Changed the keyboard layouts
+settings-input-prefs-keyboard-model = Changed the keyboard model
+settings-input-prefs-keyboard-assignments = Changed which keyboard uses which layouts
+settings-input-prefs-tablets = Changed a graphics tablet
+settings-text-assistance-prefs-spelling-language = Changed the spelling language
+settings-power-prefs-suspend-minutes = Changed when the computer suspends
+settings-power-prefs-saver-suspend-minutes = Changed when the computer suspends in power saver
+settings-power-prefs-balanced-suspend-minutes = Changed when the computer suspends when balanced
+settings-power-prefs-performance-suspend-minutes = Changed when the computer suspends in performance
+settings-power-prefs-blank-minutes = Changed when the screen turns off
+settings-power-prefs-lock-minutes = Changed when the screen locks
+settings-power-prefs-lid-close-action = Changed what closing the lid does
+settings-power-prefs-power-key-action = Changed what the power key does
+settings-power-prefs-low-battery-percent = Set the low battery warning to { $new } %
+settings-power-prefs-critical-battery-percent = Set the critical battery level to { $new } %
+settings-power-prefs-critical-action = Changed what happens at critical battery
+settings-notification-prefs-per-app = Changed how an app notifies
+settings-focus-schedule-start-minute = Changed when focus begins
+settings-focus-schedule-end-minute = Changed when focus ends
+settings-focus-schedule-weekdays = Changed the focus days
+settings-system-sound-prefs-volume = Changed the system sound volume
+settings-system-sound-prefs-theme = Changed the sound theme
+settings-audio-prefs-output-device = Changed the default speaker
+settings-audio-prefs-input-device = Changed the default microphone
+settings-audio-prefs-balance = Changed the left and right balance
+settings-display-prefs-night-light-temperature = Changed how warm night light is
+settings-display-prefs-scale = Changed the display scale
+settings-locale-currency = Changed the currency
+settings-locale-date-format = Changed the date format
+settings-locale-time-format = Changed the time format
+settings-locale-measurement = Changed the measurement system
+settings-locale-number-style = Changed the number format
+settings-locale-first-day-of-week = Changed the first day of the week
+settings-provider-config-profiles = Changed the model providers
+settings-provider-config-default-profile = Changed the default model provider
+settings-default-apps-handlers = Changed a default app
+settings-shared-display-prefs-arrangement = Changed the display arrangement
+settings-osk-source-settings-layout = Changed the on-screen keyboard layout
+settings-osk-source-settings-layouts = Changed the on-screen keyboard layouts

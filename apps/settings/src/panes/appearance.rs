@@ -18,8 +18,9 @@
 //! - **Reduce motion** — snaps animations to their resting state.
 //! - **Text size** — a UI-wide text-scale multiplier for low-vision comfort.
 //!
-//! Every control is bound to an [`AppearanceEffect`]; the effect writes the
-//! section and the pane shows what the section holds, whoever changed it.
+//! A control that sets one field is bound to that field of the section, the
+//! others to an [`AppearanceEffect`]; either writes the section, and the pane
+//! shows what the section holds, whoever changed it.
 
 use std::collections::HashMap;
 
@@ -269,35 +270,11 @@ pub enum AppearanceEffect {
         #[param("How large text is drawn", choices = TEXT_SIZE_NAMES)]
         size: String,
     },
-    /// Turn high contrast on or off.
-    #[effect(idempotent)]
-    SetHighContrast {
-        #[param("Whether high contrast is on")]
-        on: bool,
-    },
-    /// Turn reduced motion on or off.
-    #[effect(idempotent)]
-    SetReduceMotion {
-        #[param("Whether animations are skipped")]
-        on: bool,
-    },
     /// Set when day and night begin.
     #[effect(idempotent)]
     SetDayNightSchedule {
         #[param("`sun`: at sunrise and sunset; `custom`: at the day and night times", choices = values(&SCHEDULES))]
         schedule: String,
-    },
-    /// Set when day begins on the custom schedule.
-    #[effect(idempotent)]
-    SetDayStart {
-        #[param("The time day begins, HH:MM", choices = TIMES)]
-        time: String,
-    },
-    /// Set when night begins on the custom schedule.
-    #[effect(idempotent)]
-    SetNightStart {
-        #[param("The time night begins, HH:MM", choices = TIMES)]
-        time: String,
     },
     /// Set which workspaces a new wallpaper covers.
     #[effect(idempotent)]
@@ -353,23 +330,9 @@ pub(crate) fn answer(
                 text_size_scale(&size).ok_or_else(|| format!("`{size}` is not a text size"))?;
             host.update(|prefs: &mut AppearancePrefs| prefs.text_scale = scale)
         }
-        AppearanceEffect::SetHighContrast { on } => {
-            host.update(|prefs: &mut AppearancePrefs| prefs.high_contrast = on)
-        }
-        AppearanceEffect::SetReduceMotion { on } => {
-            host.update(|prefs: &mut AppearancePrefs| prefs.reduce_motion = on)
-        }
         AppearanceEffect::SetDayNightSchedule { schedule } => {
             let schedule = pick(&SCHEDULES, &schedule, "day and night schedule")?;
             host.update(|prefs: &mut AppearancePrefs| prefs.schedule = schedule)
-        }
-        AppearanceEffect::SetDayStart { time } => {
-            let time = schedule_time(&time)?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.sunrise = time)
-        }
-        AppearanceEffect::SetNightStart { time } => {
-            let time = schedule_time(&time)?;
-            host.update(|prefs: &mut AppearancePrefs| prefs.sunset = time)
         }
         AppearanceEffect::SetWallpaperScope { scope } => {
             let scope = pick(&WALLPAPER_SCOPES, &scope, "wallpaper scope")?;
@@ -381,13 +344,6 @@ pub(crate) fn answer(
         }
         AppearanceEffect::ChooseWallpaper => choose_wallpaper(app, cx),
     }
-}
-
-/// A time of day `HH:MM`, normalised.
-fn schedule_time(time: &str) -> Result<String, String> {
-    settings_store::day_schedule::parse_hhmm(time)
-        .map(settings_store::day_schedule::format_hhmm)
-        .ok_or_else(|| format!("`{time}` is not a time of day (HH:MM)"))
 }
 
 /// Ask for a picture through the file-chooser portal, then hand it to the
@@ -563,11 +519,11 @@ impl AppearancePane {
         &self,
         state: &LocalState<bool>,
         id: &str,
-        effect: tilo_resource::ActionRef<AppearanceEffect, bool>,
+        field: ui::tilo_resource::Path<AppearancePrefs, bool>,
     ) -> Box<dyn Widget> {
         Box::new(
             self.cx
-                .bind(Toggle::from_state(state).with_id(id), self::effect(effect)),
+                .bind_field(Toggle::from_state(state).with_id(id), field),
         )
     }
 
@@ -622,7 +578,7 @@ impl AppearancePane {
                     self.toggle(
                         &self.shown.high_contrast,
                         "appearance.high_contrast",
-                        AppearanceEffect::SET_HIGH_CONTRAST,
+                        AppearancePrefs::paths().high_contrast,
                     ),
                 ),
                 setting_row_described(
@@ -631,7 +587,7 @@ impl AppearancePane {
                     self.toggle(
                         &self.shown.reduce_motion,
                         "appearance.reduce_motion",
-                        AppearanceEffect::SET_REDUCE_MOTION,
+                        AppearancePrefs::paths().reduce_motion,
                     ),
                 ),
             ]),
@@ -775,7 +731,7 @@ impl AppearancePane {
                     times(),
                     &self.shown.sunrise,
                     "appearance.sunrise",
-                    |control| cx.bind(control, effect(AppearanceEffect::SET_DAY_START)),
+                    |control| cx.bind_field(control, AppearancePrefs::paths().sunrise),
                 ),
             ));
             body.push(choice_row(
@@ -784,7 +740,7 @@ impl AppearancePane {
                     times(),
                     &self.shown.sunset,
                     "appearance.sunset",
-                    |control| cx.bind(control, effect(AppearanceEffect::SET_NIGHT_START)),
+                    |control| cx.bind_field(control, AppearancePrefs::paths().sunset),
                 ),
             ));
         }
@@ -889,6 +845,8 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
+    use crate::host::testing::{APPEARANCE, edit_field};
+
     fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
         app.effect(&SettingsEffect::from(effect))
             .expect("the appearance effect is answered");
@@ -918,25 +876,15 @@ mod tests {
                 size: "Large".into(),
             },
         );
-        set(&mut app, AppearanceEffect::SetHighContrast { on: true });
+        edit_field(&mut app, APPEARANCE, "high_contrast", true).unwrap();
         set(
             &mut app,
             AppearanceEffect::SetDayNightSchedule {
                 schedule: "custom".into(),
             },
         );
-        set(
-            &mut app,
-            AppearanceEffect::SetDayStart {
-                time: "06:30".into(),
-            },
-        );
-        set(
-            &mut app,
-            AppearanceEffect::SetNightStart {
-                time: "21:00".into(),
-            },
-        );
+        edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
+        edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
         set(
             &mut app,
             AppearanceEffect::SetWallpaperScope {
@@ -960,16 +908,13 @@ mod tests {
         assert_eq!(config.fixed.sunrise, 6 * 60 + 30);
         assert_eq!(config.fixed.sunset, 21 * 60);
 
-        for refused in [
-            AppearanceEffect::SetTheme {
+        assert!(
+            app.effect(&SettingsEffect::from(AppearanceEffect::SetTheme {
                 theme: "Neon".into(),
-            },
-            AppearanceEffect::SetDayStart {
-                time: "25:00".into(),
-            },
-        ] {
-            assert!(app.effect(&SettingsEffect::from(refused)).is_err());
-        }
+            }))
+            .is_err()
+        );
+        assert!(edit_field(&mut app, APPEARANCE, "sunrise", "25:00").is_err());
         assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
     }
 

@@ -7,6 +7,8 @@
 //! screenshot. It never writes them itself: a control is bound to a
 //! [`SettingsEffect`] ([`PaneCx::bind`]), and the effect's answer writes.
 
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
@@ -22,6 +24,66 @@ use crate::resource::Settings;
 struct Door {
     actions: Actions<Settings>,
     dispatcher: Dispatcher<Settings>,
+    /// The published field edits of each settings section, by its type.
+    sections: Rc<HashMap<TypeId, Box<dyn Any>>>,
+}
+
+/// A settings section a pane binds its controls to by path: the person's
+/// own record, published as `settings:<kind>`.
+pub trait Section:
+    SettingsSchema
+    + ui::tilo_resource::Resource<State = Self>
+    + ui::tilo_resource::Fields
+    + Clone
+    + PartialEq
+    + Send
+    + Sync
+{
+}
+
+impl<T> Section for T where
+    T: SettingsSchema
+        + ui::tilo_resource::Resource<State = T>
+        + ui::tilo_resource::Fields
+        + Clone
+        + PartialEq
+        + Send
+        + Sync
+{
+}
+
+/// The published actions of section `T`, held for the panes.
+fn held<T: Section>(
+    cx: &ui::framework::SurfaceCx<Settings>,
+    sections: &mut HashMap<TypeId, Box<dyn Any>>,
+) {
+    if let Some(actions) = cx.record_actions(&cx.settings::<T>()) {
+        sections.insert(TypeId::of::<T>(), Box::new(actions));
+    }
+}
+
+/// Every section's published actions, for the panes of the surface attached
+/// through `cx`.
+fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
+    let mut sections = HashMap::new();
+    held::<crate::prefs::AppearancePrefs>(cx, &mut sections);
+    held::<crate::prefs::AccessibilityPrefs>(cx, &mut sections);
+    held::<crate::prefs::InputPrefs>(cx, &mut sections);
+    held::<ui::text_assistance::TextAssistancePrefs>(cx, &mut sections);
+    held::<crate::prefs::PowerPrefs>(cx, &mut sections);
+    held::<crate::prefs::UpdatePrefs>(cx, &mut sections);
+    held::<crate::prefs::NotificationPrefs>(cx, &mut sections);
+    held::<crate::prefs::AudioPrefs>(cx, &mut sections);
+    held::<crate::prefs::DisplayPrefs>(cx, &mut sections);
+    held::<crate::region::Locale>(cx, &mut sections);
+    held::<crate::continuity::ContinuityPrivacy>(cx, &mut sections);
+    held::<crate::panes::keyboard_shortcuts::DesktopControls>(cx, &mut sections);
+    held::<crate::panes::agent_models::AgentProviders>(cx, &mut sections);
+    held::<crate::panes::personal_apps::DefaultApps>(cx, &mut sections);
+    held::<crate::panes::display::shared_displays::SharedDisplayPrefs>(cx, &mut sections);
+    held::<crate::panes::display::shared_displays::AutomaticDisplayPrefs>(cx, &mut sections);
+    held::<crate::panes::mouse_keyboard::keyboard_editor::OskSourceSettings>(cx, &mut sections);
+    sections
 }
 
 /// What a pane reaches of its host. Cheap to clone; clones share the door.
@@ -64,6 +126,7 @@ impl PaneCx {
             door: Some(Door {
                 actions: cx.actions(),
                 dispatcher: cx.dispatcher(),
+                sections: Rc::new(sections(cx)),
             }),
             storage: cx.storage(),
             mode: cx.mode(),
@@ -145,6 +208,49 @@ impl PaneCx {
             }
             Some(_) | None => control.unavailable(),
         }
+    }
+
+    /// The published actions of section `T`; `None` outside a host.
+    fn section<T: Section>(&self) -> Option<&Actions<T>> {
+        self.door
+            .as_ref()?
+            .sections
+            .get(&TypeId::of::<T>())?
+            .downcast_ref::<Actions<T>>()
+    }
+
+    /// `control`, setting the field of section `T` at `path` to each
+    /// committed value: the section's own field edit, which its check
+    /// guards. Disabled outside a host.
+    #[must_use]
+    pub fn bind_field<T, V, C>(&self, control: C, path: ui::tilo_resource::Path<T, V>) -> C
+    where
+        T: Section,
+        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
+        C: ActionControl<V>,
+    {
+        match self
+            .section::<T>()
+            .and_then(|actions| actions.edit_binding(path, ui::tilo_resource::Path::set))
+        {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
+    /// The binding of the field of section `T` at `path`, for a pane's own
+    /// widget that emits the field's value. `None` outside a host.
+    #[must_use]
+    pub fn field_binding<T, V>(
+        &self,
+        path: ui::tilo_resource::Path<T, V>,
+    ) -> Option<ui::tilo_actions::ActionBinding<V>>
+    where
+        T: Section,
+        V: ui::tilo_resource::Model + ui::tilo_resource::Settable + 'static,
+    {
+        self.section::<T>()?
+            .edit_binding(path, ui::tilo_resource::Path::set)
     }
 
     /// Bind to a published item operation rather than exporting a row effect
@@ -288,5 +394,59 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
     #[must_use]
     pub fn settings(&self) -> &StoredSettings<T> {
         &self.settings
+    }
+}
+
+/// What tests reach of the sections, as an agent or assistive technology
+/// does.
+#[cfg(test)]
+pub(crate) mod testing {
+    use ui::framework::testing::TestApp;
+
+    pub(crate) const APPEARANCE: &str = "settings.appearance";
+    pub(crate) const ACCESSIBILITY: &str = "settings.accessibility";
+    pub(crate) const NOTIFICATIONS: &str = "settings.notifications";
+    pub(crate) const POWER: &str = "settings.power";
+    pub(crate) const INPUT: &str = "settings.input";
+    pub(crate) const TEXT_ASSISTANCE: &str = "settings.text-assistance";
+
+    /// Set the field `field` of the section `kind` to `value` through the
+    /// door, as an agent does.
+    ///
+    /// # Errors
+    /// The door's refusal: the section's check, an unknown field.
+    pub(crate) fn edit_field(
+        app: &mut TestApp<crate::SettingsShell>,
+        kind: &str,
+        field: &str,
+        value: impl serde::Serialize,
+    ) -> Result<(), String> {
+        edit_path(app, kind, &[field], value)
+    }
+
+    /// Set the field at `path` (field names, outermost first) of the section
+    /// `kind` to `value` through the door, as an agent does.
+    ///
+    /// # Errors
+    /// The door's refusal: the section's check, an unknown field.
+    pub(crate) fn edit_path(
+        app: &mut TestApp<crate::SettingsShell>,
+        kind: &str,
+        path: &[&str],
+        value: impl serde::Serialize,
+    ) -> Result<(), String> {
+        let path: Vec<serde_json::Value> = path
+            .iter()
+            .map(|field| serde_json::json!({ "field": field }))
+            .collect();
+        app.call_on(
+            &format!("settings:{kind}"),
+            "field-edit",
+            serde_json::json!({
+                "edit": { "path": path, "op": "set", "value": value }
+            }),
+        )
+        .map(drop)
+        .map_err(|error| format!("{error:?}"))
     }
 }

@@ -2085,3 +2085,289 @@ display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
 display-shared-move-stale = Das Gerät hat seine Position bestätigt, aber die gemeinsame Anordnung wurde geändert. Aktualisiere sie und versuche es erneut.
 display-shared-auto-input = Automatische Eingabe von deinen Geräten erlauben
 display-shared-auto-description = Solange eine Anzeige dieses Geräts eingebunden ist, dürfen deine registrierten Geräte es steuern, wenn sie online sind. Kontinuität und Anzeige/Eingabe müssen ebenfalls aktiviert sein. Abgelehnte Geräte bleiben abgelehnt. Diese Auswahl gilt nur hier.
+
+## History: what each change to a settings section did
+
+settings-appearance-prefs-high-contrast = { $new ->
+    [true] Hohen Kontrast eingeschaltet
+   *[false] Hohen Kontrast ausgeschaltet
+}
+settings-appearance-prefs-reduce-motion = { $new ->
+    [true] Weniger Bewegung eingeschaltet
+   *[false] Weniger Bewegung ausgeschaltet
+}
+settings-appearance-prefs-reduce-transparency = { $new ->
+    [true] Weniger Transparenz eingeschaltet
+   *[false] Weniger Transparenz ausgeschaltet
+}
+settings-appearance-prefs-forced-colors = { $new ->
+    [true] Designfarben für Inhalte erzwungen
+   *[false] Designfarben für Inhalte nicht mehr erzwungen
+}
+settings-accessibility-prefs-large-cursor = { $new ->
+    [true] Großen Mauszeiger eingeschaltet
+   *[false] Großen Mauszeiger ausgeschaltet
+}
+settings-accessibility-prefs-screen-reader = { $new ->
+    [true] Bildschirmleser eingeschaltet
+   *[false] Bildschirmleser ausgeschaltet
+}
+settings-accessibility-prefs-sticky-keys = { $new ->
+    [true] Einrastfunktion eingeschaltet
+   *[false] Einrastfunktion ausgeschaltet
+}
+settings-accessibility-prefs-slow-keys = { $new ->
+    [true] Anschlagverzögerung eingeschaltet
+   *[false] Anschlagverzögerung ausgeschaltet
+}
+settings-accessibility-prefs-bounce-keys = { $new ->
+    [true] Tastenprellen-Filter eingeschaltet
+   *[false] Tastenprellen-Filter ausgeschaltet
+}
+settings-accessibility-prefs-bounce-keys-alert = { $new ->
+    [true] Hinweis beim Tastenprellen eingeschaltet
+   *[false] Hinweis beim Tastenprellen ausgeschaltet
+}
+settings-accessibility-prefs-mouse-keys = { $new ->
+    [true] Maustasten eingeschaltet
+   *[false] Maustasten ausgeschaltet
+}
+settings-accessibility-prefs-visual-alerts = { $new ->
+    [true] Visuelle Hinweise eingeschaltet
+   *[false] Visuelle Hinweise ausgeschaltet
+}
+settings-accessibility-prefs-cursor-crosshair = { $new ->
+    [true] Fadenkreuz am Zeiger eingeschaltet
+   *[false] Fadenkreuz am Zeiger ausgeschaltet
+}
+settings-accessibility-prefs-thick-text-caret = { $new ->
+    [true] Breite Schreibmarke eingeschaltet
+   *[false] Breite Schreibmarke ausgeschaltet
+}
+settings-accessibility-prefs-switch-control = { $new ->
+    [true] Schaltersteuerung eingeschaltet
+   *[false] Schaltersteuerung ausgeschaltet
+}
+settings-input-prefs-tap-to-click = { $new ->
+    [true] Tippen zum Klicken eingeschaltet
+   *[false] Tippen zum Klicken ausgeschaltet
+}
+settings-input-prefs-tap-drag = { $new ->
+    [true] Tippen und Ziehen eingeschaltet
+   *[false] Tippen und Ziehen ausgeschaltet
+}
+settings-input-prefs-tap-drag-lock = { $new ->
+    [true] Ziehsperre eingeschaltet
+   *[false] Ziehsperre ausgeschaltet
+}
+settings-input-prefs-disable-while-typing = { $new ->
+    [true] Touchpad beim Tippen ausgeschaltet
+   *[false] Touchpad beim Tippen eingeschaltet gelassen
+}
+settings-input-prefs-middle-emulation = { $new ->
+    [true] Mittelklick-Emulation eingeschaltet
+   *[false] Mittelklick-Emulation ausgeschaltet
+}
+settings-input-prefs-left-handed = { $new ->
+    [true] Maustasten für die linke Hand vertauscht
+   *[false] Maustasten für die rechte Hand eingestellt
+}
+settings-input-prefs-touchpad-gestures = { $new ->
+    [true] Touchpad-Gesten eingeschaltet
+   *[false] Touchpad-Gesten ausgeschaltet
+}
+settings-input-prefs-touchpad-enabled = { $new ->
+    [true] Touchpad eingeschaltet
+   *[false] Touchpad ausgeschaltet
+}
+settings-input-prefs-touchpad-disabled-on-external-mouse = { $new ->
+    [true] Touchpad bei angeschlossener Maus ausgeschaltet
+   *[false] Touchpad bei angeschlossener Maus eingeschaltet gelassen
+}
+settings-text-assistance-prefs-check-spelling = { $new ->
+    [true] Rechtschreibprüfung eingeschaltet
+   *[false] Rechtschreibprüfung ausgeschaltet
+}
+settings-text-assistance-prefs-auto-correct = { $new ->
+    [true] Autokorrektur eingeschaltet
+   *[false] Autokorrektur ausgeschaltet
+}
+settings-power-prefs-auto-suspend = { $new ->
+    [true] Automatischen Ruhezustand eingeschaltet
+   *[false] Automatischen Ruhezustand ausgeschaltet
+}
+settings-update-prefs-auto = { $new ->
+    [true] Automatische Updates eingeschaltet
+   *[false] Automatische Updates ausgeschaltet
+}
+settings-notification-prefs-do-not-disturb = { $new ->
+    [true] „Nicht stören“ eingeschaltet
+   *[false] „Nicht stören“ ausgeschaltet
+}
+settings-notification-prefs-show-banners = { $new ->
+    [true] Mitteilungsbanner eingeschaltet
+   *[false] Mitteilungsbanner ausgeschaltet
+}
+settings-notification-prefs-show-previews = { $new ->
+    [true] Mitteilungsvorschau eingeschaltet
+   *[false] Mitteilungsvorschau ausgeschaltet
+}
+settings-notification-prefs-play-sounds = { $new ->
+    [true] Mitteilungstöne eingeschaltet
+   *[false] Mitteilungstöne ausgeschaltet
+}
+settings-notification-prefs-show-on-lock-screen = { $new ->
+    [true] Mitteilungen auf dem Sperrbildschirm gezeigt
+   *[false] Mitteilungen auf dem Sperrbildschirm ausgeblendet
+}
+settings-notification-prefs-show-badges = { $new ->
+    [true] Mitteilungsabzeichen eingeschaltet
+   *[false] Mitteilungsabzeichen ausgeschaltet
+}
+settings-focus-schedule-enabled = { $new ->
+    [true] Fokuszeiten eingeschaltet
+   *[false] Fokuszeiten ausgeschaltet
+}
+settings-focus-schedule-allow-priority = { $new ->
+    [true] Vorrangige Apps während des Fokus zugelassen
+   *[false] Vorrangige Apps während des Fokus nicht mehr zugelassen
+}
+settings-system-sound-prefs-enabled = { $new ->
+    [true] Systemtöne eingeschaltet
+   *[false] Systemtöne ausgeschaltet
+}
+settings-system-sound-events-notification = { $new ->
+    [true] Mitteilungston eingeschaltet
+   *[false] Mitteilungston ausgeschaltet
+}
+settings-system-sound-events-message = { $new ->
+    [true] Nachrichtenton eingeschaltet
+   *[false] Nachrichtenton ausgeschaltet
+}
+settings-system-sound-events-volume-change = { $new ->
+    [true] Ton bei Lautstärkeänderung eingeschaltet
+   *[false] Ton bei Lautstärkeänderung ausgeschaltet
+}
+settings-system-sound-events-screenshot = { $new ->
+    [true] Bildschirmfoto-Ton eingeschaltet
+   *[false] Bildschirmfoto-Ton ausgeschaltet
+}
+settings-system-sound-events-device-connected = { $new ->
+    [true] Ton beim Anschließen eingeschaltet
+   *[false] Ton beim Anschließen ausgeschaltet
+}
+settings-system-sound-events-device-disconnected = { $new ->
+    [true] Ton beim Trennen eingeschaltet
+   *[false] Ton beim Trennen ausgeschaltet
+}
+settings-system-sound-events-low-battery = { $new ->
+    [true] Ton bei schwachem Akku eingeschaltet
+   *[false] Ton bei schwachem Akku ausgeschaltet
+}
+settings-system-sound-events-error = { $new ->
+    [true] Fehlerton eingeschaltet
+   *[false] Fehlerton ausgeschaltet
+}
+settings-audio-prefs-mono-output = { $new ->
+    [true] Mono-Audio eingeschaltet
+   *[false] Mono-Audio ausgeschaltet
+}
+settings-audio-prefs-echo-cancellation = { $new ->
+    [true] Echounterdrückung eingeschaltet
+   *[false] Echounterdrückung ausgeschaltet
+}
+settings-display-prefs-auto-brightness = { $new ->
+    [true] Automatische Helligkeit eingeschaltet
+   *[false] Automatische Helligkeit ausgeschaltet
+}
+settings-display-prefs-night-light = { $new ->
+    [true] Nachtlicht eingeschaltet
+   *[false] Nachtlicht ausgeschaltet
+}
+settings-display-prefs-night-light-schedule = { $new ->
+    [true] Nachtlicht folgt Tag und Nacht
+   *[false] Nachtlicht folgt nicht mehr Tag und Nacht
+}
+settings-desktop-controls-vim-mode = { $new ->
+    [true] Vim-Tasten für den Desktop eingeschaltet
+   *[false] Vim-Tasten für den Desktop ausgeschaltet
+}
+settings-automatic-display-prefs-automatic-display-input = { $new ->
+    [true] Automatische Bildschirmeingabe eingeschaltet
+   *[false] Automatische Bildschirmeingabe ausgeschaltet
+}
+settings-appearance-prefs-theme = Design { $new } gewählt
+settings-appearance-prefs-mode = Erscheinungsbild auf { $new } gestellt
+settings-appearance-prefs-dark-theme = { $new } für den dunklen Modus gewählt
+settings-appearance-prefs-light-theme = { $new } für den hellen Modus gewählt
+settings-appearance-prefs-density = Abstandsdichte geändert
+settings-appearance-prefs-text-scale = Textgröße geändert
+settings-appearance-prefs-ui-scale = Größe der Oberfläche geändert
+settings-appearance-prefs-schedule = Beginn von Tag und Nacht geändert
+settings-appearance-prefs-sunrise = Tagesbeginn auf { $new } gestellt
+settings-appearance-prefs-sunset = Nachtbeginn auf { $new } gestellt
+settings-appearance-prefs-wallpaper-scope = Geändert, für welche Arbeitsbereiche ein neues Hintergrundbild gilt
+settings-appearance-prefs-wallpaper-target = Geändert, wo ein neues Hintergrundbild erscheint
+settings-appearance-prefs-distinct-letters = Unterscheidung ähnlicher Buchstaben geändert
+settings-accessibility-prefs-cursor-size = Zeigergröße auf { $new } gestellt
+settings-accessibility-prefs-on-screen-keyboard = Geändert, wann die Bildschirmtastatur erscheint
+settings-accessibility-prefs-bounce-keys-delay-ms = Verzögerung des Tastenprellen-Filters geändert
+settings-accessibility-prefs-color-filter = Farbfilter geändert
+settings-accessibility-prefs-magnifier-zoom = Lupe auf { $new }× gestellt
+settings-accessibility-prefs-magnifier-view = Darstellung der Lupe geändert
+settings-accessibility-prefs-switch-key-pair = Tasten der Schaltersteuerung geändert
+settings-accessibility-prefs-switch-scan-ms = Abtastung der Schaltersteuerung geändert
+settings-accessibility-prefs-screen-reader-rate = Sprechgeschwindigkeit des Bildschirmlesers geändert
+settings-accessibility-prefs-screen-reader-voice = Stimme des Bildschirmlesers geändert
+settings-input-prefs-touchpad-natural-scroll = Scrollrichtung des Touchpads geändert
+settings-input-prefs-mouse-natural-scroll = Scrollrichtung der Maus geändert
+settings-input-prefs-pointer-speed = Zeigergeschwindigkeit geändert
+settings-input-prefs-touchpad-pointer-speed = Touchpad-Geschwindigkeit geändert
+settings-input-prefs-mouse-pointer-speed = Mausgeschwindigkeit geändert
+settings-input-prefs-key-repeat = Tastenwiederholung geändert
+settings-input-prefs-keyboard-layout = Tastaturbelegung auf { $new } umgeschaltet
+settings-input-prefs-accel-profile = Zeigerbeschleunigung geändert
+settings-input-prefs-touchpad-click-method = Klickverhalten des Touchpads geändert
+settings-input-prefs-touchpad-scroll-method = Scrollverhalten des Touchpads geändert
+settings-input-prefs-scroll-speed = Scrollgeschwindigkeit geändert
+settings-input-prefs-compose-key = Compose-Taste geändert
+settings-input-prefs-caps-lock = Funktion der Feststelltaste geändert
+settings-input-prefs-keyboard-layouts = Tastaturbelegungen geändert
+settings-input-prefs-keyboard-model = Tastaturmodell geändert
+settings-input-prefs-keyboard-assignments = Zuordnung der Tastaturbelegungen geändert
+settings-input-prefs-tablets = Grafiktablett geändert
+settings-text-assistance-prefs-spelling-language = Sprache der Rechtschreibprüfung geändert
+settings-power-prefs-suspend-minutes = Geändert, wann der Rechner in den Ruhezustand geht
+settings-power-prefs-saver-suspend-minutes = Ruhezustand im Energiesparmodus geändert
+settings-power-prefs-balanced-suspend-minutes = Ruhezustand im ausgewogenen Modus geändert
+settings-power-prefs-performance-suspend-minutes = Ruhezustand im Leistungsmodus geändert
+settings-power-prefs-blank-minutes = Geändert, wann der Bildschirm ausgeht
+settings-power-prefs-lock-minutes = Geändert, wann der Bildschirm gesperrt wird
+settings-power-prefs-lid-close-action = Verhalten beim Zuklappen geändert
+settings-power-prefs-power-key-action = Verhalten der Ein-/Aus-Taste geändert
+settings-power-prefs-low-battery-percent = Warnung bei schwachem Akku auf { $new } % gestellt
+settings-power-prefs-critical-battery-percent = Kritischen Akkustand auf { $new } % gestellt
+settings-power-prefs-critical-action = Verhalten bei kritischem Akkustand geändert
+settings-notification-prefs-per-app = Mitteilungen einer App geändert
+settings-focus-schedule-start-minute = Beginn der Fokuszeit geändert
+settings-focus-schedule-end-minute = Ende der Fokuszeit geändert
+settings-focus-schedule-weekdays = Fokustage geändert
+settings-system-sound-prefs-volume = Lautstärke der Systemtöne geändert
+settings-system-sound-prefs-theme = Klangschema geändert
+settings-audio-prefs-output-device = Standard-Lautsprecher geändert
+settings-audio-prefs-input-device = Standard-Mikrofon geändert
+settings-audio-prefs-balance = Balance zwischen links und rechts geändert
+settings-display-prefs-night-light-temperature = Wärme des Nachtlichts geändert
+settings-display-prefs-scale = Bildschirmskalierung geändert
+settings-locale-currency = Währung geändert
+settings-locale-date-format = Datumsformat geändert
+settings-locale-time-format = Zeitformat geändert
+settings-locale-measurement = Maßsystem geändert
+settings-locale-number-style = Zahlenformat geändert
+settings-locale-first-day-of-week = Ersten Wochentag geändert
+settings-provider-config-profiles = Modellanbieter geändert
+settings-provider-config-default-profile = Standard-Modellanbieter geändert
+settings-default-apps-handlers = Eine Standard-App geändert
+settings-shared-display-prefs-arrangement = Bildschirmanordnung geändert
+settings-osk-source-settings-layout = Belegung der Bildschirmtastatur geändert
+settings-osk-source-settings-layouts = Belegungen der Bildschirmtastatur geändert
