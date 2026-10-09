@@ -3357,7 +3357,10 @@ class HeldProvider:
     logged. Only a count/event is evidence; no credentials enter state-dump.
     The fixture cannot initiate a request or invoke any desktop action.
     """
-    def __init__(self, marker_agent=None, marker_resource=None):
+    def __init__(self, marker_agent=None, marker_resource=None, *, first_hold_seconds=30):
+        if type(first_hold_seconds) is not int or not 1 <= first_hold_seconds <= 120:
+            raise RuntimeError("provider first hold requires a bounded test duration")
+        self.first_hold_seconds = first_hold_seconds
         self.received = threading.Event()
         self.requests = 0
         self.admission_attempts = 0
@@ -3468,7 +3471,7 @@ class HeldProvider:
                     released = owner.request_lock.wait_for(
                         lambda: owner.closed or owner.allowed >= ordinal
                         or ordinal in owner.exact_releases,
-                        timeout=120 if ordinal >= 2 else 30,
+                        timeout=120 if ordinal >= 2 else owner.first_hold_seconds,
                     )
                     owner.waiting_ordinals.discard(ordinal)
                 if not released or owner.closed:
@@ -3540,6 +3543,22 @@ class HeldProvider:
     def overflow_count(self):
         with self.request_lock:
             return self.refused_requests
+
+    def direction_hold_diagnostic(self):
+        """Observe the original held turn atomically, without model content."""
+        with self.request_lock:
+            return {
+                "first_request_held": 1 in self.waiting_ordinals,
+                "any_release_allowed": self.allowed > 0 or bool(self.exact_releases),
+                "first_request_release_allowed": self.allowed >= 1 or 1 in self.exact_releases,
+                "provider_closed": self.closed,
+                "request_count": min(max(self.requests, 0), 10000),
+                "waiting_response_count": min(len(self.waiting_ordinals), 10000),
+                "admission_attempt_count": min(max(self.admission_attempts, 0), 10000),
+                "admitted_count": min(max(self.admitted_attempts, 0), 10000),
+                "refused_count": min(max(self.refused_admissions, 0), 10000),
+                "probe_failure_count": min(max(self.failed_admission_probes, 0), 10000),
+            }
 
     def marker_rejection_diagnostic(self):
         """Return fixed counters only; request and exception content never escape."""
@@ -4052,6 +4071,81 @@ def wait_terminal(socket, acknowledgement, process, *, public_failure_path=None,
 def wait_for_direction_terminal(socket, action, arguments, process, output):
     return wait_terminal(socket, invoke(socket, action, arguments), process,
                          closed_failure_path=output / "managed-direction-terminal-failure.json")
+
+
+def retain_direction_owner_observation(task, provider, expected, output):
+    """Persist one current owner projection and atomic provider hold facts."""
+    epoch, revision, agent = expected
+    status = task.get("status") if isinstance(task, dict) else None
+    observation = {
+        "owner_observable": isinstance(task, dict),
+        "task_status": status if isinstance(status, str) and status in {
+            "queued", "waiting", "in_progress", "done", "failed", "cancelled",
+        } else "other",
+        "epoch_matches_original": isinstance(task, dict) and type(task.get("run_epoch")) is int
+            and task["run_epoch"] == epoch,
+        "after_revision_matches_original": isinstance(task, dict)
+            and type(task.get("after_revision")) is int and task["after_revision"] == revision,
+        "active_membership_matches_original": isinstance(task, dict)
+            and task.get("active_agent") == agent,
+        "provider": provider.direction_hold_diagnostic(),
+    }
+    (output / "managed-direction-owner-before.json").write_text(
+        json.dumps(observation, indent=2) + "\n")
+
+
+def configure_lifecycle_task_budget(socket, room, task_id, process, output):
+    """Configure only this queued fixture task through the current owner's door."""
+    resource = f"desktop:{task_id}"
+    inspect_action = wait_for("owner task budget inspection", lambda: offered_membership_action(
+        socket, room, resource, "inspect"), process)
+
+    def inspect_policy():
+        value = terminal_value(wait_terminal(socket, invoke(socket, inspect_action), process))
+        task = value.get("task")
+        if not isinstance(task, dict) or task.get("id") != task_id \
+                or task.get("status") != "queued" or task.get("route") != "model" \
+                or value.get("active_run") is not False \
+                or type(value.get("run_epoch")) is not int or value["run_epoch"] != 0 \
+                or value.get("managed_route") is not True:
+            raise RuntimeError("task budget inspection changed the queued owner frontier")
+        return value
+
+    original = inspect_policy()
+    if original.get("execution_budget") is not None:
+        raise RuntimeError("fresh fixture task unexpectedly has an explicit execution budget")
+    budget = {"turn_ms": 120000, "total_ms": 300000}
+    action = wait_for("owner task execution budget action", lambda: offered_membership_action(
+        socket, room, resource, "set-execution-budget"), process)
+    value = terminal_value(wait_terminal(socket, invoke(socket, action, {
+        "expected_run_epoch": original["run_epoch"],
+        "expected_budget": original["execution_budget"], "budget": budget,
+    }), process))
+    if value.get("result") != {"execution_budget_set": {"task_id": task_id}} \
+            or value.get("resource") != resource or value.get("execution_started") is not False:
+        raise RuntimeError("owner did not return the exact bounded task policy result")
+    saved = inspect_policy()
+    if saved.get("execution_budget") != budget:
+        raise RuntimeError("owner did not retain the exact bounded task execution policy")
+    (output / "managed-task-budget.json").write_text(json.dumps({
+        "queued_frontier_matches": True, "exact_terminal_result": True,
+        "saved_budget_matches": True, "turn_ms": budget["turn_ms"],
+        "total_ms": budget["total_ms"],
+    }, indent=2) + "\n")
+
+
+def parallel_message_admitted(provider, epoch):
+    """A counted HTTP request is not an admitted parallel model turn."""
+    with provider.request_lock:
+        if provider.requests > 2 or provider.refused_requests:
+            raise RuntimeError("parallel Message produced an unexpected provider request")
+        if provider.requests < 2:
+            return None
+        admission = provider.owner_admissions.get(2)
+        if not isinstance(admission, dict) or type(admission.get("run_epoch")) is not int \
+                or admission["run_epoch"] != epoch:
+            raise RuntimeError("parallel Message lacked the original owner's admitted run")
+        return True if 2 in provider.waiting_ordinals else None
 
 
 def chrome_state(socket):
@@ -6531,6 +6625,31 @@ def broker_catalogue_boundary_diagnostic(output):
     return catalogue_boundary_rows(lines, (1,))
 
 
+def managed_message_boundaries(lines):
+    """Retain only fixed Message stage/outcome pairs, never private log fields."""
+    stages = {
+        "settlement": "managed Agent Message settlement observed",
+        "stage": "managed Agent Message stage observed",
+        "owner_state": "managed Agent Message owner state observed",
+        "model_result": "managed Agent Message model result observed",
+        "unresolved": "managed Agent Message acknowledgement unresolved",
+    }
+    outcomes = (
+        "Completed", "PendingModel", "Refused", "Disconnected",
+        "Uncertain(Acceptance)", "Uncertain(Preparation)", "Uncertain(Commit)",
+    )
+    rows = []
+    for line in lines:
+        for stage, marker in stages.items():
+            if marker not in line:
+                continue
+            for outcome in outcomes:
+                if re.search(r"\boutcome=" + re.escape(outcome) + r"(?=\s|$)", line):
+                    rows.append({"stage": stage, "outcome": outcome})
+                    break
+    return rows[-32:]
+
+
 def managed_child_diagnostic(profile):
     """Classify bounded managed output without retaining task/model content."""
     logs = list(profile.rglob("launcher-debug-output.log"))
@@ -6731,6 +6850,7 @@ def managed_child_diagnostic(profile):
             for line in folded_lines
         ),
         "catalogue_boundaries": catalogue_boundary_rows(lines, (2, 3)),
+        "message_boundaries": managed_message_boundaries(lines),
         "first_error_kind": error_kind,
     }
 
@@ -6918,6 +7038,8 @@ def managed_task_and_message_lifecycle(
     # before Accepted and refuses epoch changes. No prompt or task content is
     # retained by this fixture.
     provider.require_owner_admission(owner_phase_at_model_admission)
+    if not task_only:
+        configure_lifecycle_task_budget(socket, room, task_id, process, output)
     startup = start_managed_agent(socket, room, agent, process)
 
     # Start acknowledges only the authenticated launch request. Keep it
@@ -7074,12 +7196,14 @@ def managed_task_and_message_lifecycle(
     parent = "m_" + message_invocation.replace("-", "").lower()
     try:
         wait_for("parallel direct Message model request",
-                 lambda: provider.request_count() >= 2, process)
+                 lambda: parallel_message_admitted(provider, epoch), process)
     except RuntimeError:
         (output / "parallel-message-model-admission.json").write_text(
             json.dumps(provider.admission_diagnostic(), indent=2) + "\n")
         raise
 
+    retain_direction_owner_observation(
+        read_task(socket, room, task_id, process), provider, (epoch, after, agent), output)
     direction = wait_for("exact-run Direction action", lambda: offered_desktop_action(
         socket, room, "tasks", f"desktop:task:{task_id}", "direct"), process)
     direction_receipt = wait_for_direction_terminal(socket, direction, {
@@ -7333,7 +7457,8 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
             invitation = json.loads(invitation_path.read_text())
             if invitation.get("empty_app_records") is not True:
                 raise RuntimeError("native fixture improperly seeded application records")
-        provider = HeldProvider(marker_agent="tide" if marker_only else None)
+        provider = HeldProvider(marker_agent="tide" if marker_only else None,
+                                first_hold_seconds=120 if lifecycle else 30)
         run(binaries / "examples/proof_provider", [profile / "config", provider.endpoint], env)
         # Provider provisioning requires a genuinely empty profile. Merge the
         # normal input settings only after it has created that profile, while

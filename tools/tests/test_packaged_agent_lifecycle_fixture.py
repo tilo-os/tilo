@@ -1704,6 +1704,111 @@ class PresentedEditorTargetTests(unittest.TestCase):
             calls.assert_called_once_with("socket", {"op": "snapshot", "path": str(
                 output / "physical-selection-refused.png")})
 
+    def test_lifecycle_budget_uses_real_fenced_owner_actions_and_closed_proof(self):
+        original = {"task": {"id": "task:PRIVATE", "status": "queued", "route": "model",
+                             "instruction": "PRIVATE-CANARY"},
+                    "active_run": False, "run_epoch": 0, "execution_budget": None,
+                    "managed_route": True}
+        budget = {"turn_ms": 120000, "total_ms": 300000}
+        result = {"result": {"execution_budget_set": {"task_id": "task:PRIVATE"}},
+                  "resource": "desktop:task:PRIVATE", "execution_started": False}
+
+        def ack(value):
+            return {"update": {"output": {"value": value}}}
+
+        for fault in (None, "frontier", "terminal", "saved"):
+            before = dict(original, run_epoch=1) if fault == "frontier" else original
+            terminal = dict(result, result={"queued": {"task_id": "task:PRIVATE"}}) \
+                if fault == "terminal" else result
+            saved = dict(original, execution_budget=budget if fault != "saved" else None)
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(PROOF, "offered_membership_action",
+                                 side_effect=lambda _s, _r, resource, op: {"resource": resource, "id": op}), \
+                    patch.object(PROOF, "wait_for", side_effect=lambda _l, fn, _p: fn()), \
+                    patch.object(PROOF, "invoke", side_effect=[ack(before), ack(terminal), ack(saved)]) as invoke, \
+                    patch.object(PROOF, "wait_terminal", side_effect=lambda _s, row, _p: row):
+                output = pathlib.Path(directory)
+                if fault:
+                    with self.assertRaises(RuntimeError):
+                        PROOF.configure_lifecycle_task_budget("socket", "room", "task:PRIVATE", None, output)
+                    self.assertFalse((output / "managed-task-budget.json").exists())
+                else:
+                    PROOF.configure_lifecycle_task_budget("socket", "room", "task:PRIVATE", None, output)
+                    self.assertEqual(json.loads((output / "managed-task-budget.json").read_text()), {
+                        "queued_frontier_matches": True, "exact_terminal_result": True,
+                        "saved_budget_matches": True, "turn_ms": 120000, "total_ms": 300000})
+                    self.assertNotIn("PRIVATE", (output / "managed-task-budget.json").read_text())
+                    self.assertEqual(invoke.call_args_list[1].args, (
+                        "socket", {"resource": "desktop:task:PRIVATE", "id": "set-execution-budget"},
+                        {"expected_run_epoch": 0, "expected_budget": None, "budget": budget}))
+                self.assertEqual(invoke.call_count, {None: 3, "frontier": 1, "terminal": 2, "saved": 3}[fault])
+
+    def test_parallel_message_requires_actual_original_admission_and_held_response(self):
+        provider = PROOF.HeldProvider.__new__(PROOF.HeldProvider)
+        provider.request_lock = PROOF.threading.Condition()
+        provider.refused_requests = 0
+        provider.requests = 1
+        provider.waiting_ordinals = {1}
+        provider.owner_admissions = {}
+        self.assertIsNone(PROOF.parallel_message_admitted(provider, 7))
+        provider.requests = 2
+        for admission in (None, {"run_epoch": 8}, {"run_epoch": True}):
+            provider.owner_admissions[2] = admission
+            with self.assertRaises(RuntimeError):
+                PROOF.parallel_message_admitted(provider, 7)
+        provider.owner_admissions[2] = {"run_epoch": 7, "private": "PRIVATE-CANARY"}
+        self.assertIsNone(PROOF.parallel_message_admitted(provider, 7))
+        provider.waiting_ordinals.add(2)
+        self.assertIs(PROOF.parallel_message_admitted(provider, 7), True)
+        provider.requests = 3
+        with self.assertRaises(RuntimeError):
+            PROOF.parallel_message_admitted(provider, 7)
+
+    def test_direction_owner_observation_reads_actual_hold_and_excludes_private_projection(self):
+        provider = PROOF.HeldProvider.__new__(PROOF.HeldProvider)
+        provider.request_lock = PROOF.threading.Condition()
+        provider.waiting_ordinals = {1, 2}
+        provider.allowed = 0
+        provider.exact_releases = set()
+        provider.closed = False
+        provider.requests = provider.admission_attempts = provider.admitted_attempts = 2
+        provider.refused_admissions = provider.failed_admission_probes = 0
+        task = {"status": "in_progress", "run_epoch": 5, "after_revision": 0,
+                "active_agent": "PRIVATE-AGENT", "instruction": "PRIVATE-CANARY",
+                "task_id": "PRIVATE-TASK", "title": "PRIVATE-CANARY"}
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory)
+            PROOF.retain_direction_owner_observation(task, provider, (5, 0, "PRIVATE-AGENT"), output)
+            path = output / "managed-direction-owner-before.json"
+            data = json.loads(path.read_text())
+            self.assertEqual(data, {
+                "owner_observable": True, "task_status": "in_progress",
+                "epoch_matches_original": True, "after_revision_matches_original": True,
+                "active_membership_matches_original": True,
+                "provider": {"first_request_held": True, "any_release_allowed": False,
+                             "first_request_release_allowed": False, "provider_closed": False,
+                             "request_count": 2, "waiting_response_count": 2,
+                             "admission_attempt_count": 2, "admitted_count": 2,
+                             "refused_count": 0, "probe_failure_count": 0},
+            })
+            self.assertNotIn("PRIVATE", path.read_text())
+            provider.waiting_ordinals.remove(1)
+            provider.exact_releases.add(2)
+            provider.requests = 10001
+            task.update(status="PRIVATE-CANARY", run_epoch=6, after_revision=True,
+                        active_agent="FOREIGN-PRIVATE")
+            PROOF.retain_direction_owner_observation(task, provider, (5, 0, "PRIVATE-AGENT"), output)
+            data = json.loads(path.read_text())
+            self.assertEqual(data["task_status"], "other")
+            for flag in ("epoch_matches_original", "after_revision_matches_original",
+                         "active_membership_matches_original"):
+                self.assertFalse(data[flag])
+            self.assertFalse(data["provider"]["first_request_held"])
+            self.assertTrue(data["provider"]["any_release_allowed"])
+            self.assertFalse(data["provider"]["first_request_release_allowed"])
+            self.assertEqual(data["provider"]["request_count"], 10000)
+            self.assertNotIn("PRIVATE", path.read_text())
+
     def test_direction_terminal_success_invokes_once_without_failure_artifact(self):
         receipt = {"update": {"invocation": "original-private-id", "state": "succeeded",
                               "output": {"value": "PRIVATE-CANARY"}}}
@@ -2282,6 +2387,24 @@ class PresentedEditorTargetTests(unittest.TestCase):
         self.assertIn(
             '"tilo_agent_catalogue=debug,"', inspect.getsource(PROOF.bootstrap)
         )
+
+    def test_managed_message_boundaries_are_bounded_and_payload_free(self):
+        lines = [
+            "private text outcome=PendingModel managed Agent Message stage observed"
+        ] * 40
+        lines.extend([
+            "outcome=RefusedPrivate managed Agent Message stage observed",
+            "outcome=Completed private unrelated log",
+            "outcome=Uncertain(Acceptance) managed Agent Message settlement observed",
+        ])
+        rows = PROOF.managed_message_boundaries(lines)
+        self.assertEqual(len(rows), 32)
+        self.assertEqual(rows[0], {"stage": "stage", "outcome": "PendingModel"})
+        self.assertEqual(rows[-1], {
+            "stage": "settlement", "outcome": "Uncertain(Acceptance)",
+        })
+        self.assertNotIn("private", json.dumps(rows))
+        self.assertNotIn("RefusedPrivate", json.dumps(rows))
 
     def test_normal_descriptor_transport_is_not_a_managed_failure(self):
         with tempfile.TemporaryDirectory() as directory:
