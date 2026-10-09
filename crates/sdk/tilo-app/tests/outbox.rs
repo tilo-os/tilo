@@ -175,12 +175,13 @@ fn only_the_owning_device_carries_out_an_entry_and_both_see_the_result() {
     sync(&mut laptop, &mut phone);
     assert_eq!(carried().len(), 1);
 
-    // The settlement was nobody's step: the person's undo on the phone
-    // takes back their note, then their send (from the laptop), never what
-    // the phone recorded about the server.
+    // The settlement was nobody's step: Ctrl+Z on the phone takes back the
+    // note written there, and the person's undo (as the palette and agents
+    // reach it, on every device) then their send from the laptop — never
+    // what the phone recorded about the server.
     assert!(phone.undo());
     assert_eq!(phone.state().note, "");
-    assert!(phone.undo());
+    phone.call("undo", serde_json::json!({})).unwrap();
     let state = phone.state();
     assert_eq!(state.outbox.outcome(&id).map(Settled::is_done), Some(true));
     assert!(
