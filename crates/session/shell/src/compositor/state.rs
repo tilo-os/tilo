@@ -4029,7 +4029,7 @@ impl State {
         if !captured_here {
             return;
         }
-        let (association, blocker) = wl_compositor::with_states(surface, |states| {
+        let (association, capture) = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -4061,7 +4061,7 @@ impl State {
                     .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
                     .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
                     .map(|(colorimetry, _)| colorimetry);
-                if let Some((token, barrier)) = crate::compositor::foreign::store()
+                if let Some(capture) = crate::compositor::foreign::store()
                     .prepare_dmabuf_capture_with_damage(
                         surface_id,
                         client,
@@ -4075,7 +4075,7 @@ impl State {
                     // must happen after this callback returns. Doing it here
                     // self-deadlocked the compositor on the first GPU-backed
                     // app commit (most visibly Chat).
-                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
+                    return (ForeignCommitCapture::Dmabuf(capture.token), Some(capture));
                 }
                 return (ForeignCommitCapture::Failed, None);
             }
@@ -4095,8 +4095,11 @@ impl State {
                 }
             }
         });
-        if let Some(blocker) = blocker {
-            wl_compositor::add_blocker(surface, blocker);
+        if let Some(capture) = capture {
+            wl_compositor::add_blocker(surface, capture.barrier);
+            if let Some(fence) = capture.fence {
+                self.watch_dmabuf_fence(fence, surface_id, capture.token);
+            }
         }
         if matches!(
             association,
@@ -4125,6 +4128,30 @@ impl State {
                     .push_back(association);
             }
         });
+    }
+
+    /// Start the capture of commit `token` on `surface_id` when its buffer's
+    /// implicit fence signals. The loop watches the fence, so no thread waits
+    /// on a client's GPU and a slow client holds up only its own commits.
+    fn watch_dmabuf_fence(
+        &self,
+        fence: smithay::backend::allocator::dmabuf::DmabufSource,
+        surface_id: u64,
+        token: u64,
+    ) {
+        let watched = self.loop_handle.insert_source(fence, move |(), _, _| {
+            crate::compositor::foreign::dmabuf_fence_signalled(surface_id, token);
+            Ok(())
+        });
+        if let Err(error) = watched {
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                error = %error.error,
+                "could not watch a client buffer's fence; capturing it on the worker"
+            );
+            crate::compositor::foreign::dmabuf_fence_unwatched(surface_id, token);
+        }
     }
 
     /// Re-evaluate transactions whose off-thread buffer capture completed.
