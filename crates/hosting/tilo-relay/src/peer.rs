@@ -544,17 +544,45 @@ where
             Arc<tokio::sync::OwnedSemaphorePermit>,
         )> = std::collections::VecDeque::new();
         let mut catching_up = false;
+        let mut reader_open = true;
         loop {
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
+                if !reader_open {
+                    // Keep the authenticated lease live until every owner job
+                    // admitted before the FIN has passed a durable barrier.
+                    for id in &subscribed {
+                        let workspace = session.workspaces.lock().await.get(id).cloned();
+                        if let Some(workspace) = workspace {
+                            let owner = crate::persistence::handle(&workspace).await;
+                            let done = owner
+                                .submit_prepared_wait(
+                                    1,
+                                    async { Ok(()) },
+                                    |_, ()| Ok(()),
+                                    |result| async { result },
+                                )
+                                .await?;
+                            crate::persistence::receipt(done).await?;
+                        }
+                    }
+                    return Ok::<(), PeerError>(());
+                }
                 // Prefer an already-readable inbound frame over the periodic
                 // membership audit. After a live revoke the audit and a refused
                 // delta can become ready together; the delta must win so the
                 // peer still receives NotAuthorised rather than a bare close.
                 tokio::select! {
                     biased;
-                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
+                    frame = reader.read_next() => {
+                        if let Some(frame) = frame? {
+                            (frame, None)
+                        } else {
+                            reader_open = false;
+                            continue;
+                        }
+                    },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
                     // for this connection is written, so its replay starts
@@ -625,8 +653,8 @@ where
                             tokio::select! {
                                 biased;
                                 result = &mut operation => break result?,
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
                                     let can_route = private_may_overtake(&frame, blocked_room, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         // The state future may hold the authorization lane
@@ -705,8 +733,8 @@ where
                                     result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                                     break;
                                 }
-                                frame = reader.read_next(), if backlog.len() < 32 => {
-                                    let Some(frame) = frame? else { return Ok(()); };
+                                frame = reader.read_next(), if reader_open && backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { reader_open = false; continue; };
                                     let can_route = private_may_overtake(&frame, None, v2 && pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
@@ -4367,6 +4395,65 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// Correlate admission and owner phases without retaining a signed payload.
+#[derive(Clone)]
+struct StateAdmissionTrace {
+    id: blake3::Hash,
+    kind: &'static str,
+    workspace_id: u64,
+    author: [u8; 4],
+}
+
+impl StateAdmissionTrace {
+    fn new(envelope: &Envelope) -> Option<Self> {
+        if !tracing::enabled!(target: "tilo_relay::native_publication", tracing::Level::DEBUG) {
+            return None;
+        }
+        let Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } = envelope
+        else {
+            return None;
+        };
+        let payload = crate::coedit::CoeditPayload::decode(delta)?;
+        let (kind, body) = match payload {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. } => ("checkpoint", body),
+            crate::coedit::CoeditPayload::RetainedDelta { body, .. } => ("delta", body),
+        };
+        let mut author = [0; 4];
+        author.copy_from_slice(&author_device_public_key[..4]);
+        Some(Self {
+            id: blake3::hash(&body),
+            kind,
+            workspace_id: *workspace_id,
+            author,
+        })
+    }
+
+    fn emit(&self, phase: &str) {
+        tracing::debug!(target: "tilo_relay::native_publication",
+            phase, id = %self.id, kind = self.kind,
+            workspace_id = self.workspace_id,
+            author = %hex::encode(self.author),
+            "native relay publication hop");
+    }
+}
+
+/// A dropped admission future must be distinguishable from a slow owner job.
+struct AdmissionWaitTrace(Option<StateAdmissionTrace>);
+
+impl Drop for AdmissionWaitTrace {
+    fn drop(&mut self) {
+        if let Some(trace) = &self.0 {
+            trace.emit("persistence_admission_cancelled");
+        }
+    }
+}
+
 /// Admit `envelope`, authored by this host's own device, through the
 /// workspace's ordered persistence owner, as a device's commit is admitted.
 /// Resolves with its host order once it is durable and published.
@@ -4460,6 +4547,8 @@ async fn enqueue_state_inner(
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
     trace_native_publication("persistence_admission_wait", &envelope, None);
+    let admission_trace = StateAdmissionTrace::new(&envelope);
+    let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
@@ -4478,6 +4567,8 @@ async fn enqueue_state_inner(
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let durable_sequence = durable.clone();
+    let operation_trace = admission_trace.clone();
+    let completion_trace = admission_trace.clone();
     let completion = Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
@@ -4551,6 +4642,9 @@ async fn enqueue_state_inner(
         },
         move |state, prepared| {
             if commit.is_none() {
+                if let Some(trace) = &operation_trace {
+                    trace.emit("persistence_owner_started");
+                }
                 let (recipients, sessions, session_lives, replay_targets, logical_offline_bytes) =
                     prepared.take().invariant("ordered recipients")?;
                 let envelope = envelope.take().invariant("admitted envelope")?;
@@ -4921,6 +5015,13 @@ async fn enqueue_state_inner(
                 Ok(commit)
             }
             .await;
+            if let Some(trace) = &completion_trace {
+                trace.emit(if result.is_ok() {
+                    "persistence_completed"
+                } else {
+                    "persistence_failed"
+                });
+            }
             if crate::persistence::correlated_diagnostics() && let Err(error) = &result {
                 tracing::info!(phase = "state_commit_error", error = %error);
             }
@@ -4932,7 +5033,22 @@ async fn enqueue_state_inner(
             result
         },
     ))
-    .await?;
+    .await;
+    wait_trace.0 = None;
+    let completion = match completion {
+        Ok(completion) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admitted");
+            }
+            completion
+        }
+        Err(error) => {
+            if let Some(trace) = &admission_trace {
+                trace.emit("persistence_admission_failed");
+            }
+            return Err(error.into());
+        }
+    };
     Ok(AdmittedState {
         completion,
         sequence: durable,
@@ -7747,7 +7863,7 @@ mod private_transport_tests {
         let selection_count = shell_selection::track_selection_constructions(&store_root);
         let blocker_raw = producer_frame(&meta, &meta["baseline"][0], 1);
         let blocker = crate::transport::decode(&blocker_raw[4..]).unwrap();
-        let envelopes = meta["baseline"]
+        let envelopes = meta["checkpoint2"]
             .as_array()
             .unwrap()
             .iter()
@@ -7776,6 +7892,9 @@ mod private_transport_tests {
             );
             tokio::task::yield_now().await;
         }
+        // A clean FIN after complete authenticated frames must not discard
+        // those frames while the preceding admission is backpressured.
+        client_write.shutdown().await.unwrap();
         release_tx.send(()).unwrap();
         crate::persistence::receipt(held).await.unwrap();
         while selection_count.load(std::sync::atomic::Ordering::SeqCst) < 1 {
@@ -7790,12 +7909,32 @@ mod private_transport_tests {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
+        let tail = envelopes.last().unwrap();
+        tilo_test_env::within("the buffered checkpoint tail to become durable", async {
+            loop {
+                let retained = workspace.lock().await.store.load_retained().unwrap();
+                if retained
+                    .iter()
+                    .any(|raw| crate::transport::decode(&raw[4..]).unwrap() == *tail)
+                {
+                    break;
+                }
+                assert!(
+                    !task.is_finished(),
+                    "peer ended before persisting the buffered tail"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         stop_tracking_reader_backlog(id);
         assert_eq!(shell_selection::selection_constructions(&store_root), 1);
+        tilo_test_env::within("peer to finish after clean FIN", task)
+            .await
+            .unwrap()
+            .unwrap();
         drain.abort();
         let _ = drain.await;
-        task.abort();
-        let _ = task.await;
     }
 
     async fn checkpoint_prefix_activation_failure_fences_original_sessions_and_retry(
