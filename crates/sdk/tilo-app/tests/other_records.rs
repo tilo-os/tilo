@@ -379,3 +379,38 @@ fn a_control_built_by_hand_binds_a_sections_field_edit() {
     app.harness().click_named("contrast").unwrap();
     assert!(app.settings::<Display>().get().high_contrast);
 }
+
+/// Binds a control whose input is not the field's value: a switch for a
+/// scale.
+struct MappingApp;
+
+impl ResourceApp for MappingApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-board-mapping";
+    const TITLE: &'static str = "Board";
+
+    fn view(cx: &mut ViewCx<Board>) -> Element {
+        let display = cx.settings::<Display>();
+        let actions = cx.record_actions(&display).unwrap();
+        let large = LocalState::new(false);
+        let binding = actions
+            .edit_binding_with(Display::paths().scale, |path, large: bool| {
+                Ok(path.set(if large { 2.0 } else { 1.0 }))
+            })
+            .unwrap();
+        Box::new(
+            Column::new().push(Box::new(
+                Checkbox::from_state(&large)
+                    .with_id("large")
+                    .on_action(binding),
+            )),
+        )
+    }
+}
+
+#[test]
+fn a_control_whose_input_is_not_the_fields_value_maps_it_to_the_edit() {
+    let mut app = TestApp::<MappingApp>::new().unwrap();
+    app.harness().click_named("large").unwrap();
+    assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
+}

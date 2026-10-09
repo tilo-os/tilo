@@ -379,22 +379,42 @@ impl<R: Resource> ResourceRoot<R> {
     /// costs the view plus surfaces × rows, never the view once per row. Each
     /// row binds its edits in tree order of the surfaces offering them.
     fn bind_row_declarations(&self, rows: &mut [tilo_actions::Resource]) {
+        // Every row, nested ones too (a playlist's tracks), asked of the
+        // surfaces in one walk.
+        fn ids(rows: &[tilo_actions::Resource], out: &mut Vec<String>) {
+            for row in rows {
+                out.push(row.id.as_str().to_owned());
+                ids(&row.children, out);
+            }
+        }
+        fn bind<R: Resource>(
+            rows: &mut [tilo_actions::Resource],
+            offered: &mut std::collections::HashMap<String, Vec<tilo_resource::ActionDecl<R>>>,
+        ) {
+            for row in rows {
+                for decl in offered.remove(row.id.as_str()).unwrap_or_default() {
+                    let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+                    *row = tilo_resource::bind_declaration(bound, &decl);
+                }
+                bind(&mut row.children, offered);
+            }
+        }
         if rows.is_empty() {
             return;
         }
-        let mut decls: Vec<Vec<tilo_resource::ActionDecl<R>>> = Vec::new();
+        let mut all = Vec::new();
+        ids(rows, &mut all);
+        let mut offered: std::collections::HashMap<String, Vec<tilo_resource::ActionDecl<R>>> =
+            std::collections::HashMap::new();
         self.surfaces(&mut |surface| {
-            decls.resize_with(rows.len(), Vec::new);
-            for (row, offered) in rows.iter().zip(decls.iter_mut()) {
-                offered.extend(surface.row_declarations(row.id.as_str()));
+            for id in &all {
+                let decls = surface.row_declarations(id);
+                if !decls.is_empty() {
+                    offered.entry(id.clone()).or_default().extend(decls);
+                }
             }
         });
-        for (row, offered) in rows.iter_mut().zip(decls) {
-            for decl in offered {
-                let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
-                *row = tilo_resource::bind_declaration(bound, &decl);
-            }
-        }
+        bind(rows, &mut offered);
     }
 
     /// The resource as published: its own actions and children, the edits
