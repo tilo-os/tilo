@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups); empty runs all."
         required: false
         default: ""
       accept:
@@ -57,6 +57,7 @@ jobs:
       agent: ${{ steps.select.outputs.agent }}
       latency: ${{ steps.select.outputs.latency }}
       render: ${{ steps.select.outputs.render }}
+      wakeups: ${{ steps.select.outputs.wakeups }}
     steps:
       - name: Select KPI groups
         id: select
@@ -64,7 +65,7 @@ jobs:
           KPIS: ${{ github.event.inputs.kpis }}
         run: |
           set -euo pipefail
-          known=(fs footprint agent latency render)
+          known=(fs footprint agent latency render wakeups)
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -354,8 +355,68 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Idle wakeups (TIL-614): the shell integration gate
+  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
+  # a 10 s window whenever shell changes, here three times with a 60 s window
+  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
+  # Cargo environment, so the compiler cache its test shards fill serves it.
+  wakeups:
+    needs: [plan, builder]
+    if: needs.plan.outputs.wakeups == 'true'
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      TILO_IDLE_WAKEUP_WINDOW_SECS: "60"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the shell integration tests
+        run: >-
+          bash scripts/ci-run.sh "idle wakeup gate build" --
+          cargo test --locked -p shell --test it --no-run
+
+      - name: Count an idle desktop's wakeups three times and record them
+        run: |
+          set -uo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          status=0
+          for run in 1 2 3; do
+            bash tools/test-env.sh cargo test --locked -p shell --test it \
+              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
+              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
+          done
+          python3 tools/perf/record.py env --profile dev --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py idle-wakeups --env-json perf/env.json perf/idle-*.log \
+            > perf/wakeups.jsonl || status=1
+          cat perf/wakeups.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-wakeups
+          path: perf/
+          if-no-files-found: warn
+
   compare:
-    needs: [plan, fs, footprint, agent, latency, render]
+    needs: [plan, fs, footprint, agent, latency, render, wakeups]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -385,13 +446,14 @@ jobs:
           AGENT_RESULT: ${{ needs.agent.result }}
           LATENCY_RESULT: ${{ needs.latency.result }}
           RENDER_RESULT: ${{ needs.render.result }}
+          WAKEUPS_RESULT: ${{ needs.wakeups.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

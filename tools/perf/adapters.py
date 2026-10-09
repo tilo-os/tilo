@@ -19,12 +19,19 @@ Each adapter reads what a benchmark already prints and emits records through
   run) and `.dropped_frames` (refresh intervals in the run that showed no new
   frame). `scripts/perf/latency_bench.py` (headless, nightly) and
   `scripts/perf/device_latency_bench.py` (reference hardware) call it.
+- `idle-wakeups LOG...`: the idle-wakeup gate
+  (`crates/session/shell/tests/idle_wakeups.rs`) prints one
+  `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
+  one run; repeated runs become the samples of `wakeups.headless_two_apps`
+  (the compositor's whole process tree), `.shell` (its own process) and
+  `wakeups.frame_loop_ticks.headless_two_apps` (its frame loop's iterations).
 
 Usage:
 
     python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
+    python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -137,6 +144,35 @@ def workspace_switch(samples: list[dict[str, int]], env: dict[str, Any],
             for name, (unit, values) in series.items()]
 
 
+IDLE_WAKEUPS_LINE = re.compile(r"(?:^|\s)IDLE-WAKEUPS ((?:[a-z_]+=[0-9.]+ ?)+)$")
+IDLE_WAKEUPS_KPIS = {"total_per_s": "wakeups.headless_two_apps",
+                     "shell_per_s": "wakeups.headless_two_apps.shell",
+                     "loop_ticks_per_s": "wakeups.frame_loop_ticks.headless_two_apps"}
+
+
+def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the idle-wakeup gate."""
+    samples: dict[str, list[float]] = {kpi: [] for kpi in IDLE_WAKEUPS_KPIS.values()}
+    windows = []
+    for log in logs:
+        lines = [match for line in log.splitlines() if (match := IDLE_WAKEUPS_LINE.search(line.rstrip()))]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `IDLE-WAKEUPS` line per run, found {len(lines)}: "
+                             "did the gate run with --nocapture?")
+        fields = dict(pair.split("=", 1) for pair in lines[0].group(1).split())
+        missing = [name for name in (*IDLE_WAKEUPS_KPIS, "window_ms") if name not in fields]
+        if missing:
+            raise ValueError(f"IDLE-WAKEUPS line lacks {missing}")
+        for field, kpi in IDLE_WAKEUPS_KPIS.items():
+            samples[kpi].append(float(fields[field]))
+        windows.append(fields["window_ms"])
+    if not logs:
+        raise ValueError("no idle-wakeup gate logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs)), "window_ms": ",".join(sorted(set(windows)))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "per_s", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -149,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     switch = commands.add_parser("workspace-switch", help="records from WORKSPACE-SWITCH session-log lines")
     switch.add_argument("--env-json", required=True, type=Path)
     switch.add_argument("logs", nargs="+", type=Path)
+    idle = commands.add_parser("idle-wakeups", help="records from idle-wakeup gate logs")
+    idle.add_argument("--env-json", required=True, type=Path)
+    idle.add_argument("logs", nargs="+", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
@@ -158,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
             samples = [sample for path in args.logs
                        for sample in switch_samples(path.read_text(encoding="utf-8", errors="replace"))]
             records = workspace_switch(samples, env)
+        elif args.command == "idle-wakeups":
+            records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:
             records = tapp_sizes(json.loads(args.entries.read_text(encoding="utf-8")), env)
     except (ValueError, KeyError) as error:
