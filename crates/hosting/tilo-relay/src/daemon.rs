@@ -225,10 +225,17 @@ impl HandshakeTrust {
         }
         let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
         users.sort_unstable();
-        *self
-            .live_policy
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = TrustPolicy::AllowList { users };
+        let next = TrustPolicy::AllowList { users };
+        let previous = std::mem::replace(
+            &mut *self
+                .live_policy
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            next.clone(),
+        );
+        if previous != next {
+            crate::authority_epoch::bump();
+        }
     }
 }
 
@@ -1074,11 +1081,13 @@ impl Relay {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(delegation.agent_device_public_key, Some(delegation));
+        // A replacement may narrow an earlier delegation's rooms.
+        crate::authority_epoch::bump();
         Ok(())
     }
 
-    /// Withdraw an agent device: its sessions end within the access audit
-    /// interval and it is refused from then on.
+    /// Withdraw an agent device: its sessions end at their next access audit,
+    /// which this starts, and it is refused from then on.
     pub fn withdraw_agent(&self, agent_device_public_key: [u8; 32]) {
         self.web
             .relay
@@ -1086,6 +1095,7 @@ impl Relay {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent_device_public_key, None);
+        crate::authority_epoch::bump();
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
@@ -1731,8 +1741,12 @@ async fn apply_home_peer_projection(
     let runtimes = workspaces.lock().await;
     for room in affected_rooms {
         if let Some(runtime) = runtimes.get(&room) {
-            runtime.lock().await.admitted_users =
-                room_users.get(&room).cloned().unwrap_or_default();
+            let next = room_users.get(&room).cloned().unwrap_or_default();
+            let mut runtime = runtime.lock().await;
+            if runtime.admitted_users != next {
+                runtime.admitted_users = next;
+                crate::authority_epoch::bump();
+            }
         }
     }
     drop(runtimes);
@@ -1878,37 +1892,92 @@ fn spawn_home_peer_authority_refresh(
     })
 }
 
-/// The revocation-refresh loop: every second, re-read the on-disk
-/// revocation log and, if every entry still applies cleanly against
-/// the identity's own base list, swap it in. A malformed entry
-/// leaves the previously-live list untouched rather than partially
-/// applying.
+/// How often the revocation log is re-read while its directory cannot be
+/// watched: the cadence `tilo-relay-admin` promises ("within one second").
+const REVOCATION_POLL: Duration = Duration::from_secs(1);
+
+/// The revocation-refresh task: re-read the on-disk revocation log whenever
+/// it changes and, if every entry still applies cleanly against the
+/// identity's own base list, swap it in and wake every admitted session to
+/// re-check. A malformed entry leaves the previously-live list untouched
+/// rather than partially applying.
+///
+/// The log is followed through a watch on the state root's own entries. When
+/// that watch cannot be installed the task says so and falls back to reading
+/// the log every [`REVOCATION_POLL`], as before the watch existed.
 fn spawn_revocation_refresh_task(
     state_root: PathBuf,
     base_revocations: RevocationList,
     live_revocations: Arc<std::sync::RwLock<RevocationList>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let Ok(entries) = crate::store::load_revocations(&state_root) else {
-                continue;
-            };
-            let mut next = base_revocations.clone();
-            let mut valid = true;
-            for entry in entries {
-                if next.insert(entry).is_err() {
-                    valid = false;
-                    break;
-                }
+        let mut refresh = RevocationRefresh {
+            state_root,
+            base: base_revocations,
+            live: live_revocations,
+            applied: None,
+        };
+        let watch = match tilo_files::native::watch_entries(&refresh.state_root) {
+            Ok(watch) => Some(watch),
+            Err(error) => {
+                tracing::warn!(
+                    path = %refresh.state_root.display(),
+                    %error,
+                    "the revocation log cannot be watched; reading it every second"
+                );
+                None
             }
-            if valid && let Ok(mut current) = live_revocations.write() {
-                *current = next;
+        };
+        // Read once the watch exists, so an edit made before it began is seen.
+        refresh.reload();
+        let Some(watch) = watch else {
+            let mut interval = tokio::time::interval(REVOCATION_POLL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                refresh.reload();
+            }
+        };
+        loop {
+            let change = watch.next().await;
+            if change.kind == tilo_files::ChangeKind::Rescan
+                || change.path.as_str() == crate::store::REVOCATIONS_FILE
+            {
+                refresh.reload();
             }
         }
     })
+}
+
+/// The live revocation list and the log entries last applied to it.
+struct RevocationRefresh {
+    state_root: PathBuf,
+    base: RevocationList,
+    live: Arc<std::sync::RwLock<RevocationList>>,
+    applied: Option<Vec<tilo_user_identity::RevocationEntry>>,
+}
+
+impl RevocationRefresh {
+    fn reload(&mut self) {
+        let Ok(entries) = crate::store::load_revocations(&self.state_root) else {
+            return;
+        };
+        if self.applied.as_ref() == Some(&entries) {
+            return;
+        }
+        let mut next = self.base.clone();
+        for entry in &entries {
+            if next.insert(entry.clone()).is_err() {
+                return;
+            }
+        }
+        if let Ok(mut current) = self.live.write() {
+            *current = next;
+            drop(current);
+            self.applied = Some(entries);
+            crate::authority_epoch::bump();
+        }
+    }
 }
 
 /// The metrics-persist loop: snapshot + save to disk every second.
@@ -2221,10 +2290,21 @@ impl ProtocolHandler for ManagementProtocol {
                 if !entries.iter().any(|entry| {
                     entry.revoked_device_public_key == revocation.revoked_device_public_key
                 }) {
-                    entries.push(revocation);
+                    entries.push(revocation.clone());
                     crate::store::save_revocations(&self.state_root, &entries).map_err(
                         |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
                     )?;
+                }
+                // Apply it here too rather than wait for the log to be read
+                // back: this process stops serving its own revoked identity
+                // now. A conflicting entry is the log reader's to reject.
+                let applied = self
+                    .revocations
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(revocation);
+                if matches!(applied, Ok(true)) {
+                    crate::authority_epoch::bump();
                 }
                 tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("decommissioned"),

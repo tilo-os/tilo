@@ -22,6 +22,24 @@ pub fn create_dir_all(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
+/// Watches the entries directly in the native directory `dir` — files created,
+/// replaced or removed there — but not what happens below its
+/// subdirectories, so a busy subtree does not wake the watcher. Paths are
+/// reported relative to `dir`. Unlike [`Dir::watch`](crate::Dir::watch) on a
+/// file, a file atomically replaced in `dir` keeps reporting.
+///
+/// # Errors
+///
+/// [`FsError::NotFound`](crate::FsError::NotFound) when `dir` does not exist,
+/// or the platform's failure to watch it.
+#[cfg(all(
+    feature = "watch",
+    not(all(target_arch = "wasm32", target_os = "unknown"))
+))]
+pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsError> {
+    crate::disk_watch::watch_entries(dir)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

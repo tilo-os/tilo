@@ -337,6 +337,102 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
+/// The grant observer runs when an authority change is announced, not on a
+/// clock: a member removed from a room loses its live grant at once.
+#[tokio::test]
+async fn live_grants_follow_announced_changes() {
+    use tilo_moq::live::{AuthorizationStatus, LiveAuthority as _};
+
+    let root = SigningKey::from_bytes(&[81; 32]);
+    let (host_key, host) = device(&root, 82, DeviceCapabilities::host());
+    let (key, cert) = device(&root, 83, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host,
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    for id in [81, 82] {
+        relay
+            .set_workspace_membership(id, true, vec![cert.device_public_key], state.path().into())
+            .await
+            .unwrap();
+    }
+    let sessions = Sessions::new(relay.web_context().clone());
+    let challenge = sessions
+        .hello(&crate::auth::Hello {
+            cert: cert.clone(),
+            client_nonce: [84; 32],
+        })
+        .unwrap();
+    let session = sessions
+        .finish(
+            &challenge.handshake,
+            &crate::auth::HelloAck2 {
+                sig_over_server_nonce: key
+                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    let grants = live::LiveGrants::new();
+    let authority = live::Authority(grants.clone());
+    let observer = tokio::spawn(grants.clone().follow(sessions.clone()));
+    let mut held = Vec::new();
+    for id in [81, 82] {
+        let grant = grants
+            .issue(
+                &sessions,
+                session.token,
+                cert.device_public_key,
+                cert.user_public_key,
+                id,
+                None,
+            )
+            .await
+            .unwrap();
+        held.push(authority.try_admit(&grant.token).unwrap());
+    }
+    let denied_within = |live: Arc<dyn tilo_moq::live::LiveSession>, bound: Duration| async move {
+        tokio::time::timeout(bound, async {
+            while matches!(live.status(), AuthorizationStatus::Current) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok()
+    };
+
+    // Removal announces itself; the observer runs well before its old 50 ms
+    // tick plus the carrier's 100 ms recheck.
+    relay
+        .set_workspace_membership(81, true, vec![], state.path().into())
+        .await
+        .unwrap();
+    assert!(
+        denied_within(held[0].clone(), Duration::from_millis(150)).await,
+        "a removed member's live grant is withdrawn on the announcement"
+    );
+    assert!(
+        matches!(held[1].status(), AuthorizationStatus::Current),
+        "the other room's grant is untouched"
+    );
+
+    observer.abort();
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_input() {
     let signer = SigningKey::from_bytes(&[61; 32]);
