@@ -1,6 +1,8 @@
 //! Offline preparation uses the normal producer and validates its whole stream.
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
+
+pub(super) mod store;
 
 use tilo_vm_protocol::{Manifest, USERSPACE_COMPONENTS};
 
@@ -30,8 +32,8 @@ impl App {
             .filter(|line| !line.is_empty())
             .cloned()
             .ok_or_else(|| self.no_remote_builder(arch))?;
-        let inventory = inputs
-            .file
+        let carrier = inputs.carrier(&worktree.root)?;
+        let inventory = carrier
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
@@ -42,11 +44,10 @@ impl App {
             child.0.stdout.take().ok_or_else(|| {
                 CliError::InvalidInput("remote cohort builder has no stdout".into())
             })?;
-        let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
+        let mut capture = store::Capture::new(&worktree.root)?;
         let members = self.receipt.phase("prepare-userspace", || {
-            verify_prepared_stream(&mut stream, &manifest, &inputs.digest, arch)
+            capture.receive(stdout, &manifest, &inputs, arch)
         })?;
-        drop(stream);
         let status = child
             .0
             .wait()
@@ -59,8 +60,27 @@ impl App {
             });
         }
         inputs.unchanged(&worktree.root)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata();
+        if !metadata
+            .get("packages")
+            .is_some_and(serde_json::Value::is_array)
+        {
+            return Err(CliError::InvalidInput(
+                "cannot record prepared userspace build metadata".into(),
+            ));
+        }
+        inputs.unchanged(&worktree.root)?;
         self.receipt.set("prepared_cohort", &members);
+        let prepared_path = capture.publish(&inputs, arch, members.clone(), metadata)?;
+        self.receipt.set("prepared_path", &prepared_path);
         self.receipt.set("device_contacted", false);
+        let next = crate::hypervisor::CommandLine::new(
+            "tilo-vm",
+            &["swap", "userspace", "--slot", "device", "--from"],
+        )
+        .arg(format!("prepared:{}", prepared_path.display()))
+        .display();
         Ok(Outcome::new(
             format!(
                 "Prepared {} userspace members for {arch}; the device is unchanged",
@@ -68,18 +88,37 @@ impl App {
             ),
             json!({"prepared": true, "arch": arch, "source": inputs.provenance,
                 "source_inventory": inputs.digest, "members": members,
+                "prepared_path": prepared_path,
                 "device_contacted": false, "activated": false}),
         )
-        .next(&["tilo-vm swap userspace --slot device --builder remote"]))
+        .next(&[&next]))
     }
 }
 
+#[cfg(test)]
 pub(crate) fn verify_prepared_stream<R: BufRead>(
     stream: &mut Stream<R>,
     manifest: &Manifest,
     digest: &str,
     arch: &str,
 ) -> Result<Vec<Packed>, CliError> {
+    let directory =
+        tempfile::tempdir().map_err(CliError::io("create preparation verification spool"))?;
+    Ok(
+        stage_prepared_stream(stream, manifest, digest, arch, directory.path())?
+            .into_iter()
+            .map(|(packed, _)| packed)
+            .collect(),
+    )
+}
+
+fn stage_prepared_stream<R: BufRead>(
+    stream: &mut Stream<R>,
+    manifest: &Manifest,
+    digest: &str,
+    arch: &str,
+    directory: &std::path::Path,
+) -> Result<Vec<(Packed, super::userspace_builder::space::Archive)>, CliError> {
     let mut members = Vec::new();
     for name in USERSPACE_COMPONENTS {
         let component = manifest
@@ -97,11 +136,13 @@ pub(crate) fn verify_prepared_stream<R: BufRead>(
             .header(&mut std::io::stderr())
             .map_err(CliError::io("read the prepared cohort header"))?;
         validate_member(&packed, component, digest, arch)?;
-        // Reading to END validates the exact payload hash and byte count, even though
-        // offline preparation leaves storage and activation to the normal swap.
-        std::io::copy(stream, &mut std::io::sink())
-            .map_err(CliError::io("verify the prepared cohort payload"))?;
-        members.push(packed);
+        if packed.reused {
+            return Err(CliError::InvalidInput(
+                "prepared userspace requires every member's complete payload".into(),
+            ));
+        }
+        let archive = super::userspace_builder::space::Archive::receive(stream, directory)?;
+        members.push((packed, archive));
     }
     stream
         .finish(&mut std::io::stderr())

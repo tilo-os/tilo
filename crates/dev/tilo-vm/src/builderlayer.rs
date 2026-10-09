@@ -866,7 +866,7 @@ mod tests {
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "builderlayer_batch_tests.rs"]
-mod batch_tests;
+pub(crate) mod batch_tests;
 #[cfg(test)]
 mod binary_tests {
     use super::*;

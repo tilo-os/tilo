@@ -91,13 +91,13 @@ fn run_producer_child() -> FixtureResult<bool> {
     Ok(true)
 }
 
-struct Fixture {
-    root: tempfile::TempDir,
-    snapshot: Snapshot,
+pub(crate) struct Fixture {
+    pub(crate) root: tempfile::TempDir,
+    pub(crate) snapshot: Snapshot,
 }
 
 impl Fixture {
-    fn with_native_payload() -> FixtureResult<Self> {
+    pub(crate) fn with_native_payload() -> FixtureResult<Self> {
         let mut fixture = Self::new()?;
         // The original byte-stream fixture intentionally has non-ELF members.
         // This admission fixture uses a real small native executable so the
@@ -190,9 +190,10 @@ else:
         let path = root.path().join("fixture-cargo");
         std::fs::write(&path, cargo)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::write(root.path().join(".gitignore"), "target/\n")?;
         for args in [
             vec!["init", "-q"],
-            vec!["add", "os", "fixture-cargo"],
+            vec!["add", "os", "fixture-cargo", ".gitignore"],
             vec![
                 "-c",
                 "user.name=fixture",
@@ -217,7 +218,11 @@ else:
         Ok(Self { root, snapshot })
     }
 
-    fn run(&self, mode: &str, fail: Option<&str>) -> std::io::Result<std::process::Output> {
+    pub(crate) fn run(
+        &self,
+        mode: &str,
+        fail: Option<&str>,
+    ) -> std::io::Result<std::process::Output> {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .current_dir(self.root.path())

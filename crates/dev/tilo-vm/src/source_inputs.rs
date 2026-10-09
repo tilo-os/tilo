@@ -57,7 +57,37 @@ fn input_hash(root: &Path, path: &Path) -> Result<String, CliError> {
     Ok(build::sha256_hex(&encoded))
 }
 
+/// Reserved root transport files are generated, never product source. Tracked
+/// files with this spelling remain source inputs.
+pub(crate) fn is_generated_carrier(path: &str) -> bool {
+    !path.contains('/')
+        && path.starts_with(".tilo-vm-inputs-")
+        && Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension == "json")
+}
+
 impl Snapshot {
+    /// Existing builders sync root files but omit target/. Keep the authority
+    /// in target/ and expose its exact bytes only for this builder's lifetime.
+    pub(crate) fn carrier(&self, root: &Path) -> Result<tempfile::NamedTempFile, CliError> {
+        self.unchanged(root)?;
+        let carrier = tempfile::Builder::new()
+            .prefix(".tilo-vm-inputs-")
+            .suffix(".json")
+            .tempfile_in(root)
+            .map_err(CliError::io("create scoped source inventory carrier"))?;
+        std::fs::copy(self.file.path(), carrier.path())
+            .map_err(CliError::io("copy source inventory carrier"))?;
+        if verify(root, carrier.path())? != self.digest {
+            return Err(CliError::InvalidInput(
+                "source inventory carrier changed".into(),
+            ));
+        }
+        self.unchanged(root)?;
+        Ok(carrier)
+    }
+
     pub(crate) fn unchanged(&self, root: &Path) -> Result<(), CliError> {
         let worktree = Worktree {
             root: root.to_owned(),
@@ -87,10 +117,13 @@ impl Snapshot {
             files,
         })
         .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let directory = worktree.root.join("target/tilo-vm/source-inputs");
+        std::fs::create_dir_all(&directory)
+            .map_err(CliError::io("create source inventory directory"))?;
         let file = tempfile::Builder::new()
-            .prefix(".tilo-vm-inputs-")
+            .prefix("inputs-")
             .suffix(".json")
-            .tempfile_in(&worktree.root)
+            .tempfile_in(&directory)
             .map_err(CliError::io("create source inventory"))?;
         std::fs::write(file.path(), &bytes).map_err(CliError::io("write source inventory"))?;
         Ok(Self {
@@ -103,35 +136,41 @@ impl Snapshot {
 }
 
 fn listed_paths(root: &Path) -> Result<Vec<String>, CliError> {
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-z", "-co", "--exclude-standard"])
-        .output()
-        .map_err(CliError::io("list source inputs"))?;
-    if !listed.status.success() {
-        return Err(CliError::InvalidInput(
-            "cannot enumerate source inputs".into(),
-        ));
-    }
     let mut paths = Vec::new();
-    for raw in listed
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|raw| !raw.is_empty())
-    {
-        let path = std::str::from_utf8(raw)
-            .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
-        if path.split('/').any(|part| part == ".git")
-            || path.starts_with("target/")
-            || path.starts_with(".tilo-vm-inputs-")
+    // Separate tracked and untracked enumeration so generated-name exclusions
+    // can never hide tracked source bytes.
+    for (args, untracked) in [
+        (vec!["ls-files", "-z", "-c"], false),
+        (vec!["ls-files", "-z", "-o", "--exclude-standard"], true),
+    ] {
+        let listed = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .map_err(CliError::io("list source inputs"))?;
+        if !listed.status.success() {
+            return Err(CliError::InvalidInput(
+                "cannot enumerate source inputs".into(),
+            ));
+        }
+        for raw in listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|raw| !raw.is_empty())
         {
-            continue;
+            let path = std::str::from_utf8(raw)
+                .map_err(|_| CliError::InvalidInput("source path is not UTF-8".into()))?;
+            if path.split('/').any(|part| part == ".git")
+                || path.starts_with("target/")
+                || (untracked && is_generated_carrier(path))
+            {
+                continue;
+            }
+            if root.join(path).exists() {
+                paths.push(path.to_owned());
+            }
         }
-        if !root.join(path).exists() {
-            continue;
-        }
-        paths.push(path.to_owned());
     }
     paths.sort();
     paths.dedup();
@@ -178,6 +217,94 @@ pub(crate) fn verify(root: &Path, inventory: &Path) -> Result<String, CliError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_owned_inventories_do_not_pollute_the_next_source_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .current_dir(root.path())
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(root.path().join("source.rs"), "committed source").unwrap();
+        git(&["add", ".gitignore", "source.rs"]);
+        git(&[
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        let worktree = Worktree::detect(root.path()).unwrap();
+        let first = Snapshot::create(&worktree, "userspace").unwrap();
+        assert!(
+            first
+                .file
+                .path()
+                .starts_with(root.path().join("target/tilo-vm/source-inputs"))
+        );
+        // A terminated caller may leave its owned file behind. It must still be
+        // outside git provenance and the next caller's source inventory.
+        let orphan = first.file.path().with_file_name("cancelled-inputs.json");
+        std::fs::copy(first.file.path(), &orphan).unwrap();
+        let next = Snapshot::create(&worktree, "userspace").unwrap();
+        assert_eq!(first.digest, next.digest);
+        assert_eq!(first.provenance, next.provenance);
+        assert_eq!(worktree.dirty_state(), None);
+        first.unchanged(root.path()).unwrap();
+        next.unchanged(root.path()).unwrap();
+        let carrier = next.carrier(root.path()).unwrap();
+        let carrier_path = carrier.path().to_owned();
+        assert_eq!(
+            std::fs::read(carrier.path()).unwrap(),
+            std::fs::read(next.file.path()).unwrap()
+        );
+        assert_eq!(verify(root.path(), carrier.path()).unwrap(), next.digest);
+        std::fs::copy(
+            carrier.path(),
+            root.path().join(".tilo-vm-inputs-cancelled.json"),
+        )
+        .unwrap();
+        let after_carrier = Snapshot::create(&worktree, "userspace").unwrap();
+        assert_eq!(next.digest, after_carrier.digest);
+        assert_eq!(next.provenance, after_carrier.provenance);
+        assert_eq!(worktree.dirty_state(), None);
+        drop(carrier);
+        assert!(!carrier_path.exists());
+
+        // Real source remains observable even beside the generated namespace.
+        std::fs::write(root.path().join(".tilo-vm-inputs-real.rs"), "new source").unwrap();
+        assert!(next.unchanged(root.path()).is_err());
+        let real = Snapshot::create(&worktree, "userspace").unwrap();
+        assert_ne!(real.digest, next.digest);
+        assert_ne!(real.provenance, next.provenance);
+        std::fs::remove_file(root.path().join(".tilo-vm-inputs-real.rs")).unwrap();
+        std::fs::write(
+            root.path().join(".tilo-vm-inputs-tracked.json"),
+            "tracked source",
+        )
+        .unwrap();
+        git(&["add", ".tilo-vm-inputs-tracked.json"]);
+        let tracked = Snapshot::create(&worktree, "userspace").unwrap();
+        assert!(worktree.dirty_state().is_some());
+        std::fs::write(
+            root.path().join(".tilo-vm-inputs-tracked.json"),
+            "changed tracked source",
+        )
+        .unwrap();
+        assert!(tracked.unchanged(root.path()).is_err());
+        std::fs::write(root.path().join("source.rs"), "changed SDK input").unwrap();
+        assert!(real.unchanged(root.path()).is_err());
+    }
 
     #[test]
     fn remote_app_source_inventory_detects_dirty_sdk_and_cleans_owned_file() {

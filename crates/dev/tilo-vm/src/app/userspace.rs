@@ -1,7 +1,11 @@
 //! The normal swap story, with a single matched session cohort admission.
 
 use super::{App, Builder, CliError, Outcome, Status, VM_SLOT, describe_apply, json};
-use tilo_vm_protocol::UserspaceApply;
+use tilo_vm_protocol::{Manifest, UserspaceApply, UserspaceMember};
+
+use super::userspace_prepare::store::Loaded;
+use super::{Remote, Resolved};
+use crate::source_inputs::Snapshot;
 
 impl App {
     pub(super) fn swap_userspace(
@@ -11,7 +15,10 @@ impl App {
         builder: Option<Builder>,
         profile: Option<&str>,
     ) -> Result<Outcome, CliError> {
-        if from != "worktree"
+        let prepared_path = from
+            .strip_prefix("prepared:")
+            .filter(|path| !path.is_empty());
+        if (from != "worktree" && prepared_path.is_none())
             || profile.is_some()
             || matches!(builder, Some(Builder::Host | Builder::Vm))
             || slot == VM_SLOT
@@ -32,6 +39,19 @@ impl App {
                 .display()
                 .to_string(),
         })?;
+        // Verify the whole retained payload before even contacting the target.
+        let prepared = prepared_path
+            .map(|path| {
+                self.receipt.phase("verify-prepared-userspace", || {
+                    super::userspace_prepare::store::load(
+                        std::path::Path::new(path),
+                        &manifest,
+                        &inputs,
+                        &worktree.root,
+                    )
+                })
+            })
+            .transpose()?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         if !remote
@@ -59,15 +79,10 @@ impl App {
         let expected_session = observed.session_identity.ok_or_else(|| {
             CliError::InvalidInput("the cohort slot has no verified session identity".into())
         })?;
-        let command = self
-            .registry()?
-            .remote_builders
-            .get(&remote.hello.arch)
-            .filter(|line| !line.is_empty())
-            .cloned()
-            .ok_or_else(|| self.no_remote_builder(&remote.hello.arch))?;
-        let members =
-            self.build_userspace_remote(&mut remote, &vm, &manifest, &command, &inputs)?;
+        if prepared.is_some() {
+            self.receipt.set("prepared_path", prepared_path);
+        }
+        let members = self.stage_userspace(&vm, &mut remote, &manifest, &inputs, prepared)?;
         inputs.unchanged(&worktree.root)?;
         remote = self.connect(&vm)?;
         let result = self.receipt.phase("apply", || {
@@ -95,5 +110,48 @@ impl App {
                 "tilo-vm logs",
             ]),
         )
+    }
+
+    fn stage_userspace(
+        &mut self,
+        vm: &Resolved,
+        remote: &mut Remote,
+        manifest: &Manifest,
+        inputs: &Snapshot,
+        prepared: Option<Loaded>,
+    ) -> Result<Vec<UserspaceMember>, CliError> {
+        if let Some(prepared) = prepared {
+            if prepared.prepared.arch != remote.hello.arch {
+                return Err(CliError::InvalidInput(
+                    "prepared userspace architecture differs from the target".into(),
+                ));
+            }
+            self.receipt.set("cohort_builder_admissions", 0);
+            let floor = self.registry()?.min_free_bytes();
+            let budget = super::userspace_builder::space::Budget::new(
+                prepared.members.iter().map(|(_, archive)| archive),
+                floor,
+            )?;
+            let storage = remote.call(Status { slot: None })?.storage;
+            self.receipt.set("cohort_space_budget", &budget);
+            budget.admit(storage.free_bytes)?;
+            self.import_userspace_members(
+                remote,
+                vm,
+                manifest,
+                inputs,
+                &prepared.prepared.metadata,
+                prepared.members,
+            )
+        } else {
+            let command = self
+                .registry()?
+                .remote_builders
+                .get(&remote.hello.arch)
+                .filter(|line| !line.is_empty())
+                .cloned()
+                .ok_or_else(|| self.no_remote_builder(&remote.hello.arch))?;
+            self.build_userspace_remote(remote, vm, manifest, &command, inputs)
+        }
     }
 }

@@ -72,8 +72,21 @@ impl Worktree {
     /// plus untracked paths. `None` for a clean tree.
     pub fn dirty_state(&self) -> Option<String> {
         let status = git(&self.root, &["status", "--porcelain"])?;
+        let status = status
+            .lines()
+            .filter(|line| {
+                !line
+                    .strip_prefix("?? ")
+                    .is_some_and(crate::source_inputs::is_generated_carrier)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let diff = git(&self.root, &["diff", "HEAD"]).unwrap_or_default();
-        Some(format!("{status}\n{diff}"))
+        if status.is_empty() && diff.is_empty() {
+            None
+        } else {
+            Some(format!("{status}\n{diff}"))
+        }
     }
 }
 

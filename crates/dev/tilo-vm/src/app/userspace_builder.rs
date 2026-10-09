@@ -2,7 +2,7 @@
 
 use std::io::BufReader;
 
-mod space;
+pub(super) mod space;
 use std::time::Instant;
 
 use tilo_vm_protocol::manifest::Component;
@@ -32,8 +32,8 @@ impl App {
             .record("cohort-metadata", metadata_started.elapsed().as_secs_f64());
         inputs.unchanged(&worktree.root)?;
         self.check_vm_space(remote, vm)?;
-        let inventory = inputs
-            .file
+        let carrier = inputs.carrier(&worktree.root)?;
+        let inventory = carrier
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
@@ -117,7 +117,7 @@ impl App {
         self.import_userspace_members(remote, vm, manifest, inputs, &metadata, staged)
     }
 
-    fn import_userspace_members(
+    pub(super) fn import_userspace_members(
         &mut self,
         remote: &mut Remote,
         vm: &Resolved,
@@ -156,6 +156,15 @@ impl App {
                         provenance: Box::new(provenance.clone()),
                     })
                 })?;
+            if packed
+                .layer_hash
+                .as_ref()
+                .is_some_and(|expected| *expected != imported.hash)
+            {
+                return Err(CliError::InvalidInput(
+                    "imported userspace member differs from its prepared content identity".into(),
+                ));
+            }
             members.push(UserspaceMember {
                 component: component.name.clone(),
                 layer: imported.hash,

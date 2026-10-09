@@ -37,21 +37,38 @@ receipt reports any desktop refresh it performed.
 
 ```sh
 tilo-vm prepare-userspace --arch aarch64 # build and verify while the device is offline
+tilo-vm swap userspace --slot device --from prepared:<path>
+# Or build and apply in one operation:
 tilo-vm swap userspace --slot device --builder remote
 ```
 
 Preparation uses the configured architecture builder and the same frozen source
 inventory and nine-member producer as the swap. It checks every member's source,
 order, architecture and complete archive hash, and requires the producer to exit
-successfully. It contacts no device and selects no generation. The normal swap
-still validates the live device, storage, session and generation before activation;
-its builder reuses the compiled artifacts and existing component cache. Source
-changes after preparation are handled by the normal swap's new inventory.
+successfully. It retains the complete verified stream and source provenance in a
+private content-addressed directory under ignored `target/tilo-vm/prepared/`.
+It contacts no device and selects no generation. The receipt and command output
+print that path. Applying `--from prepared:<path>` rechecks the current source,
+immutable descriptor identity, every member header and every archive checksum
+before contacting a device. It makes no builder admission. The normal import,
+storage budget, live owner/session, generation and package-signature checks still
+run. Source changes, corrupt or incomplete payloads, a different architecture,
+or a replaced descriptor refuse reuse; prepare the changed source again. A
+receipt from an older tool that discarded its payload cannot be applied. Cached
+payloads can be removed when no longer needed; they are local developer artifacts
+and acquire no CI publication authority.
 
 This worktree operation uses one frozen source inventory to build and import
 launcher, installer, apps plus their exact SDK, AppHost, NativeRuntimeHost,
 control, app CLI, ush and Shell. It requires a daemon advertising
-`userspace.apply`; an older daemon is refused before any build or activation.
+`userspace.apply`; an older daemon is refused before any build or activation. The CLI
+and management daemon must also speak the same protocol: a retained cohort
+containing a newer `vmd` cannot bootstrap an incompatible daemon, because the
+normal handshake happens before import. Refresh management first with a CLI
+matching the currently running daemon, using the ordinary `swap vmd --slot vm`
+path, then reconnect with the cohort's CLI. That transition requires its own
+verified activation receipt; an offline preparation receipt does not prove it.
+The older daemon's existing refresh policy still applies during that first swap.
 VM-wide services, the greeter, image and kernel are separate operations.
 
 Every import must finish before activation. Changed source, target architecture,

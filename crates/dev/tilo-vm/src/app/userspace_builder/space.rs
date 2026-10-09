@@ -13,7 +13,7 @@ const MAX_ARCHIVE: u64 = 4 << 30;
 const MAX_ENTRIES: usize = 262_144;
 const ENTRY_OVERHEAD: u64 = 16 << 10;
 
-pub(super) struct Archive {
+pub(in crate::app) struct Archive {
     pub file: File,
     bytes: u64,
     unpack_bytes: u64,
@@ -27,7 +27,7 @@ impl Archive {
     /// Time reception, END verification and local capacity scanning together.
     /// The phase is not a pure network measurement. Refused streams record
     /// elapsed work but never publish a successful archive byte count.
-    pub(super) fn receive_tracked(
+    pub(in crate::app) fn receive_tracked(
         reader: &mut impl Read,
         directory: &Path,
         receipt: &mut crate::receipt::Receipt,
@@ -46,7 +46,10 @@ impl Archive {
         Ok(archive)
     }
 
-    pub(super) fn receive(reader: &mut impl Read, directory: &Path) -> Result<Self, CliError> {
+    pub(in crate::app) fn receive(
+        reader: &mut impl Read,
+        directory: &Path,
+    ) -> Result<Self, CliError> {
         let mut file = tempfile::tempfile_in(directory)
             .map_err(CliError::io("create private cohort archive"))?;
         let bytes = std::io::copy(&mut reader.take(MAX_ARCHIVE + 1), &mut file)
@@ -92,7 +95,7 @@ impl Archive {
 }
 
 #[derive(Debug, Serialize)]
-pub(super) struct Budget {
+pub(in crate::app) struct Budget {
     #[serde(rename = "reserve_bytes")]
     reserve: u64,
     #[serde(rename = "unpack_estimate_bytes")]
@@ -104,7 +107,7 @@ pub(super) struct Budget {
 }
 
 impl Budget {
-    pub(super) fn new<'a>(
+    pub(in crate::app) fn new<'a>(
         archives: impl Iterator<Item = &'a Archive>,
         reserve: u64,
     ) -> Result<Self, CliError> {
@@ -128,7 +131,7 @@ impl Budget {
         })
     }
 
-    pub(super) fn admit(&self, free_bytes: Option<u64>) -> Result<(), CliError> {
+    pub(in crate::app) fn admit(&self, free_bytes: Option<u64>) -> Result<(), CliError> {
         let free = free_bytes.ok_or_else(|| {
             invalid("VM available capacity cannot be observed; no layers transferred")
         })?;

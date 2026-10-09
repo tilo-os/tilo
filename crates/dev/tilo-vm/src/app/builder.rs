@@ -213,8 +213,8 @@ impl App {
         let metadata = self.cargo_metadata();
         let extra = build::dev_features(&metadata, &component.packages);
         inputs.unchanged(&worktree.root)?;
-        let inventory = inputs
-            .file
+        let carrier = inputs.carrier(&worktree.root)?;
+        let inventory = carrier
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|error| CliError::InvalidInput(error.to_string()))?;
@@ -352,8 +352,8 @@ impl App {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let provenance = build::source_provenance(&worktree, &format!("app:{dir}"), "remote");
         let inputs = crate::source_inputs::Snapshot::create(&worktree, &format!("app:{dir}"))?;
-        let inventory = inputs
-            .file
+        let carrier = inputs.carrier(&worktree.root)?;
+        let inventory = carrier
             .path()
             .strip_prefix(&worktree.root)
             .map_err(|e| CliError::InvalidInput(e.to_string()))?;
