@@ -2956,3 +2956,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "iroh"))]
+mod iroh_connect_tests;
