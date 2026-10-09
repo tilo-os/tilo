@@ -169,8 +169,8 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let old = fs_protocol::FileVersionId(uuid::Uuid::from_u128(101));
     let current = fs_protocol::FileVersionId(uuid::Uuid::from_u128(102));
     let actor = fs_protocol::FileActor {
-        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+        person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
+        device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
     };
     let history =
         Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
@@ -389,8 +389,8 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 record_id,
                 parents: vec![],
                 actor: fs_protocol::FileActor {
-                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                    person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
                 },
                 timestamp_ms: 1,
                 content_hash: Some(fs_protocol::ContentHash([5; 32])),

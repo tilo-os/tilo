@@ -116,8 +116,8 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         protocol_version: RECIPIENT_CONTROL_VERSION,
         operation,
     };
-    let bytes =
-        collab_types::canonical_bytes(&request).map_err(|_| t("files-received-encode-failed"))?;
+    let bytes = fs_protocol::canonical::canonical_bytes(&request)
+        .map_err(|_| t("files-received-encode-failed"))?;
     let frame = RECIPIENT_CONTROL_FRAMING
         .encode(&bytes)
         .map_err(|_| t("files-received-request-too-large"))?;
@@ -137,7 +137,7 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         Err(FrameError::Truncated) => return Err(t("files-received-response-truncated")),
         Ok(None) | Err(_) => return Err(t("files-received-no-response")),
     };
-    collab_types::canonical::from_canonical_bytes(&response)
+    fs_protocol::canonical::from_canonical_bytes(&response)
         .map_err(|_| t("files-received-response-invalid"))
 }
 
@@ -169,12 +169,12 @@ mod tests {
         runtime.block_on(async {
             let (mut client, mut service) = tokio::io::duplex(64 * 1024);
             let operation = RecipientControlOperationV1::AdmitV2 { uri: "u".into() };
-            let body = collab_types::canonical_bytes(&RecipientControlRequestV1 {
+            let body = fs_protocol::canonical::canonical_bytes(&RecipientControlRequestV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 operation: operation.clone(),
             })
             .unwrap();
-            let response = collab_types::canonical_bytes(&RecipientControlResponseV1 {
+            let response = fs_protocol::canonical::canonical_bytes(&RecipientControlResponseV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 result: RecipientControlResultV1::Error {
                     code: fs_protocol::RecipientControlErrorCode::NotFound,

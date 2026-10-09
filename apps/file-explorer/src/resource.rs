@@ -1079,7 +1079,7 @@ mod tests {
         }
 
         let mut viewer =
-            TestApp::<FileExplorerShell>::with_role(collab_types::Role::Viewer).unwrap();
+            TestApp::<FileExplorerShell>::with_role(ui::permissions::Role::Viewer).unwrap();
         viewer
             .effect(&FilesEffect::GoTo {
                 path: root.path().display().to_string(),

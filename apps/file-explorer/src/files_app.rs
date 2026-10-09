@@ -4082,7 +4082,7 @@ impl FileExplorerWidget {
                     return true;
                 };
                 let display = self.trusted_humans.display_name_or_fingerprint(&person);
-                let recipient_devices: Vec<collab_types::Ed25519PublicKey> = self
+                let recipient_devices: Vec<fs_protocol::Ed25519PublicKey> = self
                     .trusted_humans
                     .human(&person)
                     .map(|human| human.devices.iter().map(|device| device.device).collect())
@@ -4184,7 +4184,7 @@ impl FileExplorerWidget {
                         for grant in &share.grants {
                             let (subject, devices) = match grant.subject {
                                 crate::model::ShareSubject::Person { person } => {
-                                    let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                    let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
                                     self.trusted_humans.human(&person).map_or_else(
                                         || {
                                             (
@@ -4296,7 +4296,7 @@ impl FileExplorerWidget {
                         .map(|version| (version, entry.path.clone()))
                 });
                 let entry = selected.map(|(version, path)| {
-                    let person = collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
+                    let person = fs_protocol::Ed25519PublicKey::from_bytes(version.actor.person);
                     let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
                     let identity = short_fingerprint(&version.actor.person);
                     let action = t(version.provenance_key());
@@ -4325,8 +4325,8 @@ impl FileExplorerWidget {
                         ),
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
-                        op_class: collab_types::OpClass::Compaction,
-                        artifact_kind: collab_types::ArtifactKind::File,
+                        op_class: ui::widget::OpClass::Compaction,
+                        artifact_kind: ui::widget::ArtifactKind::File,
                         timestamp: UNIX_EPOCH
                             .checked_add(Duration::from_millis(version.timestamp_ms))
                             .unwrap_or(UNIX_EPOCH),
@@ -6902,7 +6902,7 @@ impl FileExplorerWidget {
                         };
                         let subject = match grant.subject {
                             crate::model::ShareSubject::Person { person } => {
-                                let person = collab_types::Ed25519PublicKey::from_bytes(person);
+                                let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
                                 self.trusted_humans.display_name_or_fingerprint(&person)
                             }
                             crate::model::ShareSubject::BearerLink => t("files-shared-link"),

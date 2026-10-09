@@ -240,7 +240,7 @@ pub enum FileCommand {
     /// Grant view access to one identity-layer-resolved human root. Names are
     /// intentionally not carried in the command or authority protocol.
     ShareWithPerson {
-        person: collab_types::Ed25519PublicKey,
+        person: fs_protocol::Ed25519PublicKey,
     },
     /// Submit one fully specified share-composer choice. The app dispatches
     /// the authority request on its background worker.

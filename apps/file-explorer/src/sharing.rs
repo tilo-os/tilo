@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use collab_types::Ed25519PublicKey;
+use fs_protocol::Ed25519PublicKey;
 use fs_protocol::{
     FilePermission, FileRecordId, NamedGrantMetadataV1, SHARE_CONTROL_FRAMING,
     SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1, ShareControlResponseV1,
@@ -217,7 +217,7 @@ async fn transact(
         protocol_version: SHARE_CONTROL_VERSION,
         operation,
     };
-    let request = collab_types::canonical_bytes(&request).map_err(|error| {
+    let request = fs_protocol::canonical::canonical_bytes(&request).map_err(|error| {
         t_args(
             "files-share-encode-failed",
             &[arg("error", error.to_string())],
@@ -262,7 +262,7 @@ async fn transact(
             ));
         }
     };
-    let response: ShareControlResponseV1 = collab_types::canonical::from_canonical_bytes(&response)
+    let response: ShareControlResponseV1 = fs_protocol::canonical::from_canonical_bytes(&response)
         .map_err(|error| {
             t_args(
                 "files-share-response-invalid",
@@ -389,7 +389,7 @@ mod tests {
                 let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
                 stream.read_exact(&mut request).unwrap();
                 let request: ShareControlRequestV1 =
-                    collab_types::canonical::from_canonical_bytes(&request).unwrap();
+                    fs_protocol::canonical::from_canonical_bytes(&request).unwrap();
                 assert_eq!(
                     request.operation,
                     ShareControlOperationV1::CreateNamed {
@@ -413,7 +413,7 @@ mod tests {
                         delivery: fs_protocol::NamedShareDeliveryStateV1::Pending,
                     }),
                 };
-                let bytes = collab_types::canonical_bytes(&response).unwrap();
+                let bytes = fs_protocol::canonical::canonical_bytes(&response).unwrap();
                 stream
                     .write_all(&(bytes.len() as u32).to_be_bytes())
                     .unwrap();
@@ -447,7 +447,7 @@ mod tests {
                 let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
                 stream.read_exact(&mut request).unwrap();
                 let request: ShareControlRequestV1 =
-                    collab_types::canonical::from_canonical_bytes(&request).unwrap();
+                    fs_protocol::canonical::from_canonical_bytes(&request).unwrap();
                 match request.operation {
                     ShareControlOperationV1::CreateBearerV2 {
                         record_id: requested,
@@ -468,7 +468,7 @@ mod tests {
                         uri: "tilo-file://one-use".into(),
                     },
                 };
-                let bytes = collab_types::canonical_bytes(&response).unwrap();
+                let bytes = fs_protocol::canonical::canonical_bytes(&response).unwrap();
                 stream
                     .write_all(&(bytes.len() as u32).to_be_bytes())
                     .unwrap();
