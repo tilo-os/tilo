@@ -39,9 +39,6 @@ const INSERT_FADE_MS: u64 = 220;
 /// Start y-offset for the insert fade; positive pulls the pill up at t=0, settling
 /// to target at t=1.
 const INSERT_FADE_Y_OFFSET: f64 = 10.0;
-/// Room beyond a pill's fade clip that its damage part also claims, for
-/// strokes and antialiasing on the clip's edge.
-const PILL_PART_MARGIN: f64 = 4.0;
 
 /// Per-pill close fade-out; pairs with `SPAWN_FADE_MS` in `tile_host.rs`.
 pub const CLOSE_FADE_MS: f32 = 180.0;
@@ -3165,9 +3162,8 @@ impl TabBar {
             // It paints inside the clip a fading pill is held to, at its
             // fade offset; a press only shrinks it.
             let bounds = vec![
-                transform.transform_rect_bbox(clip.inflate(PILL_PART_MARGIN, PILL_PART_MARGIN)),
-                pill_transform
-                    .transform_rect_bbox(clip.inflate(PILL_PART_MARGIN, PILL_PART_MARGIN)),
+                transform.transform_rect_bbox(clip),
+                pill_transform.transform_rect_bbox(clip),
             ];
             let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
             crate::scene_parts::part(scene, key, bounds, |scene| {
