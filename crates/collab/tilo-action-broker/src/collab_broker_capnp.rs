@@ -4838,7 +4838,7 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
         // A certified local origin retains its original registered clock and
         // exact person/room through an asynchronous directory lookup. Never
         // recapture a replacement origin at dispatch or accept a payload actor.
