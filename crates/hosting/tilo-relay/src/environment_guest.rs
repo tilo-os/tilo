@@ -445,6 +445,7 @@ pub fn open_ush_session(
         // never the host's shell, which no relay session reaches.
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
+        runs: None,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;
@@ -1069,6 +1070,7 @@ mod tests {
                 session: "s".into(),
                 environment: "relay-key".into(),
                 relay_session: None,
+                runs: false,
             })
             .unwrap();
             reply.push(b'\n');

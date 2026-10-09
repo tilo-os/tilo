@@ -60,6 +60,9 @@ pub struct SessionOptions {
     /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
+    /// The key the shell marks its command runs with for Terminal
+    /// ([`crate::runs`]); `None` marks nothing.
+    pub runs: Option<String>,
 }
 
 impl Default for SessionOptions {
@@ -70,6 +73,9 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
+            runs: std::env::var(crate::runs::KEY_ENV)
+                .ok()
+                .filter(|key| crate::runs::valid_key(key)),
         }
     }
 }
@@ -289,8 +295,15 @@ impl Session {
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let runtime_bin = runtime_binary()?;
         let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
+        let shell = guest_shell(&images);
+        let runs = self
+            .opts
+            .runs
+            .clone()
+            .filter(|_| self.opts.command.is_empty() && crate::runs::is_bash(&shell));
         Ok(GuestPlan {
-            shell: guest_shell(&images),
+            shell,
+            runs,
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -512,6 +525,10 @@ pub enum ServeRequest {
         /// as an earlier answer named it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The key the session's shell marks its command runs with
+        /// ([`crate::runs`]), chosen by the app for this session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<String>,
     },
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
@@ -594,6 +611,10 @@ pub enum ServeResponse {
         /// re-attaches to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The session's shell is asked to mark its runs with the key the
+        /// request named. A shell other than `bash` writes no marks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        runs: bool,
     },
     Denied {
         reason: String,
@@ -846,16 +867,41 @@ fn serve_request(
         return Ok(Served::Refused);
     }
 
+    open_environment(
+        stream,
+        writer,
+        store,
+        host_root,
+        environment.as_deref(),
+        &record,
+        req,
+    )
+}
+
+/// Build the guest of an environment on this device on a fresh pty and hand
+/// its master to the app; the connection is the session's lifetime.
+fn open_environment(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    environment: Option<&str>,
+    record: &str,
+    req: ServeRequest,
+) -> anyhow::Result<Served> {
+    let record = record.to_owned();
     let ServeRequest::OpenSession {
         cols,
         rows,
         term,
         command,
+        runs,
         ..
     } = req
     else {
         return Ok(Served::Done);
     };
+    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
 
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -867,10 +913,11 @@ fn serve_request(
     ));
     let launch = Launch {
         store,
-        environment: environment.as_deref(),
+        environment,
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
+        runs: runs.as_deref(),
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -887,6 +934,7 @@ fn serve_request(
             session: id.clone(),
             environment: record.clone(),
             relay_session: None,
+            runs: runs.is_some(),
         },
         Some(master.as_raw_fd()),
     )?;
@@ -1068,6 +1116,7 @@ fn serve_host(
         term,
         command,
         requested_by,
+        runs,
         ..
     } = req
     else {
@@ -1112,7 +1161,28 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    let runs = runs
+        .as_deref()
+        .filter(|key| {
+            command.is_empty()
+                && crate::runs::valid_key(key)
+                && crate::runs::is_bash(&account.shell)
+        })
+        .and_then(|key| {
+            let rc = store.session_dir(&id).join("runs.bash");
+            std::fs::create_dir_all(store.session_dir(&id)).ok()?;
+            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
+            Some((key, rc))
+        });
+    let child = spawn_on_pty(
+        crate::host::host_command(
+            &account,
+            term,
+            command,
+            runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
+        ),
+        &slave,
+    )?;
     drop(slave);
     reply(
         writer,
@@ -1120,6 +1190,7 @@ fn serve_host(
             session: id.clone(),
             environment: "host".into(),
             relay_session: None,
+            runs: runs.is_some(),
         },
         Some(master.as_raw_fd()),
     )?;
@@ -1225,6 +1296,7 @@ fn serve_relay(
             session: id.clone(),
             environment: key.clone(),
             relay_session: Some(session_id),
+            runs: false,
         },
         Some(master.as_raw_fd()),
     )?;
@@ -1451,6 +1523,8 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
+    /// The key the session's shell marks its runs with.
+    runs: Option<&'a str>,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1475,6 +1549,10 @@ fn spawn_attached(
         cmd.env(crate::store::GRANT_ROOT_ENV, root);
     }
     cmd.env("TERM", launch.term);
+    match launch.runs {
+        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
+        None => cmd.env_remove(crate::runs::KEY_ENV),
+    };
     spawn_on_pty(cmd, slave)
 }
 
@@ -1613,6 +1691,7 @@ mod tests {
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
+            runs: None,
         }
     }
 
