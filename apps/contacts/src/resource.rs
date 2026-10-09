@@ -414,7 +414,7 @@ impl ResourceApp for ContactsShell {
     }
 
     /// `new`, `edit`, `editfocus` and `edit-lower` show the contact form;
-    /// `export`, `unsaved`, `confirm`, `import-conflict` and
+    /// `export`, `unsaved`, `import-conflict` and
     /// `duplicate-review` its dialogs; `groups` and `context` its menus;
     /// `duplicates` a discovered likely duplicate; `search` a filtered list;
     /// `empty` a fresh install; `loading` an import in progress; `error` the
@@ -430,7 +430,6 @@ impl ResourceApp for ContactsShell {
             "unsaved",
             "groups",
             "context",
-            "confirm",
             "import-conflict",
             "duplicate-review",
             "duplicates",

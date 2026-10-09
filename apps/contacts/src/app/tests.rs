@@ -498,13 +498,16 @@ fn list_keys_delete_edit_and_create() {
     let mut harness = harness((1280, 800));
     let selected = harness.selected;
     harness.harness_mut().key("Delete");
-    assert_eq!(harness.confirm_delete, selected);
+    harness.settle();
     assert!(
-        matches!(harness.dialog, Some((DialogKey::Delete(_), _))),
-        "the delete dialog is up"
+        host_confirmation_is_up(&mut harness),
+        "the host asks before deleting"
     );
-    harness.harness_mut().key("Escape");
-    assert!(harness.confirm_delete.is_none(), "Escape cancels");
+    cancel_on_host(&mut harness);
+    assert!(
+        harness.store.get(selected.unwrap()).is_some(),
+        "cancelling deletes nothing"
+    );
 
     harness.harness_mut().key("e");
     assert_eq!(harness.mode, Mode::Edit);
@@ -640,11 +643,9 @@ fn the_contact_menu_runs_the_canonical_actions() {
         Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.choose_menu(index(ContextAction::Delete));
-    assert_eq!(app.confirm_delete, Some(grace));
-    ask(&mut app, Request::Dialog(DialogChoice::Primary));
+    confirm_on_host(&mut app);
     assert!(app.store.get(grace).is_none());
     assert!(!app.book().iter().any(|c| c.id == grace));
-    assert_eq!(toast(&app), Some("Contact deleted"));
     assert!(
         app.app
             .state()
@@ -681,9 +682,8 @@ fn header_commands_favorite_delete_and_open_the_website() {
     );
 
     ask(&mut app, Request::DeleteSelected);
-    assert_eq!(app.confirm_delete, Some(ada.id));
-    ask(&mut app, Request::Dialog(DialogChoice::Dismiss));
-    assert!(app.confirm_delete.is_none());
+    assert!(host_confirmation_is_up(&mut app), "the host asks first");
+    cancel_on_host(&mut app);
     assert!(
         app.store.get(ada.id).is_some(),
         "dismissing deletes nothing"
@@ -1132,7 +1132,9 @@ fn saves_persist_and_refusals_never_claim_success() {
         app.store.upsert(contact.clone());
         app.selected = Some(contact.id);
         app.request(Request::DeleteSelected);
-        app.request(Request::Dialog(DialogChoice::Primary));
+        if host_confirmation_is_up(&mut app) {
+            confirm_on_host(&mut app);
+        }
         app.settle();
         assert!(
             app.store.get(contact.id).is_none(),
@@ -1140,7 +1142,7 @@ fn saves_persist_and_refusals_never_claim_success() {
         );
         let delete_error = app.toast.as_ref().unwrap().0.clone();
         assert!(
-            delete_error.starts_with("Couldn't delete contact:"),
+            delete_error.starts_with("Couldn't change the address book:"),
             "{delete_error}"
         );
         assert_ne!(delete_error, "Contact deleted", "no false success toast");
@@ -1719,15 +1721,16 @@ fn context_menu_opens_canonical_contact_actions() {
                 other.is_some()
             ),
         }
-        // Click the "Delete" row in the menu → the delete-confirm modal opens.
+        // Click the "Delete" row in the menu → the host asks to confirm.
         let rows = menu_rows(&h.app);
         let delete_idx = menu_index(&h.app, ContextAction::Delete);
         h.press_left(rows[&delete_idx].center());
-        assert_eq!(
-            h.app.confirm_delete,
-            Some(id),
-            "context-menu Delete routes through the confirmation modal"
+        h.app.settle();
+        assert!(
+            host_confirmation_is_up(&mut h.app),
+            "context-menu Delete routes through the host's confirmation"
         );
+        assert!(h.app.store.get(id).is_some(), "nothing is deleted yet");
         assert!(
             !h.app.menu.is_open(),
             "the context menu closes when an item is chosen"
@@ -1834,50 +1837,22 @@ fn context_menu_opens_canonical_contact_actions() {
     }
 }
 
-/// The delete key and confirm modal dispatch the palette's delete action; the shared modal's cancel is non-destructive.
+/// Deleting asks the host to confirm: confirmed, it does exactly what the
+/// palette's delete does; cancelled, it deletes nothing.
 #[test]
 fn delete_confirmation_dispatches_the_palette_action() {
-    // --- phase: confirm_modal_delete_removes_contact_from_doc ---
+    // --- phase: confirmed_delete_is_the_palettes_delete ---
     {
         let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
-        h.app.confirm_delete = Some(id);
-        let before = h.book().len();
-        h.relayout();
-        let del = current_dialog(&*h.app).primary_rect();
-        h.press_left(del.center());
-        assert!(
-            h.app.confirm_delete.is_none(),
-            "the modal closes after confirming"
-        );
-        let after = h.book().len();
-        assert_eq!(
-            after,
-            before - 1,
-            "Delete removes the contact from the CRDT doc"
-        );
-        assert!(
-            !h.book().iter().any(|c| c.id == id),
-            "the deleted contact is gone from the document"
-        );
-    }
-
-    // --- phase: confirm_delete_dispatches_the_action_the_palette_builds ---
-    {
-        // Single source of truth, proven on the real button path: confirming
-        // a delete dispatches the byte-identical EncodedAction the Ctrl+K
-        // "Delete contact" spec builds for the same contact.
-        let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
+        let id = h.app.selected.unwrap();
         let expected = h.app.book_after(Contacts::delete(id));
-        h.app.confirm_delete = Some(id);
-        h.relayout();
-        let del = current_dialog(&*h.app).primary_rect();
-        h.press_left(del.center());
+        assert!(h.press_named(NamedKey::Delete));
+        h.app.settle();
+        confirm_on_host(&mut h.app);
         assert_eq!(
             h.book(),
             expected,
-            "the confirm-delete button does what the palette's Delete does",
+            "the confirmed delete does what the palette's Delete does",
         );
         assert!(
             !h.book().iter().any(|c| c.id == id),
@@ -1885,40 +1860,14 @@ fn delete_confirmation_dispatches_the_palette_action() {
         );
     }
 
-    // --- phase: delete_key_opens_confirm_and_escape_dismisses_it ---
+    // --- phase: cancelling_the_hosts_confirmation_is_non_destructive ---
     {
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         assert!(h.press_named(NamedKey::Delete));
-        assert_eq!(
-            h.app.confirm_delete,
-            Some(id),
-            "Delete raises the confirm modal for the selection"
-        );
-        h.press_named(NamedKey::Escape);
-        assert!(
-            h.app.confirm_delete.is_none(),
-            "Escape dismisses the confirm modal"
-        );
-        assert!(h.app.store.get(id).is_some(), "nothing was deleted");
-    }
-
-    // --- phase: delete_confirmation_is_shared_modal_and_cancel_is_non_destructive ---
-    {
-        let mut h = Harness::new(1280, 800);
-        let id = h.row_id(0);
-        h.app.confirm_delete = Some(id);
-        h.relayout();
-
-        let dialog = current_dialog(&*h.app);
-        let access = dialog.accessibility().expect("modal accessibility node");
-        assert_eq!(access.role, ui::a11y::Role::Dialog);
-        assert!(access.state.modal, "assistive tech sees a blocking dialog");
-        assert!(h.app.traps_focus(), "keyboard focus cannot leave the modal");
-        let cancel = dialog.secondary_rect();
-
-        assert!(h.press_left(cancel.center()));
-        assert!(h.app.confirm_delete.is_none(), "Cancel closes the dialog");
+        h.app.settle();
+        assert!(host_confirmation_is_up(&mut h.app));
+        cancel_on_host(&mut h.app);
         assert!(h.app.store.get(id).is_some(), "Cancel never deletes");
         assert!(
             h.book().iter().any(|c| c.id == id),
@@ -2011,16 +1960,18 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
     {
         // After Save/Delete/Import/Export the confirmation toast used to stay
         // forever: it stored an Instant nothing ever read. Drive a real action
-        // (delete) so the production `show_toast` fires, then prove the frame
+        // (a save) so the production `show_toast` fires, then prove the frame
         // loop keeps itself awake and clears the toast once its lifetime
         // elapses, and idles afterwards.
         let mut app = Live::sample(1280, 800);
-        let id = app.selected.unwrap();
-
-        app.selected = Some(id);
-        app.request(Request::DeleteSelected);
-        app.request(Request::Dialog(DialogChoice::Primary));
-        assert!(app.toast.is_some(), "deleting a contact raises a toast");
+        let contact = selected_contact(&app);
+        app.begin_edit(contact, false);
+        app.form
+            .as_ref()
+            .expect("the editor is open")
+            .set_value(Slot::Title, "Toasted");
+        app.request(Request::Save);
+        assert!(app.toast.is_some(), "saving a contact raises a toast");
         assert!(
             app.needs_animation_frame(),
             "the loop stays awake so the timed dismissal fires without further input",
@@ -3929,6 +3880,12 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
 
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     app.settle();
+    assert!(
+        app.duplicate_review.is_some(),
+        "the review stays up behind the host's question"
+    );
+    confirm_on_host(&mut app);
+    assert!(app.duplicate_review.is_none(), "a landed merge closes it");
     let book = app.book();
     assert!(
         !book.iter().any(|c| c.id == copy.id),
@@ -3939,7 +3896,6 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
         "Babbage & Co.",
         "the merge kept the chosen value"
     );
-    assert!(toast(&app).is_some_and(|message| message.starts_with("Merged")));
 }
 
 /// Shared facts read as a phrase.
@@ -3971,7 +3927,6 @@ fn every_capture_scenario_renders() {
         "favorites",
         "context",
         "more",
-        "confirm",
         "import-conflict",
         "duplicate-review",
         "empty",
@@ -3987,7 +3942,6 @@ fn every_capture_scenario_renders() {
             match scenario {
                 "new" | "edit" | "calendar" => assert_eq!(app.mode, Mode::Edit, "{scenario}"),
                 "export" => assert!(app.export.is_some()),
-                "confirm" => assert!(app.confirm_delete.is_some()),
                 "duplicate-review" => assert!(app.duplicate_review.is_some()),
                 "empty" => assert!(app.store.is_empty()),
                 _ => {}
@@ -4082,7 +4036,7 @@ fn check_refused_favorite_and_delete_reconcile_without_false_success() {
     assert!(
         toast(&app)
             .unwrap()
-            .starts_with("Couldn't update favorite:")
+            .starts_with("Couldn't change the address book:")
     );
 
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -4606,4 +4560,32 @@ fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
         .expect("the peer's change applies");
     tilo_automerge::ApplyIncoming::merge_incoming(doc, peer.doc_mut())
         .expect("the peer's change merges");
+}
+
+/// Whether the host's confirmation of an action is up.
+fn host_confirmation_is_up(app: &mut Live) -> bool {
+    app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+        node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")
+    })
+}
+
+/// Confirm the action the host asks about, as the person does.
+fn confirm_on_host(app: &mut Live) {
+    assert!(
+        host_confirmation_is_up(app),
+        "the host asks to confirm the action"
+    );
+    act_named(
+        app,
+        "Confirmation",
+        &ui::a11y::Action::SetValue("CONFIRM".into()),
+    );
+    act_named(app, "Confirm", &ui::a11y::Action::Activate);
+    app.settle();
+}
+
+/// Cancel the action the host asks about.
+fn cancel_on_host(app: &mut Live) {
+    act_named(app, "Cancel", &ui::a11y::Action::Activate);
+    app.settle();
 }

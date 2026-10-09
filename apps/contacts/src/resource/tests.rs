@@ -19,8 +19,9 @@ fn contact(book: &Replica<Contacts>, id: ContactId) -> Option<Contact> {
 }
 
 fn save(book: &mut Replica<Contacts>, base: &Contact, edited: &Contact) -> Result<(), String> {
+    // Taking a row out is confirmed, as the host asks the person to.
     let invoke = Contacts::save(base, edited).ok_or("the form changed nothing")?;
-    book.apply(invoke)
+    book.apply_confirmed(invoke)
         .map(drop)
         .map_err(|error| error.to_string())
 }
@@ -556,4 +557,46 @@ fn history_says_what_each_change_did() {
         ],
         "{sentences:#?}"
     );
+}
+
+/// Merging from the review asks the host to confirm while the review stays
+/// up; confirmed, the merge lands and the review closes.
+#[test]
+fn merging_from_the_review_asks_the_host_and_lands() {
+    let mut app = TestApp::<ContactsShell>::new().unwrap();
+    let mut survivor = person("Ada", "Lovelace");
+    survivor.id = Uuid::from_u128(1);
+    let mut source = survivor.clone();
+    source.id = Uuid::from_u128(2);
+    source.org = "Analytical Engines".into();
+    app.invoke(Contacts::add_all(vec![survivor.clone(), source.clone()]))
+        .unwrap();
+    app.effect_on(
+        &place_resource_id(&duplicate_place(survivor.id, source.id)),
+        &ContactsEffect::OpenReview {
+            survivor: survivor.id,
+            source: source.id,
+        },
+    )
+    .unwrap();
+    app.settle();
+    let activate = |app: &mut TestApp<ContactsShell>, name: &str, action| {
+        let node = app
+            .harness()
+            .a11y_node_named(name)
+            .unwrap_or_else(|| panic!("{name} is shown"));
+        app.harness().perform_a11y_action(node, &action).unwrap();
+        app.settle();
+    };
+    activate(&mut app, "Merge contacts", ui::a11y::Action::Activate);
+    assert_eq!(app.state().contacts.len(), 2, "nothing merges unconfirmed");
+    activate(
+        &mut app,
+        "Confirmation",
+        ui::a11y::Action::SetValue("CONFIRM".into()),
+    );
+    activate(&mut app, "Confirm", ui::a11y::Action::Activate);
+    let merged = app.state().contacts;
+    assert_eq!(merged.len(), 1, "the confirmed merge lands");
+    assert_eq!(merged[0].org, "Analytical Engines");
 }

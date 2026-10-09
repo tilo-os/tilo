@@ -52,7 +52,7 @@ use dialogs::{DialogKey, ExportDraft};
 /// Private presentation token; it is never written to the shared document.
 const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
 
-/// How long an action toast ("Saved", "Contact deleted", …) stays on screen
+/// How long an action toast ("Saved", "Contact created", …) stays on screen
 /// before it fades away on its own. The host loop is kept awake (via
 /// [`Widget::needs_animation_frame`]) only while a toast is up, so the frame
 /// where this elapses clears it and the loop returns to idle.
@@ -167,7 +167,6 @@ pub struct ContactsApp {
     sort: SortKey,
     group_filter: Option<String>,
     toast: Option<(String, Instant)>,
-    confirm_delete: Option<ContactId>,
     duplicate_review: Option<DuplicateReview>,
     duplicate_candidate: Option<crate::actions::DuplicateCandidate>,
     /// The export whose format is being chosen.
@@ -310,24 +309,16 @@ fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget
 }
 
 impl ContactsApp {
-    /// Apply `invoke` now, as the person's own: what the window asked
-    /// itself (the delete and merge confirmations) is not asked again. A
-    /// saved form, several edits, is submitted as one change after the
-    /// event; a refusal reaches [`Self::announce_refusal`].
+    /// Submit `invoke` through the door, after the event: a destructive
+    /// verb is confirmed by the host there, and a refusal reaches
+    /// [`Self::announce_refusal`].
     fn try_perform_action(
         &self,
-        doc: &mut ui::widget::Edits<'_>,
+        _doc: &mut ui::widget::Edits<'_>,
         invoke: Invoke<Contacts>,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        if invoke.is_group() {
-            return self
-                .submit(invoke)
-                .map_err(ui::tilo_actions::ActionError::Refused);
-        }
-        let dispatcher = self.dispatcher.as_ref().ok_or_else(|| {
-            ui::tilo_actions::ActionError::Refused("the address book is not open".into())
-        })?;
-        dispatcher.submit_now(doc, invoke)
+        self.submit(invoke)
+            .map_err(ui::tilo_actions::ActionError::Refused)
     }
     fn reconcile_refused_action(
         &mut self,
@@ -398,6 +389,13 @@ impl ContactsApp {
             if self.selected.is_none() {
                 self.selected = self.visible_ids().first().copied();
             }
+        }
+        // A merge the person confirmed has landed: its review is done.
+        if let Some(review) = &self.duplicate_review
+            && self.store.get(review.source.id).is_none()
+        {
+            self.selected = Some(review.survivor.id);
+            self.duplicate_review = None;
         }
         if let Some(sel) = self.selected
             && self.store.get(sel).is_none()
@@ -525,7 +523,6 @@ impl ContactsApp {
             sort: SortKey::Name,
             group_filter: None,
             toast: None,
-            confirm_delete: None,
             duplicate_review: None,
             duplicate_candidate: None,
             export: None,
@@ -642,7 +639,6 @@ impl ContactsApp {
                     button.open(true);
                 }
             }
-            "confirm" => self.confirm_delete = self.selected,
             "import-conflict" => {
                 if let Some(existing) = self.selected.and_then(|id| self.store.get(id)).cloned() {
                     let mut incoming = existing.clone();
@@ -975,22 +971,12 @@ impl ContactsApp {
         }
     }
 
-    fn delete_selected(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
-        match self.try_perform_action(doc, Contacts::delete(id)) {
-            Ok(()) => {
-                self.store.delete(id);
-                if self.form.as_ref().is_some_and(|form| form.draft.id == id) {
-                    self.cancel_edit();
-                }
-                if self.selected == Some(id) {
-                    self.selected = self.visible_ids().first().copied();
-                }
-                self.show_toast("Contact deleted");
-            }
-            Err(error) => self.reconcile_refused_action(doc, "delete contact", &error),
+    /// Delete the contact `id`: the host asks the person to confirm, and the
+    /// contact leaves the list once the book no longer holds it.
+    fn delete_contact(&mut self, doc: &mut ui::widget::Edits<'_>, id: ContactId) {
+        if let Err(error) = self.try_perform_action(doc, Contacts::delete(id)) {
+            self.reconcile_refused_action(doc, "delete contact", &error);
         }
-        self.confirm_delete = None;
-        self.list_stale = true;
         self.dirty = true;
     }
 
@@ -1036,7 +1022,7 @@ impl ContactsApp {
             }
             ContextAction::Delete => {
                 self.selected = Some(target);
-                self.confirm_delete = Some(target);
+                self.delete_contact(doc, target);
             }
         }
         self.dirty = true;
@@ -1550,7 +1536,11 @@ impl ContactsApp {
                     self.begin_edit(contact, false);
                 }
             }
-            Request::DeleteSelected => self.confirm_delete = self.selected,
+            Request::DeleteSelected => {
+                if let Some(id) = self.selected {
+                    self.delete_contact(doc, id);
+                }
+            }
             Request::Save => self.save_edit(doc),
             Request::FocusField(slot) => self.focus_form_field(slot),
             Request::AdvanceField(slot) => self.advance_form_field(doc, slot),
@@ -1659,7 +1649,7 @@ impl ContactsApp {
             Key::Named(NamedKey::ArrowUp) => self.move_selection(-1),
             Key::Named(NamedKey::Enter) if self.selected.is_some() => self.reveal_content(),
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if self.selected.is_some() => {
-                self.confirm_delete = self.selected;
+                self.shared.borrow_mut().push(Request::DeleteSelected);
             }
             Key::Character(c) if c.eq_ignore_ascii_case("n") => self.begin_new_contact(),
             Key::Character(c) if c.eq_ignore_ascii_case("e") => {
