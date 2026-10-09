@@ -862,27 +862,42 @@ impl PresenceCtx {
     /// comfortably exceed the ~1s restate interval, so this notices a peer
     /// gone quiet rather than blinking one whose keepalive was briefly
     /// delayed. Only the pointer goes — the peer stays in [`Self::here`],
-    /// since going quiet about pointing is not leaving.
+    /// since going quiet about pointing is not leaving — and with it the
+    /// peer's [`Self::remote_cursors`] record of that pointer, as
+    /// [`Self::clear_pointer`] does, so a peer that vanished leaves nothing
+    /// for a window to keep repainting.
     pub fn prune_pointers(&mut self, now: Instant, horizon: Duration) -> bool {
         let seen = &mut self.pointer_seen;
-        let mut retired = false;
+        let mut retired = Vec::new();
         self.pointers.retain(|key, list| {
             list.retain(|(user, _)| {
                 let fresh = seen
                     .get(&(key.clone(), user.clone()))
                     .is_some_and(|t| now.saturating_duration_since(*t) < horizon);
                 if !fresh {
-                    retired = true;
+                    retired.push(user.clone());
                 }
                 fresh
             });
             !list.is_empty()
         });
-        if retired {
-            seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
-            self.pointer_glides.retain(|id, _| seen.contains_key(id));
+        if retired.is_empty() {
+            return false;
         }
-        retired
+        seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
+        self.pointer_glides.retain(|id, _| seen.contains_key(id));
+        for user in retired {
+            // A person has one pointer; once it is gone from every scope the
+            // cursor record of it goes too.
+            if !self
+                .pointers
+                .values()
+                .any(|list| list.iter().any(|(u, _)| *u == user))
+            {
+                self.remove_remote_cursor(&user.0);
+            }
+        }
+        true
     }
 
     /// How opaque to paint `user`'s pointer at `key`: fully until the last
@@ -2786,6 +2801,20 @@ mod own_identity_tests {
             ctx.pointer_position_at(&room, &peer, quiet),
             Some((500.0, 0.0))
         );
+
+        // A pointer that arrived as a frame is also on record as a remote
+        // cursor; retiring the pointer retires that record, or a peer who
+        // vanished keeps a window repainting for the rest of the session.
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence_at(
+            peer.0.clone(),
+            room.clone(),
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            t0,
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
+        assert!(ctx.remote_cursors.is_empty(), "{:?}", ctx.remote_cursors);
     }
 
     #[test]
