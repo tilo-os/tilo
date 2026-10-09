@@ -265,8 +265,8 @@ fn overlapping_calls_with_one_invocation_id_run_one_after_the_other() {
 /// A call learns which instances run from one listing of who publishes,
 /// asking for no rows: the host need not assemble its whole catalogue to
 /// answer it. The instance's app comes from that same listing, so recording
-/// which app produced an answer's content lists nothing again; a batch
-/// lists once for all its steps.
+/// which app produced an answer's content lists nothing again; a later
+/// call on the instance that listing named lists nothing at all.
 #[test]
 fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
     let host = GatedHost {
@@ -311,7 +311,10 @@ fn a_call_lists_live_instances_once_and_asks_for_no_rows() {
             batch["structuredContent"].get("stopped").is_none(),
             "{batch}"
         );
-        assert_eq!(listings(), [0], "a batch runs on one instance, listed once");
+        assert!(
+            listings().is_empty(),
+            "a batch on an instance the session listed lists nothing again (TIL-588)"
+        );
         let apps = call(&endpoint, &session, "tilo_list_apps", json!({})).await;
         assert_eq!(
             apps["structuredContent"]["apps"][0]["peer_id"], 71,
