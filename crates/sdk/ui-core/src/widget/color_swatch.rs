@@ -428,16 +428,15 @@ impl Widget for ColorSwatchPicker {
             .unwrap_or_else(|| f64::from(theme.tokens.metrics.min_pointer_target));
         self.pad = f64::from(theme.tokens.spacing.s1);
         let (w, h) = self.grid_size();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: length(w),
                 height: length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(

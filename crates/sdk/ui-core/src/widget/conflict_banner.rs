@@ -251,15 +251,14 @@ impl Widget for ConflictBanner {
         } else {
             self.height as f32
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(h),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// The chip labels are measured here, during layout, so the chip rects

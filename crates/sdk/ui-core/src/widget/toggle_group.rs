@@ -2013,7 +2013,7 @@ impl Widget for ToggleGroup {
             return node;
         }
         let height = self.strip_height() + self.caption_height;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 // Fit the labels (measured in `measure`) unless asked to
                 // fill; a multi-select strip and a tab strip take the row's
@@ -2042,9 +2042,8 @@ impl Widget for ToggleGroup {
                 0.0
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -2489,18 +2488,7 @@ impl crate::resources::PublishesResources for ToggleGroup {
 }
 
 impl crate::widget::controls::ActionControls for ToggleGroup {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let Some(action) = &self.action else {
             // A choice kept in view state is made through the segments'
@@ -2518,14 +2506,6 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         (0..self.segments.len())
             .map(|index| action.metadata(self.segment_id(index)))
             .collect()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
     }
 }
 
