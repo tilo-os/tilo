@@ -719,6 +719,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         seccomp_blob: session.join("ush.bpf"),
         command,
         shell: "/usr/bin/sh".into(),
+        runs: None,
         term: "dumb".into(),
         env: check.environment.clone(),
         resolver: Some(String::new()),

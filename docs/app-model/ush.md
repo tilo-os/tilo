@@ -223,6 +223,104 @@ answer `{"result":"environments","environments":[{"key","name","tools",
 The request connection is the session's lifetime in both directions: Terminal
 closing it ends the guest, and the guest exiting closes it.
 
+## Command runs
+
+Terminal records what a session **ran**, not what its screen showed. A
+session is a record of its own (`terminal.session`); opening Terminal starts a
+new one, and each tab of the shell is its own. The screen, the scrollback and
+the window title stay on the device that runs the process: they are live
+output, like the pixels of a legacy window, and another device reaches them by
+re-attaching to the session on its relay.
+
+### The shell marks each run
+
+`ush` tells Terminal where each command starts and ends; Terminal never
+guesses from the prompt. An `open-session` request names a key the session
+marks its runs with, chosen by Terminal for that session:
+
+```json
+{"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
+```
+
+`runs` is 16 to 64 letters and digits. An interactive session answers
+`"runs":true`: when its shell is `bash`, `ush` starts it with an rc file of its
+own (`/run/ush/runs.bash` in a guest; for the Host target one that reads
+`/etc/profile` first, as the login shell would) that sources the person's
+`~/.bashrc` and then writes three marks into the pty stream:
+
+```text
+ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
+ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> BEL   a command line starts
+ESC ] 133 ; D ; <status> ; k=<key> BEL                it ended with <status>
+```
+
+`cmd` and `cwd` are base64 of the command line as the shell's history holds
+it and of the working directory. The key is a shell variable the rc file
+takes out of the environment before anything runs, so no program the session
+runs sees it, and output that imitates a mark (a `cat` of a file holding one)
+is not taken for one: Terminal acts only on marks carrying its key, and takes
+every mark out of what the screen shows. Another shell writes no marks; a
+`command` session and an environment on a relay answer `"runs":false`. Their
+output is live only.
+
+### A run
+
+Each run is an item of the session record's `runs` collection, written once,
+when it ends, by the Terminal that runs the session:
+
+| Field | |
+|---|---|
+| `command`, `cwd` | as the shell marked them |
+| `environment` | where it ran: the session's target |
+| `actor`, `for_person` | who ran it: the person typing, or the agent (and for whom) whose `run` asked for it |
+| `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
+| `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
+| `tool`, `items` | which parser read it, and what it found |
+
+No run writes a CRDT operation per character: the output is one blob, the
+rest a handful of fields.
+
+### Parsers
+
+Every run's output is read twice when it ends. The generic parser strips
+escape sequences and finds `path:line[:column]` locations, URLs and lines
+that say `error` or `warning`. A tool parser, chosen by the command, reads
+what that tool means: `cargo` and `rustc` diagnostics (the human format and
+`--message-format=json`) as errors and warnings with their code and primary
+location, `cargo test` and other libtest output as one item per test with its
+outcome, `git status` (long and `--short`/`--porcelain`) as one item per
+changed path. Each item is typed (`error`, `warning`, `location`, `url`,
+`test-passed`, `test-failed`, `test-ignored`, `change`) with its text and,
+where it has them, a path, line, column, code or test name.
+
+### Actions on runs
+
+- `run` runs a command line in the session: a verb of kind **Outside**, which
+  queues the command in the record's outbox. The Terminal running the session
+  types it into the shell and settles the entry with the run once it ends,
+  so an agent's call returns the run. It shows in the view like a person's
+  typing, and the run is attributed to whoever invoked it.
+- `rerun` (on a run) runs its command line again; `rerun-test` (on a run, with
+  a test name) runs that one test the way the run's tool does
+  (`cargo test <name> -- --exact`); both are Outside like `run`.
+- `open-item` (on a run, with the item's position) shows an item: a location
+  or a diagnostic opens its file at its line, a URL opens in the browser.
+
+Agents read runs as data: each run is a published item with its fields and
+items, its `output` is read with the content it names, and "the second error"
+is `open-item` with the second error's position.
+
+Which commands an agent's `run` may start is a grant on the environment;
+see [permissions.md](../architecture/permissions.md).
+
+### Search and history
+
+The person's command history spans every session: each run also adds an
+entry to the person's own history record (`terminal.history`: command, cwd,
+environment, exit, when, who, and the session and run it was), which follows
+them to their devices. Terminal's search shows the runs of every session
+from it, and a hit opens the session at that run.
+
 ## Installing tools
 
 `pkg install pandoc` inside a guest asks the broker (`Request::AddTool`). The

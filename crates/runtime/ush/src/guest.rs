@@ -141,6 +141,9 @@ pub struct GuestPlan {
     pub command: Vec<String>,
     /// The shell to host when `command` is empty.
     pub shell: PathBuf,
+    /// The key the shell marks its command runs with ([`crate::runs`]):
+    /// `bash` then starts on the rc file that writes the marks.
+    pub runs: Option<String>,
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
@@ -177,6 +180,12 @@ impl GuestPlan {
             helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
         }
         std::fs::create_dir_all(&self.guest_home)?;
+        if self.runs.is_some() {
+            std::fs::write(
+                self.session_dir.join("runs.bash"),
+                crate::runs::bash_rc(false),
+            )?;
+        }
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;
         }
@@ -298,6 +307,7 @@ fn build_guest_argv(
     push_symlinks(&mut a);
     push_pseudo_filesystems_and_var(&mut a, plan);
     push_runtime_and_broker(&mut a, plan, check.is_none());
+    push_runs(&mut a, plan);
     push_home_and_grants(&mut a, plan);
     if let Some((checkout, build)) = check {
         a.extend([
@@ -503,6 +513,17 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
     a.push(crate::GUEST_BROKER_SOCK.into());
 }
 
+/// The rc file of a shell that marks its runs, read-only at
+/// [`crate::runs::GUEST_RC`].
+fn push_runs(a: &mut Vec<OsString>, plan: &GuestPlan) {
+    if plan.runs.is_none() {
+        return;
+    }
+    a.push("--ro-bind".into());
+    a.push(plan.session_dir.join("runs.bash").into_os_string());
+    a.push(crate::runs::GUEST_RC.into());
+}
+
 /// The environment's home, then the grants at their host paths, then the
 /// masks over anything a grant would otherwise reveal of the runtime.
 fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
@@ -568,6 +589,9 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     setenv("LOGNAME", &plan.user.name, a);
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
+    if let Some(key) = &plan.runs {
+        setenv(crate::runs::KEY_ENV, key, a);
+    }
     if broker {
         setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
     }
@@ -608,6 +632,10 @@ fn push_seccomp_and_command(
     a.push("--".into());
     if plan.command.is_empty() {
         a.push(plan.shell.clone().into_os_string());
+        if plan.runs.is_some() {
+            a.push("--rcfile".into());
+            a.push(crate::runs::GUEST_RC.into());
+        }
         a.push("-i".into());
     } else {
         for arg in &plan.command {
@@ -755,6 +783,7 @@ mod tests {
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),
             shell: PathBuf::from("/usr/bin/bash"),
+            runs: None,
             term: "xterm-256color".into(),
             env: Vec::new(),
             resolver: None,

@@ -19986,6 +19986,7 @@ name = "ush"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bounded-command",
  "collab-types",
  "durable-store",

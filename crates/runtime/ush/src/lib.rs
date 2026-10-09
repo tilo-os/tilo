@@ -81,6 +81,7 @@ pub mod legacy_relay;
 pub mod policy;
 pub mod records;
 pub mod relay;
+pub mod runs;
 pub mod seccomp;
 pub mod store;
 pub mod supervisor;
