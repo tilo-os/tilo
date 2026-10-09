@@ -705,14 +705,7 @@ mod tests {
         handled
     }
 
-    fn named_press(key: NamedKey) -> WindowEvent {
-        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn a_sampled_grid_tells_each_choice_and_paints_its_samples() {
@@ -825,9 +818,9 @@ mod tests {
         assert_eq!(picker.take_choice(), Some(2));
 
         Widget::set_focus(&mut picker, true);
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Home)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
-        assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Home)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut picker, &named_key(NamedKey::Space)));
         assert_eq!(picker.take_choice(), Some(1));
 
         assert!(Widget::perform_semantic_action(

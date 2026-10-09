@@ -26,7 +26,7 @@ use ui::text_render::TextRenderer;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, PhysicalKey};
 
 use crate::categories::Category;
 
@@ -34,13 +34,7 @@ fn root() -> automerge::ObjId {
     automerge::ROOT
 }
 
-fn char_key_event(s: &str) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Character(SmolStr::new(s)),
-        Some(SmolStr::new(s)),
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::char_key;
 
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
@@ -251,7 +245,7 @@ impl Harness {
     /// thing `App` does with `autofocus_on_structure_change` set.
     fn type_char(&mut self, c: &str) {
         let mods = Modifiers::default();
-        let ev = char_key_event(c);
+        let ev = char_key(c);
         let mut handled = false;
         let mut focus_target = None;
         self.app.handle_event(
@@ -379,7 +373,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
             before["rendered_category_ids"]
         );
         // Native key construction, delivered through the same root widget route.
-        let mut ev = char_key_event("");
+        let mut ev = char_key("");
         if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
             event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
             event.text = None;
@@ -484,7 +478,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     assert_eq!(typed["local_search_text"], "z");
     assert_eq!(typed["sidebar_open"], true);
     assert_eq!(typed["narrow"], true);
-    let mut ev = char_key_event("");
+    let mut ev = char_key("");
     if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
         event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
         event.text = None;

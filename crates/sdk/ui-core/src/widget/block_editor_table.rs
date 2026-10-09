@@ -1593,15 +1593,9 @@ mod tests {
         (taffy, node)
     }
 
+    use crate::synthetic_input::char_key;
     use crate::synthetic_input::cursor_moved;
     use crate::synthetic_input::mouse_press;
-    fn char_key(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
     fn enter() -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
             Key::Named(NamedKey::Enter),

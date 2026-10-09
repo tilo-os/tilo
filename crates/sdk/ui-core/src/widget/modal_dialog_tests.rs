@@ -121,13 +121,7 @@ fn cursor_at(p: Point) -> WindowEvent {
 
 use crate::synthetic_input::mouse_press;
 
-fn key_press_event(named: NamedKey) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-        Key::Named(named),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use crate::synthetic_input::named_key;
 
 fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
     let mut tree = TaffyTree::<()>::new();
@@ -590,7 +584,7 @@ fn retained_narrow_dialog_footer_targets_follow_the_stacked_geometry() {
         assert!(actual.x0 >= window.x0 && actual.x1 <= window.x1);
         assert!(actual.y0 >= window.y0 && actual.y1 <= window.y1);
     }
-    assert!(dispatch(&mut dialog, &key_press_event(NamedKey::Enter)));
+    assert!(dispatch(&mut dialog, &named_key(NamedKey::Enter)));
     assert!(
         cancelled.get(),
         "Enter cancels the destructive confirmation"
@@ -926,7 +920,7 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
             .open(true)
             .on_dismiss(move || flag.set(flag.get() + 1));
         lay_out(&mut d, WINDOW, &Theme::dark());
-        assert!(dispatch(&mut d, &key_press_event(NamedKey::Escape)));
+        assert!(dispatch(&mut d, &named_key(NamedKey::Escape)));
         assert_eq!(dismissed.get(), 1);
         dispatch(&mut d, &cursor_at(Point::new(10.0, 10.0)));
         assert!(dispatch(&mut d, &mouse_press()), "swallowed");
@@ -936,7 +930,7 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         dispatch(&mut d, &mouse_press());
         assert_eq!(dismissed.get(), 3, "the close control dismisses");
         assert!(d.handle_detached(
-            &key_press_event(NamedKey::Escape),
+            &named_key(NamedKey::Escape),
             1.0,
             Modifiers::default(),
             &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
@@ -956,10 +950,10 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         dispatch(&mut d, &cursor_at(p));
         dispatch(&mut d, &mouse_press());
         assert_eq!(fired.get(), 1, "a click on the primary action fires it");
-        dispatch(&mut d, &key_press_event(NamedKey::Enter));
+        dispatch(&mut d, &named_key(NamedKey::Enter));
         assert_eq!(fired.get(), 2, "Enter fires the primary action");
         d.content_mut().consume = true;
-        dispatch(&mut d, &key_press_event(NamedKey::Enter));
+        dispatch(&mut d, &named_key(NamedKey::Enter));
         assert_eq!(fired.get(), 2, "content that consumes Enter suppresses it");
     }
 
@@ -1023,7 +1017,7 @@ fn open_dialog_captures_input_and_closed_dialog_is_inert() {
     // Case `open_dialog_swallows_every_key`.
     {
         let (mut d, _) = laid_out_counting(true);
-        assert!(dispatch(&mut d, &key_press_event(NamedKey::Tab)));
+        assert!(dispatch(&mut d, &named_key(NamedKey::Tab)));
     }
 
     // Case `an_in_sheet_press_reaches_the_content`.
@@ -1207,9 +1201,9 @@ fn a_three_way_question_stands_in_the_platform_order() {
     assert!(d.tertiary_rect().x0 < d.secondary_rect().x0);
     // Enter is never the alternate; Escape is Cancel when there is no
     // dismiss handler.
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     assert_eq!(saved.get(), 1);
-    dispatch(&mut d, &key_press_event(NamedKey::Escape));
+    dispatch(&mut d, &named_key(NamedKey::Escape));
     assert_eq!(cancelled.get(), 1);
     let t = d.tertiary_rect().center();
     dispatch(&mut d, &cursor_at(t));
@@ -1233,7 +1227,7 @@ fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
         .with_destructive(true)
         .open(true);
     lay_out(&mut d, WINDOW, &Theme::dark());
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     assert_eq!(cancelled.get(), 1, "Return is Cancel, as on macOS");
     assert_eq!(erased.get(), 0, "Return never erases");
     let p = d.primary_rect().center();
@@ -1287,13 +1281,13 @@ fn a_gate_may_read_state_the_content_writes_elsewhere() {
             .expect("the primary button")
     };
     assert!(primary(&d).state.disabled, "an invalid form cannot go on");
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     assert_eq!(saved.get(), 0);
 
     valid.set(true);
     present(&mut d, WINDOW, &Theme::dark());
     assert!(!primary(&d).state.disabled, "a valid form can");
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     assert_eq!(saved.get(), 1);
 }
 
@@ -1305,7 +1299,7 @@ fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
         .open(true);
     d.set_primary_enabled(false);
     lay_out(&mut d, WINDOW, &Theme::dark());
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     let p = d.primary_rect().center();
     dispatch(&mut d, &cursor_at(p));
     dispatch(&mut d, &mouse_press());
@@ -1318,7 +1312,7 @@ fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
     d.set_primary_enabled(true);
     d.set_primary_label("Erase 2 partitions");
     lay_out(&mut d, WINDOW, &Theme::dark());
-    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    dispatch(&mut d, &named_key(NamedKey::Enter));
     assert_eq!(fired.get(), 1);
     assert_eq!(
         footer_buttons(&d)[0].name.as_deref(),
@@ -1467,21 +1461,21 @@ fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
     // The keyboard: Enter is the default, Tab walks the actions in the
     // order they stand, Escape dismisses.
     assert_eq!(
-        sheet.handle(&key_press_event(NamedKey::Enter), 1.0),
+        sheet.handle(&named_key(NamedKey::Enter), 1.0),
         Some(SheetResponse::Action(0))
     );
-    sheet.handle(&key_press_event(NamedKey::Tab), 1.0);
+    sheet.handle(&named_key(NamedKey::Tab), 1.0);
     let first = sheet.focused_action().expect("Tab focuses an action");
     let leftmost = (0..3)
         .min_by(|a, b| layout.actions[*a].x0.total_cmp(&layout.actions[*b].x0))
         .unwrap();
     assert_eq!(first, leftmost, "Tab starts at the leading action");
     assert_eq!(
-        sheet.handle(&key_press_event(NamedKey::Enter), 1.0),
+        sheet.handle(&named_key(NamedKey::Enter), 1.0),
         Some(SheetResponse::Action(first))
     );
     assert_eq!(
-        sheet.handle(&key_press_event(NamedKey::Escape), 1.0),
+        sheet.handle(&named_key(NamedKey::Escape), 1.0),
         Some(SheetResponse::Dismiss)
     );
 }

@@ -1408,13 +1408,7 @@ mod tests {
 
     use crate::synthetic_input::cursor_moved;
     use crate::synthetic_input::mouse_press;
-    fn named_key(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn number_text_parses_and_formats_with_units_signs_and_precision() {

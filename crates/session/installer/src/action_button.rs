@@ -207,14 +207,7 @@ mod tests {
 
     use super::*;
 
-    fn press(key: NamedKey) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     fn assert_key_fires(key: NamedKey) {
         let (control, presses) = Control::detached("installer", "back", serde_json::Value::Null);
@@ -227,7 +220,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         button.handle_event(
-            &press(key),
+            &named_key(key),
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
