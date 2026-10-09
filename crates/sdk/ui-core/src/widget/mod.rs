@@ -2536,6 +2536,8 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+mod composed;
+pub use composed::Composed;
 pub mod controls;
 pub mod decorator;
 pub mod document_effects;
