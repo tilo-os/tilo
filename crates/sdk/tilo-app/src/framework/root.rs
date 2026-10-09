@@ -1422,6 +1422,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 }
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+    fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        ui_core::widget::Widget::for_each_child(self, &mut |child| {
+            bindings.extend(ui_core::widget::controls::action_control_bindings(child));
+        });
+        bindings
+    }
     fn has_action_control_bindings(&self) -> bool {
         // The default inventory contributes semantic bindings for this wrapper
         // and action bindings from its exposed children. Preserve that scope
