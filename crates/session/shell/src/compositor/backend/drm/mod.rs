@@ -478,6 +478,15 @@ fn direct_failures(scanouts: &[ScanoutEntry]) -> u32 {
         .unwrap_or(0)
 }
 
+/// Whether any output renders direct, as the phase summary reports it.
+fn direct_status(scanouts: &[ScanoutEntry]) -> &'static str {
+    if scanouts.iter().any(|entry| entry.direct_targets.is_some()) {
+        "enabled"
+    } else {
+        "unavailable"
+    }
+}
+
 /// Why an output is not on direct scanout, if one is not.
 fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
     scanouts
@@ -1290,15 +1299,7 @@ impl DrmPresenter {
                 self.phase_window.direct_sparse_frames,
                 self.phase_window.client_scanout_frames,
                 direct_failures(&self.scanouts),
-                if self
-                    .scanouts
-                    .iter()
-                    .any(|entry| entry.direct_targets.is_some())
-                {
-                    "enabled"
-                } else {
-                    "unavailable"
-                },
+                direct_status(&self.scanouts),
                 direct_reason(&self.scanouts),
             );
             self.phase_window.reset(now);
