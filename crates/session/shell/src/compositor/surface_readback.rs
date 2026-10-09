@@ -148,7 +148,7 @@ pub fn swizzle_row_into(
     src: &[u8],
     dst: &mut [u8],
 ) -> Result<(), ReadbackError> {
-    if src.len() != dst.len() || src.len() % 4 != 0 {
+    if src.len() != dst.len() || !src.len().is_multiple_of(4) {
         return Err(ReadbackError::InvalidDimensions {
             width: i32::try_from(dst.len() / 4).unwrap_or(i32::MAX),
             height: 1,
