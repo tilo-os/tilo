@@ -3,6 +3,9 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[cfg(feature = "chrono")]
+#[path = "dates.rs"]
+pub mod dates;
 #[path = "evolution.rs"]
 pub mod evolution;
 #[path = "fields.rs"]

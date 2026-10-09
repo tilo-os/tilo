@@ -582,3 +582,50 @@ fn search_finds_an_item_by_its_codes_and_variants() {
     assert_eq!(entries.len(), 1);
     assert!(entries[0].text.contains("rust"), "{:?}", entries[0].text);
 }
+
+/// A path names the object its value is stored in, through the items of a
+/// collection: what an editor working on document objects binds to.
+#[test]
+fn a_path_finds_the_object_its_value_is_stored_in() {
+    use automerge::ReadDoc as _;
+
+    let mut library = Replica::<Library>::new();
+    library
+        .apply(Library::NEW_SNIPPET.with(library::NewSnippet {
+            title: "Deploy".into(),
+        }))
+        .unwrap();
+    let id = library
+        .state()
+        .unwrap()
+        .snippets
+        .ids()
+        .next()
+        .unwrap()
+        .clone();
+    let paths = Library::paths();
+    let body = paths.snippets.item(&id).body;
+    let text = body.object(library.doc()).expect("the body's text");
+    assert_eq!(library.doc().text(&text).unwrap(), "");
+    library
+        .apply(Invoke::edit(&body.splice(0, 0, "kubectl")).unwrap())
+        .unwrap();
+    assert_eq!(library.doc().text(&text).unwrap(), "kubectl");
+    assert!(
+        paths
+            .snippets
+            .item(&id)
+            .favorite
+            .object(library.doc())
+            .is_none(),
+        "a scalar is stored in no object of its own"
+    );
+    assert!(
+        paths
+            .snippets
+            .item(&Id::from_raw("gone"))
+            .body
+            .object(library.doc())
+            .is_none()
+    );
+}

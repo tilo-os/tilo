@@ -21,6 +21,15 @@ use serde::{Deserialize, Serialize};
 use crate::collection::Id;
 use crate::model::Model;
 
+/// The object stored under `key` of the map `obj`.
+fn object_at(doc: &crate::Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::ObjId> {
+    use automerge::ReadDoc as _;
+    match doc.get(obj, key) {
+        Ok(Some((automerge::Value::Object(_), id))) => Some(id),
+        _ => None,
+    }
+}
+
 /// One step of a [`Path`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -171,6 +180,42 @@ impl<R, T> Path<R, T> {
         T: 'static,
     {
         root.get_at(&self.segments)?.downcast_ref()
+    }
+
+    /// The object the value at this path is stored in — the map of a
+    /// record, the text of a `RichText`, the list of a `Vec` — when it is
+    /// present in `doc` and is an object; `None` for a scalar or a value
+    /// that is not there. What an editor that works on the document's
+    /// objects (the rich-text editor) binds to.
+    pub fn object(&self, doc: &crate::Doc) -> Option<automerge::ObjId>
+    where
+        R: Model,
+    {
+        use crate::shape::{ENTRY_VALUE_KEY, Shape};
+        let mut obj = automerge::ROOT;
+        let mut shape = R::SHAPE;
+        for segment in &self.segments {
+            let (key, next) = match (shape, segment) {
+                (Shape::Record(fields), Segment::Field(key)) => (
+                    key.as_str(),
+                    fields
+                        .iter()
+                        .find(|field| field.key == key)
+                        .map_or(Shape::Value, |field| field.shape),
+                ),
+                (Shape::Collection(item), Segment::Item(id)) => {
+                    obj = object_at(doc, &obj, id.as_str())?;
+                    (ENTRY_VALUE_KEY, *item)
+                }
+                (Shape::Keyed(item), Segment::Item(id)) => (id.as_str(), *item),
+                (_, Segment::Field(key) | Segment::Key(key)) => (key.as_str(), Shape::Value),
+                (_, Segment::Item(id)) => (id.as_str(), Shape::Value),
+                (_, Segment::Cell { .. }) => return None,
+            };
+            obj = object_at(doc, &obj, key)?;
+            shape = next;
+        }
+        Some(obj)
     }
 
     /// Whether `self` is `other` or lies inside it.

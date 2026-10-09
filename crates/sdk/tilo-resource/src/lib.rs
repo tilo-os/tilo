@@ -102,6 +102,8 @@ pub mod batch;
 pub mod child;
 pub mod collection;
 pub mod content;
+#[cfg(feature = "chrono")]
+mod dates;
 pub mod delta;
 pub mod derived;
 mod describe;
