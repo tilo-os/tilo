@@ -615,3 +615,71 @@ fn legacy_person_records_load_without_email_hints_or_identity_changes() {
     assert!(person.emails.0.is_empty());
     assert!(person.endpoints.is_empty());
 }
+
+/// One projection of many people is what projecting each of them alone
+/// is: labels and hints land, a deleted person stays deleted, and the
+/// removed are tombstoned.
+#[test]
+fn one_projection_of_many_people_is_each_projected_alone() {
+    use super::Projected;
+    let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
+    let mut batched = fixture().expect("fixture succeeds");
+    let mut single = fixture().expect("fixture succeeds");
+    for record in [&mut batched, &mut single] {
+        record
+            .apply(ContactDirectory::REMOVE_CONTACT.with(second()))
+            .expect("removing succeeds");
+    }
+    let people = [first(), second(), third.clone()].map(|person| Projected {
+        label: format!("Person {person}"),
+        phones: vec!["+12025550123".into()],
+        emails: vec![format!("{person}@example.test")],
+        person,
+    });
+    batched
+        .apply(ContactDirectory::PROJECT_CONTACTS.with((people.to_vec(), vec![first()])))
+        .expect("projecting succeeds");
+    for projected in &people {
+        let person = projected.person.clone();
+        single
+            .apply(
+                ContactDirectory::PROJECT_CONTACT.with((person.clone(), projected.label.clone())),
+            )
+            .expect("projecting succeeds");
+        if person != second() {
+            single
+                .apply(
+                    ContactDirectory::PROJECT_PHONES
+                        .with((person.clone(), projected.phones.clone())),
+                )
+                .expect("projecting succeeds");
+            single
+                .apply(ContactDirectory::PROJECT_EMAILS.with((person, projected.emails.clone())))
+                .expect("projecting succeeds");
+        }
+    }
+    single
+        .apply(ContactDirectory::REMOVE_CONTACT.with(first()))
+        .expect("removing succeeds");
+    let batched = batched.state().expect("readable");
+    assert_eq!(batched, single.state().expect("readable"));
+    assert!(batched.people.get(&first()).expect("projected").removed);
+    assert!(batched.people.get(&second()).expect("projected").removed);
+    assert_eq!(
+        batched.phone_candidates("+12025550123"),
+        vec![third],
+        "only a person still in the book is a candidate"
+    );
+
+    let mut record = fixture().expect("fixture succeeds");
+    let invalid = Projected {
+        person: Id::from_raw("not-a-uuid"),
+        ..Projected::default()
+    };
+    assert!(
+        record
+            .apply(ContactDirectory::PROJECT_CONTACTS.with((vec![invalid], Vec::new())))
+            .is_err(),
+        "a person is named by a Contacts UUID"
+    );
+}

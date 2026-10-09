@@ -924,6 +924,61 @@ type = "array"
 type = "string"
 
 [[resources.verbs]]
+description = "Project many Contacts identities as one change: each person's label, phone and mailbox hints as [`Self::project_contact`], [`Self::project_phones`] and [`Self::project_emails`] would, and each of `removed` tombstoned as [`Self::remove_contact`] would. A large import costs one change instead of three per person."
+id = "project-contacts"
+kind = "undoable"
+label = "Project many Contacts identities as one change: each person's label,"
+
+[[resources.verbs.params]]
+name = "people"
+required = true
+
+[resources.verbs.params.schema]
+description = "People"
+type = "array"
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One Contacts identity as Contacts projects it: its label and the phone and mailbox hints it holds."
+required = [
+    "person",
+    "label",
+    "phones",
+    "emails",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.emails]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.emails.items]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.person]
+description = "The Contacts UUID."
+type = "string"
+
+[resources.verbs.params.schema.items.properties.phones]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.phones.items]
+type = "string"
+
+[[resources.verbs.params]]
+name = "removed"
+required = true
+
+[resources.verbs.params.schema]
+description = "Removed"
+type = "array"
+
+[resources.verbs.params.schema.items]
+type = "string"
+
+[[resources.verbs]]
 description = "Remove a reviewed association. No implicit transfer to another person."
 destructive = true
 id = "forget-endpoint"
