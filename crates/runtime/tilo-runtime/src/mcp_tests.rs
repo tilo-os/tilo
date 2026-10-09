@@ -15,6 +15,7 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
         },
         action: None,
         has_children: true,
+        fresh_binding: None,
         visibility: Some(tilo_actions::remote::RowVisibility {
             action: "read".into(),
             contract: contract.clone(),
@@ -119,6 +120,7 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         },
         action: Some(descriptor),
         has_children: false,
+        fresh_binding: None,
         visibility: None,
     };
     assert_eq!(
@@ -201,6 +203,7 @@ fn action_row(
             view: None,
         }),
         has_children: false,
+        fresh_binding: None,
         visibility: None,
     }
 }

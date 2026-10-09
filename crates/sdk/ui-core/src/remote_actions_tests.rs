@@ -23,6 +23,7 @@ fn row(id: &str) -> CatalogueRow {
         action: None,
         has_children: false,
         visibility: None,
+        fresh_binding: None,
     }
 }
 
@@ -100,6 +101,53 @@ fn client() -> (Arc<FakeHost>, RemoteActions) {
         Caller::local_app("so.tilo.example").in_room("room"),
     );
     (host, actions)
+}
+
+#[test]
+fn revision_aware_invocation_carries_exact_fence_and_one_tracked_identity() {
+    let mut actions = RemoteActions::session();
+    let expected_target = target("message");
+    let (invocation, answer) = actions.invoke_tracked_at_revision(
+        expected_target.clone(),
+        InvokeArgument::Text("private draft".into()),
+        None,
+        "exact-r7",
+    );
+    assert!(matches!(answer.get(), RemoteCall::Pending));
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("expected exactly one invocation")
+    };
+    assert_eq!(request.invocation, invocation);
+    assert_eq!(request.target, expected_target);
+    assert_eq!(
+        request.argument,
+        InvokeArgument::Text("private draft".into())
+    );
+    assert_eq!(request.revision.as_deref(), Some("exact-r7"));
+    assert!(request.fresh_binding.is_none());
+    assert!(request.on_behalf_of.is_none() && request.context.is_none());
+    assert!(request.confirmation.is_none());
+    assert!(actions.is_busy());
+    let (legacy, _) = actions.invoke_tracked(target("done"), InvokeArgument::None, None);
+    assert_ne!(legacy, invocation);
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("expected exactly one legacy invocation")
+    };
+    assert_eq!(request.invocation, legacy);
+    assert!(request.revision.is_none());
+    assert!(request.fresh_binding.is_none());
 }
 
 #[test]

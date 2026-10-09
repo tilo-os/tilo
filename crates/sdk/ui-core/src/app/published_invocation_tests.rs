@@ -60,6 +60,7 @@ fn original_counter_spec(action: &str) -> crate::invocation_scope::PublishedInvo
         params: current.params().to_vec(),
         input: tilo_actions::InputSpec::None,
         directory_revision: None,
+        fresh_binding: None,
     }
 }
 
@@ -76,6 +77,24 @@ fn original_remote_authorizer_with_spec(
     grant: crate::permissions::PermissionContext,
     spec: Option<crate::invocation_scope::PublishedInvocationSpec>,
 ) -> crate::invocation_scope::PublishedInvocationAuthorizer {
+    original_remote_authorizer_with_spec_route(
+        expected,
+        grant,
+        spec,
+        crate::collaboration::RouteSpec::record(
+            "test.counter",
+            uuid::Uuid::from_u128(1),
+            crate::RecordId::for_tab(900).as_str(),
+        ),
+    )
+}
+
+fn original_remote_authorizer_with_spec_route(
+    expected: crate::invocation_scope::PublishedInvocationRequest,
+    grant: crate::permissions::PermissionContext,
+    spec: Option<crate::invocation_scope::PublishedInvocationSpec>,
+    route: crate::collaboration::RouteSpec,
+) -> crate::invocation_scope::PublishedInvocationAuthorizer {
     std::sync::Arc::new(move |delivered| {
         if delivered != &expected {
             return Err("unknown or altered original invocation".into());
@@ -83,11 +102,7 @@ fn original_remote_authorizer_with_spec(
         let grant = grant.clone();
         let lease = crate::invocation_scope::PublishedInvocationLease::new(
             expected.clone(),
-            crate::collaboration::RouteSpec::record(
-                "test.counter",
-                uuid::Uuid::from_u128(1),
-                crate::RecordId::for_tab(900).as_str(),
-            ),
+            route.clone(),
             std::sync::Arc::new(move || {
                 grant
                     .check(&crate::permissions::PermissionScope::app(
@@ -889,4 +904,203 @@ fn directory_permission_original_revision_checked_before_actual_handler() {
             "stale original revision must refuse before mutation; identical control must still run"
         );
     }
+}
+
+#[test]
+fn fresh_current_binding_checked_before_actual_handler() {
+    use std::sync::{Arc, atomic::AtomicU64};
+    for case in 0..7 {
+        let mut request = remote_request(990 + case, "bump");
+        let mut card = CounterCard::new();
+        card.fresh_semantic = true;
+        card.fresh_dynamic = case == 6;
+        let (mut app, store, checkout, _temp) = owned_framework_counter(card);
+        // Resolve the exact owner resource through the production dispatch
+        // seam; the fixture also publishes unrelated actions whose broader
+        // surface need not be eligible for eager catalogue publication.
+        let resource = app
+            .publication_resources()
+            .into_iter()
+            .find(|resource| {
+                resource
+                    .semantic_identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.key == "test.counter")
+            })
+            .expect("framework counter must publish its canonical owner resource");
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "bump")
+            .unwrap();
+        let binding = tilo_actions::remote::FreshActionBinding {
+            descriptor: App::directory_descriptor(&resource, action),
+            operation_type: action.operation_type.clone(),
+        };
+        request.address = binding.descriptor.address.clone();
+        let admitted_revision = app.action_directory_revision();
+        app.state.doc.put(ROOT, "unrelated-model", case).unwrap();
+        app.invalidate_widget_resource_cache();
+        assert_ne!(app.action_directory_revision(), admitted_revision);
+        let mut spec = original_counter_spec("bump");
+        spec.contract = action.contract.clone();
+        spec.fresh_binding = Some(binding);
+        match case {
+            0 => {}
+            6 => {}
+            1 => spec
+                .fresh_binding
+                .as_mut()
+                .unwrap()
+                .descriptor
+                .action_label
+                .push_str(" changed"),
+            2 => {
+                spec.fresh_binding
+                    .as_mut()
+                    .unwrap()
+                    .descriptor
+                    .semantic_identity = None
+            }
+            3 => {
+                spec.fresh_binding
+                    .as_mut()
+                    .unwrap()
+                    .descriptor
+                    .address
+                    .resource = "other-counter".into()
+            }
+            4 => spec.directory_revision = Some(admitted_revision),
+            5 => spec.fresh_binding.as_mut().unwrap().operation_type = Some("other-type".into()),
+            _ => unreachable!(),
+        }
+        app.require_published_invocation_authorizer();
+        app.install_published_invocation_authorizer(original_remote_authorizer_with_spec_route(
+            request.clone(),
+            original_remote_grant(Arc::new(AtomicU64::new(99))),
+            Some(spec),
+            crate::collaboration::RouteSpec::record(
+                "test.counter",
+                uuid::Uuid::from_u128(1),
+                checkout.id.as_str(),
+            ),
+        ))
+        .unwrap();
+        deliver_remote(&mut app, &request);
+        assert_eq!(
+            owned_count(&store, &checkout),
+            i64::from(case == 0),
+            "fresh binding case {case}"
+        );
+    }
+}
+
+fn owned_framework_counter(
+    card: CounterCard,
+) -> (
+    App,
+    crate::record::RecordStore,
+    crate::RecordCheckout,
+    tempfile::TempDir,
+) {
+    use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use crate::application_test_support::{author, runner_permissions, runner_probe_definition};
+    let (old_app, store, _legacy_checkout, temp) = owned_counter(CounterCard::new());
+    drop(old_app);
+    let checkout =
+        crate::RecordCheckout::new(crate::RecordId::minted(), crate::RecordKind::new("counter"));
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "n", 0).map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    store.require_invocation_provenance(&checkout).unwrap();
+    let mut definition =
+        crate::application_test_support::definition(runner_probe_definition().create);
+    definition.app_id = "test.counter";
+    definition.record_kind = crate::RecordKind::new("counter");
+    definition.create = if card.fresh_dynamic {
+        dynamic_framework_counter_factory
+    } else {
+        framework_counter_factory
+    };
+    let context = HostContext::prepare(
+        &definition,
+        HostContextInputs {
+            records: store.clone(),
+            views: std::rc::Rc::new(
+                crate::application_view::InstanceViewStore::new(
+                    temp.path().join("records"),
+                    "D",
+                    &uuid::Uuid::from_u128(1).to_string(),
+                )
+                .unwrap(),
+            ),
+            device_id: "D".into(),
+            instance_id: 900,
+            permissions: runner_permissions(),
+            author: author(),
+            action_context: tilo_actions::ActionContext::default()
+                .with_app("test.counter", "Counter"),
+        },
+        &LaunchTarget::Record {
+            checkout: checkout.clone(),
+            reveal: None,
+        },
+    )
+    .unwrap();
+    let mut component = definition
+        .instantiate(
+            context,
+            LaunchTarget::Record {
+                checkout: checkout.clone(),
+                reveal: None,
+            },
+            RestoreInput::None,
+        )
+        .unwrap();
+    component.mount(|_| {}).unwrap();
+    let binding = component.callback_binding();
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(crate::widget::BoundAppWidget::new(component)),
+    );
+    app.collaboration.manager = admitted_delivery_manager();
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        route: binding.broker_route().unwrap(),
+        epoch: uuid::Uuid::new_v4(),
+    });
+    app.init_layout();
+    (app, store, checkout, temp)
+}
+
+fn framework_counter_factory(
+    context: crate::application::HostContext,
+    _target: crate::application::LaunchTarget,
+    _restore: crate::application::RestoreInput,
+) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+    Ok(framework_counter_component(context, false))
+}
+
+fn dynamic_framework_counter_factory(
+    context: crate::application::HostContext,
+    _target: crate::application::LaunchTarget,
+    _restore: crate::application::RestoreInput,
+) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+    Ok(framework_counter_component(context, true))
+}
+
+fn framework_counter_component(
+    context: crate::application::HostContext,
+    dynamic: bool,
+) -> crate::application::AppComponent {
+    let mut card = CounterCard::new();
+    card.fresh_semantic = true;
+    card.fresh_dynamic = dynamic;
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<CounterAction>(COUNTER_TYPE);
+    crate::application::AppComponent::new(context, Box::new(card), registry)
 }

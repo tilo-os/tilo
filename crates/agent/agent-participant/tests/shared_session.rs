@@ -187,6 +187,7 @@ async fn call(
         context: None,
         confirmation: None,
         revision: None,
+        fresh_binding: None,
     }))
     .encode()
     .unwrap();

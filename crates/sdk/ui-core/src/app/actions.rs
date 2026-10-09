@@ -999,6 +999,7 @@ impl App {
                 .unwrap_or_default(),
             action: None,
             descriptor: None,
+            fresh_binding: None,
             has_children: may_descend
                 && (!resource.children.is_empty() || !resource.actions.is_empty()),
             visibility_action: Some(visibility.address.action),
@@ -1024,9 +1025,25 @@ impl App {
             resource_presentation_json: String::new(),
             action: Some(action_id.to_owned()),
             descriptor: Some(exported.clone()),
+            fresh_binding: Self::directory_fresh_binding(resource, action),
             has_children: false,
             visibility_action: Some(action_id.to_owned()),
             visibility_contract_json: exported.contract_json,
+        })
+    }
+
+    fn directory_fresh_binding(
+        resource: &tilo_actions::Resource,
+        action: &tilo_actions::ActionSpec,
+    ) -> Option<runtime_collab::FreshActionBinding> {
+        if !action.admits_fresh_binding() || resource.semantic_identity.is_none() {
+            return None;
+        }
+        let descriptor = Self::directory_descriptor(resource, action);
+        Some(runtime_collab::FreshActionBinding {
+            descriptor: Self::exported_directory_action(&descriptor),
+            locus: serde_json::to_string(&descriptor.locus).ok()?,
+            operation_type: action.operation_type.clone(),
         })
     }
 
@@ -1704,9 +1721,54 @@ impl App {
         }
     }
 
+    fn resolve_fresh_action_directory(
+        &mut self,
+        resource: &str,
+        action: &str,
+        expected: &runtime_collab::FreshActionBinding,
+    ) -> runtime_collab::ActionDirectoryResolutionReply {
+        let mut reply = runtime_collab::ActionDirectoryResolutionReply {
+            resolution: runtime_collab::ActionDirectoryResolution::Unavailable,
+            revision: String::new(),
+        };
+        if !self.published_action_history_ready()
+            || expected.descriptor.resource != resource
+            || expected.descriptor.action != action
+            || expected.descriptor.semantic_identity.is_none()
+        {
+            return reply;
+        }
+        let Some(row) = self
+            .resolve_publication_resource(resource, action)
+            .as_ref()
+            .and_then(|resource| Self::directory_action_row(resource, action))
+        else {
+            reply.resolution = runtime_collab::ActionDirectoryResolution::NotFound;
+            return reply;
+        };
+        if row.fresh_binding.as_ref() != Some(expected) {
+            return reply;
+        }
+        let Ok(revision) = self.try_action_directory_revision() else {
+            return reply;
+        };
+        reply.revision = revision;
+        reply.resolution = runtime_collab::ActionDirectoryResolution::Found(Box::new(row));
+        reply
+    }
+
     fn pump_action_directory_requests(&mut self) {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
+                ActionDirectoryRequest::ResolveFresh {
+                    resource,
+                    action,
+                    expected,
+                    reply,
+                } => {
+                    let _ = reply
+                        .send(self.resolve_fresh_action_directory(&resource, &action, &expected));
+                }
                 ActionDirectoryRequest::Query { query, reply } => {
                     let _ = reply.send(self.published_action_directory_page(query));
                 }
@@ -1830,7 +1892,7 @@ impl App {
         });
         let authorization = authorization.and_then(|(capture, lease)| {
             if let Some(lease) = &lease {
-                self.check_published_invocation_revision(lease)?;
+                self.check_published_invocation_revision(lease, &request)?;
             }
             self.published_invocation_scope(&address, lease)
                 .map(|scope| (capture, scope))
@@ -2138,6 +2200,7 @@ impl App {
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
                 revision: None,
+                fresh_binding: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2781,6 +2844,7 @@ impl App {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             };
             self.actions
                 .broker_requests
@@ -3611,6 +3675,7 @@ impl App {
             context,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
         };
         self.actions
             .broker_requests
@@ -4742,7 +4807,7 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
     fn text(value: &str) -> usize {
         value.len().saturating_add(8) / 8 * 8 + 8
     }
-    let descriptor = row.descriptor.as_ref().map_or(0, |descriptor| {
+    fn descriptor_bytes(descriptor: &runtime_collab::ExportedAction) -> usize {
         let input = match &descriptor.input {
             runtime_collab::ExportedInput::None => 0,
             runtime_collab::ExportedInput::Text {
@@ -4764,7 +4829,34 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
             + text(&descriptor.operation_kind)
             + text(&descriptor.params_json)
             + text(&descriptor.contract_json)
+            + descriptor.view.as_ref().map_or(0, |view| {
+                STRUCT
+                    + text(&view.id)
+                    + text(&view.label)
+                    + text(view.description.as_deref().unwrap_or(""))
+                    + text(&view.open_action)
+                    + view.mount.as_ref().map_or(0, |mount| {
+                        STRUCT
+                            + text(&mount.action)
+                            + text(&mount.capability_param)
+                            + text(&mount.view_param)
+                    })
+                    + view.range.as_ref().map_or(0, |range| {
+                        STRUCT
+                            + text(&range.action)
+                            + text(&range.start_param)
+                            + text(&range.end_param)
+                            + text(&range.unit_param)
+                    })
+            })
             + input
+    }
+    let descriptor = row.descriptor.as_ref().map_or(0, descriptor_bytes);
+    let fresh_binding = row.fresh_binding.as_ref().map_or(0, |binding| {
+        STRUCT
+            + descriptor_bytes(&binding.descriptor)
+            + text(&binding.locus)
+            + text(binding.operation_type.as_deref().unwrap_or(""))
     });
     STRUCT
         + text(&row.parent_resource)
@@ -4776,6 +4868,7 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
         + text(row.visibility_action.as_deref().unwrap_or(""))
         + text(&row.visibility_contract_json)
         + descriptor
+        + fresh_binding
 }
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels

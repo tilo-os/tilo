@@ -1932,6 +1932,8 @@ pub(crate) fn execute_resource_operation(
         let context = context
             .with_source_invocation(source_invocation)
             .with_args_from_payload(&encoded.payload);
+        crate::invocation_scope::NativeMessageCapture::validate_encoded(doc, &encoded)
+            .map_err(tilo_actions::DoorError::Failed)?;
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
         note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());

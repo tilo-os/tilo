@@ -41,7 +41,7 @@ pub use catalogue::{
 pub use pending::{Completer, Pending, PendingPoll, pending};
 
 use crate::context::ActionContext;
-use crate::door::ActionAddress;
+use crate::door::{ActionAddress, ActionDescriptor};
 use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::params::ARGUMENTS_JSON_PREFIX;
 
@@ -295,6 +295,21 @@ pub struct RemoteActionTarget {
     pub address: ActionAddress,
 }
 
+/// The complete public action description a caller selected for a fresh,
+/// semantic-bound resolution.
+///
+/// This is inert expected state, not execution authority. The host requires a
+/// semantic identity and an exact address match with [`InvokeRequest::target`]
+/// before asking the live owner to re-materialize the current handler.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreshActionBinding {
+    pub descriptor: ActionDescriptor,
+    /// Optional application operation type used to select a concrete handler
+    /// within the descriptor's broader document/effect/view class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_type: Option<String>,
+}
+
 /// What an invocation carries for the action's declared input.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum InvokeArgument {
@@ -345,6 +360,11 @@ pub struct InvokeRequest {
     /// refuses a target that no longer exists at it rather than guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// Request current resolution of the same semantic action while requiring
+    /// its complete public descriptor and contract to remain unchanged.
+    /// Mutually exclusive with [`Self::revision`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_binding: Option<FreshActionBinding>,
     /// The live invocation this request continues: an edit an effect
     /// submits while running for someone else. The host admits it as that
     /// invocation's original caller, with their grants, never as the app.
@@ -712,7 +732,10 @@ impl ActionHostError {
 /// idempotent per [`InvocationId`]: invoking an id again with the same
 /// request reports the original invocation, with a different request fails
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
-/// implements that rule.
+/// implements that rule. A host that does not implement
+/// [`InvokeRequest::fresh_binding`] must reject such a request before
+/// admission; silently treating it as an ordinary invocation would discard
+/// the caller's current-binding requirement.
 pub trait ActionHost {
     /// End this admitted transport run without cancelling its app jobs.
     fn retire_execution(&self, caller: &Caller) {
@@ -1330,6 +1353,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
             on_behalf_of: None,
         };
         let original = alice().in_room("room-a").in_new_execution();
@@ -1504,6 +1528,7 @@ mod tests {
                 presentation: None,
             },
             action: Some(descriptor(resource, action)),
+            fresh_binding: None,
             has_children: false,
             visibility: None,
         }
@@ -1529,6 +1554,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
         }
     }
 

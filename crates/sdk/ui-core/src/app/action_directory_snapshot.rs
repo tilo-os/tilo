@@ -122,6 +122,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                     visibility_action: Some(descriptor.address.action.clone()),
                     visibility_contract_json: exported.contract_json.clone(),
                     descriptor: Some(exported),
+                    fresh_binding: App::directory_fresh_binding(resource, action),
                 };
                 self.snapshot.actions.insert(address, row.clone());
                 actions.push(row);
@@ -158,6 +159,7 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
                         .unwrap_or_default(),
                     action: None,
                     descriptor: None,
+                    fresh_binding: None,
                     has_children: !actions.is_empty() || !children.is_empty(),
                     visibility_action: Some(descriptor.address.action.clone()),
                     visibility_contract_json: serde_json::to_string(&descriptor.contract)

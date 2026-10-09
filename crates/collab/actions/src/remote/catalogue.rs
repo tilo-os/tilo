@@ -13,7 +13,7 @@ use crate::contract::ActionContract;
 use crate::door::{ActionAddress, ActionDescriptor};
 use crate::resource::ResourcePresentation;
 
-use super::RemoteActionTarget;
+use super::{FreshActionBinding, RemoteActionTarget};
 
 /// Largest page a host returns, whatever a query asks for.
 pub const MAX_CATALOGUE_PAGE: u32 = 256;
@@ -180,6 +180,9 @@ pub struct CatalogueRow {
     /// The action this row offers; `None` for a resource-only row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<ActionDescriptor>,
+    /// Complete expected state for an explicit fresh semantic resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_binding: Option<FreshActionBinding>,
     /// Whether querying with this resource as the parent yields more rows.
     #[serde(default)]
     pub has_children: bool,
@@ -360,6 +363,7 @@ mod tests {
                 params: Vec::new(),
                 view: None,
             }),
+            fresh_binding: None,
             has_children: action.is_none(),
             visibility: None,
         }

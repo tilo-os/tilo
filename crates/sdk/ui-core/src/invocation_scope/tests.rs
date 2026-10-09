@@ -134,6 +134,7 @@ fn actual_dispatch_scope(
             params: declaration.params().to_vec(),
             input: tilo_actions::InputSpec::None,
             directory_revision: None,
+            fresh_binding: None,
         })
         .unwrap();
     caller

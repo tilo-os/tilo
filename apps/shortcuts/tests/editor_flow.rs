@@ -69,6 +69,7 @@ fn row(
             params,
             view: None,
         }),
+        fresh_binding: None,
         has_children: false,
         visibility: None,
     }

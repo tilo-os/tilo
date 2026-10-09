@@ -103,6 +103,7 @@ fn invoke_request(
         context: None,
         confirmation: None,
         revision: None,
+        fresh_binding: None,
     })
 }
 

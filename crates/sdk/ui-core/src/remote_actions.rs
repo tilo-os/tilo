@@ -27,8 +27,8 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, serve,
+    FreshActionBinding, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, serve,
 };
 
 use crate::collaboration::{CollabEvent, CollabRequest};
@@ -309,6 +309,55 @@ impl RemoteActions {
         (invocation, call)
     }
 
+    /// Invoke the exact action freshly confirmed at `revision`, retaining one
+    /// caller-owned identity. The revision is a comparison fence, not authority.
+    #[must_use]
+    pub fn invoke_tracked_at_revision(
+        &self,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+        revision: impl Into<String>,
+    ) -> (InvocationId, LocalState<InvocationCall>) {
+        let invocation = InvocationId::new();
+        let call = self.invoke_request(InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target,
+            argument,
+            context: None,
+            confirmation,
+            revision: Some(revision.into()),
+            fresh_binding: None,
+        });
+        (invocation, call)
+    }
+
+    /// Invoke the current handler at `target` only if the owner freshly proves
+    /// its full public binding still equals `binding`. The comparison grants
+    /// no authority; the broker checks current permissions and contract.
+    #[must_use]
+    pub fn invoke_tracked_fresh_bound(
+        &self,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+        binding: FreshActionBinding,
+    ) -> (InvocationId, LocalState<InvocationCall>) {
+        let invocation = InvocationId::new();
+        let call = self.invoke_request(InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target,
+            argument,
+            context: None,
+            confirmation,
+            revision: None,
+            fresh_binding: Some(binding),
+        });
+        (invocation, call)
+    }
+
     /// Invoke an action with a caller-owned stable identity.
     ///
     /// Use this when the durable object that caused the request already has a
@@ -322,9 +371,7 @@ impl RemoteActions {
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
     ) -> LocalState<InvocationCall> {
-        let answer = LocalState::new(RemoteCall::Pending);
-        let now = crate::background::Background::current().now();
-        let request = InvokeRequest {
+        self.invoke_request(InvokeRequest {
             on_behalf_of: None,
             invocation,
             target,
@@ -332,7 +379,13 @@ impl RemoteActions {
             context: None,
             confirmation,
             revision: None,
-        };
+            fresh_binding: None,
+        })
+    }
+
+    fn invoke_request(&self, request: InvokeRequest) -> LocalState<InvocationCall> {
+        let answer = LocalState::new(RemoteCall::Pending);
+        let now = crate::background::Background::current().now();
         self.lock().invocations.insert(
             request.invocation,
             Running {

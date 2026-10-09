@@ -149,7 +149,11 @@ pub struct AgentMessageRows {
     revision: Option<String>,
     cursor: Vec<u8>,
     call: Option<LocalState<CatalogueCall>>,
-    matches: Vec<(RemoteActionTarget, String)>,
+    matches: Vec<(
+        RemoteActionTarget,
+        String,
+        Option<tilo_actions::remote::FreshActionBinding>,
+    )>,
     seen_cursors: HashSet<Vec<u8>>,
     exhausted: bool,
 }
@@ -182,6 +186,7 @@ pub enum AgentMessagePoll {
 pub struct AgentMessageOffer {
     target: RemoteActionTarget,
     revision: String,
+    fresh_binding: Option<tilo_actions::remote::FreshActionBinding>,
 }
 
 pub enum AgentMessageOfferPoll {
@@ -211,9 +216,9 @@ fn canonical_chat_route(workspace: &str) -> tilo_actions::remote::CanonicalActio
     }
 }
 
-/// Discover and freshly confirm the exact Chat Message action without
+/// Discover the exact Chat Message action without
 /// invoking it. Cold discovery may launch signed Chat, but never submits the
-/// user's draft. The returned offer is descriptive until re-confirmed by
+/// user's draft. The returned offer is descriptive, never authority, until freshly validated by
 /// [`begin_from_offer`] at submission time.
 #[must_use]
 pub fn poll_offer(
@@ -244,17 +249,35 @@ pub fn poll_offer(
         return AgentMessageOfferPoll::Available(AgentMessageOffer {
             target: target.clone(),
             revision: revision.clone(),
+            fresh_binding: None,
         });
     }
-    match poll(
-        actions,
-        workspace,
-        agent,
-        "",
-        submission,
-        resolve_deadline,
-        pages_remaining,
-    ) {
+    let result = if let AgentMessageSubmission::Rows(state) = submission {
+        let mut offer = None;
+        let result = poll_rows(
+            actions,
+            agent,
+            state,
+            pages_remaining,
+            DiscoveryGoal::Offer(&mut offer),
+        );
+        if let Some(offer) = offer {
+            return AgentMessageOfferPoll::Available(offer);
+        }
+        observe_submission_result(submission, &result);
+        result
+    } else {
+        poll(
+            actions,
+            workspace,
+            agent,
+            "",
+            submission,
+            resolve_deadline,
+            pages_remaining,
+        )
+    };
+    match result {
         AgentMessagePoll::Waiting => AgentMessageOfferPoll::Waiting,
         AgentMessagePoll::Advance {
             submission,
@@ -267,12 +290,24 @@ pub fn poll_offer(
     }
 }
 
-/// Re-confirm a previously discovered exact offer before invoking it.
+/// Prepare a descriptive offer for owner-fresh validation with the actual draft
+/// on the next poll. Legacy offers retain their exact revision fence.
 #[must_use]
 pub fn begin_from_offer(
     actions: &RemoteActions,
     offer: &AgentMessageOffer,
 ) -> AgentMessageSubmission {
+    if offer.fresh_binding.is_some() {
+        let mut state = AgentMessageRows::new(offer.target.provider.clone());
+        state.revision = Some(offer.revision.clone());
+        state.exhausted = true;
+        state.matches.push((
+            offer.target.clone(),
+            offer.revision.clone(),
+            offer.fresh_binding.clone(),
+        ));
+        return AgentMessageSubmission::Rows(Box::new(state));
+    }
     AgentMessageSubmission::Confirm {
         target: offer.target.clone(),
         revision: offer.revision.clone(),
@@ -393,7 +428,13 @@ pub fn poll(
             *until,
             pages_remaining,
         ),
-        AgentMessageSubmission::Rows(state) => poll_rows(actions, agent, state, pages_remaining),
+        AgentMessageSubmission::Rows(state) => poll_rows(
+            actions,
+            agent,
+            state,
+            pages_remaining,
+            DiscoveryGoal::Invoke(text),
+        ),
         AgentMessageSubmission::Confirm {
             target,
             revision,
@@ -713,11 +754,17 @@ fn is_chat_application_open_row(row: &tilo_actions::remote::CatalogueRow, room: 
         && action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
 }
 
+enum DiscoveryGoal<'a> {
+    Offer(&'a mut Option<AgentMessageOffer>),
+    Invoke(&'a str),
+}
+
 fn poll_rows(
     actions: &RemoteActions,
     agent: &str,
     state: &AgentMessageRows,
     mut pages_remaining: u16,
+    goal: DiscoveryGoal<'_>,
 ) -> AgentMessagePoll {
     let mut state = state.clone();
     if let Some(answer) = state.call.as_ref() {
@@ -736,7 +783,7 @@ fn poll_rows(
         }
     }
     if state.exhausted {
-        return confirm_unique(actions, state, pages_remaining);
+        return confirm_unique(actions, state, pages_remaining, goal);
     }
     if state.provider.is_empty() {
         return discovery_failed("rows", "missing_provider");
@@ -795,18 +842,35 @@ fn confirm_unique(
     actions: &RemoteActions,
     mut state: AgentMessageRows,
     pages_remaining: u16,
+    goal: DiscoveryGoal<'_>,
 ) -> AgentMessagePoll {
-    let Some((target, revision)) = state.matches.pop() else {
+    let Some((target, revision, binding)) = state.matches.pop() else {
         return discovery_failed("rows", "no_match");
     };
-    let call = actions.catalogue_page(CatalogueQuery::resolve(&target, revision.clone()));
-    AgentMessagePoll::Advance {
-        submission: AgentMessageSubmission::Confirm {
-            target,
-            revision,
-            call,
-        },
-        pages_remaining,
+    let Some(binding) = binding else {
+        return discovery_failed("rows", "fresh_binding_unavailable");
+    };
+    match goal {
+        DiscoveryGoal::Offer(offer) => {
+            *offer = Some(AgentMessageOffer {
+                target,
+                revision,
+                fresh_binding: Some(binding),
+            });
+            AgentMessagePoll::Waiting
+        }
+        DiscoveryGoal::Invoke(text) => {
+            let (invocation, call) = actions.invoke_tracked_fresh_bound(
+                target,
+                InvokeArgument::Text(text.to_owned()),
+                None,
+                binding,
+            );
+            AgentMessagePoll::Advance {
+                submission: AgentMessageSubmission::Invoke { invocation, call },
+                pages_remaining,
+            }
+        }
     }
 }
 
@@ -838,8 +902,12 @@ fn poll_confirmation(
             confirmation_failure(&page, agent, target, revision),
         );
     }
-    let (invocation, call) =
-        actions.invoke_tracked(target.clone(), InvokeArgument::Text(text.to_owned()), None);
+    let (invocation, call) = actions.invoke_tracked_at_revision(
+        target.clone(),
+        InvokeArgument::Text(text.to_owned()),
+        None,
+        revision,
+    );
     AgentMessagePoll::Advance {
         submission: AgentMessageSubmission::Invoke { invocation, call },
         pages_remaining: pages_remaining.saturating_sub(1),
@@ -1040,7 +1108,16 @@ fn ingest_page(
     for row in &page.rows {
         if is_message_row(row, agent) {
             let target = row.target().ok_or("missing_target")?;
-            state.matches.push((target, page.revision.clone()));
+            if row
+                .fresh_binding
+                .as_ref()
+                .is_some_and(|binding| row.action.as_ref() != Some(&binding.descriptor))
+            {
+                return Err("invalid_fresh_binding");
+            }
+            state
+                .matches
+                .push((target, page.revision.clone(), row.fresh_binding.clone()));
             if state.matches.len() > 1 {
                 return Err("ambiguous_target");
             }
@@ -1645,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_rows_restart_same_provider_and_confirm_only_fresh_target_once() {
+    fn stale_rows_restart_same_provider_and_fresh_bind_unique_target_once() {
         use crate::collaboration::CollabRequest;
         use crate::widget::Collaborative;
         use tilo_actions::remote::RemoteActionMessage;
@@ -1655,18 +1732,13 @@ mod tests {
         state.call = None;
         let initial = AgentMessageSubmission::Rows(Box::new(state));
         let (pending, pages) = advance_discovery(&actions, &initial, deadline, MAX_PAGES);
-        let old = confirmed_page("scribe", "old-revision");
+        let mut old = confirmed_page("scribe", "old-revision");
+        old.exhausted = false;
+        old.next_cursor = vec![1];
         let old_target = old.rows[0].target().unwrap();
         answer_discovery(&pending, old);
         let (pending, pages) = advance_discovery(&actions, &pending, deadline, pages);
-        answer_discovery(
-            &pending,
-            CataloguePage {
-                stale_cursor: true,
-                exhausted: true,
-                ..CataloguePage::default()
-            },
-        );
+        answer_discovery(&pending, stale_discovery());
         let (restarted, pages) = advance_discovery(&actions, &pending, deadline, pages);
         assert_eq!(pages, MAX_PAGES - 2);
         let AgentMessageSubmission::Rows(state) = &restarted else {
@@ -1681,21 +1753,13 @@ mod tests {
         fresh.rows[0].resource.id = "fresh-opaque-resource".into();
         fresh.rows[0].parent_resource = "fresh-opaque-resource".into();
         fresh.rows[0].action.as_mut().unwrap().address.resource = "fresh-opaque-resource".into();
+        fresh.rows[0].fresh_binding.as_mut().unwrap().descriptor =
+            fresh.rows[0].action.clone().unwrap();
         let fresh_target = fresh.rows[0].target().unwrap();
+        let fresh_binding = fresh.rows[0].fresh_binding.clone().unwrap();
         answer_discovery(&pending, fresh.clone());
-        let (confirmed, pages) = advance_discovery(&actions, &pending, deadline, pages);
-        let AgentMessageSubmission::Confirm {
-            target, revision, ..
-        } = &confirmed
-        else {
-            panic!("expected Confirm")
-        };
-        assert_eq!(target, &fresh_target);
-        assert_ne!(target, &old_target);
-        assert_eq!(revision, "new-revision");
-        answer_discovery(&confirmed, fresh);
-        let (invoking, pages) = advance_discovery(&actions, &confirmed, deadline, pages);
-        assert_eq!(pages, MAX_PAGES - 4);
+        let (invoking, pages) = advance_discovery(&actions, &pending, deadline, pages);
+        assert_eq!(pages, MAX_PAGES - 3);
         assert!(matches!(invoking, AgentMessageSubmission::Invoke { .. }));
         let requests = actions.take_collab_requests();
         let invokes = requests
@@ -1709,6 +1773,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(invokes.len(), 1);
         assert_eq!(invokes[0].target, fresh_target);
+        assert_ne!(invokes[0].target, old_target);
+        assert_eq!(invokes[0].fresh_binding.as_ref().unwrap(), &fresh_binding);
+        assert!(invokes[0].revision.is_none());
         assert_eq!(
             invokes[0].argument,
             InvokeArgument::Text("PRIVATE-TEXT".into())
@@ -1722,12 +1789,14 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(queries.len(), 4);
+        assert_eq!(queries.len(), 3);
         assert!(
             queries
                 .iter()
                 .all(|query| query.provider.as_deref() == Some("chat-provider")
-                    && query.canonical_route.is_none())
+                    && query.canonical_route.is_none()
+                    && query.needle == "message"
+                    && query.target.is_none())
         );
         assert!(
             queries[2].parent_resource.is_none()
@@ -1736,7 +1805,19 @@ mod tests {
                 && queries[2].needle == "message"
         );
         assert_eq!(queries[0].needle, "message");
-        assert_eq!(queries[1].target.as_ref(), Some(&old_target.address));
+        assert!(matches!(
+            poll(
+                &actions,
+                "room-a",
+                "scribe",
+                "PRIVATE-TEXT",
+                &invoking,
+                deadline,
+                pages
+            ),
+            AgentMessagePoll::Waiting
+        ));
+        assert!(actions.take_collab_requests().is_empty());
     }
 
     #[test]
@@ -1841,17 +1922,12 @@ mod tests {
         let mut pages = 4;
         for attempt in 0..2 {
             (submission, pages) = advance_discovery(&actions, &submission, deadline, pages);
-            let root = confirmed_page("scribe", "old-revision");
+            let mut root = confirmed_page("scribe", "old-revision");
+            root.exhausted = false;
+            root.next_cursor = vec![1];
             answer_discovery(&submission, root);
             (submission, pages) = advance_discovery(&actions, &submission, deadline, pages);
-            answer_discovery(
-                &submission,
-                CataloguePage {
-                    stale_cursor: true,
-                    exhausted: true,
-                    ..CataloguePage::default()
-                },
-            );
+            answer_discovery(&submission, stale_discovery());
             let result = poll(
                 &actions,
                 "room-a",
@@ -1881,6 +1957,112 @@ mod tests {
         assert!(requests.iter().all(|request| matches!(request,
             CollabRequest::RemoteAction { message: RemoteActionMessage::CatalogueRequest { query, .. } }
                 if query.provider.as_deref() == Some("chat-provider") && query.canonical_route.is_none())));
+    }
+
+    #[test]
+    fn named_offer_discovery_never_emits_a_fresh_or_revision_invocation() {
+        use crate::collaboration::CollabRequest;
+        use crate::widget::Collaborative;
+        use tilo_actions::remote::RemoteActionMessage;
+        let page = confirmed_page("scribe", "current-revision");
+        let expected_target = page.rows[0].target().unwrap();
+        let submission = diagnostic_catalogue_submission("rows", RemoteCall::Done(page.clone()));
+        let mut actions = RemoteActions::session();
+        let deadline = crate::time::now() + RESOLVE_WINDOW;
+        let AgentMessageOfferPoll::Available(offer) = poll_offer(
+            &actions,
+            "room-a",
+            "scribe",
+            &submission,
+            deadline,
+            MAX_PAGES,
+        ) else {
+            panic!("expected a descriptive named offer")
+        };
+        assert_eq!(offer.target, expected_target);
+        assert_eq!(offer.revision, "current-revision");
+        assert!(actions.take_collab_requests().is_empty());
+        let prepared = begin_from_offer(&actions, &offer);
+        assert!(actions.take_collab_requests().is_empty());
+        let (invoking, _) = advance_discovery(&actions, &prepared, deadline, MAX_PAGES);
+        let requests = actions.take_collab_requests();
+        let [
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            },
+        ] = requests.as_slice()
+        else {
+            panic!("actual submission must invoke exactly once")
+        };
+        assert_eq!(request.target, expected_target);
+        assert_eq!(request.fresh_binding, page.rows[0].fresh_binding);
+        assert_eq!(
+            request.argument,
+            InvokeArgument::Text("PRIVATE-TEXT".into())
+        );
+        assert!(request.revision.is_none());
+        let AgentMessageSubmission::Invoke { invocation, .. } = invoking else {
+            panic!("expected tracked invocation")
+        };
+        assert_eq!(request.invocation, invocation);
+    }
+
+    #[test]
+    fn fresh_send_refuses_absent_or_inconsistent_owner_binding_but_offer_stays_read_only() {
+        use crate::widget::Collaborative;
+        let valid = confirmed_page("scribe", "current-revision");
+        let mut pages = Vec::new();
+        let mut missing = valid.clone();
+        missing.rows[0].fresh_binding = None;
+        pages.push(missing.clone());
+        let mut changed = valid;
+        changed.rows[0]
+            .fresh_binding
+            .as_mut()
+            .unwrap()
+            .descriptor
+            .locus = ExecutionLocus::ServerPreferred;
+        pages.push(changed);
+        let mut actions = RemoteActions::session();
+        for page in pages {
+            let submission = diagnostic_catalogue_submission("rows", RemoteCall::Done(page));
+            assert!(matches!(
+                poll(
+                    &actions,
+                    "room-a",
+                    "scribe",
+                    "PRIVATE-TEXT",
+                    &submission,
+                    crate::time::now() + RESOLVE_WINDOW,
+                    MAX_PAGES
+                ),
+                AgentMessagePoll::Failed
+            ));
+        }
+        assert!(actions.take_collab_requests().is_empty());
+        let submission = diagnostic_catalogue_submission("rows", RemoteCall::Done(missing));
+        assert!(matches!(
+            poll_offer(
+                &actions,
+                "room-a",
+                "scribe",
+                &submission,
+                crate::time::now() + RESOLVE_WINDOW,
+                MAX_PAGES
+            ),
+            AgentMessageOfferPoll::Failed
+        ));
+        assert!(
+            actions
+                .take_collab_requests()
+                .iter()
+                .all(|request| matches!(
+                    request,
+                    crate::collaboration::CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::CatalogueRequest { .. }
+                    }
+                ))
+        );
     }
 
     #[test]
@@ -2000,7 +2182,7 @@ mod tests {
 
     fn message_row(agent: &str) -> CatalogueRow {
         let resource = format!("chat.person:{agent}");
-        CatalogueRow {
+        let mut row = CatalogueRow {
             provider: "chat-provider".into(),
             app_id: "so.tilo.chat".into(),
             parent_resource: resource.clone(),
@@ -2029,7 +2211,13 @@ mod tests {
             }),
             has_children: false,
             visibility: None,
-        }
+            fresh_binding: None,
+        };
+        row.fresh_binding = Some(tilo_actions::remote::FreshActionBinding {
+            descriptor: row.action.clone().unwrap(),
+            operation_type: Some("chat.action".into()),
+        });
+        row
     }
 
     fn confirmed_page(agent: &str, revision: &str) -> CataloguePage {

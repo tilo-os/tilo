@@ -544,6 +544,12 @@ impl CollabRequest {
 /// threads as inert strings and budgets only; no widget reference or Cap'n
 /// Proto handle ever leaves the UI/collaboration boundary.
 pub enum ActionDirectoryRequest {
+    ResolveFresh {
+        resource: String,
+        action: String,
+        expected: runtime_collab::FreshActionBinding,
+        reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolutionReply>,
+    },
     Query {
         query: runtime_collab::ActionDirectoryQuery,
         reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryPage>,

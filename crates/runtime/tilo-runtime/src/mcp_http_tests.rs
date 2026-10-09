@@ -68,6 +68,7 @@ impl StubHost {
             },
             action: Some(descriptor),
             has_children: false,
+            fresh_binding: None,
             visibility: None,
         }
     }

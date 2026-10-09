@@ -16785,6 +16785,7 @@ mod tests {
                         view: None,
                     }),
                     has_children: false,
+                    fresh_binding: None,
                     visibility: None,
                 }],
                 exhausted: true,

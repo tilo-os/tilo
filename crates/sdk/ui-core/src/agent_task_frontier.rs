@@ -1734,6 +1734,7 @@ mod tests {
             }),
             has_children: false,
             visibility: None,
+            fresh_binding: None,
         }
     }
 

@@ -7968,6 +7968,7 @@ impl ShellOverlayHost {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             },
         );
         self.pending_launchpad_actions
@@ -8449,6 +8450,7 @@ impl ShellOverlayHost {
             context: None,
             confirmation: None,
             revision: Some(revision.clone()),
+            fresh_binding: None,
         });
         pending.lookup = AgentNavigationLookup::LaunchInvoke {
             invocation,
@@ -8739,6 +8741,7 @@ impl ShellOverlayHost {
             context: None,
             confirmation: None,
             revision: Some(revision.clone()),
+            fresh_binding: None,
         });
         AgentNavigationPoll::Invoke(PendingLaunchpadAction {
             title: pending.title.clone(),

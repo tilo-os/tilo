@@ -164,12 +164,20 @@ impl action_directory::Server for DurableDirectory {
 pub fn directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
     Rc::new(RefCell::new(TestActionDirectory {
         revision: revision.into(),
+        fresh_binding: false,
         resolve_mode: DirectoryResolveMode::Found,
         result: tilo_actions::ResultSpec::None,
         confirmation_required: false,
         query_count: 0,
         resolve_count: 0,
     }))
+}
+
+/// A directory whose action opts into exact fresh-current resolution.
+pub fn fresh_directory_state(revision: &str) -> Rc<RefCell<TestActionDirectory>> {
+    let state = directory_state(revision);
+    state.borrow_mut().fresh_binding = true;
+    state
 }
 
 pub fn directory_server(state: &Rc<RefCell<TestActionDirectory>>) -> action_directory::Client {

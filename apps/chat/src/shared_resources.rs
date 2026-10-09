@@ -334,6 +334,7 @@ mod tests {
                     presentation: None,
                 },
                 action: Some(descriptor),
+                fresh_binding: None,
                 has_children: false,
                 visibility: None,
             }],

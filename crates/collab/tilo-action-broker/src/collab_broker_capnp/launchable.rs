@@ -477,6 +477,7 @@ mod tests {
                 context: None,
                 confirmation,
                 revision: None,
+                fresh_binding: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())

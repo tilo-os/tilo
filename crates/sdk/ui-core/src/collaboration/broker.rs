@@ -5711,6 +5711,12 @@ fn write_directory_row(
     if let Some(descriptor) = &row.descriptor {
         write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
     }
+    if let Some(binding) = &row.fresh_binding {
+        let mut fresh = out.reborrow().init_fresh_binding();
+        write_directory_descriptor(fresh.reborrow().init_descriptor(), &binding.descriptor);
+        fresh.set_locus(&binding.locus);
+        fresh.set_operation_type(binding.operation_type.as_deref().unwrap_or(""));
+    }
 }
 
 #[allow(
@@ -5825,35 +5831,81 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
                 text(request.get_revision())?,
                 text(request.get_resource())?,
                 text(request.get_action())?,
+                request
+                    .has_expected_binding()
+                    .then(|| {
+                        request
+                            .get_expected_binding()
+                            .and_then(runtime_collab::decode_fresh_action_binding)
+                    })
+                    .transpose()?,
             ))
         });
-        let (revision, resource, action) = match request {
+        let (revision, resource, action, expected) = match request {
             Ok(request) => request,
             Err(error) => return capnp::capability::Promise::err(error),
         };
+        if expected.is_some() && !revision.is_empty() {
+            return capnp::capability::Promise::err(capnp::Error::failed(
+                "fresh binding and pinned revision are mutually exclusive".into(),
+            ));
+        }
         let requests = self.requests.clone();
         let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
-            let (reply, response) = tokio::sync::oneshot::channel();
-            let reply_value = if submit_directory_request(
-                &requests,
-                &owner,
-                ActionDirectoryRequest::Resolve {
-                    revision,
-                    resource,
-                    action,
-                    reply,
-                },
-            )
-            .is_err()
-            {
-                directory_unavailable()
+            let reply_value = if let Some(expected) = expected {
+                let (reply, response) = tokio::sync::oneshot::channel();
+                if submit_directory_request(
+                    &requests,
+                    &owner,
+                    ActionDirectoryRequest::ResolveFresh {
+                        resource,
+                        action,
+                        expected,
+                        reply,
+                    },
+                )
+                .is_err()
+                {
+                    runtime_collab::ActionDirectoryResolutionReply {
+                        revision: String::new(),
+                        resolution: directory_unavailable(),
+                    }
+                } else {
+                    response.await.unwrap_or_else(|_| {
+                        runtime_collab::ActionDirectoryResolutionReply {
+                            revision: String::new(),
+                            resolution: directory_unavailable(),
+                        }
+                    })
+                }
             } else {
-                // As for a query: the asker's deadline, not one of ours.
-                response.await.unwrap_or_else(|_| directory_unavailable())
+                let (reply, response) = tokio::sync::oneshot::channel();
+                let resolution = if submit_directory_request(
+                    &requests,
+                    &owner,
+                    ActionDirectoryRequest::Resolve {
+                        revision,
+                        resource,
+                        action,
+                        reply,
+                    },
+                )
+                .is_err()
+                {
+                    directory_unavailable()
+                } else {
+                    // As for a query: the asker's deadline, not one of ours.
+                    response.await.unwrap_or_else(|_| directory_unavailable())
+                };
+                runtime_collab::ActionDirectoryResolutionReply {
+                    revision: String::new(),
+                    resolution,
+                }
             };
             let mut out = results.get().init_resolution();
-            match reply_value {
+            out.set_revision(&reply_value.revision);
+            match reply_value.resolution {
                 runtime_collab::ActionDirectoryResolution::Found(row) => {
                     write_directory_row(out.reborrow().init_found(), &row);
                 }
@@ -7035,7 +7087,7 @@ mod tests {
     fn directory_row_estimates_bound_their_encoded_size() {
         let text = |length: usize| "x".repeat(length);
         for length in [0, 1, 7, 8, 9, 63, 64, 1000] {
-            let row = runtime_collab::ActionDirectoryRow {
+            let mut row = runtime_collab::ActionDirectoryRow {
                 parent_resource: text(length),
                 resource: text(length),
                 resource_kind: text(length),
@@ -7063,7 +7115,15 @@ mod tests {
                 has_children: false,
                 visibility_action: Some(text(length)),
                 visibility_contract_json: text(length),
+                fresh_binding: None,
             };
+            let plain_bytes = crate::app::directory_row_wire_bytes(&row);
+            row.fresh_binding = Some(runtime_collab::FreshActionBinding {
+                descriptor: row.descriptor.clone().unwrap(),
+                locus: "\"Document\"".into(),
+                operation_type: Some(text(length)),
+            });
+            assert!(crate::app::directory_row_wire_bytes(&row) > plain_bytes);
             let rows = 40u32;
             let mut message = capnp::message::Builder::new_default();
             {

@@ -3548,6 +3548,7 @@ impl ShellNetwork {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             },
         );
         if self.send_remote_action(topic, endpoint, message) {
@@ -9401,6 +9402,7 @@ mod tests {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    fresh_binding: None,
                 },
             ),
         )
@@ -9510,6 +9512,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             });
 
             let mut round_trip = |request: RemoteActionMessage| {

@@ -94,6 +94,7 @@ async fn native_message_source_repeated_delivery_deduplicates_and_replacement_re
                 context: None,
                 confirmation: None,
                 revision: Some("message-r1".into()),
+                fresh_binding: None,
                 on_behalf_of: None,
             };
             let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))

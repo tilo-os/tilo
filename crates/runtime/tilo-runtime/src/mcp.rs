@@ -1766,6 +1766,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             // allow/deny policy; that decision is the confirmation.
             confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
             revision: Some(revision),
+            fresh_binding: None,
         };
         let mut started = self.start_confirmed(&mut request).await;
         if current && started.as_ref().is_err_and(|error| error.contains(STALE)) {

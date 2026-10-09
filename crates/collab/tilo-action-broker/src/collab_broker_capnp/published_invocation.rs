@@ -408,6 +408,7 @@ impl OriginalInvocationData {
         route: CrdtRoute,
         offered: &PublishedAction,
         revision: Option<&str>,
+        fresh_binding: Option<&tilo_actions::remote::FreshActionBinding>,
         caller: Option<InvocationCaller>,
         time: Option<crate::peer_actions::PolicyTime>,
         execution: Option<tilo_actions::remote::ExecutionLease>,
@@ -433,6 +434,7 @@ impl OriginalInvocationData {
                 },
             },
             directory_revision: revision.map(str::to_owned),
+            fresh_binding: fresh_binding.cloned(),
         };
         Some(Arc::new(Self {
             request,

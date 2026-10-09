@@ -220,13 +220,16 @@ impl CapnpBrokerState {
                 actor,
                 cluster,
                 peer,
-                revision,
-                resource,
-                action,
+                &runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                    revision: revision.to_owned(),
+                    resource: resource.to_owned(),
+                    action: action.to_owned(),
+                },
             ),
         )
         .await
-        .map_err(|_| "action directory resolution timeout")??;
+        .map_err(|_| "action directory resolution timeout")??
+        .resolution;
         check_registration(&registered, worker.as_ref(), self, directories, peer)?;
         Ok(CapturedResolution {
             registered,
@@ -633,6 +636,7 @@ fn invoke_checked(
                 AdmissionProvenance {
                     durable: None,
                     revision: Some(&revision),
+                    fresh_binding: None,
                     origin: Some(InvocationCaller::Local {
                         route,
                         admitted: Box::new(current),

@@ -209,6 +209,7 @@ fn addressed_invocation(
                         context: None,
                         confirmation: None,
                         revision: Some("native-message-r1".into()),
+                        fresh_binding: None,
                         on_behalf_of: None,
                     },
                 )

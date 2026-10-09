@@ -21,6 +21,7 @@ fn directory_test_row() -> runtime_collab::ActionDirectoryRow {
         resource_presentation_json: String::new(),
         action: Some("open-link".into()),
         descriptor: None,
+        fresh_binding: None,
         has_children: false,
         visibility_action: None,
         visibility_contract_json: String::new(),

@@ -60,12 +60,7 @@ impl super::App {
             reason,
         };
         source.matches(request).map_err(refused)?;
-        if let Some(original) = &source.spec().directory_revision {
-            let current = self.try_action_directory_revision().map_err(refused)?;
-            if original != &current {
-                return Err(refused("native Message directory revision changed".into()));
-            }
-        }
+        self.check_published_invocation_spec(source.spec(), request)?;
         use crate::bound_dispatch::legacy_document::{LocalResourceTarget, select_local_target};
         let owner = if let Some(target) = self
             .actions

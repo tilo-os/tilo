@@ -1478,62 +1478,7 @@ impl ChannelHandle {
                 // `action_count` above already proved `actions.len()` fits in
                 // u32, so every index here does too.
                 let idx = u32::try_from(i).unwrap_or(u32::MAX);
-                let mut row = list.reborrow().get(idx);
-                row.set_resource(&a.resource);
-                if let Some(identity) = &a.semantic_identity {
-                    if !identity.is_valid() || identity.kind != a.resource_kind {
-                        return Err(capnp::Error::failed(
-                            "invalid resource semantic identity".into(),
-                        )
-                        .into());
-                    }
-                    let mut out = row.reborrow().init_semantic_identity();
-                    out.set_kind(&identity.kind);
-                    out.set_key(&identity.key);
-                }
-                row.set_action(&a.action);
-                row.set_resource_kind(&a.resource_kind);
-                row.set_resource_label(&a.resource_label);
-                row.set_action_label(&a.action_label);
-                row.set_description(a.description.as_deref().unwrap_or(""));
-                row.set_operation_kind(&a.operation_kind);
-                row.set_params_json(&a.params_json);
-                row.set_contract_json(&a.contract_json);
-                if let Some(view) = &a.view {
-                    let mut out = row.reborrow().init_view();
-                    out.set_id(&view.id);
-                    out.set_label(&view.label);
-                    out.set_description(view.description.as_deref().unwrap_or(""));
-                    out.set_open_action(&view.open_action);
-                    out.set_primary(view.primary);
-                    if let Some(range) = &view.range {
-                        let mut range_out = out.reborrow().init_range();
-                        range_out.set_action(&range.action);
-                        range_out.set_start_param(&range.start_param);
-                        range_out.set_end_param(&range.end_param);
-                        range_out.set_unit_param(&range.unit_param);
-                    }
-                    if let Some(mount) = &view.mount {
-                        let mut out = out.init_mount();
-                        out.set_action(&mount.action);
-                        out.set_capability_param(&mount.capability_param);
-                        out.set_view_param(&mount.view_param);
-                    }
-                }
-                let mut input = row.init_input();
-                match &a.input {
-                    ExportedInput::None => input.set_none(()),
-                    ExportedInput::Text {
-                        prompt,
-                        placeholder,
-                        wants_content,
-                    } => {
-                        let mut t = input.init_text();
-                        t.set_prompt(prompt);
-                        t.set_placeholder(placeholder);
-                        t.set_wants_content(*wants_content);
-                    }
-                }
+                encode_exported_action(list.reborrow().get(idx), a)?;
             }
         }
         req.send().promise.await?;
@@ -1625,9 +1570,54 @@ impl ChannelHandle {
             wire.set_action(action);
         }
         let reply = request.send().promise.await?;
-        Ok(decode_action_directory_resolution(
-            reply.get()?.get_resolution()?,
-        )?)
+        Ok(decode_action_directory_resolution_reply(reply.get()?.get_resolution()?)?.resolution)
+    }
+
+    /// Re-materialize the current handler for a stable semantic target while
+    /// requiring its complete public descriptor and contract to be unchanged.
+    ///
+    /// This mode is explicit: it sends an absent revision and a present full
+    /// expected binding. A successful owner response must include the
+    /// authoritative current revision for the exact returned row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] for an invalid expected binding, a connection
+    /// failure, malformed data, or a successful response without a revision.
+    pub async fn resolve_current_published_action(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        expected: &FreshActionBinding,
+    ) -> Result<ActionDirectoryResolutionReply, NotAvailable> {
+        if expected.descriptor.resource != resource
+            || expected.descriptor.action != action
+            || expected.descriptor.semantic_identity.is_none()
+            || expected.locus.is_empty()
+        {
+            return Err(capnp::Error::failed("invalid fresh action binding".into()).into());
+        }
+        let mut request = self.inner.resolve_published_action_request();
+        {
+            let mut wire = request.get();
+            wire.set_peer_id(peer_id);
+            wire.set_revision("");
+            wire.set_resource(resource);
+            wire.set_action(action);
+            encode_fresh_action_binding(wire.init_expected_binding(), expected)?;
+        }
+        let reply = request.send().promise.await?;
+        let decoded = decode_action_directory_resolution_reply(reply.get()?.get_resolution()?)?;
+        if matches!(decoded.resolution, ActionDirectoryResolution::Found(_))
+            && decoded.revision.is_empty()
+        {
+            return Err(capnp::Error::failed(
+                "fresh action resolution omitted its current revision".into(),
+            )
+            .into());
+        }
+        Ok(decoded)
     }
 
     /// Open a server-pulled stream of invocations the session has addressed
@@ -2571,6 +2561,17 @@ pub struct ExportedAction {
     pub input: ExportedInput,
 }
 
+/// Complete inert expected state for explicit fresh semantic resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshActionBinding {
+    pub descriptor: ExportedAction,
+    /// Canonical JSON encoding of the action descriptor's execution locus.
+    pub locus: String,
+    /// Optional application operation type within the descriptor's broader
+    /// document/effect/view class.
+    pub operation_type: Option<String>,
+}
+
 /// Bounded, revision-aware request to an application-owned action directory.
 ///
 /// `cursor` is opaque to callers. A source must reject it as stale when its
@@ -2606,6 +2607,7 @@ pub struct ActionDirectoryRow {
     pub resource_presentation_json: String,
     pub action: Option<String>,
     pub descriptor: Option<ExportedAction>,
+    pub fresh_binding: Option<FreshActionBinding>,
     pub has_children: bool,
     /// Permission-bearing action used only to disclose a container row.
     pub visibility_action: Option<String>,
@@ -2632,6 +2634,31 @@ pub enum ActionDirectoryResolution {
     Unavailable,
 }
 
+/// The two mutually exclusive ways to ask a live application to resolve one
+/// exact directory action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionDirectoryResolutionRequest {
+    RevisionBound {
+        revision: String,
+        resource: String,
+        action: String,
+    },
+    FreshBinding {
+        resource: String,
+        action: String,
+        expected: FreshActionBinding,
+    },
+}
+
+/// An exact-resolution outcome and the live owner's authoritative revision.
+/// Revision-bound replies keep `revision` empty; a successful fresh reply must
+/// carry a non-empty revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDirectoryResolutionReply {
+    pub resolution: ActionDirectoryResolution,
+    pub revision: String,
+}
+
 #[cfg(feature = "client")]
 fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
     value.to_str().map(str::to_owned).map_err(|error| {
@@ -2640,7 +2667,86 @@ fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
 }
 
 #[cfg(feature = "client")]
-fn decode_exported_action(
+pub fn encode_exported_action(
+    mut row: collab_capnp::exported_action::Builder<'_>,
+    action: &ExportedAction,
+) -> Result<(), capnp::Error> {
+    row.set_resource(&action.resource);
+    if let Some(identity) = &action.semantic_identity {
+        if !identity.is_valid() || identity.kind != action.resource_kind {
+            return Err(capnp::Error::failed(
+                "invalid resource semantic identity".into(),
+            ));
+        }
+        let mut out = row.reborrow().init_semantic_identity();
+        out.set_kind(&identity.kind);
+        out.set_key(&identity.key);
+    }
+    row.set_action(&action.action);
+    row.set_resource_kind(&action.resource_kind);
+    row.set_resource_label(&action.resource_label);
+    row.set_action_label(&action.action_label);
+    row.set_description(action.description.as_deref().unwrap_or(""));
+    row.set_operation_kind(&action.operation_kind);
+    row.set_params_json(&action.params_json);
+    row.set_contract_json(&action.contract_json);
+    if let Some(view) = &action.view {
+        let mut out = row.reborrow().init_view();
+        out.set_id(&view.id);
+        out.set_label(&view.label);
+        out.set_description(view.description.as_deref().unwrap_or(""));
+        out.set_open_action(&view.open_action);
+        out.set_primary(view.primary);
+        if let Some(range) = &view.range {
+            let mut range_out = out.reborrow().init_range();
+            range_out.set_action(&range.action);
+            range_out.set_start_param(&range.start_param);
+            range_out.set_end_param(&range.end_param);
+            range_out.set_unit_param(&range.unit_param);
+        }
+        if let Some(mount) = &view.mount {
+            let mut out = out.init_mount();
+            out.set_action(&mount.action);
+            out.set_capability_param(&mount.capability_param);
+            out.set_view_param(&mount.view_param);
+        }
+    }
+    let mut input = row.init_input();
+    match &action.input {
+        ExportedInput::None => input.set_none(()),
+        ExportedInput::Text {
+            prompt,
+            placeholder,
+            wants_content,
+        } => {
+            let mut text = input.init_text();
+            text.set_prompt(prompt);
+            text.set_placeholder(placeholder);
+            text.set_wants_content(*wants_content);
+        }
+    }
+    Ok(())
+}
+
+/// Encode a complete fresh semantic binding into its Cap'n Proto form.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the descriptor's semantic identity is
+/// invalid.
+#[cfg(feature = "client")]
+pub fn encode_fresh_action_binding(
+    mut out: collab_capnp::fresh_action_binding::Builder<'_>,
+    binding: &FreshActionBinding,
+) -> Result<(), capnp::Error> {
+    encode_exported_action(out.reborrow().init_descriptor(), &binding.descriptor)?;
+    out.set_locus(&binding.locus);
+    out.set_operation_type(binding.operation_type.as_deref().unwrap_or(""));
+    Ok(())
+}
+
+#[cfg(feature = "client")]
+pub fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {
     let description = capnp_text(row.get_description()?)?;
@@ -2732,6 +2838,23 @@ fn decode_exported_action(
     })
 }
 
+/// Decode a complete fresh semantic binding from its Cap'n Proto form.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the descriptor or text is malformed.
+#[cfg(feature = "client")]
+pub fn decode_fresh_action_binding(
+    binding: collab_capnp::fresh_action_binding::Reader<'_>,
+) -> Result<FreshActionBinding, capnp::Error> {
+    let operation_type = capnp_text(binding.get_operation_type()?)?;
+    Ok(FreshActionBinding {
+        descriptor: decode_exported_action(binding.get_descriptor()?)?,
+        locus: capnp_text(binding.get_locus()?)?,
+        operation_type: (!operation_type.is_empty()).then_some(operation_type),
+    })
+}
+
 #[cfg(feature = "client")]
 fn decode_action_directory_row(
     row: collab_capnp::action_directory_row::Reader<'_>,
@@ -2744,6 +2867,12 @@ fn decode_action_directory_row(
         .transpose()?
         .map(decode_exported_action)
         .transpose()?;
+    let fresh_binding = row
+        .has_fresh_binding()
+        .then(|| row.get_fresh_binding())
+        .transpose()?
+        .map(decode_fresh_action_binding)
+        .transpose()?;
     Ok(ActionDirectoryRow {
         parent_resource: capnp_text(row.get_parent_resource()?)?,
         resource: capnp_text(row.get_resource()?)?,
@@ -2752,6 +2881,7 @@ fn decode_action_directory_row(
         resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
         action: (!action.is_empty()).then_some(action),
         descriptor,
+        fresh_binding,
         has_children: row.get_has_children(),
         visibility_action: (!visibility_action.is_empty()).then_some(visibility_action),
         visibility_contract_json: capnp_text(row.get_visibility_contract_json()?)?,
@@ -2811,6 +2941,23 @@ pub fn decode_action_directory_resolution(
             Ok(ActionDirectoryResolution::Unavailable)
         }
     }
+}
+
+/// Decode an exact directory result together with any authoritative current
+/// revision supplied by its live owner.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when either the resolution or revision is
+/// malformed.
+#[cfg(feature = "client")]
+pub fn decode_action_directory_resolution_reply(
+    resolution: collab_capnp::action_directory_resolution::Reader<'_>,
+) -> Result<ActionDirectoryResolutionReply, capnp::Error> {
+    Ok(ActionDirectoryResolutionReply {
+        revision: capnp_text(resolution.get_revision()?)?,
+        resolution: decode_action_directory_resolution(resolution)?,
+    })
 }
 
 /// One invocation off an [`InvocationStream`].

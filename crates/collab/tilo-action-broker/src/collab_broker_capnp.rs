@@ -2119,7 +2119,7 @@ impl LocalActionDirectoryRegistry {
 #[derive(Debug)]
 pub enum ActionDirectoryBridgeResponse {
     Page(runtime_collab::ActionDirectoryPage),
-    Resolution(runtime_collab::ActionDirectoryResolution),
+    Resolution(runtime_collab::ActionDirectoryResolutionReply),
     StartedDirectoryAction(StartedDirectoryAction),
 }
 
@@ -2296,9 +2296,7 @@ enum ActionDirectoryBridgeRequest {
         actor: BrokerActor,
         cluster_id: String,
         peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
+        request: runtime_collab::ActionDirectoryResolutionRequest,
         reply: DirectoryReply,
     },
     Start {
@@ -2418,9 +2416,11 @@ impl ActionDirectoryRequestQueue {
             actor,
             cluster_id,
             peer_id,
-            revision,
-            resource,
-            action,
+            request: runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                revision,
+                resource,
+                action,
+            },
             reply,
         })
         .map(|()| response)
@@ -2482,9 +2482,44 @@ impl ActionDirectoryRequestQueue {
             actor,
             cluster_id,
             peer_id,
-            revision,
+            request: runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                revision,
+                resource,
+                action,
+            },
+            reply: DirectoryReply::Pending(reply),
+        })
+        .map(|()| response)
+    }
+
+    /// Resolve the current handler for an exact, previously observed public
+    /// binding. This is deliberately distinct from revision-bound lookup.
+    pub(crate) fn try_resolve_fresh_pending(
+        &self,
+        actor: BrokerActor,
+        cluster_id: impl Into<String>,
+        peer_id: u64,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+        expected: runtime_collab::FreshActionBinding,
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
+        let cluster_id = cluster_id.into();
+        let resource = resource.into();
+        let action = action.into();
+        let request = runtime_collab::ActionDirectoryResolutionRequest::FreshBinding {
             resource,
             action,
+            expected,
+        };
+        validate_directory_resolution_request(&cluster_id, &request)
+            .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
+        let (reply, response) = tilo_actions::remote::pending();
+        self.enqueue(ActionDirectoryBridgeRequest::Resolve {
+            actor,
+            cluster_id,
+            peer_id,
+            request,
             reply: DirectoryReply::Pending(reply),
         })
         .map(|()| response)
@@ -2656,6 +2691,89 @@ fn validate_directory_target_input(
     Ok(())
 }
 
+fn validate_directory_resolution_request(
+    cluster_id: &str,
+    request: &runtime_collab::ActionDirectoryResolutionRequest,
+) -> Result<(), capnp::Error> {
+    let (revision, resource, action, expected) = match request {
+        runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+            revision,
+            resource,
+            action,
+        } => (revision.as_str(), resource.as_str(), action.as_str(), None),
+        runtime_collab::ActionDirectoryResolutionRequest::FreshBinding {
+            resource,
+            action,
+            expected,
+        } => ("", resource.as_str(), action.as_str(), Some(expected)),
+    };
+    validate_directory_target_input(cluster_id, revision, resource, action, None, None)?;
+    if let Some(expected) = expected {
+        let descriptor = &expected.descriptor;
+        let semantic_identity = descriptor.semantic_identity.as_ref();
+        if descriptor.resource != resource
+            || descriptor.action != action
+            || semantic_identity.is_none_or(|identity| {
+                !identity.is_valid() || identity.kind != descriptor.resource_kind
+            })
+            || serde_json::from_str::<tilo_actions::ExecutionLocus>(&expected.locus).is_err()
+            || !matches!(
+                descriptor.operation_kind.as_str(),
+                "document" | "effect" | "view"
+            )
+        {
+            return Err(capnp::Error::failed(
+                "invalid fresh action directory binding".into(),
+            ));
+        }
+        validate_directory_identifier(
+            &descriptor.resource_kind,
+            "fresh resource kind",
+            DIRECTORY_MAX_KIND_BYTES,
+            true,
+        )?;
+        validate_directory_text(
+            &descriptor.resource_label,
+            "fresh resource label",
+            DIRECTORY_MAX_LABEL_BYTES,
+            true,
+        )?;
+        validate_directory_text(
+            &descriptor.action_label,
+            "fresh action label",
+            DIRECTORY_MAX_LABEL_BYTES,
+            true,
+        )?;
+        validate_directory_text(
+            descriptor.description.as_deref().unwrap_or(""),
+            "fresh action description",
+            DIRECTORY_MAX_DESCRIPTION_BYTES,
+            false,
+        )?;
+        validate_directory_text(
+            &descriptor.params_json,
+            "fresh action parameters",
+            DIRECTORY_MAX_PARAMS_BYTES,
+            true,
+        )?;
+        validate_directory_text(
+            &descriptor.contract_json,
+            "fresh action contract",
+            DIRECTORY_MAX_CONTRACT_BYTES,
+            true,
+        )?;
+        if let Some(operation_type) = &expected.operation_type {
+            validate_directory_identifier(
+                operation_type,
+                "fresh operation type",
+                DIRECTORY_MAX_IDENTIFIER_BYTES,
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn write_directory_descriptor(
     mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
     descriptor: &runtime_collab::ExportedAction,
@@ -2725,6 +2843,12 @@ fn write_directory_row(
     out.set_visibility_contract_json(&row.visibility_contract_json);
     if let Some(descriptor) = &row.descriptor {
         write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
+    }
+    if let Some(binding) = &row.fresh_binding {
+        let mut fresh = out.reborrow().init_fresh_binding();
+        write_directory_descriptor(fresh.reborrow().init_descriptor(), &binding.descriptor);
+        fresh.set_locus(&binding.locus);
+        fresh.set_operation_type(binding.operation_type.as_deref().unwrap_or(""));
     }
 }
 
@@ -3043,6 +3167,7 @@ impl ManagedInteractionTarget {
 struct AdmissionProvenance<'a> {
     durable: Option<DurableContext<'a>>,
     revision: Option<&'a str>,
+    fresh_binding: Option<&'a tilo_actions::remote::FreshActionBinding>,
     origin: Option<InvocationCaller>,
     retained_time: Option<&'a crate::peer_actions::PolicyTime>,
 }
@@ -4392,9 +4517,7 @@ impl CapnpBrokerState {
                         actor,
                         cluster_id,
                         peer_id,
-                        revision,
-                        resource,
-                        action,
+                        request,
                         reply,
                     } => {
                         if reply.is_closed() {
@@ -4406,9 +4529,7 @@ impl CapnpBrokerState {
                                 &actor,
                                 &cluster_id,
                                 peer_id,
-                                &revision,
-                                &resource,
-                                &action,
+                                &request,
                             ))
                             .await
                             .and_then(|result| {
@@ -4535,12 +4656,22 @@ impl CapnpBrokerState {
         actor: &BrokerActor,
         cluster_id: &str,
         peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
-        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+        resolution_request: &runtime_collab::ActionDirectoryResolutionRequest,
+    ) -> Result<runtime_collab::ActionDirectoryResolutionReply, String> {
+        validate_directory_resolution_request(cluster_id, resolution_request)
             .map_err(|error| error.to_string())?;
+        let (revision, resource, action, expected) = match resolution_request {
+            runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                revision,
+                resource,
+                action,
+            } => (revision.as_str(), resource.as_str(), action.as_str(), None),
+            runtime_collab::ActionDirectoryResolutionRequest::FreshBinding {
+                resource,
+                action,
+                expected,
+            } => ("", resource.as_str(), action.as_str(), Some(expected)),
+        };
         let registered = directories
             .registered(peer_id, cluster_id)
             .map_err(|error| error.to_string())?;
@@ -4550,6 +4681,10 @@ impl CapnpBrokerState {
             wire.set_revision(revision);
             wire.set_resource(resource);
             wire.set_action(action);
+            if let Some(expected) = expected {
+                runtime_collab::encode_fresh_action_binding(wire.init_expected_binding(), expected)
+                    .map_err(|error| error.to_string())?;
+            }
         }
         let reply = request
             .send()
@@ -4569,21 +4704,47 @@ impl CapnpBrokerState {
         {
             return Err("application exceeded directory resolution byte budget".into());
         }
-        let decoded = runtime_collab::decode_action_directory_resolution(resolution)
+        let decoded = runtime_collab::decode_action_directory_resolution_reply(resolution)
             .map_err(|error| error.to_string())?;
-        match decoded {
+        let current = directories
+            .registered(peer_id, cluster_id)
+            .map_err(|error| error.to_string())?;
+        if current.registration != registered.registration
+            || current.app_id != registered.app_id
+            || current.route != registered.route
+        {
+            return Ok(runtime_collab::ActionDirectoryResolutionReply {
+                resolution: runtime_collab::ActionDirectoryResolution::NotFound,
+                revision: String::new(),
+            });
+        }
+        match decoded.resolution {
             runtime_collab::ActionDirectoryResolution::Found(row)
                 if row.resource == resource
                     && row.action.as_deref() == Some(action)
+                    && expected.is_none_or(|expected| {
+                        !decoded.revision.is_empty()
+                            && row.descriptor.as_ref() == Some(&expected.descriptor)
+                            && row.fresh_binding.as_ref() == Some(expected)
+                    })
                     && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
                         .map_err(|error| error.to_string())? =>
             {
-                Ok(runtime_collab::ActionDirectoryResolution::Found(row))
+                Ok(runtime_collab::ActionDirectoryResolutionReply {
+                    resolution: runtime_collab::ActionDirectoryResolution::Found(row),
+                    revision: expected.map_or_else(String::new, |_| decoded.revision),
+                })
             }
             runtime_collab::ActionDirectoryResolution::Found(_) => {
-                Ok(runtime_collab::ActionDirectoryResolution::NotFound)
+                Ok(runtime_collab::ActionDirectoryResolutionReply {
+                    resolution: runtime_collab::ActionDirectoryResolution::NotFound,
+                    revision: String::new(),
+                })
             }
-            other => Ok(other),
+            other => Ok(runtime_collab::ActionDirectoryResolutionReply {
+                resolution: other,
+                revision: String::new(),
+            }),
         }
     }
 
@@ -4627,14 +4788,16 @@ impl CapnpBrokerState {
                 actor,
                 cluster_id,
                 peer_id,
-                revision,
-                resource,
-                action,
+                &runtime_collab::ActionDirectoryResolutionRequest::RevisionBound {
+                    revision: revision.clone(),
+                    resource: resource.clone(),
+                    action: action.clone(),
+                },
             )
             .await
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
-            return Err(match resolved {
+        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved.resolution else {
+            return Err(match resolved.resolution {
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
                     ActionDirectoryBridgeError::StaleRevision
                 }
@@ -5259,6 +5422,7 @@ impl CapnpBrokerState {
             AdmissionProvenance {
                 durable: None,
                 revision: None,
+                fresh_binding: None,
                 origin,
                 retained_time: None,
             },
@@ -5298,6 +5462,7 @@ impl CapnpBrokerState {
             AdmissionProvenance {
                 durable: None,
                 revision,
+                fresh_binding: None,
                 origin,
                 retained_time: None,
             },
@@ -5319,6 +5484,7 @@ impl CapnpBrokerState {
             AdmissionProvenance {
                 durable: durable.map(|(caller, request)| DurableContext::Peer(caller, request)),
                 revision,
+                fresh_binding: None,
                 origin: None,
                 retained_time: None,
             },
@@ -5349,6 +5515,7 @@ impl CapnpBrokerState {
         let AdmissionProvenance {
             durable,
             revision,
+            fresh_binding,
             origin,
             retained_time,
         } = provenance;
@@ -5607,7 +5774,8 @@ impl CapnpBrokerState {
                     },
                     offered.0.route.clone(),
                     &offered.1,
-                    revision,
+                    fresh_binding.is_none().then_some(revision).flatten(),
+                    fresh_binding,
                     durable.map(DurableContext::origin).or(origin),
                     policy_time.clone(),
                     execution.as_ref().map(ExecutionScope::lease),
@@ -6310,6 +6478,7 @@ impl CapnpBrokerState {
             context: Some(ledger_context),
             confirmation: None,
             revision: None,
+            fresh_binding: None,
             on_behalf_of: None,
         };
         let mut completion = None;
@@ -14662,6 +14831,7 @@ pub mod tests {
     /// capability client rather than a mock of the shell bridge.
     pub struct TestActionDirectory {
         revision: String,
+        fresh_binding: bool,
         pub resolve_mode: DirectoryResolveMode,
         result: tilo_actions::ResultSpec,
         confirmation_required: bool,
@@ -14682,7 +14852,12 @@ pub mod tests {
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
             let contract_json = self.contract_json();
             let descriptor = runtime_collab::ExportedAction {
-                semantic_identity: None,
+                semantic_identity: self.fresh_binding.then(|| {
+                    runtime_collab::ExportedResourceSemanticIdentity {
+                        kind: "workspace".into(),
+                        key: "workspace:atlas".into(),
+                    }
+                }),
                 resource: "workspace:atlas".into(),
                 action: "open".into(),
                 resource_kind: "workspace".into(),
@@ -14695,6 +14870,14 @@ pub mod tests {
                 input: runtime_collab::ExportedInput::None,
                 view: None,
             };
+            let fresh_binding = self
+                .fresh_binding
+                .then(|| runtime_collab::FreshActionBinding {
+                    descriptor: descriptor.clone(),
+                    locus: serde_json::to_string(&tilo_actions::ExecutionLocus::ClientLocal)
+                        .expect("test locus encodes"),
+                    operation_type: None,
+                });
             runtime_collab::ActionDirectoryRow {
                 parent_resource: String::new(),
                 resource: descriptor.resource.clone(),
@@ -14703,6 +14886,7 @@ pub mod tests {
                 resource_presentation_json: String::new(),
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
+                fresh_binding,
                 has_children: false,
                 visibility_action: Some("open".into()),
                 visibility_contract_json: contract_json,
@@ -14741,16 +14925,34 @@ pub mod tests {
 
         fn resolve(
             self: Rc<Self>,
-            _params: action_directory::ResolveParams,
+            params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
         ) -> Promise<(), capnp::Error> {
+            let request = match params.get() {
+                Ok(request) => request,
+                Err(error) => return Promise::err(error),
+            };
             let mut state = self.state.borrow_mut();
             state.resolve_count = state.resolve_count.saturating_add(1);
             let mut out = results.get().init_resolution();
+            let fresh_matches = if request.has_expected_binding() {
+                request
+                    .get_expected_binding()
+                    .and_then(runtime_collab::decode_fresh_action_binding)
+                    .ok()
+                    .as_ref()
+                    == state.row().fresh_binding.as_ref()
+            } else {
+                true
+            };
             match state.resolve_mode {
-                DirectoryResolveMode::Found => {
+                DirectoryResolveMode::Found if fresh_matches => {
                     write_directory_row(out.reborrow().init_found(), &state.row());
+                    if request.has_expected_binding() {
+                        out.set_revision(&state.revision);
+                    }
                 }
+                DirectoryResolveMode::Found => out.set_not_found(()),
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),
             }
@@ -15057,6 +15259,7 @@ pub mod tests {
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
+            fresh_binding: false,
             resolve_mode: DirectoryResolveMode::Found,
             result: tilo_actions::ResultSpec::None,
             confirmation_required: false,
@@ -15338,6 +15541,7 @@ pub mod tests {
                     context: None,
                     confirmation: None,
                     revision: Some("directory-r1".into()),
+                    fresh_binding: None,
                     on_behalf_of: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
@@ -15450,7 +15654,7 @@ pub mod tests {
                     address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
                 },
                 argument: InvokeArgument::None, context: None, confirmation: None,
-                revision: None, on_behalf_of: None,
+                revision: None, fresh_binding: None, on_behalf_of: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {

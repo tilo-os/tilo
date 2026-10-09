@@ -1301,6 +1301,7 @@ fn row(
             view: None,
         }),
         has_children: false,
+        fresh_binding: None,
         visibility: None,
     }
 }
@@ -1352,6 +1353,11 @@ impl ActionHost for SupervisorHost {
         if !self.0.authorized(caller) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
+        if request.fresh_binding.is_some() {
+            return Pending::ready(Err(invalid(
+                "this action host does not support fresh directory bindings",
+            )));
+        }
         let invocation = request.invocation;
         let supervisor = &self.0;
         let receipt = supervisor
@@ -1385,7 +1391,9 @@ impl ActionHost for SupervisorHost {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tilo_actions::remote::{PendingPoll, ReceiptStatus, RemoteActionTarget};
+    use tilo_actions::remote::{
+        FreshActionBinding, PendingPoll, ReceiptStatus, RemoteActionTarget,
+    };
 
     const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -1457,6 +1465,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
         }
     }
 
@@ -1630,5 +1639,34 @@ mod tests {
             matches!(refused, Err(ActionHostError::Refused { ref reason }) if reason == "the agent has no such task"),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn supervisor_refuses_fresh_directory_mode_before_admission() {
+        let (host, caller, spawned) = supervisor();
+        let invocation = InvocationId::new();
+        let mut request = request(
+            invocation,
+            SUPERVISOR_RESOURCE,
+            SPAWN_ACTION,
+            spawn_argument("tidy the notes"),
+        );
+        let descriptor = host
+            .0
+            .rows()
+            .into_iter()
+            .find_map(|row| row.action)
+            .expect("supervisor publishes an action descriptor");
+        request.fresh_binding = Some(FreshActionBinding {
+            descriptor,
+            operation_type: None,
+        });
+
+        assert!(matches!(
+            host.invoke(&caller, request).poll_ready(),
+            PendingPoll::Ready(Err(ActionHostError::InvalidRequest { .. }))
+        ));
+        assert_eq!(spawned.load(Ordering::SeqCst), 0);
+        assert!(host.observe(&caller, &invocation).is_none());
     }
 }

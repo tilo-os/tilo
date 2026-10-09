@@ -245,6 +245,10 @@ pub struct PublishedInvocationSpec {
     pub params: Vec<tilo_actions::ActionParam>,
     pub input: tilo_actions::InputSpec,
     pub directory_revision: Option<String>,
+    /// Explicit request for the current handler at one exact semantic address,
+    /// retaining its complete public contract rather than an old callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_binding: Option<tilo_actions::remote::FreshActionBinding>,
 }
 
 /// An opaque check minted by the actual host for this exact invocation.

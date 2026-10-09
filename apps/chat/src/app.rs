@@ -1576,6 +1576,7 @@ impl ChatApp {
                 continue;
             };
             let row = tilo_actions::remote::CatalogueRow {
+                fresh_binding: None,
                 provider: query.provider.unwrap_or_default(),
                 app_id: "task-center".into(),
                 parent_resource: String::new(),

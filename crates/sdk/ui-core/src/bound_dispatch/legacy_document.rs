@@ -846,6 +846,8 @@ fn execute_owned(
                     context = context.enriched_by(ambient);
                 }
                 let context = context.with_args_from_payload(&encoded.payload);
+                crate::invocation_scope::NativeMessageCapture::validate_encoded(doc, &encoded)
+                    .map_err(DoorError::Failed)?;
                 let dispatched = execute_document(
                     doc,
                     action.as_ref(),

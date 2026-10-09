@@ -1851,6 +1851,7 @@ mod owner_commit_tests {
             let release = Rc::new(tokio::sync::Notify::new());
             let row = TestActionDirectory {
                 revision: "directory-r1".into(),
+                fresh_binding: false,
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,
@@ -1924,6 +1925,7 @@ mod owner_commit_tests {
             );
             let descriptor = TestActionDirectory {
                 revision: "directory-r1".into(),
+                fresh_binding: false,
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,

@@ -327,6 +327,7 @@ pub fn catalogue_rows(provider: &str, config: &ShortcutConfig) -> Vec<CatalogueR
                 },
                 action: Some(descriptor),
                 has_children: top,
+                fresh_binding: None,
                 visibility: None,
             }
         })

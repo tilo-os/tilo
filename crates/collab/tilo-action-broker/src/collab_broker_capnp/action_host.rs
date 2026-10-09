@@ -16,9 +16,10 @@ use tilo_desktop_model::Workspace;
 use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
-    application_provider, pending, workspace_provider, workspace_provider_room,
+    CatalogueResource, CatalogueRow, Completer, Confirmation, FreshActionBinding,
+    InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
+    Reservation, RowVisibility, application_provider, pending, workspace_provider,
+    workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -233,6 +234,70 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
         },
         params: action.params.clone(),
         view: action.view.clone(),
+    }
+}
+
+fn runtime_fresh_binding(binding: &FreshActionBinding) -> runtime_collab::FreshActionBinding {
+    let descriptor = &binding.descriptor;
+    runtime_collab::FreshActionBinding {
+        descriptor: runtime_collab::ExportedAction {
+            resource: descriptor.address.resource.clone(),
+            semantic_identity: descriptor.semantic_identity.as_ref().map(|identity| {
+                runtime_collab::ExportedResourceSemanticIdentity {
+                    kind: identity.kind.clone(),
+                    key: identity.key.clone(),
+                }
+            }),
+            action: descriptor.address.action.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource_label: descriptor.resource_label.clone(),
+            action_label: descriptor.action_label.clone(),
+            description: descriptor.description.clone(),
+            operation_kind: descriptor.kind.as_str().to_string(),
+            params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
+            contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
+            view: descriptor
+                .view
+                .as_ref()
+                .map(|view| runtime_collab::ExportedView {
+                    id: view.id.clone(),
+                    label: view.label.clone(),
+                    description: view.description.clone(),
+                    open_action: view.open_action.clone(),
+                    primary: view.primary,
+                    mount: view
+                        .mount
+                        .as_ref()
+                        .map(|mount| runtime_collab::ExportedViewMount {
+                            action: mount.action.clone(),
+                            capability_param: mount.capability_param.clone(),
+                            view_param: mount.view_param.clone(),
+                        }),
+                    range: view
+                        .range
+                        .as_ref()
+                        .map(|range| runtime_collab::ExportedViewRange {
+                            action: range.action.clone(),
+                            start_param: range.start_param.clone(),
+                            end_param: range.end_param.clone(),
+                            unit_param: range.unit_param.clone(),
+                        }),
+                }),
+            input: match &descriptor.input {
+                InputSpec::None => runtime_collab::ExportedInput::None,
+                InputSpec::Text {
+                    prompt,
+                    placeholder,
+                    collects,
+                } => runtime_collab::ExportedInput::Text {
+                    prompt: prompt.clone(),
+                    placeholder: placeholder.clone(),
+                    wants_content: *collects == Collects::Content,
+                },
+            },
+        },
+        locus: serde_json::to_string(&descriptor.locus).unwrap_or_default(),
+        operation_type: binding.operation_type.clone(),
     }
 }
 
@@ -1047,6 +1112,25 @@ impl CapnpBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
+        if request.revision.is_some() && request.fresh_binding.is_some() {
+            return Pending::ready(Err(ActionHostError::InvalidRequest {
+                reason: "fresh and revision-bound directory modes cannot be mixed".into(),
+            }));
+        }
+        if request.fresh_binding.is_some()
+            && !request
+                .target
+                .provider
+                .starts_with(super::canonical_route::PROVIDER_PREFIX)
+        {
+            return if let Some(root) = self.directory_target(caller, request) {
+                self.invoke_directory(caller, root, origin, request)
+            } else {
+                Pending::ready(Err(ActionHostError::InvalidRequest {
+                    reason: "fresh binding is available only for a live action directory".into(),
+                }))
+            };
+        }
         if request
             .target
             .provider
@@ -1484,23 +1568,45 @@ impl CapnpBrokerState {
         let unavailable = || ActionHostError::Unavailable {
             reason: "the invocation ledger is unavailable".into(),
         };
-        let Some(revision) = request
+        if request.revision.is_some() && request.fresh_binding.is_some() {
+            return Pending::ready(Err(ActionHostError::InvalidRequest {
+                reason: "fresh and revision-bound directory modes cannot be mixed".into(),
+            }));
+        }
+        let revision = request
             .revision
             .clone()
-            .filter(|revision| !revision.is_empty())
-        else {
+            .filter(|revision| !revision.is_empty());
+        let fresh_binding = request.fresh_binding.clone();
+        if revision.is_some() == fresh_binding.is_some() {
             return Pending::ready(Err(ActionHostError::InvalidRequest {
-                reason: "a directory action needs the revision it was chosen at".into(),
+                reason: "a directory action needs exactly one pinned revision or fresh binding"
+                    .into(),
             }));
-        };
+        }
         let argument = request.argument.to_slot();
         let address = &request.target.address;
+        if fresh_binding.as_ref().is_some_and(|binding| {
+            binding.descriptor.address != *address
+                || binding
+                    .descriptor
+                    .semantic_identity
+                    .as_ref()
+                    .is_none_or(|identity| {
+                        !identity.is_valid() || identity.kind != binding.descriptor.resource_kind
+                    })
+        }) {
+            return Pending::ready(Err(ActionHostError::InvalidRequest {
+                reason: "the fresh directory binding does not name the exact semantic target"
+                    .into(),
+            }));
+        }
         if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
             return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
         }
         if validate_directory_target_input(
             &root.cluster_id,
-            &revision,
+            revision.as_deref().unwrap_or_default(),
             &address.resource,
             &address.action,
             argument.as_deref(),
@@ -1527,14 +1633,27 @@ impl CapnpBrokerState {
             }
             Ok(Reservation::Reserved) => {}
         }
-        let resolved = self.action_directory_request_queue().try_resolve_pending(
-            self.caller_actor(caller, &root.cluster_id),
-            &root.cluster_id,
-            root.peer_id,
-            revision,
-            &address.resource,
-            &address.action,
-        );
+        let actor = self.caller_actor(caller, &root.cluster_id);
+        let queue = self.action_directory_request_queue();
+        let resolved = if let Some(revision) = revision {
+            queue.try_resolve_pending(
+                actor,
+                &root.cluster_id,
+                root.peer_id,
+                revision,
+                &address.resource,
+                &address.action,
+            )
+        } else {
+            queue.try_resolve_fresh_pending(
+                actor,
+                &root.cluster_id,
+                root.peer_id,
+                &address.resource,
+                &address.action,
+                runtime_fresh_binding(fresh_binding.as_ref().expect("checked fresh mode")),
+            )
+        };
         let resolved = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -1607,17 +1726,8 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let row = match reply {
-            Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::Found(row),
-            ))) => row,
-            Some(Ok(ActionDirectoryBridgeResponse::Resolution(
-                runtime_collab::ActionDirectoryResolution::StaleRevision,
-            ))) => {
-                return Err(ActionHostError::InvalidRequest {
-                    reason: "the action changed since that revision; list it again".into(),
-                });
-            }
+        let resolved = match reply {
+            Some(Ok(ActionDirectoryBridgeResponse::Resolution(resolved))) => resolved,
             Some(Ok(_)) => return Err(ActionHostError::UnknownAction),
             Some(Err(error)) => return Err(bridge_error(error)),
             None => {
@@ -1626,8 +1736,30 @@ impl CapnpBrokerState {
                 });
             }
         };
+        let row = match resolved.resolution {
+            runtime_collab::ActionDirectoryResolution::Found(row) => row,
+            runtime_collab::ActionDirectoryResolution::StaleRevision => {
+                return Err(ActionHostError::InvalidRequest {
+                    reason: "the action changed since that revision; list it again".into(),
+                });
+            }
+            _ => return Err(ActionHostError::UnknownAction),
+        };
+        if let Some(expected) = &request.fresh_binding {
+            if resolved.revision.is_empty()
+                || directory_fresh_binding(&row).as_ref() != Some(expected)
+            {
+                return Err(ActionHostError::UnknownAction);
+            }
+        }
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
+        let source_revision = request.revision.as_deref().or_else(|| {
+            request
+                .fresh_binding
+                .as_ref()
+                .map(|_| resolved.revision.as_str())
+        });
         let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
@@ -1676,7 +1808,8 @@ impl CapnpBrokerState {
             },
             super::AdmissionProvenance {
                 durable: None,
-                revision: request.revision.as_deref(),
+                revision: source_revision,
+                fresh_binding: request.fresh_binding.as_ref(),
                 origin: origin.cloned(),
                 retained_time: None,
             },
@@ -2707,6 +2840,7 @@ fn action_row(provider: String, app_id: &str, action: ActionDescriptor) -> Catal
             presentation: None,
         },
         action: Some(action),
+        fresh_binding: None,
         has_children: false,
         visibility: None,
     }
@@ -2718,8 +2852,16 @@ fn directory_row(
     root: &ActionDirectoryRoot,
     row: &runtime_collab::ActionDirectoryRow,
 ) -> Option<CatalogueRow> {
+    let fresh_binding = row
+        .fresh_binding
+        .as_ref()
+        .and_then(|_| directory_fresh_binding(row));
     let action = if row.action.is_some() {
-        Some(descriptor(&published_directory_action(row).ok()?))
+        Some(if let Some(binding) = &fresh_binding {
+            binding.descriptor.clone()
+        } else {
+            descriptor(&published_directory_action(row).ok()?)
+        })
     } else {
         None
     };
@@ -2738,6 +2880,7 @@ fn directory_row(
             .filter(tilo_actions::ResourcePresentation::is_valid),
         },
         action,
+        fresh_binding,
         has_children: row.has_children,
         visibility: row.visibility_action.clone().and_then(|action| {
             Some(RowVisibility {
@@ -2745,6 +2888,30 @@ fn directory_row(
                 contract: serde_json::from_str(&row.visibility_contract_json).ok()?,
             })
         }),
+    })
+}
+
+/// Convert the owner's complete current binding without reconstructing the
+/// execution locus that legacy directory rows do not publish. Missing or
+/// malformed fresh metadata simply leaves the row revision-bound.
+fn directory_fresh_binding(row: &runtime_collab::ActionDirectoryRow) -> Option<FreshActionBinding> {
+    let binding = row.fresh_binding.as_ref()?;
+    if row.descriptor.as_ref()? != &binding.descriptor {
+        return None;
+    }
+    let offered = published_directory_action(row).ok()?;
+    let locus = serde_json::from_str::<ExecutionLocus>(&binding.locus).ok()?;
+    let mut descriptor = descriptor(&offered);
+    descriptor.locus = locus;
+    if descriptor.semantic_identity.is_none()
+        || descriptor.address.resource != row.resource
+        || descriptor.address.action != row.action.as_deref()?
+    {
+        return None;
+    }
+    Some(FreshActionBinding {
+        descriptor,
+        operation_type: binding.operation_type.clone(),
     })
 }
 
@@ -2768,14 +2935,16 @@ fn directory_page(
             stale_cursor: page.stale_cursor,
             budget_exhausted: page.budget_exhausted,
         }),
-        ActionDirectoryBridgeResponse::Resolution(resolution) => {
+        ActionDirectoryBridgeResponse::Resolution(reply) => {
             let mut page = CataloguePage {
                 exhausted: true,
                 ..CataloguePage::default()
             };
-            match resolution {
+            match reply.resolution {
                 runtime_collab::ActionDirectoryResolution::Found(row) => {
-                    let Some(revision) = resolution_revision else {
+                    let revision = resolution_revision
+                        .or((!reply.revision.is_empty()).then_some(reply.revision.as_str()));
+                    let Some(revision) = revision else {
                         return Err(ActionHostError::Unavailable {
                             reason: "directory resolution lost its requested revision".into(),
                         });
@@ -2819,6 +2988,7 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
 #[cfg(test)]
 mod workspace_task_provider_tests {
     use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use super::{ActionHostError, FreshActionBinding};
     use crate::services::{HostServices, WorkspaceTaskSnapshot, WorkspaceTasks};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
@@ -2911,8 +3081,29 @@ mod workspace_task_provider_tests {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    fresh_binding: None,
                     on_behalf_of: None,
                 };
+                let mut unsupported_fresh = request.clone();
+                unsupported_fresh.invocation = tilo_actions::InvocationId::new();
+                unsupported_fresh.fresh_binding = Some(FreshActionBinding {
+                    descriptor: row.action.clone().expect("task row has an action"),
+                    operation_type: None,
+                });
+                assert!(matches!(
+                    state
+                        .action_invoke(&caller, None, None, &unsupported_fresh)
+                        .poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Err(
+                        ActionHostError::InvalidRequest { .. }
+                    ))
+                ));
+                assert!(
+                    state
+                        .remote_job(&caller, &unsupported_fresh.invocation)
+                        .is_none(),
+                    "a non-directory fresh binding must not reserve or dispatch an invocation"
+                );
                 let mut pending = state.action_invoke(&caller, None, None, &request);
                 let receipt = loop {
                     if let tilo_actions::remote::PendingPoll::Ready(result) = pending.poll_ready() {

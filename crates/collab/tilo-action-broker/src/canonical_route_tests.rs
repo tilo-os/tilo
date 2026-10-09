@@ -109,6 +109,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     context: None,
                     confirmation: None,
                     revision: Some("directory-r1".into()),
+                    fresh_binding: None,
                     on_behalf_of: None,
                 };
                 let pending = host.invoke(&caller, request);
@@ -143,6 +144,83 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                 drop(replacement_stream);
                 drop(old_stream);
             }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_fresh_binding_invokes_current_revision_once_and_refuses_changed_binding() {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = signed_worker::OriginalRoom::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let (worker, _) = room.join_worker(41).await;
+            let stream = worker.handle.subscribe_stable_invocations().await.unwrap();
+            let directory = signed_worker::fresh_directory_state("fresh-r1");
+            worker
+                .handle
+                .publish_action_directory(
+                    &room.route.app_id,
+                    signed_worker::directory_server(&directory),
+                )
+                .await
+                .unwrap();
+            let caller = canonical_caller(&room);
+            let host = room
+                .state
+                .certified_local_action_host(
+                    &caller,
+                    &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key),
+                )
+                .unwrap();
+            let roots = canonical_pending(&room, host.query(&caller, canonical_query(&room)))
+                .await
+                .unwrap();
+            let page = canonical_pending(
+                &room,
+                host.query(&caller, provider_query(roots.providers[0].provider.clone())),
+            )
+            .await
+            .unwrap();
+            let row = page.rows.first().expect("fresh action row");
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: row.target().expect("fresh action target"),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                fresh_binding: Some(row.fresh_binding.clone().expect("owner fresh binding")),
+                on_behalf_of: None,
+            };
+            directory.borrow_mut().revision = "fresh-r2".into();
+            let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))
+                .await
+                .expect("fresh binding survives unrelated directory revision churn");
+            assert_eq!(
+                stream.read().await.unwrap().invocation_uuid,
+                *request.invocation.0.as_bytes()
+            );
+            let retry = canonical_pending(&room, host.invoke(&caller, request.clone()))
+                .await
+                .expect("the same UUID returns its original admission");
+            assert_eq!(retry.invocation, receipt.invocation);
+            assert_eq!(room.state.pending_invocations.lock().unwrap().len(), 1);
+
+            directory.borrow_mut().confirmation_required = true;
+            let mut changed = request;
+            changed.invocation = tilo_actions::InvocationId::new();
+            assert!(
+                canonical_pending(&room, host.invoke(&caller, changed))
+                    .await
+                    .is_err(),
+                "a changed current public binding must require rediscovery"
+            );
+            assert_eq!(room.state.pending_invocations.lock().unwrap().len(), 1);
         })
         .await;
 }
@@ -193,6 +271,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 context: None,
                 confirmation: None,
                 revision: Some("r1".into()),
+                fresh_binding: None,
                 on_behalf_of: None,
             };
             let receipt = canonical_pending(&room, host.invoke(&caller, request.clone()))

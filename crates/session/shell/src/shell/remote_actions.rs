@@ -248,6 +248,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            fresh_binding: None,
         }
     }
 
@@ -431,6 +432,7 @@ mod tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             };
             match now(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(

@@ -70,6 +70,7 @@ fn locus_scope_with(
         params: spec.params().to_vec(),
         input: tilo_actions::InputSpec::None,
         directory_revision: None,
+        fresh_binding: None,
     })
     .unwrap()
     .with_owner_token(std::sync::Arc::new(request.clone()))

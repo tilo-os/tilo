@@ -2279,6 +2279,7 @@ mod tests {
                 presentation: None,
             },
             action: None,
+            fresh_binding: None,
             has_children,
             visibility: None,
         }
@@ -2338,6 +2339,7 @@ mod tests {
                 params: Vec::new(),
                 view: None,
             }),
+            fresh_binding: None,
             has_children: false,
             visibility: None,
         }

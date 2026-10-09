@@ -155,6 +155,8 @@ impl QAction for CounterAction {
 /// One open resource exporting an immediate `bump` and a prompted
 /// `set-label`.
 struct CounterCard {
+    fresh_semantic: bool,
+    fresh_dynamic: bool,
     button: Button,
     destructive: bool,
     lazy_resource: Option<Resource>,
@@ -252,6 +254,8 @@ impl CounterCard {
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
         Self {
             button: Button::new("bump", "Bump").on_action(binding),
+            fresh_semantic: false,
+            fresh_dynamic: false,
             destructive,
             lazy_resource: None,
             directory_provider: None,
@@ -283,6 +287,8 @@ impl CounterCard {
     fn with_lazy_resource(resource: Resource) -> Self {
         Self {
             button: Button::new("lazy-resource", "Lazy resource"),
+            fresh_semantic: false,
+            fresh_dynamic: false,
             destructive: false,
             lazy_resource: Some(resource),
             directory_provider: None,
@@ -316,6 +322,21 @@ impl CounterCard {
             self.destructive,
             self.post_bump_reset && counter_in_doc(doc) > 0,
         );
+        if self.fresh_semantic {
+            resource.semantic_identity = Some(tilo_actions::ResourceSemanticIdentity {
+                kind: "test.counter".into(),
+                key: "original-counter".into(),
+            });
+        }
+        if self.fresh_dynamic {
+            for action in &mut resource.actions {
+                if action.id == "bump" {
+                    *action = action
+                        .clone()
+                        .with_risk(|_| tilo_actions::RiskLevel::Destructive);
+                }
+            }
+        }
         if self.bump_after_ping {
             resource = resource.with_action(
                 ActionSpec::operation(

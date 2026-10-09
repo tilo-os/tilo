@@ -727,6 +727,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         context: None,
         confirmation: None,
         revision: None,
+        fresh_binding: None,
     }
 }
 

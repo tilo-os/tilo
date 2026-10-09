@@ -1087,6 +1087,7 @@ mod tests {
                     input: tilo_actions::InputSpec::None,
                     view: None,
                 }),
+                fresh_binding: None,
             };
             let catalogue = tilo_actions::remote::CataloguePage {
                 revision: "1".into(),

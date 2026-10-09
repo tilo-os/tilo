@@ -56,6 +56,7 @@ fn row(
         provider: format!("sample:{app}"),
         app_id: app.into(),
         parent_resource: String::new(),
+        fresh_binding: None,
         action: Some(ActionDescriptor {
             semantic_identity: None,
             address: ActionAddress::new(&resource.id, action),

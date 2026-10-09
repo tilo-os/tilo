@@ -320,6 +320,7 @@ impl NativePendingTaskOperation {
             context: None,
             confirmation: None,
             revision: Some(page.revision),
+            fresh_binding: None,
             on_behalf_of: None,
         };
         self.phase = NativePendingTaskPhase::Admission {

@@ -2426,6 +2426,7 @@ impl Session {
         let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::RemoteAction {
             message: RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+                fresh_binding: None,
                 on_behalf_of: None,
                 invocation,
                 target: tilo_actions::remote::RemoteActionTarget {

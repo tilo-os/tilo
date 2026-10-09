@@ -7,12 +7,61 @@ impl super::App {
     pub(super) fn check_published_invocation_revision(
         &mut self,
         lease: &PublishedInvocationLease,
+        request: &PublishedInvocationRequest,
+    ) -> Result<(), tilo_actions::DoorError> {
+        lease.check().map_err(tilo_actions::DoorError::Failed)?;
+        let spec = lease
+            .dispatch_spec()
+            .map_err(tilo_actions::DoorError::Failed)?;
+        self.check_published_invocation_spec(spec, request)
+    }
+
+    pub(super) fn check_published_invocation_spec(
+        &mut self,
+        spec: &crate::invocation_scope::PublishedInvocationSpec,
+        request: &PublishedInvocationRequest,
     ) -> Result<(), tilo_actions::DoorError> {
         let refused = |reason: String| tilo_actions::DoorError::Unavailable {
             code: "published_invocation_revision_changed".into(),
             reason,
         };
-        if let Some(original) = &lease.dispatch_spec().map_err(refused)?.directory_revision {
+        if let Some(binding) = &spec.fresh_binding {
+            if spec.directory_revision.is_some() {
+                return Err(refused(
+                    "fresh and revision-bound modes cannot be mixed".into(),
+                ));
+            }
+            let expected = &binding.descriptor;
+            if expected.address != request.address || expected.semantic_identity.is_none() {
+                return Err(refused(
+                    "fresh operation has no exact semantic binding".into(),
+                ));
+            }
+            let resource = self
+                .resolve_publication_resource(&request.address.resource, &request.address.action)
+                .ok_or_else(|| refused("fresh operation is no longer published".into()))?;
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == request.address.action)
+                .ok_or_else(|| refused("fresh operation is no longer published".into()))?;
+            let current = Self::directory_descriptor(&resource, action);
+            if !action.admits_fresh_binding()
+                || action.operation_type != binding.operation_type
+                || &current != expected
+                || current.kind != spec.kind
+                || current.contract != spec.contract
+                || current.params != spec.params
+                || current.input != spec.input
+            {
+                return Err(refused("fresh operation public binding changed".into()));
+            }
+            // The existing dispatch below binds arguments and builds this
+            // current operation exactly once, in this same invoker scope.
+            // Comparing a public binding never executes an old callback.
+            return Ok(());
+        }
+        if let Some(original) = &spec.directory_revision {
             let current = self.try_action_directory_revision().map_err(refused)?;
             if original != &current {
                 return Err(refused(

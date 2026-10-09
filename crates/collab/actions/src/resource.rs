@@ -1452,6 +1452,19 @@ impl ActionSpec {
             .map_or(self.contract.permission, |classify| classify(args))
     }
 
+    /// Whether the published contract completely describes admission for
+    /// every argument this action accepts.
+    ///
+    /// A fresh semantic binding may compare the public contract instead of
+    /// pinning a directory revision only when neither permission nor risk is
+    /// classified by an opaque callback. Argument-sensitive actions remain
+    /// revision-bound until a protocol can carry their exact classified
+    /// admission result.
+    #[must_use]
+    pub fn admits_fresh_binding(&self) -> bool {
+        self.permission_of.is_none() && self.risk_of.is_none()
+    }
+
     /// [`permission_for_args`](Self::permission_for_args) for arguments that
     /// arrived as JSON. Arguments that do not bind build no action, so they
     /// need what the declaration says.

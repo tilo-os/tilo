@@ -144,6 +144,7 @@ impl AgentParticipant {
                     },
                     action: Some(descriptor),
                     has_children: false,
+                    fresh_binding: None,
                     visibility: None,
                 });
             }
@@ -187,6 +188,7 @@ impl AgentParticipant {
                         view: None,
                     }),
                     has_children: false,
+                    fresh_binding: None,
                     visibility: None,
                 });
             }

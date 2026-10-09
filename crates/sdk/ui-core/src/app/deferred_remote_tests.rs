@@ -101,6 +101,7 @@ fn deferred_actual_owned_dispatch_checks_original_grant_before_single_mint() {
             params: current.params().to_vec(),
             input: tilo_actions::InputSpec::None,
             directory_revision: None,
+            fresh_binding: None,
         };
         let (mut app, store, checkout, _temp) =
             owned_counter(CounterCard::with_lazy_resource(resource));

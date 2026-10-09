@@ -303,7 +303,8 @@ interface ChannelHandle {
   # descriptor at `revision`; an unavailable, changed, or disconnected owner
   # returns a non-ok status and is never invoked from cached catalogue data.
   resolvePublishedAction @35 (peerId :UInt64, revision :Text,
-                              resource :Text, action :Text)
+                              resource :Text, action :Text,
+                              expectedBinding :FreshActionBinding)
       -> (resolution :ActionDirectoryResolution,
           invocationBinding :PublishedInvocationBinding);
 
@@ -468,7 +469,12 @@ struct PublishedInvocationObservation {
 # connection/capability goes away.
 interface ActionDirectory {
   query @0 (query :ActionDirectoryQuery) -> (page :ActionDirectoryPage);
-  resolve @1 (revision :Text, resource :Text, action :Text)
+  # `expectedBinding` is an explicit fresh-resolution mode. Legacy callers
+  # leave it absent and supply `revision`; fresh callers leave `revision`
+  # empty and supply the full previously observed public descriptor. Resource
+  # and action remain the independently addressed target in both modes.
+  resolve @1 (revision :Text, resource :Text, action :Text,
+              expectedBinding :FreshActionBinding)
       -> (resolution :ActionDirectoryResolution);
 }
 
@@ -510,6 +516,10 @@ struct ActionDirectoryRow {
   # Bounded declarative metadata. The shell parses this into its own themed
   # primitives; application drawing code never crosses this boundary.
   resourcePresentationJson @9 :Text;
+  # Present on action rows which support explicit fresh semantic resolution.
+  # This repeats the complete public binding so a caller can carry exactly
+  # what it observed back to the live owner; it grants no authority.
+  freshBinding @10 :FreshActionBinding;
 }
 
 struct ActionDirectoryPage {
@@ -530,6 +540,9 @@ struct ActionDirectoryResolution {
     staleRevision @2 :Void;
     unavailable @3 :Void;
   }
+  # Non-empty only for a successful fresh resolution. It is the live owner's
+  # authoritative current revision for the returned exact row.
+  revision @4 :Text;
 }
 
 interface WorkspaceControlHandle {
@@ -598,6 +611,16 @@ struct ExportedAction {
 struct ResourceSemanticIdentity {
   kind @0 :Text;
   key @1 :Text;
+}
+
+# Complete public expected state for explicit fresh semantic resolution.
+# `operationType` is empty when the application declares no finer handler
+# type. `locus` carries the ActionDescriptor execution locus omitted from the
+# legacy ExportedAction projection.
+struct FreshActionBinding {
+  descriptor @0 :ExportedAction;
+  locus @1 :Text;
+  operationType @2 :Text;
 }
 
 struct ResourceViewDescriptor {

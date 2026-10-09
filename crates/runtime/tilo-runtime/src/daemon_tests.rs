@@ -343,6 +343,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                     view: None,
                 }),
                 has_children: false,
+                fresh_binding: None,
                 visibility: None,
             }]
         } else {

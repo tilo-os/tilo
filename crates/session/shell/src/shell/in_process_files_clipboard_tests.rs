@@ -423,6 +423,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             });
             let (job, receipt) = self.wait(pending).unwrap();
             assert_eq!(receipt.invocation, invocation);
@@ -481,6 +482,7 @@ mod files_clipboard_tests {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             }));
             let Message::Receipt(result) = self.wait(pending).unwrap() else {
                 panic!("the actual agent must receive its invocation receipt");

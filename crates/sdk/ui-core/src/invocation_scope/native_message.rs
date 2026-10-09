@@ -248,6 +248,83 @@ impl NativeMessageCapture {
         self.state.borrow().changed
     }
 
+    /// Validate the current handler's encoded Message before it can mutate a
+    /// document. Fresh resolution deliberately chooses the current callback,
+    /// so its encoded destination must still match the immutable broker source.
+    pub(crate) fn validate_encoded(
+        document: &mut AutoCommit,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        ACTIVE.with_borrow(|active| {
+            let Some(capture) = active else { return Ok(()) };
+            capture.validate_fresh_message(document, encoded)
+        })
+    }
+
+    fn validate_fresh_message(
+        &self,
+        document: &mut AutoCommit,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        let Some(binding) = &self.source.spec.fresh_binding else {
+            return Ok(());
+        };
+        self.source.check()?;
+        self.owner
+            .check_invocation_lifetime()
+            .map_err(|_| "native Message owner retired")?;
+        let (store, checkout) = self.owner.store_checkout();
+        if !super::record_loan_matches(store, checkout, document)
+            || !self.admission.matches(document, checkout)
+            || current_invoker().as_ref() != Some(&self.source.request.invoker())
+        {
+            return Err("fresh Message owner or invoker differs from its source".into());
+        }
+        type InertMessage = tilo_actions::agent_message::AgentMessagePayload<
+            serde::de::IgnoredAny,
+            serde::de::IgnoredAny,
+            serde::de::IgnoredAny,
+            serde::de::IgnoredAny,
+        >;
+        let identity = binding
+            .descriptor
+            .semantic_identity
+            .as_ref()
+            .filter(|identity| identity.kind == "chat.agent")
+            .ok_or("fresh Message semantic target unavailable")?;
+        let agent = identity
+            .key
+            .strip_prefix("chat.person:")
+            .filter(|agent| !agent.is_empty())
+            .ok_or("fresh Message semantic target is not canonical")?;
+        let text =
+            original_message_text(&self.source.spec, self.source.request.argument.as_deref())?;
+        let typed: tilo_actions::agent_message::AgentMessageMutation<InertMessage> =
+            serde_json::from_slice(&encoded.payload)
+                .map_err(|_| "fresh Message encoded action is not canonical typed input")?;
+        let tilo_actions::agent_message::AgentMessageMutation::PostAgentMessage {
+            workspace,
+            agent: encoded_agent,
+            message,
+        } = typed;
+        if encoded.type_id != "chat.action"
+            || self.source.route.app_id != "so.tilo.chat"
+            || self
+                .source
+                .route
+                .record
+                .as_deref()
+                .is_some_and(|record| !record.is_empty())
+            || workspace != self.source.route.cluster_id.to_string()
+            || encoded_agent != agent
+            || message.intent != tilo_actions::agent_message::AgentIntent::Message
+            || message.text != text
+        {
+            return Err("fresh Message encoded destination differs from its source".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn route(&self) -> &RouteSpec {
         self.source.route()
     }
@@ -362,6 +439,32 @@ impl NativeMessageCapture {
             .take()
             .ok_or_else(|| "native Message completed without a typed execution contribution".into())
     }
+}
+
+fn original_message_text(
+    spec: &PublishedInvocationSpec,
+    argument: Option<&str>,
+) -> Result<String, String> {
+    let argument = argument.ok_or("original Message text is unavailable")?;
+    let bound = if let Some(json) = argument.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
+        let supplied = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|_| "original Message arguments are not canonical JSON")?;
+        tilo_actions::ActionArgs::bind_json(&spec.params, &supplied)
+            .map_err(|_| "original Message arguments do not match its specification")?
+    } else {
+        tilo_actions::ActionArgs::bind(
+            &spec.params,
+            [(
+                tilo_actions::PROMPTED_PARAM.to_owned(),
+                tilo_actions::ArgValue::Text(argument.to_owned()),
+            )],
+        )
+        .map_err(|_| "original Message text does not match its specification")?
+    };
+    bound
+        .text(tilo_actions::PROMPTED_PARAM)
+        .map(str::to_owned)
+        .ok_or_else(|| "original Message specification has no prompted text".into())
 }
 
 pub(crate) struct ActiveCapture(Option<NativeMessageCapture>);

@@ -145,6 +145,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             view: None,
         }),
         has_children: false,
+        fresh_binding: None,
         visibility: None,
     }
 }

@@ -916,6 +916,7 @@ impl Worker {
                 },
                 action: Some(descriptor),
                 has_children: false,
+                fresh_binding: None,
                 visibility: None,
             })
             .collect();
@@ -991,6 +992,7 @@ impl Worker {
                 },
                 action: Some(descriptor),
                 has_children: false,
+                fresh_binding: None,
                 visibility: None,
             }));
         }
@@ -1067,6 +1069,7 @@ impl Worker {
                 },
                 action: Some(descriptor),
                 has_children: false,
+                fresh_binding: None,
                 visibility: None,
             })
             .collect();
@@ -1108,6 +1111,7 @@ impl Worker {
                         view: None,
                     }),
                     has_children: false,
+                    fresh_binding: None,
                     visibility: None,
                 }
             })

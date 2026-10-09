@@ -657,6 +657,7 @@ pub(super) fn invoke(
                 AdmissionProvenance {
                     durable: Some(context),
                     revision: Some(&request.revision),
+                    fresh_binding: None,
                     origin: None,
                     retained_time: None,
                 },

@@ -126,6 +126,7 @@ impl Door {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             },
         ))
         .map(|receipt| receipt.status)

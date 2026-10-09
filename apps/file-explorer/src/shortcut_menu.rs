@@ -219,6 +219,7 @@ impl ShortcutMenuState {
                 context: None,
                 confirmation: None,
                 revision: None,
+                fresh_binding: None,
             }),
         });
         self.running.push((invocation, label.clone()));
@@ -259,6 +260,7 @@ mod tests {
                 params,
                 view: None,
             }),
+            fresh_binding: None,
             has_children: false,
             visibility: None,
         }

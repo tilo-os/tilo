@@ -527,6 +527,7 @@ mod durable_local_matrix {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    fresh_binding: None,
                 };
                 assert!(matches!(
                     rig.state
@@ -785,6 +786,7 @@ mod durable_local_matrix {
                     let mut rig = Rig::new(&env).await;
                     let row_state = TestActionDirectory {
                         revision: "original-r1".into(),
+                        fresh_binding: false,
                         resolve_mode: DirectoryResolveMode::Found,
                         result: tilo_actions::ResultSpec::None,
                         confirmation_required: false,
@@ -1063,6 +1065,7 @@ mod durable_local_matrix {
                     context: None,
                     confirmation: None,
                     revision: None,
+                    fresh_binding: None,
                     on_behalf_of: None,
                 };
                 assert!(matches!(

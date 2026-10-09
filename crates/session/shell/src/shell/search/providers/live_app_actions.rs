@@ -443,6 +443,7 @@ impl ServiceStart {
                 context: None,
                 confirmation,
                 revision: Some(self.revision.clone()),
+                fresh_binding: None,
             }))
     }
 }
@@ -494,6 +495,7 @@ impl LocalStart {
             context: None,
             confirmation,
             revision: None,
+            fresh_binding: None,
         })
     }
 }
@@ -2207,6 +2209,7 @@ impl LiveAppActionsProvider {
                         context: None,
                         confirmation,
                         revision: Some(revision.clone()),
+                        fresh_binding: None,
                     });
                 let ticket = directory_start_ticket(
                     admission,
@@ -3636,6 +3639,7 @@ mod tests {
             },
             action: Some(descriptor),
             has_children: false,
+            fresh_binding: None,
             visibility: None,
         };
         provider.directory_pages.borrow_mut().insert(
@@ -4217,6 +4221,7 @@ mod tests {
             },
             action: Some(exported("Inspect playback", "inspect")),
             has_children: false,
+            fresh_binding: None,
             visibility: None,
         };
         let key = (7, actor, "inspect playback".into(), Vec::new());
@@ -4663,6 +4668,7 @@ mod tests {
                 },
                 action: Some(exported(label, action)),
                 has_children: false,
+                fresh_binding: None,
                 visibility: None,
             };
             provider.directory_pages.borrow_mut().insert(
@@ -4774,6 +4780,7 @@ mod tests {
             },
             action: Some(descriptor),
             has_children: false,
+            fresh_binding: None,
             visibility: None,
         };
         provider.set_directory_query("read");
@@ -5730,6 +5737,7 @@ mod tests {
                         },
                         action: None,
                         has_children: true,
+                        fresh_binding: None,
                         visibility: None,
                     }],
                     Vec::new(),
