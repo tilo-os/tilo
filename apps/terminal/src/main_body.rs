@@ -6366,11 +6366,19 @@ impl TerminalBackend {
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
-                if !program.is_empty() {
+                // The runtime's interactive bash marks its runs with this
+                // session's key, as it does for the supervisor's sessions.
+                let key = program.is_empty().then(crate::runs::new_key);
+                if let Some(key) = &key {
+                    cmd.env("TILO_USH_RUNS", key);
+                } else {
                     cmd.arg("-c");
                     cmd.arg(exec_script(&program));
                 }
-                Self::with_command(cmd).map_err(|error| OpenError::Failed(error.to_string()))
+                let mut backend = Self::with_command(cmd)
+                    .map_err(|error| OpenError::Failed(error.to_string()))?;
+                backend.runs = key;
+                Ok(backend)
             }
             ConfineRoute::Host => {
                 if requested_by == Requester::Agent {
