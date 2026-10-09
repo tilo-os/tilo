@@ -99,6 +99,18 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.assertIn("needs `dev_build`", "\n".join(check.audit(root)))
             self.edit(manifest, 'dev_swap = "reboot"\n', 'dev_swap = "hot"\n')
             self.assertIn("`dev_swap` must be one of reboot", "\n".join(check.audit(root)))
+        with self.subTest(phase='the assembled runtime tree must name each direct tree it installs'):
+            root = self.fixture()
+            containerfile = root / "os/Containerfile"
+            containerfile.write_text(containerfile.read_text().replace(
+                "/image/usr/share/tilo/font-catalogs", "/image/elsewhere"))
+            self.assertIn("direct file /usr/share/tilo/font-catalogs/ (component 'apps+runtime') is never copied",
+                          "\n".join(check.audit(root)))
+        with self.subTest(phase='the assembled runtime tree is copied whole'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile", "COPY --from=runtime-image-payload /image/usr/ /usr/",
+                      "COPY --from=runtime-image-payload /image/usr/lib/ /usr/lib/")
+            self.assertIn("copy the assembled tree whole", "\n".join(check.audit(root)))
         with self.subTest(phase='unapplied layer fails'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n", "")
