@@ -2382,6 +2382,7 @@ settings-locale-number-style = Changed the number format
 settings-locale-first-day-of-week = Changed the first day of the week
 settings-choose-theme = Chose the theme { $theme }
 settings-set-key-repeat = Changed the key repeat
+settings-mute-app = Changed how long an app is muted
 settings-allow-continuity = { $on ->
     [true] Allowed Continuity between devices
    *[false] Stopped Continuity between devices

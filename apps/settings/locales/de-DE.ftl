@@ -2382,6 +2382,7 @@ settings-locale-number-style = Zahlenformat geändert
 settings-locale-first-day-of-week = Ersten Wochentag geändert
 settings-choose-theme = Design { $theme } gewählt
 settings-set-key-repeat = Tastenwiederholung geändert
+settings-mute-app = Stummschaltung einer App geändert
 settings-allow-continuity = { $on ->
     [true] Continuity zwischen Geräten erlaubt
    *[false] Continuity zwischen Geräten beendet

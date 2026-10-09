@@ -751,7 +751,6 @@ type = "String"
 [[resources]]
 kind = "settings.notifications"
 label = "Notifications"
-verbs = []
 version = 1
 
 [[resources.fields]]
@@ -846,6 +845,28 @@ title = "Rules keyed by the launcher's verified package id. The compositor"
 type = """
 std::collections::BTreeMap<String, settings_store::notification_policy
 ::AppNotificationRule,>"""
+
+[[resources.verbs]]
+description = "Mute one app's notifications for a while, counted from when the action was made, or unmute it."
+id = "mute-app"
+kind = "undoable"
+label = "Mute an app"
+
+[[resources.verbs.params]]
+name = "app"
+required = true
+
+[resources.verbs.params.schema]
+description = "The app's id"
+type = "string"
+
+[[resources.verbs.params]]
+name = "duration"
+required = true
+
+[resources.verbs.params.schema]
+description = "For how long: Not muted, For 1 hour, For 8 hours or For 24 hours"
+type = "string"
 
 [[resources]]
 kind = "settings.audio"

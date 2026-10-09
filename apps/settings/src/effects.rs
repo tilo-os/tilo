@@ -115,7 +115,6 @@ settings_effects! {
     Navigation(NavigationEffect) => answer_navigation,
     Appearance(crate::panes::appearance::AppearanceEffect) => crate::panes::appearance::answer,
     Accessibility(crate::panes::accessibility::AccessibilityEffect) => crate::panes::accessibility::answer,
-    Notifications(crate::panes::notifications::NotificationEffect) => crate::panes::notifications::answer,
     DefaultApps(crate::panes::personal_apps::DefaultAppsEffect) => crate::panes::personal_apps::answer,
     TimeDate(crate::panes::time_date::TimeDateEffect) => crate::panes::time_date::answer,
     Shortcuts(crate::panes::keyboard_shortcuts::ShortcutEffect) => crate::panes::keyboard_shortcuts::answer,

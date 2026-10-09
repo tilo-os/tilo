@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::{ActionControl, Actions, Dispatcher, EffectAnswer, Effected, Refused, RunMode};
+use ui::framework::{
+    ActionControl, Actions, Dispatcher, EffectAnswer, Effected, RecordOperations, Refused, RunMode,
+};
 use ui::storage::{AppStorage, Settings as StoredSettings, SettingsRevision, SettingsSchema};
 use ui::tilo_resource::{Binds, Effect};
 
@@ -24,7 +26,8 @@ use crate::resource::Settings;
 struct Door {
     actions: Actions<Settings>,
     dispatcher: Dispatcher<Settings>,
-    /// The published field edits of each settings section, by its type.
+    /// The published field edits of each settings section, by its type, and
+    /// what its live rows may offer of it, by `RecordOperations<T>`.
     sections: Rc<HashMap<TypeId, Box<dyn Any>>>,
 }
 
@@ -57,8 +60,12 @@ fn held<T: Section>(
     cx: &ui::framework::SurfaceCx<Settings>,
     sections: &mut HashMap<TypeId, Box<dyn Any>>,
 ) {
-    if let Some(actions) = cx.record_actions(&cx.settings::<T>()) {
+    let section = cx.settings::<T>();
+    if let Some(actions) = cx.record_actions(&section) {
         sections.insert(TypeId::of::<T>(), Box::new(actions));
+    }
+    if let Some(operations) = cx.record_operations(&section) {
+        sections.insert(TypeId::of::<RecordOperations<T>>(), Box::new(operations));
     }
 }
 
@@ -211,6 +218,22 @@ impl PaneCx {
     }
 
     /// The published actions of section `T`; `None` outside a host.
+    /// `decl`, a bound field edit or verb of section `T`, as an operation a
+    /// live row offers (one app's notification rule on that app's row).
+    /// `None` outside a host, or where the section is read only here.
+    #[must_use]
+    pub fn row_operation<T: Section>(
+        &self,
+        decl: &ui::tilo_resource::ActionDecl<T>,
+    ) -> Option<ui::tilo_actions::ActionSpec> {
+        self.door
+            .as_ref()?
+            .sections
+            .get(&TypeId::of::<RecordOperations<T>>())?
+            .downcast_ref::<RecordOperations<T>>()?
+            .operation(decl)
+    }
+
     fn section<T: Section>(&self) -> Option<&Actions<T>> {
         self.door
             .as_ref()?
@@ -257,6 +280,31 @@ impl PaneCx {
         match self.section::<T>().and_then(|actions| {
             actions.edit_binding_with(path, move |path, input| Ok(path.set(value(input)?)))
         }) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
+    /// `control`, making each committed input the edit `edit` builds of the
+    /// field of section `T` at `path` (one entry of a map, built whole
+    /// where it is not there yet). Disabled outside a host.
+    #[must_use]
+    pub fn bind_edit<T, V, I, C>(
+        &self,
+        control: C,
+        path: ui::tilo_resource::Path<T, V>,
+        edit: impl Fn(I) -> ui::tilo_resource::Edit<T> + Send + Sync + 'static,
+    ) -> C
+    where
+        T: Section,
+        V: 'static,
+        I: 'static,
+        C: ActionControl<I>,
+    {
+        match self
+            .section::<T>()
+            .and_then(|actions| actions.edit_binding_with(path, move |_, input| Ok(edit(input))))
+        {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }

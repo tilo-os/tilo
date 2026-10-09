@@ -7,7 +7,7 @@
 //! are the single source of truth the rest of the system follows, exactly
 //! like Appearance owns the theme.
 //!
-//! Every control is bound to a [`NotificationEffect`]:
+//! Every control is a field edit of that section, or its `mute-app` verb:
 //! - **Do Not Disturb** — master mute for banners and sounds.
 //! - **Show banners** — pop-up banners for incoming notifications.
 //! - **Show previews** — reveal the message body (off shows only the app name).
@@ -16,7 +16,7 @@
 //! - **Focus** — a scheduled quiet period that only priority apps pierce.
 //! - **Per app** — overrides of the delivery choices for one verified app,
 //!   priority during focus, and a temporary mute. An app's rows are live rows
-//!   (`settings.notification-app:<id>`) offering the same effects bound to it.
+//!   (`settings.notification-app:<id>`) offering the same edits bound to it.
 
 use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap};
@@ -25,17 +25,14 @@ use settings_store::notification_policy::AppNotificationRule;
 use taffy::{NodeId, TaffyTree};
 use tilo_clock::unix_now_i64;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::framework::LiveRow;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::tilo_resource;
 use ui::widget::{AppModel, Dropdown, ModelPath, Toggle, Widget};
 
-use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::prefs::NotificationPrefs;
-use crate::resource::Settings;
-use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
     setting_row_described, value_row,
@@ -140,97 +137,67 @@ fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'sta
     table.iter().map(|(label, _)| *label)
 }
 
-/// How notifications reach the person: globally, during focus, and per app.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "settings.effect")]
-pub enum NotificationEffect {
-    /// Show one app's notification banners, or stop.
-    #[effect(idempotent)]
-    SetAppBanners {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Show previews in one app's notifications, or stop.
-    #[effect(idempotent)]
-    SetAppPreviews {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Play one app's notification sounds, or stop.
-    #[effect(idempotent)]
-    SetAppSounds {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Show one app's notification badges, or stop.
-    #[effect(idempotent)]
-    SetAppBadges {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Let one app's notifications through during focus, or stop.
-    #[effect(idempotent)]
-    SetAppPriority {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Let one app's notifications from priority contacts through during
-    /// focus, or stop.
-    #[effect(idempotent)]
-    SetAppPriorityContacts {
-        #[param("The app's id")]
-        app: String,
-        on: bool,
-    },
-    /// Mute one app's notifications for a while, or unmute it.
-    #[effect(idempotent)]
-    MuteApp {
-        #[param("The app's id")]
-        app: String,
-        #[param("For how long", choices = english(MUTE_OPTIONS))]
-        duration: String,
-    },
+/// One of an app's delivery choices a person turns on or off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AppChoice {
+    Banners,
+    Previews,
+    Sounds,
+    Badges,
+    Priority,
+    PriorityContacts,
 }
 
-/// One app's override of a delivery choice.
-fn app_rule(
-    app: &str,
-    change: impl FnOnce(&mut AppNotificationRule),
-) -> Result<impl FnOnce(&mut NotificationPrefs), String> {
-    if !valid_app_id(app) {
-        return Err(format!("`{app}` is not an app id"));
-    }
-    let app = app.to_owned();
-    Ok(move |prefs: &mut NotificationPrefs| change(prefs.per_app.entry(app).or_default()))
-}
-
-/// Answer `effect`.
-pub(crate) fn answer(
-    app: &SettingsApp,
-    effect: NotificationEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer {
-    use NotificationEffect as E;
-    let host = app.host();
-    match effect {
-        E::SetAppBanners { app, on } => host.update(app_rule(&app, |r| r.banners = Some(on))?),
-        E::SetAppPreviews { app, on } => host.update(app_rule(&app, |r| r.previews = Some(on))?),
-        E::SetAppSounds { app, on } => host.update(app_rule(&app, |r| r.sounds = Some(on))?),
-        E::SetAppBadges { app, on } => host.update(app_rule(&app, |r| r.badges = Some(on))?),
-        E::SetAppPriority { app, on } => host.update(app_rule(&app, |r| r.priority = on)?),
-        E::SetAppPriorityContacts { app, on } => {
-            host.update(app_rule(&app, |r| r.priority_contacts = on)?)
+impl AppChoice {
+    /// The field edit turning this choice of `app`, whose rule is `rule`,
+    /// on or off: the one field of its rule, the rest untouched; the rule
+    /// whole, with only this choice made, where the app has none yet.
+    fn edit(
+        self,
+        app: &str,
+        rule: Option<&AppNotificationRule>,
+        on: bool,
+    ) -> tilo_resource::Edit<NotificationPrefs> {
+        let rules = NotificationPrefs::paths().per_app;
+        if rule.is_none() {
+            let mut made = AppNotificationRule::default();
+            self.make(&mut made, on);
+            return rules
+                .child::<AppNotificationRule>(tilo_resource::Segment::Key(app.to_owned()))
+                .set(made);
         }
-        E::MuteApp { app, duration } => {
-            let seconds =
-                mute_seconds(&duration).ok_or_else(|| format!("`{duration}` is not offered"))?;
-            let until = (seconds > 0).then(|| unix_now_i64().saturating_add(seconds));
-            host.update(app_rule(&app, |r| r.muted_until = until)?)
+        let rule = rules.key(app);
+        match self {
+            Self::Banners => rule.banners.set(Some(on)),
+            Self::Previews => rule.previews.set(Some(on)),
+            Self::Sounds => rule.sounds.set(Some(on)),
+            Self::Badges => rule.badges.set(Some(on)),
+            Self::Priority => rule.priority.set(on),
+            Self::PriorityContacts => rule.priority_contacts.set(on),
+        }
+    }
+
+    /// Make this choice in `rule`.
+    fn make(self, rule: &mut AppNotificationRule, on: bool) {
+        match self {
+            Self::Banners => rule.banners = Some(on),
+            Self::Previews => rule.previews = Some(on),
+            Self::Sounds => rule.sounds = Some(on),
+            Self::Badges => rule.badges = Some(on),
+            Self::Priority => rule.priority = on,
+            Self::PriorityContacts => rule.priority_contacts = on,
+        }
+    }
+
+    /// The id a row offers this choice under.
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Banners => "set-app-banners",
+            Self::Previews => "set-app-previews",
+            Self::Sounds => "set-app-sounds",
+            Self::Badges => "set-app-badges",
+            Self::Priority => "set-app-priority",
+            Self::PriorityContacts => "set-app-priority-contacts",
         }
     }
 }
@@ -238,6 +205,7 @@ pub(crate) fn answer(
 /// What the notification area keeps for the window: the policy as last
 /// read, and the apps it lists.
 pub struct NotificationsArea {
+    cx: PaneCx,
     prefs: RefCell<Followed<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
@@ -248,6 +216,7 @@ impl NotificationsArea {
     /// rather than the ones this device has installed.
     pub fn new(cx: &PaneCx) -> Self {
         Self {
+            cx: cx.clone(),
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::new(),
             sample: !cx.reaches_devices(),
@@ -275,7 +244,7 @@ impl NotificationsArea {
         let prefs = prefs.get();
         apps.iter()
             .take(MAX_APP_ROWS)
-            .map(|app| app_row(prefs, app))
+            .map(|app| app_row(&self.cx, prefs, app))
             .collect()
     }
 }
@@ -295,92 +264,76 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
     .collect()
 }
 
-/// `effect` offered on a row as `label`.
-fn offered(effect: impl Into<SettingsEffect>, label: String) -> tilo_actions::ActionSpec {
-    let mut spec = effect.into().bound();
-    spec.label = label;
-    spec
+/// The live row of `app` under `prefs`: each delivery choice offered as the
+/// flip of what applies to it now, and its mute lifted or set, all changes
+/// of the app's rule in the notification section.
+fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
+    let stored = prefs.per_app.get(&app.id);
+    let rule = stored.copied().unwrap_or_default();
+    let flips = [
+        (
+            AppChoice::Banners,
+            !rule.banners.unwrap_or(prefs.show_banners),
+            "notification banners",
+        ),
+        (
+            AppChoice::Previews,
+            !rule.previews.unwrap_or(prefs.show_previews),
+            "message previews",
+        ),
+        (
+            AppChoice::Sounds,
+            !rule.sounds.unwrap_or(prefs.play_sounds),
+            "notification sounds",
+        ),
+        (
+            AppChoice::Badges,
+            !rule.badges.unwrap_or(prefs.show_badges),
+            "notification badges",
+        ),
+        (AppChoice::Priority, !rule.priority, "priority during focus"),
+        (
+            AppChoice::PriorityContacts,
+            !rule.priority_contacts,
+            "priority contacts during focus",
+        ),
+    ];
+    let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
+    let (duration, mute_label) = if muted {
+        ("Not muted", "Unmute notifications")
+    } else {
+        ("For 1 hour", "Mute notifications for an hour")
+    };
+    let params = crate::prefs::notification_prefs::MuteApp::paths();
+    let mute = NotificationPrefs::MUTE_APP
+        .bind(params.app, app.id.clone())
+        .and(params.duration, duration.to_owned())
+        .declaration("mute-app", mute_label);
+    let offered = flips
+        .into_iter()
+        .map(|(choice, on, noun)| {
+            tilo_resource::ActionDecl::edit(
+                choice.id(),
+                flip(on, noun),
+                choice.edit(&app.id, stored, on),
+            )
+        })
+        .chain(mute);
+    offered.fold(
+        LiveRow::new(
+            format!("settings.notification-app:{}", app.id),
+            "settings.notification-app",
+            app.name.clone(),
+        ),
+        |row, decl| match cx.row_operation(&decl) {
+            Some(operation) => row.operation(operation),
+            None => row,
+        },
+    )
 }
 
 fn flip(on: bool, noun: &str) -> String {
     format!("Turn {} {noun}", if on { "on" } else { "off" })
-}
-
-/// The live row of `app` under `prefs`: each delivery choice offered as the
-/// flip of what applies to it now.
-fn app_row(prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
-    let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
-    let id = app.id.clone();
-    let banners = !rule.banners.unwrap_or(prefs.show_banners);
-    let previews = !rule.previews.unwrap_or(prefs.show_previews);
-    let sounds = !rule.sounds.unwrap_or(prefs.play_sounds);
-    let badges = !rule.badges.unwrap_or(prefs.show_badges);
-    let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
-    let mute = if muted {
-        offered(
-            NotificationEffect::MuteApp {
-                app: id.clone(),
-                duration: "Not muted".into(),
-            },
-            "Unmute notifications".into(),
-        )
-    } else {
-        offered(
-            NotificationEffect::MuteApp {
-                app: id.clone(),
-                duration: "For 1 hour".into(),
-            },
-            "Mute notifications for an hour".into(),
-        )
-    };
-    LiveRow::new(
-        format!("settings.notification-app:{}", app.id),
-        "settings.notification-app",
-        app.name.clone(),
-    )
-    .operation(offered(
-        NotificationEffect::SetAppBanners {
-            app: id.clone(),
-            on: banners,
-        },
-        flip(banners, "notification banners"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPreviews {
-            app: id.clone(),
-            on: previews,
-        },
-        flip(previews, "message previews"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppSounds {
-            app: id.clone(),
-            on: sounds,
-        },
-        flip(sounds, "notification sounds"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppBadges {
-            app: id.clone(),
-            on: badges,
-        },
-        flip(badges, "notification badges"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPriority {
-            app: id.clone(),
-            on: !rule.priority,
-        },
-        flip(!rule.priority, "priority during focus"),
-    ))
-    .operation(offered(
-        NotificationEffect::SetAppPriorityContacts {
-            app: id,
-            on: !rule.priority_contacts,
-        },
-        flip(!rule.priority_contacts, "priority contacts during focus"),
-    ))
-    .operation(mute)
 }
 
 fn mute_ftl(english: &str) -> &'static str {
@@ -413,7 +366,7 @@ fn mute_label(deadline: Option<i64>, now: i64) -> String {
     mute_shown(english)
 }
 
-fn mute_seconds(label: &str) -> Option<i64> {
+pub(crate) fn mute_seconds(label: &str) -> Option<i64> {
     MUTE_OPTIONS.iter().find_map(|(english, seconds)| {
         (*english == label || mute_shown(english) == label).then_some(*seconds)
     })
@@ -648,19 +601,22 @@ impl NotificationsPane {
         )
     }
 
-    /// A per-app toggle: the app is bound, the control supplies the value.
+    /// A per-app toggle: the app is bound, the control supplies the value,
+    /// set on the app's own rule.
     fn app_toggle(
         &self,
         app: &str,
         field: &str,
         state: &LocalState<bool>,
-        set: ActionRef<NotificationEffect, (String, bool)>,
+        choice: AppChoice,
     ) -> El {
         let id = format!("notifications.app.{app}.{field}");
+        let rule = self.prefs().per_app.get(app).copied();
         let app = app.to_owned();
-        Box::new(self.cx.bind(
+        Box::new(self.cx.bind_edit(
             Toggle::from_state(state).with_id(&id),
-            effect(set).map(move |on: bool| (app.clone(), on)),
+            NotificationPrefs::paths().per_app,
+            move |on: bool| choice.edit(&app, rule.as_ref(), on),
         ))
     }
 
@@ -871,9 +827,9 @@ impl NotificationsPane {
             };
             let id = app.id.clone();
             let mute = Self::choice(mute_options(), &shown.mute, |control| {
-                self.cx.bind(
+                self.cx.bind_verb(
                     control.with_id(&format!("notifications.app.{}.mute", app.id)),
-                    effect(NotificationEffect::MUTE_APP)
+                    NotificationPrefs::MUTE_APP
                         .map(move |shown: String| (id.clone(), mute_english(&shown))),
                 )
             });
@@ -893,42 +849,42 @@ impl NotificationsPane {
                         "notif-app-banners-desc",
                         "notif-app-banners",
                         &shown.banners,
-                        NotificationEffect::SET_APP_BANNERS,
+                        AppChoice::Banners,
                     ),
                     toggle(
                         "previews",
                         "notif-app-previews-desc",
                         "notif-app-previews",
                         &shown.previews,
-                        NotificationEffect::SET_APP_PREVIEWS,
+                        AppChoice::Previews,
                     ),
                     toggle(
                         "sounds",
                         "notif-app-sounds-desc",
                         "notif-app-sounds",
                         &shown.sounds,
-                        NotificationEffect::SET_APP_SOUNDS,
+                        AppChoice::Sounds,
                     ),
                     toggle(
                         "badges",
                         "notif-app-badges-desc",
                         "notif-app-badges",
                         &shown.badges,
-                        NotificationEffect::SET_APP_BADGES,
+                        AppChoice::Badges,
                     ),
                     toggle(
                         "priority",
                         "notif-app-priority-desc",
                         "notif-app-priority",
                         &shown.priority,
-                        NotificationEffect::SET_APP_PRIORITY,
+                        AppChoice::Priority,
                     ),
                     toggle(
                         "priority_contacts",
                         "notif-app-contacts-desc",
                         "notif-app-contacts",
                         &shown.priority_contacts,
-                        NotificationEffect::SET_APP_PRIORITY_CONTACTS,
+                        AppChoice::PriorityContacts,
                     ),
                     choice_row(&t("notif-app-mute"), mute),
                     caption(&app_caption),
@@ -1012,13 +968,29 @@ impl Widget for NotificationsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path};
+    use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    fn set(app: &mut TestApp<SettingsShell>, effect: NotificationEffect) {
-        app.effect(&SettingsEffect::from(effect))
-            .expect("the notification effect is answered");
+    /// Set `field` of the rule of `app_id` through the door, as an agent
+    /// does: a field edit of the notification section.
+    fn edit_rule(
+        app: &mut TestApp<SettingsShell>,
+        app_id: &str,
+        field: &str,
+        value: bool,
+    ) -> Result<(), String> {
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }, { "key": app_id }, { "field": field }],
+                "op": "set",
+                "value": value,
+            }}),
+        )
+        .map(drop)
+        .map_err(|error| format!("{error:?}"))
     }
 
     /// Rules enumerate system and Flatpak desktop identities.
@@ -1066,27 +1038,32 @@ mod tests {
     /// person's `notifications` section, where the compositor's notification
     /// layer reads them; an override touches only its own field.
     #[test]
-    fn notification_effects_write_the_policy() {
+    fn notification_edits_write_the_policy() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, NOTIFICATIONS, "do_not_disturb", true).unwrap();
         edit_field(&mut app, NOTIFICATIONS, "show_banners", false).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "enabled"], true).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 20 * 60).unwrap();
         edit_path(&mut app, NOTIFICATIONS, &["focus", "weekdays"], 0b0001_1111).unwrap();
-        set(
+        // A rule is set whole where the app has none, then field by field.
+        app.call_on(
+            "settings:settings.notifications",
+            "field-edit",
+            serde_json::json!({ "edit": {
+                "path": [{ "field": "per_app" }, { "key": "so.tilo.chat" }],
+                "op": "set",
+                "value": { "sounds": false },
+            }}),
+        )
+        .unwrap();
+        edit_rule(&mut app, "so.tilo.chat", "priority", true).unwrap();
+        invoke_section(
             &mut app,
-            NotificationEffect::SetAppSounds {
-                app: "so.tilo.chat".into(),
-                on: false,
-            },
-        );
-        set(
-            &mut app,
-            NotificationEffect::MuteApp {
-                app: "so.tilo.mail".into(),
-                duration: "For 8 hours".into(),
-            },
-        );
+            NOTIFICATIONS,
+            "mute-app",
+            serde_json::json!({ "app": "so.tilo.mail", "duration": "For 8 hours" }),
+        )
+        .unwrap();
         let prefs = app.settings::<NotificationPrefs>().get();
         assert!(prefs.do_not_disturb);
         assert!(!prefs.show_banners);
@@ -1095,7 +1072,8 @@ mod tests {
         assert_eq!(prefs.focus.weekdays, 0b0001_1111);
         let chat = prefs.per_app["so.tilo.chat"];
         assert_eq!(chat.sounds, Some(false));
-        assert_eq!(chat.banners, None, "only the changed field is an override");
+        assert!(chat.priority);
+        assert_eq!(chat.banners, None, "only the changed fields are overrides");
         let muted = prefs.per_app["so.tilo.mail"].muted_until.unwrap();
         assert!(muted > unix_now_i64() + 7 * 60 * 60);
 
@@ -1103,11 +1081,14 @@ mod tests {
             edit_path(&mut app, NOTIFICATIONS, &["focus", "start_minute"], 24 * 60).is_err(),
             "a minute past the day is refused"
         );
+        assert!(edit_rule(&mut app, "so.tilo.mail", "frobnicate", true).is_err());
         assert!(
-            app.effect(&SettingsEffect::from(NotificationEffect::SetAppBadges {
-                app: "not an id".into(),
-                on: true,
-            }))
+            invoke_section(
+                &mut app,
+                NOTIFICATIONS,
+                "mute-app",
+                serde_json::json!({ "app": "so.tilo.mail", "duration": "forever" }),
+            )
             .is_err()
         );
         assert_eq!(app.settings::<NotificationPrefs>().get(), prefs);
@@ -1141,7 +1122,7 @@ mod tests {
     }
 
     /// Every app is a live row offering the flip of what applies to it now,
-    /// through the same effects as the pane's toggles; opening the pane
+    /// through the same edits as the pane's toggles; opening the pane
     /// writes nothing.
     #[test]
     fn apps_are_live_rows_offering_their_rules() {
@@ -1151,15 +1132,24 @@ mod tests {
             settings.document().section("notifications").is_empty(),
             "showing the inherited values is not an override"
         );
-        app.effect_on(
+        app.call_on(
             "settings.notification-app:so.tilo.chat",
-            &SettingsEffect::from(NotificationEffect::SetAppBanners {
-                app: "so.tilo.chat".into(),
-                on: false,
-            }),
+            "set-app-banners",
+            serde_json::json!({}),
         )
         .expect("the row offers turning banners off");
         assert_eq!(settings.get().per_app["so.tilo.chat"].banners, Some(false));
+        app.call_on(
+            "settings.notification-app:so.tilo.chat",
+            "mute-app",
+            serde_json::json!({}),
+        )
+        .expect("the row offers muting the app for an hour");
+        assert!(
+            settings.get().per_app["so.tilo.chat"]
+                .muted_until
+                .is_some_and(|until| until > unix_now_i64())
+        );
         let surface = app.agent_surface().to_string();
         assert!(
             surface.contains("settings.notification-app:so.tilo.mail"),
@@ -1177,6 +1167,7 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         let area = NotificationsArea {
+            cx: cx.clone(),
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
             apps: OnceCell::from(sample_apps()),
             sample: true,

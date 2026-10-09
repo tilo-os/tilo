@@ -1016,7 +1016,25 @@ impl ui::storage::SettingsSchema for NotificationPrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
-impl NotificationPrefs {}
+impl NotificationPrefs {
+    /// Mute one app's notifications for a while, counted from when the
+    /// action was made, or unmute it.
+    #[action(label = "Mute an app")]
+    pub fn mute_app(
+        &mut self,
+        cx: &mut ui::tilo_resource::ActionCx,
+        #[param("The app's id")] app: String,
+        #[param("For how long: Not muted, For 1 hour, For 8 hours or For 24 hours")]
+        duration: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let seconds = crate::panes::notifications::mute_seconds(&duration).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{duration}` is not offered"))
+        })?;
+        let until = (seconds > 0).then(|| (cx.now_ms() / 1000).saturating_add(seconds));
+        self.per_app.entry(app).or_default().muted_until = until;
+        Ok(())
+    }
+}
 
 impl Default for NotificationPrefs {
     fn default() -> Self {
