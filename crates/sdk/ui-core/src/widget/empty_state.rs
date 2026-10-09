@@ -1204,6 +1204,7 @@ impl crate::widget::controls::ActionControls for EmptyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use vello_encoding::DrawTag;
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
@@ -1245,28 +1246,6 @@ mod tests {
         }
     }
     use crate::synthetic_input::mouse_press;
-    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
 
     /// Representative numbers: the dark theme's `xl` title and `sm` message at
     /// the spacing scale a docked panel is drawn with.

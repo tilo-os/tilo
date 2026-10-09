@@ -1331,8 +1331,8 @@ impl crate::widget::controls::ActionControls for Autocomplete {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
-    use winit::event::Modifiers;
 
     #[test]
     fn suggestions_open_highlight_accept_or_cancel() {
@@ -1375,8 +1375,8 @@ mod tests {
             ac.begin_edit();
             // The field starts empty, so both letters insert normally (no select-all
             // to swallow the first one).
-            drive(&mut ac, &char_key("a"));
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("l"));
             assert_eq!(ac.text(), "al");
             let vals: Vec<&str> = ac.suggestions().iter().map(|s| s.value.as_str()).collect();
             assert_eq!(vals, ["alpha", "album"], "prefix filter applied");
@@ -1387,16 +1387,16 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("l"));
             // No highlight yet → Enter would commit the typed text. Arrow down arms
             // the first suggestion.
             assert!(ac.highlighted().is_none());
-            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "alpha");
-            assert!(drive(&mut ac, &named_key(NamedKey::ArrowDown)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::ArrowDown)));
             assert_eq!(ac.highlighted().unwrap().value, "album");
-            assert!(drive(&mut ac, &named_key(NamedKey::Enter)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Enter)));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1409,9 +1409,9 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("b"));
+            dispatch(&mut ac, &char_key("b"));
             assert!(
-                !drive(&mut ac, &named_key(NamedKey::Enter)),
+                !dispatch(&mut ac, &named_key(NamedKey::Enter)),
                 "Enter goes on to the form's default action"
             );
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Accepted("b".into()));
@@ -1421,8 +1421,8 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
-            assert!(drive(&mut ac, &named_key(NamedKey::Escape)));
+            dispatch(&mut ac, &char_key("a"));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Escape)));
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
             assert!(!ac.is_open());
         }
@@ -1431,13 +1431,13 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // → "alpha","album"
+            dispatch(&mut ac, &char_key("a")); // → "alpha","album"
             let panel = ac.dropdown_rect().expect("dropdown open");
             // Click the second row ("album").
             let row = ac.row_rect(panel, 1);
             let c = row.center();
-            drive(&mut ac, &cursor_moved(c.x, c.y));
-            assert!(drive(&mut ac, &mouse_press()));
+            dispatch(&mut ac, &cursor_moved(c.x, c.y));
+            assert!(dispatch(&mut ac, &mouse_press()));
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
@@ -1448,9 +1448,9 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // "alpha","album"
+            dispatch(&mut ac, &char_key("a")); // "alpha","album"
             // Tab fills the field with the first suggestion but does not commit.
-            assert!(drive(&mut ac, &named_key(NamedKey::Tab)));
+            assert!(dispatch(&mut ac, &named_key(NamedKey::Tab)));
             assert_eq!(ac.text(), "alpha");
             assert_eq!(
                 ac.take_outcome(),
@@ -1463,10 +1463,10 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("a"));
             // Move far away, then press: cancels but is not swallowed.
-            drive(&mut ac, &cursor_moved(900.0, 900.0));
-            let consumed = drive(&mut ac, &mouse_press());
+            dispatch(&mut ac, &cursor_moved(900.0, 900.0));
+            let consumed = dispatch(&mut ac, &mouse_press());
             assert!(!consumed, "the outside click still reaches the host");
             assert_eq!(ac.take_outcome(), AutocompleteOutcome::Cancelled);
         }
@@ -1526,42 +1526,20 @@ mod tests {
 
     use crate::synthetic_input::mouse_press;
 
-    fn drive(ac: &mut Autocomplete, ev: &WindowEvent) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut doc = AutoCommit::new();
-        ac.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-
     #[test]
     fn begin_edit_selection_arms_only_for_preseeded_values() {
         fn freshly_focused_empty_field_keeps_every_letter() {
             let mut ac = Autocomplete::new();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a"));
+            dispatch(&mut ac, &char_key("a"));
             assert_eq!(
                 ac.input.selection_range_public(),
                 None,
                 "no selection after first char"
             );
-            drive(&mut ac, &char_key("b"));
-            drive(&mut ac, &char_key("c"));
+            dispatch(&mut ac, &char_key("b"));
+            dispatch(&mut ac, &char_key("c"));
             assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
         }
 
@@ -1580,7 +1558,7 @@ mod tests {
             let mut ac = suggester_paths();
             ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
             ac.begin_edit();
-            drive(&mut ac, &char_key("a")); // field now holds "a"
+            dispatch(&mut ac, &char_key("a")); // field now holds "a"
             assert_eq!(ac.text(), "a");
             ac.begin_edit();
             assert_eq!(
@@ -1588,7 +1566,7 @@ mod tests {
                 None,
                 "typed text is not re-selected"
             );
-            drive(&mut ac, &char_key("l"));
+            dispatch(&mut ac, &char_key("l"));
             assert_eq!(
                 ac.text(),
                 "al",
@@ -1608,7 +1586,7 @@ mod tests {
                 Some((0, "/home/user".len())),
                 "fresh entry into a pre-seeded field selects the whole value",
             );
-            drive(&mut ac, &char_key("x"));
+            dispatch(&mut ac, &char_key("x"));
             assert_eq!(
                 ac.text(),
                 "x",
@@ -1662,9 +1640,9 @@ mod tests {
             ac.open();
             assert!(ac.is_open());
             assert_eq!(ac.suggestions().len(), 2);
-            drive(&mut ac, &named_key(NamedKey::ArrowDown));
+            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Paris");
-            drive(&mut ac, &named_key(NamedKey::ArrowDown));
+            dispatch(&mut ac, &named_key(NamedKey::ArrowDown));
             assert_eq!(ac.highlighted().unwrap().value, "Parma");
         }
 

@@ -1411,6 +1411,7 @@ impl Widget for Table {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Size as TSize};
@@ -1613,26 +1614,17 @@ mod tests {
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> (bool, Option<NodeId>) {
-        let mut handled = false;
-        let mut focus_target = None;
-        table.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(doc),
-                path: root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy,
-            },
-        );
+        let sent = Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .path(root)
+            .layout(taffy, node)
+            .send(table, ev);
         // The owner applies what the table hands it, as an app's action does.
         for edit in table.take_edits() {
             apply(doc, root, &edit);
         }
-        (handled, focus_target)
+        (sent.handled, sent.focus_target)
     }
 
     #[test]

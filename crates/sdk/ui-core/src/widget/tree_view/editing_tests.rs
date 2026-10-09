@@ -9,7 +9,7 @@ use automerge::AutoCommit;
 use taffy::TaffyTree;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::tests::{
@@ -19,6 +19,7 @@ use super::tests::{
 use super::*;
 use crate::a11y::{Action, Role};
 use crate::presence::PresenceCtx;
+use crate::testing::Dispatch;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -37,23 +38,11 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
     node: taffy::NodeId,
     modifiers: ModifiersState,
 ) -> bool {
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    view.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::from(modifiers),
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy,
-        },
-    );
-    handled
+    Dispatch::new()
+        .modifiers(modifiers)
+        .layout(taffy, node)
+        .send(view, event)
+        .handled
 }
 
 fn right_press() -> WindowEvent {

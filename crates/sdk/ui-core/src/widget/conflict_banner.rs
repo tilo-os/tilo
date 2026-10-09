@@ -447,10 +447,9 @@ impl Widget for ConflictBanner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn banner_at(rect: Rect, count: usize) -> ConflictBanner {
         let mut b = ConflictBanner::new("Kanban move");
@@ -525,28 +524,6 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     use crate::synthetic_input::mouse_press;
-
-    fn dispatch(b: &mut ConflictBanner, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        b.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     #[test]
     fn conflict_banner_chips_fire_only_their_callbacks() {
