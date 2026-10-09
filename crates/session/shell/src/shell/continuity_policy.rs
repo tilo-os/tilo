@@ -219,10 +219,59 @@ impl ContinuityPolicySnapshot {
     }
 }
 
+/// The policy in a live settings document, parsed once per settings
+/// generation — for a per-tick reader that must not read the file.
+pub struct ContinuityPolicyCache {
+    settings: settings_store::live::LiveSettings,
+    seen: u64,
+    policy: ContinuityPolicySnapshot,
+}
+
+impl ContinuityPolicyCache {
+    #[must_use]
+    pub fn new(settings: &settings_store::live::LiveSettings) -> Self {
+        let snapshot = settings.snapshot();
+        Self {
+            settings: settings.clone(),
+            seen: snapshot.generation,
+            policy: ContinuityPolicySnapshot::from_document(&snapshot.document),
+        }
+    }
+
+    /// The current policy: one atomic load unless the settings changed.
+    pub fn current(&mut self) -> ContinuityPolicySnapshot {
+        if self.settings.generation() != self.seen {
+            let snapshot = self.settings.snapshot();
+            self.seen = snapshot.generation;
+            self.policy = ContinuityPolicySnapshot::from_document(&snapshot.document);
+        }
+        self.policy
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_cached_policy_follows_each_settings_generation() {
+        use settings_store::SettingsSource as _;
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        let mut cache = ContinuityPolicyCache::new(&settings);
+        assert!(!cache.current().permits(ContinuityCapability::TypedGamepad));
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "typed_gamepad": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(cache.current().permits(ContinuityCapability::TypedGamepad));
+    }
 
     fn document(value: &Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
