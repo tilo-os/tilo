@@ -26,6 +26,100 @@ PROOF = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROOF)
 
 
+class FixtureAppearanceTests(unittest.TestCase):
+    def test_normal_settings_merge_preserves_provider_input_and_accessibility(self):
+        for theme, mode, contrast in (("light", "light", False),
+                                      ("dark", "dark", False),
+                                      ("high-contrast", "dark", True)):
+            with self.subTest(theme=theme), tempfile.TemporaryDirectory() as directory:
+                profile = pathlib.Path(directory)
+                path = profile / "config/tilo/settings.json"
+                path.parent.mkdir(parents=True)
+                original = {"version": 1, "model": {"provider": "preserved"},
+                            "input": {"keyboard_layout": "ime/rime"},
+                            "appearance": {"mode": "automatic", "ui_scale": 1.25,
+                                           "accessibility": {"reduce_motion": True}}}
+                path.write_text(json.dumps(original))
+                PROOF.configure_fixture_appearance(profile, theme, 2)
+                settings = json.loads(path.read_text())
+                self.assertEqual(settings["model"], original["model"])
+                self.assertEqual(settings["input"], original["input"])
+                self.assertEqual(settings["version"], 1)
+                self.assertEqual(settings["appearance"]["mode"], mode)
+                self.assertEqual(settings["appearance"]["accessibility"], {
+                    "schema_version": 1, "high_contrast": contrast,
+                    "text_scale": 2.0, "ui_scale": 1.25, "reduce_motion": True})
+                self.assertEqual(list(profile.rglob("*.json")), [path])
+
+    def test_defaults_do_not_create_or_rewrite_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            PROOF.configure_fixture_appearance(profile)
+            self.assertEqual(list(profile.iterdir()), [])
+            path = profile / "config/tilo/settings.json"
+            path.parent.mkdir(parents=True)
+            path.write_text('{"version": 1}\n')
+            PROOF.configure_fixture_appearance(profile)
+            self.assertEqual(path.read_text(), '{"version": 1}\n')
+
+    def test_invalid_requests_and_malformed_settings_never_write(self):
+        for invalid in ("nan", "inf", "-inf", "bad", True, False, 0.49, 4.01):
+            with self.subTest(scale=invalid):
+                with self.assertRaises(PROOF.argparse.ArgumentTypeError):
+                    PROOF.fixture_text_scale(invalid)
+        for scale in (0.5, 4):
+            self.assertEqual(PROOF.fixture_text_scale(str(scale)), float(scale))
+        for settings in ([], {"appearance": []},
+                         {"appearance": {"accessibility": []}},
+                         {"appearance": {"accessibility": {"schema_version": True}}},
+                         {"appearance": {"accessibility": {"schema_version": 0}}}):
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as directory:
+                profile = pathlib.Path(directory)
+                path = profile / "config/tilo/settings.json"
+                path.parent.mkdir(parents=True)
+                original = json.dumps(settings)
+                path.write_text(original)
+                with self.assertRaises(RuntimeError):
+                    PROOF.configure_fixture_appearance(profile, "light", 1)
+                self.assertEqual(path.read_text(), original)
+
+    def test_cli_projects_public_options_and_preserves_default_behavior(self):
+        for arguments, appearance in (([], (None, None)),
+                                     (["--theme", "high-contrast", "--text-scale", "2"],
+                                      ("high-contrast", 2.0))):
+            with tempfile.TemporaryDirectory() as directory, patch.object(
+                    sys, "argv", ["fixture", "--binaries", directory] + arguments), \
+                    patch.object(PROOF, "evidence_directory", return_value=pathlib.Path(directory)), \
+                    patch.object(PROOF, "bootstrap", return_value=True) as bootstrap, \
+                    patch("sys.stdout", new=io.StringIO()):
+                PROOF.main()
+                self.assertEqual(bootstrap.call_args.kwargs["appearance"], appearance)
+                manifest = json.loads((pathlib.Path(directory) / "proof-source.json").read_text())
+                self.assertEqual(manifest["requested_theme"], appearance[0])
+                self.assertEqual(manifest["requested_text_scale"], appearance[1])
+                self.assertFalse(manifest["private_content_recorded"])
+        source = inspect.getsource(PROOF.bootstrap)
+        self.assertLess(source.index('run(binaries / "examples/proof_provider"'),
+                        source.index("configure_fixture_appearance(profile, *appearance)"))
+        self.assertLess(source.index("configure_fixture_appearance(profile, *appearance)"),
+                        source.index("shell_args ="))
+
+    def test_cli_rejects_invalid_appearance_before_running_fixture(self):
+        for arguments in (["--theme", "unknown"], ["--text-scale", "nan"],
+                          ["--text-scale", "inf"], ["--text-scale", "0.49"],
+                          ["--text-scale", "4.01"], ["--text-scale", "true"]):
+            with self.subTest(arguments=arguments), patch.object(
+                    sys, "argv", ["fixture", "--binaries", "/unused"] + arguments), \
+                    patch.object(PROOF, "bootstrap") as bootstrap, \
+                    patch.object(PROOF, "evidence_directory") as evidence, \
+                    patch("sys.stderr", new=io.StringIO()):
+                with self.assertRaises(SystemExit) as refused:
+                    PROOF.main()
+                self.assertEqual(refused.exception.code, 2)
+                bootstrap.assert_not_called()
+                evidence.assert_not_called()
+
+
 class PresentedEditorTargetTests(unittest.TestCase):
     def test_managed_profile_availability_observes_only_exact_fixed_public_state(self):
         windows = [{"address": "owned", "bus": ":1.1", "root": "/workspace"}]
@@ -1463,7 +1557,7 @@ class PresentedEditorTargetTests(unittest.TestCase):
         client = Client()
         with patch.object(PROOF.atspi, "atspi_address", return_value="owned"), \
                 patch.object(PROOF.atspi, "bus_pids", return_value={":1.1": 1, ":1.2": 2}), \
-                patch.object(PROOF.atspi, "app_process", side_effect=lambda pid: pid), \
+                patch.object(PROOF.atspi, "app_process", side_effect=lambda pid, **_kwargs: pid), \
                 patch.object(PROOF, "process_program", side_effect=lambda pid: "shell" if pid == 1 else "chat"), \
                 patch.object(PROOF.atspi, "AtspiClient", return_value=client) as bound:
             windows = PROOF.owned_shell_accessibility_windows()

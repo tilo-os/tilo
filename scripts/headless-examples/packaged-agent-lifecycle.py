@@ -205,8 +205,8 @@ def agent_conversation_accessibility(agent_name, *, detached=False, diagnostic_p
             diagnostic_path.write_text(json.dumps(observed, indent=2) + "\n")
 
     for bus, proxy_pid in peers.items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "chat":
+        pid = atspi.app_process(proxy_pid, expected_program="chat")
+        if pid is None or process_program(pid) != "chat":
             continue
         observed["chat_processes"] += 1
         client = atspi.AtspiClient(address, bus)
@@ -268,8 +268,8 @@ def shell_accessibility_control(label):
     address = atspi.atspi_address()
     matches = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "shell":
+        pid = atspi.app_process(proxy_pid, expected_program="shell")
+        if pid is None or process_program(pid) != "shell":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -398,8 +398,8 @@ def owned_shell_accessibility_windows():
     address = atspi.atspi_address()
     windows = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "shell":
+        pid = atspi.app_process(proxy_pid, expected_program="shell")
+        if pid is None or process_program(pid) != "shell":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -527,7 +527,8 @@ def chat_category_accessibility(label):
     address = atspi.atspi_address()
     matches = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        if process_program(atspi.app_process(proxy_pid)) != "chat":
+        pid = atspi.app_process(proxy_pid, expected_program="chat")
+        if pid is None or process_program(pid) != "chat":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -551,7 +552,8 @@ def chat_accessibility_control(label):
     address = atspi.atspi_address()
     matches = []
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        if process_program(atspi.app_process(proxy_pid)) != "chat":
+        pid = atspi.app_process(proxy_pid, expected_program="chat")
+        if pid is None or process_program(pid) != "chat":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -654,8 +656,8 @@ def agent_read_only_accessibility(agent_name, *, detached=False):
     control_name = "Return conversation" if detached else "Float conversation"
     forbidden = {"Send message", "Queue task", "Send direction", "Stop current task"}
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "chat":
+        pid = atspi.app_process(proxy_pid, expected_program="chat")
+        if pid is None or process_program(pid) != "chat":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -1381,8 +1383,8 @@ def agent_write_restricted_accessibility(agent_name, expected):
     matches = {}
     forbidden = {"Send message", "Queue task", "Send direction", "Stop current task"}
     for bus, proxy_pid in atspi.bus_pids(address).items():
-        pid = atspi.app_process(proxy_pid)
-        if process_program(pid) != "chat":
+        pid = atspi.app_process(proxy_pid, expected_program="chat")
+        if pid is None or process_program(pid) != "chat":
             continue
         client = atspi.AtspiClient(address, bus)
         try:
@@ -4272,6 +4274,57 @@ def production_rime_default():
     ) != ["luna_pinyin_simp"]:
         raise RuntimeError("the production Rime default is not the known single schema")
     return raw
+
+
+def fixture_text_scale(value):
+    """Accept the production type-scale band without silently clamping a proof."""
+    if isinstance(value, bool):
+        raise argparse.ArgumentTypeError("text scale must be a finite number")
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("text scale must be a finite number") from None
+    if not math.isfinite(scale) or not 0.5 <= scale <= 4.0:
+        raise argparse.ArgumentTypeError("text scale must be finite and within 0.5..4.0")
+    return scale
+
+
+def configure_fixture_appearance(profile, theme=None, text_scale=None):
+    """Merge requested appearance through the normal owned-profile settings door."""
+    if theme is None and text_scale is None:
+        return
+    if theme not in (None, "light", "dark", "high-contrast"):
+        raise RuntimeError("unknown fixture theme")
+    if text_scale is not None:
+        text_scale = fixture_text_scale(text_scale)
+    path = profile / "config/tilo/settings.json"
+    settings = json.loads(path.read_text()) if path.exists() else {"version": 1}
+    if not isinstance(settings, dict):
+        raise RuntimeError("scratch settings are malformed")
+    appearance = settings.get("appearance", {})
+    if not isinstance(appearance, dict):
+        raise RuntimeError("scratch appearance settings are malformed")
+    appearance = dict(appearance)
+    layer = appearance.get("accessibility", {})
+    if not isinstance(layer, dict) or type(layer.get("schema_version", 1)) is not int \
+            or layer.get("schema_version", 1) != 1:
+        raise RuntimeError("scratch accessibility settings are malformed")
+    # A typed accessibility layer replaces the legacy appearance fields. Carry
+    # their existing values forward rather than resetting unrelated preferences.
+    layer = {key: appearance[key] for key in (
+        "high_contrast", "forced_colors", "text_scale", "ui_scale", "reduce_motion",
+        "reduce_transparency", "thick_caret", "hyperlegible", "distinct_letters",
+    ) if key in appearance} | dict(layer)
+    layer["schema_version"] = 1
+    if theme is not None:
+        appearance["mode"] = "light" if theme == "light" else "dark"
+        layer["high_contrast"] = theme == "high-contrast"
+    if text_scale is not None:
+        layer["text_scale"] = text_scale
+    appearance["accessibility"] = layer
+    settings["appearance"] = appearance
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 def configure_rime_input(profile):
@@ -7735,7 +7788,7 @@ def enroll_native(socket, invitation, shell, binaries, env):
 
 def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
               launch_path="applications", task_only=False, marker_only=False,
-              ime_only=False):
+              ime_only=False, appearance=(None, None)):
     if launch_path not in ("applications", "store") or (launch_path == "store" and not native):
         raise RuntimeError("Store launch proof requires the native signed workspace")
     env, profile = scratch_session_env()
@@ -7794,6 +7847,7 @@ def bootstrap(binaries, output, native=False, size="1600x900", lifecycle=False,
         provider = HeldProvider(marker_agent="tide" if marker_only else None,
                                 first_hold_seconds=120 if lifecycle else 30)
         run(binaries / "examples/proof_provider", [profile / "config", provider.endpoint], env)
+        configure_fixture_appearance(profile, *appearance)
         # Provider provisioning requires a genuinely empty profile. Merge the
         # normal input settings only after it has created that profile, while
         # still preceding the compositor's production settings load.
@@ -8241,6 +8295,8 @@ def main():
         default="lifecycle",
     )
     parser.add_argument("--size", choices=["1600x900", "800x600"], default="1600x900")
+    parser.add_argument("--theme", choices=["light", "dark", "high-contrast"])
+    parser.add_argument("--text-scale", type=fixture_text_scale)
     parser.add_argument("--launch-path", choices=["applications", "store"], default="applications")
     args = parser.parse_args()
     binaries = args.binaries.resolve()
@@ -8250,6 +8306,8 @@ def main():
     (output / "proof-source.json").write_text(json.dumps({
         "script_sha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
         "private_content_recorded": False,
+        "requested_theme": args.theme,
+        "requested_text_scale": args.text_scale,
     }, indent=2) + "\n")
     proven = bootstrap(
         binaries,
@@ -8261,6 +8319,7 @@ def main():
         task_only=args.stage == "managed-task",
         marker_only=args.stage == "native-marker",
         ime_only=args.stage == "native-ime",
+        appearance=(args.theme, args.text_scale),
     )
     if args.stage in {"native-marker", "managed-task", "native-ime", "lifecycle"} and not proven:
         raise RuntimeError(

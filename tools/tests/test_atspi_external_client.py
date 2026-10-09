@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -269,6 +270,135 @@ class AppDrivingTests(unittest.TestCase):
         finally:
             CLIENT.AtspiClient.tree = original
         self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
+
+
+class AppProcessTests(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.proc = Path(self.work.name)
+
+    def tearDown(self):
+        self.work.cleanup()
+
+    def process(
+        self,
+        pid: int,
+        parent: int,
+        comm: str,
+        *,
+        started: int | None = None,
+        executable: str | None = None,
+        argv0: str | None = None,
+    ) -> None:
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        start = started if started is not None else pid * 10
+        fields = ["S", str(parent), *(["0"] * 17), str(start)]
+        (entry / "stat").write_text(f"{pid} ({comm}) {' '.join(fields)}\n")
+        (entry / "comm").write_text(f"{comm}\n")
+        if executable is not None:
+            (entry / "exe").symlink_to(executable)
+        if argv0 is not None:
+            (entry / "cmdline").write_bytes(argv0.encode() + b"\0--flag\0")
+
+    def sandbox(self, *, duplicate_chat: bool = False) -> None:
+        self.process(100, 1, "tilo-launcher", executable="/usr/bin/tilo-launcher")
+        self.process(101, 100, "xdg-dbus-proxy", executable="/usr/bin/xdg-dbus-proxy")
+        self.process(102, 100, "bwrap", executable="/usr/bin/bwrap")
+        self.process(103, 102, "tilo-launcher", executable="/tilo-launcher")
+        self.process(104, 103, "agent-helper", executable="/app/bin/agent-helper")
+        self.process(105, 103, "chat", executable="/app/bin/chat")
+        if duplicate_chat:
+            self.process(106, 103, "chat", executable="/app/bin/chat")
+
+    def test_exact_program_ignores_retained_launcher_and_helper_order(self):
+        self.sandbox()
+        # A same-named process outside the sandbox branch grants no authority.
+        self.process(90, 100, "chat", executable="/tmp/chat")
+        self.assertEqual(CLIENT.app_process(101, "chat", self.proc), 105)
+
+    def test_exact_program_refuses_duplicate_or_missing_executables(self):
+        self.sandbox(duplicate_chat=True)
+        with self.assertRaisesRegex(CLIENT.GateError, "2 live 'chat' executables"):
+            CLIENT.app_process(101, "chat", self.proc)
+        self.assertIsNone(CLIENT.app_process(101, "notes", self.proc))
+
+    def test_exact_program_skips_an_unrelated_direct_bus_peer(self):
+        self.process(200, 1, "tilo-shell", executable="/usr/bin/tilo-shell")
+        self.assertIsNone(CLIENT.app_process(200, "chat", self.proc))
+
+    def test_exact_program_skips_a_direct_peer_that_exits_before_identity(self):
+        self.process(200, 1, "transient", executable="/usr/bin/transient")
+
+        def exited(root, pid):
+            __import__("shutil").rmtree(root / str(pid))
+            raise FileNotFoundError(pid)
+
+        with patch.object(CLIENT, "_proc_stat", side_effect=exited):
+            self.assertIsNone(CLIENT.app_process(200, "chat", self.proc))
+        self.assertIsNone(CLIENT.app_process(201, "chat", self.proc))
+
+    def test_exact_direct_peer_is_rechecked_before_acceptance(self):
+        self.process(200, 1, "chat", executable="/usr/bin/chat")
+        with patch.object(CLIENT, "_exact_program", side_effect=["chat", "notes"]):
+            with self.assertRaisesRegex(CLIENT.GateError, "changed during app resolution"):
+                CLIENT.app_process(200, "chat", self.proc)
+
+    def test_exact_program_uses_argv0_only_when_exe_is_unavailable(self):
+        self.sandbox()
+        (self.proc / "105" / "exe").unlink()
+        (self.proc / "105" / "cmdline").write_bytes(b"/app/bin/chat\0--private-value\0")
+        self.assertEqual(CLIENT.app_process(101, "chat", self.proc), 105)
+
+        # A readable kernel executable always wins over a spoofable argv.
+        (self.proc / "105" / "exe").symlink_to("/app/bin/not-chat")
+        self.assertIsNone(CLIENT.app_process(101, "chat", self.proc))
+
+    def test_exact_program_does_not_hide_a_live_unreadable_identity(self):
+        self.sandbox()
+        (self.proc / "105" / "exe").unlink()
+        with self.assertRaisesRegex(CLIENT.GateError, "exposes neither exe nor argv0"):
+            CLIENT.app_process(101, "chat", self.proc)
+
+    def test_exact_program_refuses_changed_proxy_identity(self):
+        self.sandbox()
+        original = CLIENT._proc_stat
+        proxy_reads = 0
+
+        def changing(root, pid):
+            nonlocal proxy_reads
+            result = original(root, pid)
+            if pid == 101:
+                proxy_reads += 1
+                if proxy_reads >= 3:
+                    return result[0], result[1] + 1
+            return result
+
+        with patch.object(CLIENT, "_proc_stat", side_effect=changing):
+            with self.assertRaisesRegex(CLIENT.GateError, "changed during app resolution"):
+                CLIENT.app_process(101, "chat", self.proc)
+
+    def test_exact_program_refuses_changed_intermediate_ancestry(self):
+        self.sandbox()
+        original = CLIENT._proc_stat
+        bwrap_reads = 0
+
+        def changing(root, pid):
+            nonlocal bwrap_reads
+            result = original(root, pid)
+            if pid == 102:
+                bwrap_reads += 1
+                if bwrap_reads >= 2:
+                    return result[0], result[1] + 1
+            return result
+
+        with patch.object(CLIENT, "_proc_stat", side_effect=changing):
+            with self.assertRaisesRegex(CLIENT.GateError, "changed during app resolution"):
+                CLIENT.app_process(101, "chat", self.proc)
+
+    def test_legacy_call_shape_remains_available(self):
+        self.sandbox()
+        self.assertIsInstance(CLIENT.app_process(101, proc_root=self.proc), int)
 
 
 class FakeShell:

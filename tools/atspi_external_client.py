@@ -354,31 +354,153 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
     )
 
 
-def app_process(pid: int) -> int:
+def _proc_stat(proc_root: Path, pid: int) -> tuple[int, int]:
+    """Return ``(parent pid, start time)`` from one complete proc stat row."""
+    fields = (proc_root / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+    # After the closing parenthesis, fields start at stat field 3 (state).
+    return int(fields[1]), int(fields[19])
+
+
+def _exact_program(proc_root: Path, pid: int) -> str:
+    """The kernel executable name, with complete argv[0] as a narrow fallback."""
+    entry = proc_root / str(pid)
+    try:
+        return Path(os.readlink(entry / "exe")).name
+    except OSError:
+        # A process can disappear between the stat snapshot and readlink, or
+        # procfs can deny the symlink while leaving cmdline readable. Read the
+        # complete first argument only; never match a truncated display name
+        # or any later, caller-controlled argument.
+        try:
+            argv0 = entry.joinpath("cmdline").read_bytes().split(b"\0", 1)[0]
+        except OSError as error:
+            if _safe_proc_stat(proc_root, pid) is None:
+                return ""
+            raise GateError(f"live process pid {pid} exposes neither exe nor argv0") from error
+        if not argv0:
+            return ""
+        return Path(os.fsdecode(argv0)).name
+
+
+def app_process(
+    pid: int,
+    expected_program: str | None = None,
+    proc_root: Path = Path("/proc"),
+) -> int | None:
     """The app behind an AT-SPI connection. A sandboxed app reaches the bus
     through the launcher's filtered proxy, so the bus reports the proxy's pid;
-    the app is the launcher's descendant that is neither a proxy nor bwrap."""
+    the app is inside that exact launcher's bwrap branch.
+
+    ``expected_program`` makes this an authority lookup rather than a process
+    summary: exactly one live descendant must have that executable basename.
+    The optional argument leaves existing callers source-compatible while
+    acceptance gates can avoid attributing a retained launcher or helper to
+    an app merely because it happened to be enumerated first.
+    """
     def comm(process: int) -> str:
         try:
-            return Path(f"/proc/{process}/comm").read_text().strip()
+            return (proc_root / str(process) / "comm").read_text().strip()
         except OSError:
             return ""
 
-    if comm(pid) != "xdg-dbus-proxy":
+    process_entry = proc_root / str(pid)
+    process_comm = comm(pid)
+    if not process_comm:
+        if expected_program is not None and not process_entry.exists():
+            return None
+        if expected_program is not None:
+            raise GateError(f"AT-SPI pid {pid} has no readable process identity")
+    if process_comm != "xdg-dbus-proxy":
+        if expected_program is None:
+            return pid
+        try:
+            identity = _proc_stat(proc_root, pid)
+        except (OSError, IndexError, ValueError) as error:
+            if not process_entry.exists():
+                return None
+            raise GateError(f"AT-SPI pid {pid} has no live process identity") from error
+        if (
+            _exact_program(proc_root, pid) != Path(expected_program).name
+        ):
+            return None
+        try:
+            stable = _proc_stat(proc_root, pid) == identity
+            same_program = _exact_program(proc_root, pid) == Path(expected_program).name
+        except (OSError, IndexError, ValueError) as error:
+            raise GateError(f"AT-SPI pid {pid} changed during app resolution") from error
+        if not stable or not same_program:
+            raise GateError(f"AT-SPI pid {pid} changed during app resolution")
         return pid
     try:
-        launcher = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        launcher, proxy_started = _proc_stat(proc_root, pid)
+        _, launcher_started = _proc_stat(proc_root, launcher)
     except (OSError, IndexError, ValueError):
+        if expected_program is not None:
+            if not process_entry.exists():
+                return None
+            raise GateError(f"AT-SPI proxy pid {pid} has no live launcher identity")
         return pid
     children: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
+    identities: dict[int, tuple[int, int]] = {}
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
         if not entry.name.isdigit():
             continue
         try:
-            parent = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            process = int(entry.name)
+            parent, started = _proc_stat(proc_root, process)
         except (OSError, IndexError, ValueError):
             continue
-        children.setdefault(parent, []).append(int(entry.name))
+        identities[process] = (parent, started)
+        children.setdefault(parent, []).append(process)
+
+    if expected_program is not None:
+        expected = Path(expected_program).name
+        sandbox_roots = [child for child in children.get(launcher, []) if comm(child) == "bwrap"]
+        pending = list(sandbox_roots)
+        descendants: list[int] = []
+        seen: set[int] = set()
+        while pending:
+            process = pending.pop(0)
+            if process in seen:
+                continue
+            if len(seen) >= len(identities):
+                raise GateError(f"AT-SPI proxy pid {pid} has a malformed process graph")
+            seen.add(process)
+            descendants.append(process)
+            pending.extend(children.get(process, []))
+        matches = []
+        for process in descendants:
+            if identities.get(process) != _safe_proc_stat(proc_root, process):
+                continue
+            if _exact_program(proc_root, process) == expected:
+                matches.append(process)
+        try:
+            proxy_identity = _proc_stat(proc_root, pid)
+            launcher_identity = _proc_stat(proc_root, launcher)
+        except (OSError, IndexError, ValueError) as error:
+            raise GateError(f"AT-SPI proxy pid {pid} changed during app resolution") from error
+        if (
+            proxy_identity != (launcher, proxy_started)
+            or launcher_identity[1] != launcher_started
+        ):
+            raise GateError(f"AT-SPI proxy pid {pid} changed during app resolution")
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise GateError(
+                f"AT-SPI proxy pid {pid} has {len(matches)} live {expected!r} "
+                "executables in its sandbox"
+            )
+        matched = matches[0]
+        if not _ancestry_is_current(proc_root, matched, launcher, identities) \
+                or _exact_program(proc_root, matched) != expected:
+            raise GateError(f"AT-SPI proxy pid {pid} changed during app resolution")
+        return matched
+
     pending = list(children.get(launcher, []))
     while pending:
         process = pending.pop(0)
@@ -386,6 +508,34 @@ def app_process(pid: int) -> int:
             return process
         pending.extend(children.get(process, []))
     return pid
+
+
+def _safe_proc_stat(proc_root: Path, pid: int) -> tuple[int, int] | None:
+    try:
+        return _proc_stat(proc_root, pid)
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _ancestry_is_current(
+    proc_root: Path,
+    process: int,
+    launcher: int,
+    identities: dict[int, tuple[int, int]],
+) -> bool:
+    """Revalidate every snapshotted parent edge from PROCESS to LAUNCHER."""
+    seen: set[int] = set()
+    while process != launcher:
+        if process in seen:
+            return False
+        seen.add(process)
+        identity = identities.get(process)
+        if identity is None or _safe_proc_stat(proc_root, process) != identity:
+            return False
+        process = identity[0]
+    launcher_identity = identities.get(launcher)
+    return launcher_identity is not None \
+        and _safe_proc_stat(proc_root, launcher) == launcher_identity
 
 
 def process_command(pid: int) -> str:
