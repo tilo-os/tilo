@@ -9188,6 +9188,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-history",
  "tilo-media",
  "tilo-net",
  "tilo-oauth",

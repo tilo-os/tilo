@@ -1,0 +1,301 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "music.library"
+label = "Music"
+version = 1
+
+[[resources.fields]]
+owner = "library"
+path = "recommendations"
+stored = "record"
+title = "Recommendation feedback, governed by this library's sharing permissions"
+type = "crate::recommendations::Preferences"
+
+[[resources.fields]]
+owner = "preferences"
+path = "recommendations.likes"
+stored = "value"
+title = "Explore from liked songs"
+type = "bool"
+
+[[resources.fields]]
+owner = "preferences"
+path = "recommendations.saved_albums"
+stored = "value"
+title = "Explore from saved albums"
+type = "bool"
+
+[[resources.fields]]
+owner = "preferences"
+path = "recommendations.followed_artists"
+stored = "value"
+title = "Explore from followed artists"
+type = "bool"
+
+[[resources.fields]]
+owner = "preferences"
+path = "recommendations.preferred_artists"
+stored = "value"
+title = "Preferred artists, by id"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "preferences"
+path = "recommendations.dismissed"
+stored = "value"
+title = "Songs not to suggest again, by track id"
+type = "Set<String>"
+
+[[resources.fields]]
+owner = "library"
+path = "artists"
+readonly = true
+stored = "value"
+title = "Artists, by id. Only importing a track adds one"
+type = "BTreeMap<ArtistId, Artist>"
+
+[[resources.fields]]
+owner = "library"
+path = "albums"
+readonly = true
+stored = "value"
+title = "Albums, by id. Only importing a track adds one"
+type = "BTreeMap<AlbumId, Album>"
+
+[[resources.fields]]
+owner = "library"
+path = "tracks"
+readonly = true
+stored = "value"
+title = "Songs, by id. Only importing a track adds one"
+type = "BTreeMap<TrackId, Track>"
+
+[[resources.fields]]
+owner = "library"
+path = "playlists"
+stored = "collection"
+title = "Playlists"
+type = "Collection<Playlist>"
+
+[[resources.fields]]
+owner = "playlist"
+path = "playlists.*.id"
+readonly = true
+stored = "value"
+title = "The playlist's id: its item in the library"
+type = "PlaylistId"
+
+[[resources.fields]]
+label = true
+owner = "playlist"
+path = "playlists.*.name"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "playlist"
+path = "playlists.*.description"
+stored = "value"
+title = "Description"
+type = "String"
+
+[[resources.fields]]
+owner = "playlist"
+path = "playlists.*.tracks"
+stored = "collection"
+title = "Tracks, in order, as items keyed by track id"
+type = "Collection<TrackId>"
+
+[[resources.fields]]
+owner = "playlist"
+path = "playlists.*.cover"
+stored = "value"
+title = "Cover: an HTTPS URL or a bounded embedded PNG data URL; empty for"
+type = "String"
+
+[[resources.fields]]
+owner = "library"
+path = "liked"
+stored = "value"
+title = "Liked songs, by track id"
+type = "Set<TrackId>"
+
+[[resources.fields]]
+owner = "library"
+path = "saved_albums"
+stored = "value"
+title = "Albums saved to the library, by album id"
+type = "Set<AlbumId>"
+
+[[resources.fields]]
+owner = "library"
+path = "followed_artists"
+stored = "value"
+title = "Followed artists, by artist id"
+type = "Set<ArtistId>"
+
+[[resources.verbs]]
+description = "Create a new playlist."
+id = "create-playlist"
+kind = "undoable"
+label = "Create a new playlist"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Playlist name; blank for New playlist"
+type = "string"
+
+[[resources.verbs.params]]
+name = "track"
+required = false
+
+[resources.verbs.params.schema]
+description = "A song of the library to put in it first"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Delete a playlist."
+destructive = true
+id = "delete-playlist"
+kind = "undoable"
+label = "Delete a playlist"
+
+[[resources.verbs.params]]
+name = "playlist"
+required = true
+
+[resources.verbs.params.schema]
+description = "Playlist"
+type = "string"
+
+[[resources.verbs]]
+description = "Add a song to the library.  A catalogue song, with its album and artist, so it stays playable, likeable and listable on every device. What the library holds already is kept as it is. Content from outside the library: nobody's undo step takes it back."
+id = "import-track"
+kind = "undoable"
+label = "Add a song to the library"
+
+[[resources.verbs.params]]
+name = "song"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The song with its own album and artist"
+required = [
+    "track",
+    "album",
+    "artist",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.album]
+additionalProperties = false
+description = "One album (or single/EP) in the catalog."
+required = [
+    "id",
+    "title",
+    "artist_id",
+    "year",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.album.properties.artist_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.album.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.album.properties.title]
+description = "Title"
+type = "string"
+
+[resources.verbs.params.schema.properties.album.properties.year]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.artist]
+additionalProperties = false
+description = "One artist in the catalog."
+required = [
+    "id",
+    "name",
+    "genre",
+    "monthly_listeners",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.artist.properties.genre]
+description = "Free-text genre tag, shown on the artist detail header."
+type = "string"
+
+[resources.verbs.params.schema.properties.artist.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.artist.properties.monthly_listeners]
+description = "Monthly-listeners style stat, purely cosmetic."
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.artist.properties.name]
+description = "Name"
+type = "string"
+
+[resources.verbs.params.schema.properties.track]
+additionalProperties = false
+description = "One track. The historical `yt_id` field holds a source key: a `YouTube` video id or a namespaced Spotify URI. `YouTube` keys resolve a streamable audio URL via the `crate::backend` worker; for the offline sample library it is a synthetic id."
+required = [
+    "id",
+    "title",
+    "album_id",
+    "artist_id",
+    "track_no",
+    "duration_s",
+    "yt_id",
+    "plays",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.track.properties.album_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.track.properties.artist_id]
+type = "string"
+
+[resources.verbs.params.schema.properties.track.properties.duration_s]
+description = "Duration in whole seconds."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.track.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.track.properties.plays]
+description = 'Play count, used by "most played" sorting and stats.'
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.track.properties.title]
+description = "Title"
+type = "string"
+
+[resources.verbs.params.schema.properties.track.properties.track_no]
+description = "Position within its album (1-based)."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.track.properties.yt_id]
+description = "Source key: a `YouTube` video id or a namespaced Spotify URI."
+type = "string"

@@ -822,8 +822,7 @@ mod tests {
         };
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -891,8 +890,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -949,8 +947,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -1123,7 +1120,7 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
-            assert!(crate::doc::load_library(&doc).tracks.is_empty());
+            assert!(crate::seed::library_of(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
             assert!(app.pb.playing);
             assert!(app.worker.is_none());

@@ -82,6 +82,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 
 [dev-dependencies]
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true

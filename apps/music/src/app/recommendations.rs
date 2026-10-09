@@ -3,8 +3,8 @@ use ui::tokens::TextRole;
 use ui::widget::{Button, Column, Element, Row, Text, Toggle};
 
 use super::{Action, MusicApp, View, page_part};
-use crate::actions::MusicAction;
 use crate::model::Library;
+use crate::recommendations::Preferences;
 use crate::recommendations::{Input, suggestions};
 
 #[derive(Debug)]
@@ -119,7 +119,7 @@ fn inputs(mut content: Column, asked: &Controls<'_>, values: Vec<(Input, bool)>)
                     .with_accessible_name(&input.label())
                     .on_change(move |enabled| {
                         queue.borrow_mut().push(Action::Recommendation(
-                            MusicAction::SetRecommendationInput { input, enabled },
+                            Preferences::input_path(input).set(enabled),
                         ));
                     }),
             )),
@@ -142,10 +142,12 @@ fn pick_controls(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
                 asked,
                 &format!("music-recommendations-dismiss-{}", pick.track),
                 "music-recommendations-dismiss",
-                Action::Recommendation(MusicAction::SetRecommendationDismissed {
-                    track: pick.track.clone(),
-                    dismissed: true,
-                }),
+                Action::Recommendation(
+                    Library::paths()
+                        .recommendations
+                        .dismissed
+                        .insert(&pick.track),
+                ),
             ))
             .push(button(
                 asked,
@@ -155,9 +157,13 @@ fn pick_controls(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
                 } else {
                     "music-recommendations-prefer"
                 },
-                Action::Recommendation(MusicAction::SetRecommendationArtist {
-                    artist: pick.artist.clone(),
-                    preferred: !pick.preferred,
+                Action::Recommendation({
+                    let preferred = Library::paths().recommendations.preferred_artists;
+                    if pick.preferred {
+                        preferred.remove(&pick.artist)
+                    } else {
+                        preferred.insert(&pick.artist)
+                    }
                 }),
             ));
     }
@@ -202,10 +208,12 @@ fn feedback(mut content: Column, asked: &Controls<'_>, presentation: Presentatio
                 asked,
                 &format!("music-recommendations-unprefer-{artist}"),
                 "music-recommendations-unprefer",
-                Action::Recommendation(MusicAction::SetRecommendationArtist {
-                    artist,
-                    preferred: false,
-                }),
+                Action::Recommendation(
+                    Library::paths()
+                        .recommendations
+                        .preferred_artists
+                        .remove(&artist),
+                ),
             ));
     }
     for (track, title) in presentation.hidden {
@@ -218,10 +226,7 @@ fn feedback(mut content: Column, asked: &Controls<'_>, presentation: Presentatio
                 asked,
                 &format!("music-recommendations-restore-{track}"),
                 "music-recommendations-restore",
-                Action::Recommendation(MusicAction::SetRecommendationDismissed {
-                    track,
-                    dismissed: false,
-                }),
+                Action::Recommendation(Library::paths().recommendations.dismissed.remove(&track)),
             ));
     }
     content

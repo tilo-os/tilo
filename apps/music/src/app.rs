@@ -3,8 +3,8 @@
 //! The whole UI is drawn directly into the Vello scene (nav rail, library
 //! grids, track lists, detail pages, search and the now-playing transport
 //! bar), so the app owns its layout math and hit-testing rather than
-//! composing stock taffy widgets. User-authored library state lives in the
-//! Automerge document via [`crate::doc`]; `sync` refreshes that render
+//! composing stock taffy widgets. User-authored library state is the
+//! [`Library`](crate::model::Library) resource; `sync` refreshes that render
 //! snapshot each frame. Playback, downloads and other device effects stay
 //! local so one device can never start audio or consume another device's disk.
 
@@ -44,7 +44,6 @@ use crate::backend::{
     AlbumPage, ArtistHit, ArtistPage, HomeContent, HomeItem, HomeItemKind, HomeSection,
     PlaylistPage, SearchBundle, SearchTop, TrackHit,
 };
-use crate::doc;
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::model::{
     Album, Artist, CacheState, CatalogueTrack, Library, Playback, RepeatMode, Track,
@@ -112,7 +111,7 @@ pub enum View {
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Nav(View),
-    Recommendation(crate::actions::MusicAction),
+    Recommendation(ui::tilo_resource::Edit<crate::model::Library>),
     Back,
     /// Open the platform search for this app, prefilled with a genre: the
     /// Browse tiles route here.
@@ -627,7 +626,7 @@ pub struct MusicApp {
     /// Where library edits go: the framework's dispatcher, which applies
     /// each as the participant's attributed, undoable action. `None` until
     /// the surface is attached.
-    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Music>>,
+    dispatcher: Option<ui::framework::Dispatcher<crate::model::Library>>,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
@@ -1017,7 +1016,8 @@ impl MusicApp {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        let next_library = doc::load_library(state);
+        let next_library =
+            <crate::model::Library as ui::tilo_resource::Resource>::read(state).unwrap_or_default();
         self.lib = next_library;
         self.inject_live_hits();
         self.library_heads = Some(heads);
@@ -1076,7 +1076,7 @@ impl MusicApp {
     /// cover set in a prior session (or by a peer) renders. Cheap: a handful of
     /// playlists, and the image store dedups fetches by URL.
     fn sync_playlist_covers(&mut self) {
-        for pl in &self.lib.playlists {
+        for pl in self.lib.playlists() {
             if !pl.cover.is_empty() {
                 self.art_urls.insert(pl.id.clone(), pl.cover.clone());
             }
@@ -1178,23 +1178,21 @@ impl MusicApp {
 
     // ---- action dispatch --------------------------------------------------
 
-    /// Apply one [`MusicAction`](crate::actions::MusicAction) through the
-    /// framework's dispatcher — the one door the Ctrl+K palette, agents and
-    /// every on-screen affordance share: checked against the participant's
-    /// permissions, attributed, undoable and replayed byte-identically on
-    /// peers. Callers reload the in-memory library from the document
-    /// afterward for immediate feedback.
+    /// Submit one verb or field edit of the library through the framework's
+    /// dispatcher — the one door the Ctrl+K palette, agents and every
+    /// on-screen affordance share: checked against the participant's
+    /// permissions, attributed, undoable and replayed on peers. Callers
+    /// reload the in-memory library from the document afterward for
+    /// immediate feedback.
     fn perform_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::MusicAction,
+        submit: impl ui::framework::Submit<crate::model::Library>,
     ) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        if let Err(error) =
-            dispatcher.apply_now_with(state, action, crate::actions::history_context(action))
-        {
+        if let Err(error) = dispatcher.submit_now(state, submit) {
             self.notify(ToastKind::Error, error.to_string());
         }
     }
@@ -1222,7 +1220,7 @@ impl MusicApp {
     /// Send library edits through the framework's dispatcher.
     pub(crate) fn attach_dispatcher(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Music>,
+        dispatcher: ui::framework::Dispatcher<crate::model::Library>,
     ) {
         self.dispatcher = Some(dispatcher);
     }
@@ -1233,7 +1231,7 @@ impl MusicApp {
     /// playlist is a projection of the like set, not a stored playlist, so it is
     /// not surfaced here — only real, mutable playlists are.
     pub(crate) fn music_resource_ctx(&self) -> crate::actions::MusicResourceCtx {
-        let mut playlists = self.lib.playlists.iter().collect::<Vec<_>>();
+        let mut playlists = self.lib.playlists().collect::<Vec<_>>();
         playlists.sort_by(|a, b| a.id.cmp(&b.id));
         let playlists = playlists
             .into_iter()
@@ -1242,15 +1240,14 @@ impl MusicApp {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 tracks: p
-                    .track_ids
-                    .iter()
+                    .tracks
+                    .values()
                     .take(crate::actions::OPEN_PLAYLIST_TRACK_LIMIT)
                     .map(|tid| crate::actions::TrackRef {
                         id: tid.clone(),
                         label: self.track_title(tid),
                         artist: self.track_artist(tid),
                         liked: self.lib.is_liked(tid),
-                        rank: p.track_ranks.get(tid).copied().unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -1320,27 +1317,26 @@ impl MusicApp {
 
     /// The authoritative search result's metadata, for an admitted effect
     /// importing a catalogue song into the shared library.
-    pub(crate) fn catalogue_import_action(
+    pub(crate) fn catalogue_import(
         &self,
         track: &str,
-    ) -> Result<crate::actions::MusicAction, String> {
+    ) -> Result<ui::tilo_resource::Invoke<crate::model::Library>, String> {
         let hit = self
             .live_hits
             .iter()
             .find(|hit| hit.track.id == track)
             .ok_or_else(|| "Catalogue song is no longer available".to_string())?;
-        Ok(crate::actions::import_track_action(
-            &hit.track,
-            &hit.album,
-            &hit.artist,
-        ))
+        Ok(crate::model::Library::IMPORT_TRACK.with(hit.clone()))
     }
 
     /// The rows this device shows beside the library: its player, queue and
     /// open file, and the tracks it keeps offline, which offer their removal.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let mut rows: Vec<_> = crate::actions::live_device_resources(&self.music_resource_ctx())
+        let ctx = self.music_resource_ctx();
+        let mut rows: Vec<_> = crate::actions::library_rows(&ctx)
             .into_iter()
+            .chain(crate::recommendations::resources(&self.lib))
+            .chain(crate::actions::live_device_resources(&ctx))
             .map(live_row)
             .collect();
         rows.push(self.source_row());
@@ -1410,40 +1406,23 @@ impl MusicApp {
         {
             return Some(live_row(resource));
         }
-        if let Some(track) = id.strip_prefix("music.track:") {
-            if !self.stored_library.tracks.contains_key(track)
-                && self.live_hits.iter().any(|hit| hit.track.id == track)
-            {
-                return self.publish_resource(id).map(|mut resource| {
-                    // An unpersisted catalogue result cannot declare a document
-                    // mutation beside the resource's authored action surface.
-                    // Its admitted effect imports the real song then submits
-                    // SetLiked through the canonical resource dispatcher.
-                    if let Some(action) = resource
-                        .actions
-                        .iter_mut()
-                        .find(|action| action.id == "toggle-like")
-                    {
-                        *action = ui::tilo_resource::Effect::bound(
-                            &crate::actions::MusicEffect::ToggleLike {
-                                track: track.to_owned(),
-                            },
-                        );
-                    }
-                    live_row(resource)
-                });
-            }
-            return matches!(self.cache_state(track), CacheState::Cached)
-                .then(|| self.offline_row(track))
+        if id.starts_with("music.recommendation") {
+            return crate::recommendations::resource_by_id(&self.lib, id).map(live_row);
+        }
+        if let Some(track) = id.strip_prefix("music.track:")
+            && !self.stored_library.tracks.contains_key(track)
+        {
+            // A catalogue song the library does not hold yet: its row's
+            // like imports the real song first.
+            return self
+                .live_hits
+                .iter()
+                .any(|hit| hit.track.id == track)
+                .then(|| self.publish_resource(id).map(live_row))
                 .flatten();
         }
-        let device = id == "music.player:player"
-            || id == crate::actions::QUEUE_RESOURCE_ID
-            || id == crate::actions::LOCAL_FILE_RESOURCE_ID
-            || crate::actions::parse_queue_item_resource_id(id).is_some();
-        if !device {
-            return None;
-        }
+        // The player, the queue and its entries, the open file, and the
+        // library's tracks, albums, artists, playlists, memberships and views.
         self.publish_resource(id).map(live_row)
     }
 
@@ -1877,7 +1856,12 @@ impl MusicApp {
         let playlist_id = self.cover_embed_for.take();
         match (playlist_id, result) {
             (Some(playlist_id), Ok(url)) => {
-                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
+                self.perform_action(
+                    state,
+                    crate::model::Library::playlist_paths(&playlist_id)
+                        .cover
+                        .replace(url.clone()),
+                );
                 self.reload_library(state);
                 self.art_urls.insert(playlist_id, url);
                 self.notify(ToastKind::Success, "Playlist cover updated");
@@ -2373,16 +2357,16 @@ impl MusicApp {
     fn recommendation_action(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        action: &crate::actions::MusicAction,
+        edit: ui::tilo_resource::Edit<crate::model::Library>,
     ) {
-        self.perform_action(state, action);
+        self.perform_action(state, edit);
         self.reload_library(state);
     }
 
     fn dispatch(&mut self, action: Action, state: &mut ui::widget::Edits<'_>) {
         self.dirty = true;
         match action {
-            Action::Recommendation(action) => self.recommendation_action(state, &action),
+            Action::Recommendation(edit) => self.recommendation_action(state, edit),
             Action::Nav(v) => self.on_nav(v),
             Action::Back => self.on_back(),
             Action::BrowseGenre(genre) => self.on_browse_genre(&genre),
@@ -2538,7 +2522,10 @@ impl MusicApp {
         track: &str,
         state: &mut ui::widget::Edits<'_>,
     ) {
-        self.perform_action(state, &crate::actions::remove_track_action(playlist, track));
+        self.perform_action(
+            state,
+            crate::model::Library::remove_from_playlist(playlist, track),
+        );
         self.reload_library(state);
     }
 
@@ -2552,21 +2539,14 @@ impl MusicApp {
         let Some(track) = self
             .lib
             .playlist(playlist)
-            .and_then(|playlist| playlist.track_ids.get(from))
-            .cloned()
-        else {
-            return;
-        };
-        let Some(rank) = self
-            .lib
-            .playlist(playlist)
-            .and_then(|playlist| playlist.rank_for_move(&track, to))
+            .and_then(|playlist| playlist.tracks.at(from))
+            .map(|(_, track)| track.clone())
         else {
             return;
         };
         self.perform_action(
             state,
-            &crate::actions::move_track_action(playlist, &track, rank),
+            crate::model::Library::move_in_playlist(playlist, &track, to),
         );
         self.reload_library(state);
     }
@@ -2733,7 +2713,7 @@ impl MusicApp {
 
     fn on_toggle_like(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let liked = !self.lib.is_liked(id);
-        self.perform_action(state, &crate::actions::set_liked_action(id, liked));
+        self.perform_action(state, crate::model::Library::like(id, liked));
         self.reload_library(state);
         let now = self.lib.is_liked(id);
         self.notify(
@@ -2748,7 +2728,7 @@ impl MusicApp {
 
     fn on_toggle_save_album(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let saved = !self.lib.is_album_saved(id);
-        self.perform_action(state, &crate::actions::set_saved_album_action(id, saved));
+        self.perform_action(state, crate::model::Library::save_album(id, saved));
         self.reload_library(state);
         let now = self.lib.is_album_saved(id);
         self.notify(
@@ -2773,10 +2753,7 @@ impl MusicApp {
             return;
         }
         let followed = !self.lib.is_artist_followed(id);
-        self.perform_action(
-            state,
-            &crate::actions::set_followed_artist_action(id, followed),
-        );
+        self.perform_action(state, crate::model::Library::follow_artist(id, followed));
         self.reload_library(state);
         let now = self.lib.is_artist_followed(id);
         // Prefer a live artist-page name; fall back to the library.
@@ -2802,17 +2779,10 @@ impl MusicApp {
         track: &str,
         state: &mut ui::widget::Edits<'_>,
     ) {
-        let Some(rank) = self
-            .lib
-            .playlist(playlist)
-            .map(crate::model::Playlist::append_rank)
-        else {
+        let Some(edit) = self.lib.add_to_playlist(playlist, track) else {
             return;
         };
-        self.perform_action(
-            state,
-            &crate::actions::add_track_action(playlist, track, rank),
-        );
+        self.perform_action(state, edit);
         self.reload_library(state);
         let pl = self
             .lib
@@ -2837,18 +2807,27 @@ impl MusicApp {
         } else {
             self.name_input.trim().to_string()
         };
-        // Mint the id at authoring time and carry it in the action, so
-        // the create replays deterministically (see `crate::actions`).
-        let id = crate::actions::new_playlist_id();
-        self.perform_action(state, &crate::actions::create_playlist_action(&id, &name));
-        // If this create came from "Add to playlist… → New playlist…",
-        // drop the target track into the freshly-created playlist — a
-        // second action bracketed into the same undo boundary.
+        // If this create came from "Add to playlist… → New playlist…", the
+        // new playlist holds the target track from the start: one action.
         let added_track = self.new_playlist_track.take();
-        if let Some(track) = &added_track {
-            self.perform_action(state, &crate::actions::add_track_action(&id, track, 0));
-        }
+        let before: HashSet<String> = self.lib.playlists().map(|p| p.id.clone()).collect();
+        self.perform_action(
+            state,
+            crate::model::Library::CREATE_PLAYLIST.with(crate::resource::library::CreatePlaylist {
+                name: name.clone(),
+                track: added_track.clone(),
+            }),
+        );
         self.reload_library(state);
+        let Some(id) = self
+            .lib
+            .playlists()
+            .map(|p| p.id.clone())
+            .find(|id| !before.contains(id))
+        else {
+            self.name_prompt = None;
+            return;
+        };
         self.name_prompt = None;
         self.name_input.clear();
         self.name_dialog = None;
@@ -2887,7 +2866,10 @@ impl MusicApp {
                     },
                 );
             } else {
-                self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
+                self.perform_action(
+                    state,
+                    crate::model::Library::playlist_paths(id).name.replace(name),
+                );
                 self.reload_library(state);
             }
         }
@@ -2897,7 +2879,11 @@ impl MusicApp {
     }
 
     fn on_delete_playlist(&mut self, id: String, state: &mut ui::widget::Edits<'_>) {
-        self.perform_action(state, &crate::actions::delete_playlist_action(&id));
+        self.perform_action(
+            state,
+            crate::model::Library::DELETE_PLAYLIST
+                .with(ui::tilo_resource::Id::from_raw(id.as_str())),
+        );
         self.reload_library(state);
         // Leave the now-deleted detail page.
         if self.view == View::Playlist(id) {
@@ -3481,14 +3467,13 @@ impl MusicApp {
     /// is actually played, so it joins the user's library permanently and
     /// syncs across devices. No-op for tracks already in the library.
     fn import_live_track(&mut self, track_id: &str, state: &mut ui::widget::Edits<'_>) {
-        if !is_live_track(track_id) || doc::has_track(state, track_id) {
+        if !is_live_track(track_id) || self.stored_library.tracks.contains_key(track_id) {
             return;
         }
-        let Some(hit) = self.live_hits.iter().find(|h| h.track.id == track_id) else {
+        let Ok(import) = self.catalogue_import(track_id) else {
             return;
         };
-        let action = crate::actions::import_track_action(&hit.track, &hit.album, &hit.artist);
-        self.perform_action(state, &action);
+        self.perform_action(state, import);
     }
 
     /// Drain the worker's updates (once per frame). Applies resolved streams to
@@ -4669,9 +4654,10 @@ impl MusicApp {
                 self.stage_play_bundled(40_000.0);
             }
             ShotStage::MembershipOpen => {
-                let Some((playlist, track)) = self.lib.playlists.iter().find_map(|playlist| {
+                let Some((playlist, track)) = self.lib.playlists().find_map(|playlist| {
                     playlist
-                        .track_ids
+                        .tracks
+                        .values()
                         .last()
                         .map(|track| (playlist.id.clone(), track.clone()))
                 }) else {
@@ -4888,8 +4874,7 @@ impl MusicApp {
         }
         let playlists: Vec<(String, String)> = self
             .lib
-            .playlists
-            .iter()
+            .playlists()
             .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
         for (id, name) in playlists {
