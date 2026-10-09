@@ -10,12 +10,12 @@ use taffy::{NodeId, Style, TaffyTree};
 use winit::event::{Modifiers, WindowEvent};
 
 /// Send `event` to `widget` in a scratch context; whether it was handled.
-pub(crate) fn dispatch<W: Widget + ?Sized>(widget: &mut W, event: &WindowEvent) -> bool {
+pub fn dispatch<W: Widget + ?Sized>(widget: &mut W, event: &WindowEvent) -> bool {
     Dispatch::new().send(widget, event).handled
 }
 
 /// The context [`Dispatch::send`] lends a widget, scratch unless set.
-pub(crate) struct Dispatch<'a> {
+pub struct Dispatch<'a> {
     scale_factor: f64,
     modifiers: Modifiers,
     doc: Option<&'a mut AutoCommit>,
@@ -27,13 +27,20 @@ pub(crate) struct Dispatch<'a> {
 
 /// What one sent event left behind.
 #[derive(Debug)]
-pub(crate) struct Dispatched {
-    pub(crate) handled: bool,
-    pub(crate) focus_target: Option<NodeId>,
+pub struct Dispatched {
+    pub handled: bool,
+    pub focus_target: Option<NodeId>,
+}
+
+impl Default for Dispatch<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a> Dispatch<'a> {
-    pub(crate) fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             scale_factor: 1.0,
             modifiers: Modifiers::default(),
@@ -46,52 +53,55 @@ impl<'a> Dispatch<'a> {
     }
 
     /// Hold `modifiers` while the event is handled.
-    pub(crate) fn modifiers(mut self, modifiers: impl Into<Modifiers>) -> Self {
+    #[must_use]
+    pub fn modifiers(mut self, modifiers: impl Into<Modifiers>) -> Self {
         self.modifiers = modifiers.into();
         self
     }
 
-    pub(crate) fn scale_factor(mut self, scale_factor: f64) -> Self {
+    #[must_use]
+    pub fn scale_factor(mut self, scale_factor: f64) -> Self {
         self.scale_factor = scale_factor;
         self
     }
 
     /// Lend `doc` instead of a scratch document.
-    pub(crate) fn doc(mut self, doc: &'a mut AutoCommit) -> Self {
+    #[must_use]
+    pub fn doc(mut self, doc: &'a mut AutoCommit) -> Self {
         self.doc = Some(doc);
         self
     }
 
     /// The document path the widget sees; the root by default.
-    pub(crate) fn path(mut self, path: &'a ObjId) -> Self {
+    #[must_use]
+    pub fn path(mut self, path: &'a ObjId) -> Self {
         self.path = Some(path);
         self
     }
 
     /// Handle the event at `node` of a laid-out tree instead of a scratch leaf.
-    pub(crate) fn layout(mut self, taffy: &'a TaffyTree<()>, node: NodeId) -> Self {
+    #[must_use]
+    pub fn layout(mut self, taffy: &'a TaffyTree<()>, node: NodeId) -> Self {
         self.layout = Some((taffy, node));
         self
     }
 
     /// Start each send as already handled, as if an earlier handler took it.
-    pub(crate) fn handled(mut self, handled: bool) -> Self {
+    #[must_use]
+    pub fn handled(mut self, handled: bool) -> Self {
         self.handled = handled;
         self
     }
 
     /// Start each send with this focus target instead of none.
-    pub(crate) fn focus_target(mut self, focus_target: Option<NodeId>) -> Self {
+    #[must_use]
+    pub fn focus_target(mut self, focus_target: Option<NodeId>) -> Self {
         self.focus_target = focus_target;
         self
     }
 
     /// Send `event` to `widget`; reusable for a sequence of events.
-    pub(crate) fn send<W: Widget + ?Sized>(
-        &mut self,
-        widget: &mut W,
-        event: &WindowEvent,
-    ) -> Dispatched {
+    pub fn send<W: Widget + ?Sized>(&mut self, widget: &mut W, event: &WindowEvent) -> Dispatched {
         let mut scratch_taffy = TaffyTree::<()>::new();
         let (taffy, node_id) = if let Some(layout) = self.layout {
             layout
