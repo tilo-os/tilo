@@ -14,41 +14,183 @@ from ..core import check, expect
 
 AREA = "resources"
 
-# One sh script, so ssh latency never lands inside the measured window.
-SAMPLE = r'''
+# One sh script, so ssh latency never lands inside the measured window. Per process:
+# its CPU ticks, its main thread's context switches, its parent and its start time.
+# Per thread of every process, one awk per process (a few dozen forks per snapshot,
+# not one per thread): the thread's name, CPU ticks and context switches.
+SAMPLE = r"""
 uid=__UID__; hz=$(getconf CLK_TCK)
+threads() {
+  awk -v pid="$1" 'BEGIN {
+    dir = "/proc/" pid "/task"; ls = "ls " dir " 2>/dev/null"
+    while ((ls | getline tid) > 0) {
+      base = dir "/" tid
+      ok = (getline st < (base "/stat")) > 0; close(base "/stat")
+      if (!ok) continue
+      comm = ""; getline comm < (base "/comm"); close(base "/comm")
+      gsub(/[ \t]/, "_", comm); if (comm == "") comm = "?"
+      sub(/^.*\) /, "", st); split(st, f, " ")
+      cs = 0
+      while ((getline line < (base "/status")) > 0)
+        if (line ~ /^(non)?voluntary_ctxt_switches:/) { split(line, g, /[ \t]+/); cs += g[2] }
+      close(base "/status")
+      print "H", pid, tid, comm, f[12] + f[13], cs
+    }
+    close(ls)
+  }'
+}
 snap() {
+  echo "U $(cut -d' ' -f1 /proc/uptime)"
   for d in /proc/[0-9]*; do
     [ "$(stat -c %u $d 2>/dev/null)" = "$uid" ] || continue
     s=$(cat $d/stat 2>/dev/null) || continue
     comm=$(tr " " _ < $d/comm 2>/dev/null)
     set -- $(echo "$s" | sed 's/^.*) //')
     cs=$(awk '/^voluntary_ctxt_switches|^nonvoluntary_ctxt_switches/ {n+=$2} END {print n+0}' $d/status 2>/dev/null)
-    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs"
+    echo "P ${d#/proc/} $comm $(( ${12} + ${13} )) $cs $2 ${20}"
+    threads "${d#/proc/}"
   done
   awk '/^cpu / {t=0; for (i=2;i<=NF;i++) t+=$i; print "T", t, $5}' /proc/stat
 }
 echo "@@0"; snap; sleep __SECS__; echo "@@1"; snap; echo "HZ $hz"
-'''
+"""
 
 
-def _parse_sample(text):
-    snaps, cur, hz = [{}, {}], None, 100
-    totals = [None, None]
+def _parse_sample(text: str) -> dict:
+    """`SAMPLE` output -> both snapshots: per process {pid: {comm, ticks, cs, ppid, start}},
+    per thread {(pid, tid): (comm, ticks, cs)}, the guest's CPU totals and uptime, and HZ."""
+    out = {"procs": [{}, {}], "threads": [{}, {}], "totals": [None, None],
+           "uptime": [None, None], "hz": 100}
+    cur = None
     for line in text.splitlines():
-        if line == "@@0":
-            cur = 0
-        elif line == "@@1":
-            cur = 1
-        elif line.startswith("P ") and cur is not None:
-            _, pid, comm, ticks, cs = line.split()[:5]
-            snaps[cur][int(pid)] = (comm, int(ticks), int(cs))
-        elif line.startswith("T ") and cur is not None:
-            _, total, idle = line.split()
-            totals[cur] = (int(total), int(idle))
+        f = line.split()
+        if line in ("@@0", "@@1"):
+            cur = int(line[2])
         elif line.startswith("HZ "):
-            hz = int(line.split()[1])
-    return snaps, totals, hz
+            out["hz"] = int(f[1])
+        elif cur is None or not f:
+            continue
+        elif f[0] == "P" and len(f) >= 5:
+            out["procs"][cur][int(f[1])] = {
+                "comm": f[2], "ticks": int(f[3]), "cs": int(f[4]),
+                "ppid": int(f[5]) if len(f) > 5 else None,
+                "start": int(f[6]) if len(f) > 6 else None}
+        elif f[0] == "H" and len(f) == 6:
+            out["threads"][cur][(int(f[1]), int(f[2]))] = (f[3], int(f[4]), int(f[5]))
+        elif f[0] == "T" and len(f) == 3:
+            out["totals"][cur] = (int(f[1]), int(f[2]))
+        elif f[0] == "U" and len(f) == 2:
+            out["uptime"][cur] = float(f[1])
+    return out
+
+
+def compositor_pid(procs: dict) -> int | None:
+    """The compositor among the slot user's processes: the `shell` with no `shell` above it.
+
+    Every other process named `shell` was started by the compositor from its own binary
+    (the public shader-seed renderer, `--shader-seed-render`), so it has the compositor
+    as an ancestor; the busiest `shell` could be such a child. Two roots would be two
+    compositors, and which of them is the idle desktop cannot be said."""
+    def has_shell_ancestor(pid):
+        seen = {pid}
+        pid = procs[pid]["ppid"]
+        while pid in procs and pid not in seen:
+            if procs[pid]["comm"] == "shell":
+                return True
+            seen.add(pid)
+            pid = procs[pid]["ppid"]
+        return False
+
+    roots = sorted(pid for pid, p in procs.items() if p["comm"] == "shell" and not has_shell_ancestor(pid))
+    if len(roots) > 1:
+        raise core.Unobservable(f"{len(roots)} compositor processes of the slot user (pids {roots})")
+    return roots[0] if roots else None
+
+
+def thread_rows(sample: dict, pid: int, seconds: float) -> dict:
+    """CPU and context switches per thread of `pid` over the window, busiest first.
+
+    A thread started inside the window counts from zero. The CPU of threads that ended
+    inside it is in the process's total but in no thread: `exited_cpu_pct`."""
+    (a, b), hz = sample["threads"], sample["hz"]
+    rows = []
+    for (owner, tid), (comm, ticks, cs) in b.items():
+        if owner != pid:
+            continue
+        _, t0, c0 = a.get((owner, tid), (comm, 0, 0))
+        rows.append({"tid": tid, "comm": comm,
+                     "cpu_pct": round((ticks - t0) / hz / seconds * 100, 2),
+                     "ctxt_switches_per_s": round((cs - c0) / seconds, 2),
+                     "new": (owner, tid) not in a})
+    rows.sort(key=lambda r: (-r["cpu_pct"], -r["ctxt_switches_per_s"]))
+    procs = sample["procs"]
+    proc_cpu = ((procs[1][pid]["ticks"] - procs[0][pid]["ticks"]) / hz / seconds * 100
+                if pid in procs[0] and pid in procs[1] else None)
+    exited = None if proc_cpu is None or not rows else max(proc_cpu - sum(r["cpu_pct"] for r in rows), 0.0)
+    return {"threads": rows,
+            "wakeups_per_s": round(sum(r["ctxt_switches_per_s"] for r in rows), 1),
+            "exited_cpu_pct": None if exited is None else round(exited, 2)}
+
+
+def thread_groups(rows: list[dict]) -> list[dict]:
+    """Threads summed by name less a trailing index, so a pool (`llvmpipe-0`…`llvmpipe-5`,
+    `tilo-session-rt-1`) reads as one line; busiest first."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        name = re.sub(r"[-_:#.]?\d+$", "", r["comm"]) or r["comm"]
+        g = groups.setdefault(name, {"name": name, "threads": 0, "cpu_pct": 0.0,
+                                     "ctxt_switches_per_s": 0.0})
+        g["threads"] += 1
+        g["cpu_pct"] = round(g["cpu_pct"] + r["cpu_pct"], 2)
+        g["ctxt_switches_per_s"] = round(g["ctxt_switches_per_s"] + r["ctxt_switches_per_s"], 2)
+    return sorted(groups.values(), key=lambda g: (-g["cpu_pct"], -g["ctxt_switches_per_s"]))
+
+
+def describe_threads(groups: list[dict], n: int = 4) -> str:
+    """The busiest thread groups for a failure message: `tilo-net 1.9%, llvmpipe×6 0.8%`."""
+    return ", ".join(f"{g['name']}{'×' + str(g['threads']) if g['threads'] > 1 else ''} {g['cpu_pct']}%"
+                     for g in groups[:n] if g["cpu_pct"] > 0)
+
+
+def summarize(sample: dict, seconds: int) -> dict:
+    """Per-process and per-thread CPU over the window, the compositor named by
+    `compositor_pid` rather than by being the busiest `shell`."""
+    (a, b), hz = sample["procs"], sample["hz"]
+    procs = []
+    for pid, p in b.items():
+        if pid in a:
+            procs.append({"pid": pid, "comm": p["comm"],
+                          "cpu_pct": round((p["ticks"] - a[pid]["ticks"]) / hz / seconds * 100, 2),
+                          "ctxt_switches_per_s": round((p["cs"] - a[pid]["cs"]) / seconds, 1)})
+    procs.sort(key=lambda p: -p["cpu_pct"])
+    pid = compositor_pid(a)
+    shell = next((p for p in procs if p["pid"] == pid), None)
+    threads = thread_rows(sample, pid, seconds) if shell else None
+    # The busiest other processes' threads too: a session service or an app's runtime
+    # (Terminal's tilo-ush) is as much an idle cost as the compositor.
+    for p in procs[:5]:
+        if p is not shell and p["cpu_pct"] >= 0.5:
+            p["threads"] = thread_groups(thread_rows(sample, p["pid"], seconds)["threads"])[:8]
+    start, uptime = (a.get(pid) or {}).get("start"), sample["uptime"][0]
+    guest, totals = None, sample["totals"]
+    if all(totals):
+        dt, di = totals[1][0] - totals[0][0], totals[1][1] - totals[0][1]
+        guest = round((1 - di / dt) * 100, 2) if dt else None
+    return {
+        "compositor_pid": pid,
+        # How long the compositor had run when the window opened: startup work still
+        # running by then is paid inside the idle window, and this says how likely that is.
+        "session_age_s": round(uptime - start / hz, 1) if start is not None and uptime else None,
+        "shell_cpu_pct": shell and shell["cpu_pct"],
+        "shell_wakeups_per_s": shell and shell["ctxt_switches_per_s"],
+        "shell_threads_wakeups_per_s": threads and threads["wakeups_per_s"],
+        "shell_exited_threads_cpu_pct": threads and threads["exited_cpu_pct"],
+        "shell_thread_groups": threads and thread_groups(threads["threads"]),
+        "shell_threads": threads and threads["threads"],
+        "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
+        "guest_cpu_pct": guest,
+        "top": procs[:10],
+    }
 
 
 def measure(ctx, seconds: int) -> dict:
@@ -56,29 +198,12 @@ def measure(ctx, seconds: int) -> dict:
     mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
     rows = core.trace_after(ctx, mark)
-    (a, b), totals, hz = _parse_sample(text)
-    procs = []
-    for pid, (comm, ticks, cs) in b.items():
-        if pid in a:
-            procs.append({"pid": pid, "comm": comm,
-                          "cpu_pct": round((ticks - a[pid][1]) / hz / seconds * 100, 2),
-                          "ctxt_switches_per_s": round((cs - a[pid][2]) / seconds, 1)})
-    procs.sort(key=lambda p: -p["cpu_pct"])
-    shell = next((p for p in procs if p["comm"] == "shell"), None)
-    guest = None
-    if all(totals):
-        dt, di = totals[1][0] - totals[0][0], totals[1][1] - totals[0][1]
-        guest = round((1 - di / dt) * 100, 2) if dt else None
     painted = [r for r in rows if r.get("painted") == 1]
     return {
         "seconds": seconds,
-        "shell_cpu_pct": shell and shell["cpu_pct"],
-        "shell_wakeups_per_s": shell and shell["ctxt_switches_per_s"],
+        **summarize(_parse_sample(text), seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
         "frames_painted": len(painted),
-        "user_cpu_pct_total": round(sum(p["cpu_pct"] for p in procs), 2),
-        "guest_cpu_pct": guest,
-        "top": procs[:10],
     }
 
 
@@ -91,7 +216,8 @@ def memory(ctx, apps: list[str]) -> dict:
     uid = ctx.vm.slot_uid()
     procs = sorted((p for p in table["procs"].values() if p["uid"] == uid),
                    key=lambda p: -(p["anon_rss_mb"] or 0))
-    shell = next((p for p in procs if p["comm"] == "shell"), None)
+    pid = compositor_pid({p["pid"]: p for p in procs})
+    shell = next((p for p in procs if p["pid"] == pid), None)
     per_app = {}
     for app in apps:
         a = core.app_cgroup(table, app)
@@ -137,6 +263,9 @@ def _record_idle(ctx, m: dict, ram_mib: int, variant: str = "") -> None:
         # Context switches of the compositor's main thread, its loop: each is a wakeup or
         # a preemption.
         ctx.record("idle.wakeups_per_s.shell", "per_s", [m["shell_wakeups_per_s"]], **window)
+        # The same summed over every thread of the compositor process.
+        ctx.record("idle.wakeups_per_s.shell_threads", "per_s", [m["shell_threads_wakeups_per_s"]],
+                   session_age_s=m["session_age_s"], **window)
         ctx.record("idle.loop_ticks_per_s", "per_s", [m["shell_loop_ticks_per_s"]], **window)
         ctx.record("idle.frames", "count", [m["frames_painted"]], **window)
 
@@ -180,7 +309,12 @@ def _budget_problems(m, budgets, prefix):
     if m["shell_cpu_pct"] is None:
         raise core.Unobservable("no `shell` process of the slot user found")
     if m["shell_cpu_pct"] > budgets[f"{prefix}_shell_cpu_pct"]:
-        problems.append(f"compositor CPU {m['shell_cpu_pct']}% > {budgets[f'{prefix}_shell_cpu_pct']}%")
+        busiest = [describe_threads(m["shell_thread_groups"] or [])]
+        if m["shell_exited_threads_cpu_pct"]:
+            busiest.append(f"exited threads {m['shell_exited_threads_cpu_pct']}%")
+        problems.append(f"compositor CPU {m['shell_cpu_pct']}% > {budgets[f'{prefix}_shell_cpu_pct']}% "
+                        f"({', '.join(filter(None, busiest)) or 'no thread named'}; "
+                        f"session age {m['session_age_s']} s)")
     if m["frames_painted"] > budgets[f"{prefix}_frames"]:
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}")
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:

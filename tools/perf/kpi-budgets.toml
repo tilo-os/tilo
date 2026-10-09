@@ -328,6 +328,14 @@ max = 1.0
 min_delta = 5.0
 source = "KPI document: compositor at most 1 wakeup/s while still (context switches of its loop thread)"
 
+# The same over every thread of the compositor process (TIL-690): the loop thread can
+# sleep while the network runtime, session services or the renderer's threads do not.
+[kpi."idle.wakeups_per_s.shell_threads"]
+unit = "per_s"
+max = 5.0
+min_delta = 5.0
+source = "KPI document: idle desktop at most 5 wakeups/s (context switches of every compositor thread)"
+
 [kpi."idle.ram_mib"]
 unit = "MiB"
 max = 1024.0
