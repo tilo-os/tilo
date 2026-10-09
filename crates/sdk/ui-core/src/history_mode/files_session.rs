@@ -3,13 +3,13 @@ use super::checked_files::{
     FileHistoricalContent, FileHistorySnapshot, FileHistoryTarget, FileHistoryTransport,
     FileRestoreSession,
 };
-use collab_types::files::{
+use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as Request, FileHistoryReadErrorV1 as Error,
     FileHistoryReadQueryV1 as Query, FileHistoryReadScopeV1 as Scope,
     FileHistoryReadValueV1 as Value, FileRestoreReviewV1 as Review,
 };
-use collab_types::{FileVersionId, FileVersionV1};
+use fs_protocol::{FileVersionId, FileVersionV1};
 use std::{
     cell::RefCell,
     sync::{Arc, mpsc},
@@ -32,7 +32,7 @@ enum Reply {
             (
                 Scope,
                 Vec<FileVersionV1>,
-                Option<collab_types::ContentRevisionV1>,
+                Option<fs_protocol::ContentRevisionV1>,
             ),
             Error,
         >,
@@ -53,7 +53,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 struct Presented {
     versions: Vec<FileVersionV1>,
     scope: Option<Scope>,
-    current_revision: Option<collab_types::ContentRevisionV1>,
+    current_revision: Option<fs_protocol::ContentRevisionV1>,
     message: String,
     live_updates: bool,
     preview_changed: bool,
@@ -79,7 +79,7 @@ pub(super) struct FileController {
     background: Background,
     pub versions: Vec<FileVersionV1>,
     pub scope: Option<Scope>,
-    pub current_revision: Option<collab_types::ContentRevisionV1>,
+    pub current_revision: Option<fs_protocol::ContentRevisionV1>,
     pub after: Option<FileHistorySnapshot>,
     pub before: Option<FileHistorySnapshot>,
     pub parent: Option<FileVersionId>,
@@ -210,9 +210,7 @@ impl FileController {
         self.load();
     }
     /// Learned only from a successful authorized immutable metadata read.
-    pub fn resource_identity(
-        &self,
-    ) -> Option<(uuid::Uuid, uuid::Uuid, collab_types::FileRecordId)> {
+    pub fn resource_identity(&self) -> Option<(uuid::Uuid, uuid::Uuid, fs_protocol::FileRecordId)> {
         self.scope
             .map(|scope| (scope.workspace_id, scope.mount_lifetime, scope.record_id))
     }
@@ -282,7 +280,7 @@ impl FileController {
         &self,
         workspace: uuid::Uuid,
         mount: uuid::Uuid,
-        record: collab_types::FileRecordId,
+        record: fs_protocol::FileRecordId,
     ) -> bool {
         record == self.target.record
             && self.scope.is_none_or(|s| {
@@ -313,7 +311,7 @@ impl FileController {
             (
                 Scope,
                 Vec<FileVersionV1>,
-                Option<collab_types::ContentRevisionV1>,
+                Option<fs_protocol::ContentRevisionV1>,
             ),
             Error,
         >,
@@ -528,7 +526,7 @@ fn load_all(
     (
         Scope,
         Vec<FileVersionV1>,
-        Option<collab_types::ContentRevisionV1>,
+        Option<fs_protocol::ContentRevisionV1>,
     ),
     Error,
 > {
@@ -548,7 +546,7 @@ fn load_all(
             page.current_revision,
         );
         if expected.as_ref().is_some_and(|value| value != &metadata)
-            || page.versions.len() > collab_types::files::MAX_HISTORY_PAGE_VERSIONS
+            || page.versions.len() > fs_protocol::files::MAX_HISTORY_PAGE_VERSIONS
             || page.scope.workspace_id.is_nil()
             || page.scope.mount_lifetime.is_nil()
             || page.scope.record_id.0.is_nil()
@@ -647,7 +645,7 @@ fn read_snapshot(
         FileHistoricalContent::NoContent
     } else {
         match transport.preview(scope, version_id) {
-            Ok(bytes) if bytes.len() <= collab_types::MAX_HISTORY_PREVIEW_BYTES => {
+            Ok(bytes) if bytes.len() <= fs_protocol::MAX_HISTORY_PREVIEW_BYTES => {
                 FileHistoricalContent::Bytes(bytes.into())
             }
             Ok(_) => FileHistoricalContent::Unavailable(Error::TooLarge),
@@ -676,10 +674,10 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
     match outcome {
         Outcome::Applied { receipt } => I18nManager::format(
             match receipt.prior_reference {
-                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision => {
+                fs_protocol::files::FileRestorePriorReferenceV1::ObservedRevision => {
                     "history-files-outcome-applied"
                 }
-                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative => {
+                fs_protocol::files::FileRestorePriorReferenceV1::LegacyContentRepresentative => {
                     "history-files-outcome-applied-legacy"
                 }
             },
@@ -732,7 +730,7 @@ mod tests {
     fn controller() -> FileController {
         FileController::new(FileHistoryTarget {
             binding: uuid::Uuid::from_u128(9),
-            record: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
+            record: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             label: "Report.txt".into(),
             transport: Arc::new(Transport),
         })
@@ -797,17 +795,17 @@ mod tests {
                 id: FileVersionId(uuid::Uuid::from_u128(id)),
                 record_id: scope().record_id,
                 parents: vec![],
-                actor: collab_types::FileActor {
+                actor: fs_protocol::FileActor {
                     person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
                     device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
                 },
                 timestamp_ms: id as u64,
                 content_hash: None,
-                metadata_hash: collab_types::ContentHash([0; 32]),
-                provenance: collab_types::FileProvenance::Create,
+                metadata_hash: fs_protocol::ContentHash([0; 32]),
+                provenance: fs_protocol::FileProvenance::Create,
             };
             let page = |versions: Vec<FileVersionV1>, total, next| {
-                Value::Page(collab_types::files::FileHistoryPageV1 {
+                Value::Page(fs_protocol::files::FileHistoryPageV1 {
                     scope: scope(),
                     versions,
                     total_versions: total,
@@ -961,7 +959,7 @@ mod tests {
         Scope {
             workspace_id: uuid::Uuid::from_u128(1),
             mount_lifetime: uuid::Uuid::from_u128(2),
-            record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
     }
@@ -980,14 +978,14 @@ mod tests {
                     id: FileVersionId(uuid::Uuid::from_u128(8)),
                     record_id: scope().record_id,
                     parents: vec![],
-                    actor: collab_types::FileActor {
+                    actor: fs_protocol::FileActor {
                         person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
                         device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
                     },
                     timestamp_ms: 1,
-                    content_hash: Some(collab_types::ContentHash([3; 32])),
-                    metadata_hash: collab_types::ContentHash([4; 32]),
-                    provenance: collab_types::FileProvenance::Create,
+                    content_hash: Some(fs_protocol::ContentHash([3; 32])),
+                    metadata_hash: fs_protocol::ContentHash([4; 32]),
+                    provenance: fs_protocol::FileProvenance::Create,
                 };
                 controller.key.selection = Some(version.id);
                 let key = controller.key;
@@ -1154,7 +1152,7 @@ mod tests {
             controller.drain();
             assert!(controller.review.is_none());
             let mut foreign = scope();
-            foreign.record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(7));
+            foreign.record_id = fs_protocol::FileRecordId(uuid::Uuid::from_u128(7));
             controller
                 .tx
                 .send(Completion {
@@ -1232,7 +1230,7 @@ mod tests {
                         }
                         match query {
                             Query::Page { .. } => {
-                                Ok(Value::Page(collab_types::files::FileHistoryPageV1 {
+                                Ok(Value::Page(fs_protocol::files::FileHistoryPageV1 {
                                     scope: scope(),
                                     versions: vec![self.version.clone()],
                                     total_versions: 1,
@@ -1266,14 +1264,14 @@ mod tests {
                     id: FileVersionId(uuid::Uuid::from_u128(8)),
                     record_id: scope().record_id,
                     parents: vec![],
-                    actor: collab_types::FileActor {
+                    actor: fs_protocol::FileActor {
                         person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
                         device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
                     },
                     timestamp_ms: 1,
-                    content_hash: Some(collab_types::ContentHash([3; 32])),
-                    metadata_hash: collab_types::ContentHash([4; 32]),
-                    provenance: collab_types::FileProvenance::Create,
+                    content_hash: Some(fs_protocol::ContentHash([3; 32])),
+                    metadata_hash: fs_protocol::ContentHash([4; 32]),
+                    provenance: fs_protocol::FileProvenance::Create,
                 };
                 let transport = Arc::new(Delayed {
                     calls: AtomicUsize::new(0),

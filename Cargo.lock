@@ -2371,17 +2371,14 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "postcard",
- "rand 0.10.1",
  "serde",
  "serde_bytes",
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-clock",
  "tracing",
  "uuid",
  "web-time",
- "wire-frame",
 ]
 
 [[package]]
@@ -4314,10 +4311,10 @@ dependencies = [
  "cap-std",
  "chrono",
  "cloud-source",
- "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
  "fluent",
+ "fs-protocol",
  "fuser",
  "hex",
  "host-fs",
@@ -4724,6 +4721,26 @@ dependencies = [
  "fs-content",
  "hex",
  "libc",
+ "workspace-hack",
+]
+
+[[package]]
+name = "fs-protocol"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "tilo-clock",
+ "uuid",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -7886,6 +7903,7 @@ dependencies = [
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fnv",
+ "fs-protocol",
  "getrandom 0.4.3",
  "hex",
  "landlock",
@@ -16876,6 +16894,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "fs-content",
  "fs-native",
+ "fs-protocol",
  "fuser",
  "futures-util",
  "getrandom 0.4.3",
@@ -17888,6 +17907,7 @@ dependencies = [
  "collab-types",
  "console-control",
  "ed25519-dalek 3.0.0",
+ "fs-protocol",
  "fuser",
  "getrandom 0.4.3",
  "hex",
@@ -18199,6 +18219,7 @@ dependencies = [
  "fluent",
  "fnv",
  "form_urlencoded",
+ "fs-protocol",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
  "hex",

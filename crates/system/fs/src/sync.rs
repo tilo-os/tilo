@@ -1691,7 +1691,7 @@ async fn replica_ack_response(
     if request.validate().is_err() || request.workspace_id != workspace_id {
         return ReplicaAckResponseV1::Denied;
     }
-    let requester = collab_types::FileActor {
+    let requester = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(peer.user_public_key),
         device: collab_types::Ed25519PublicKey(peer.device_public_key),
     };
@@ -1726,7 +1726,7 @@ async fn replica_ack_response(
     {
         return ReplicaAckResponseV1::Unavailable;
     }
-    let actor = collab_types::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(identity.user_public_key()),
         device: collab_types::Ed25519PublicKey(identity.device_public_key()),
     };
@@ -2367,7 +2367,7 @@ struct DirectMeshAuthorizer<'a> {
 }
 
 impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
-    fn actor_is_certified(&self, actor: &collab_types::FileActor) -> bool {
+    fn actor_is_certified(&self, actor: &fs_protocol::FileActor) -> bool {
         // A home peer is commonly a second device certified to the same
         // human as the desktop which authored the record. The envelope still
         // verifies the original device signature; the live transport cert
@@ -2384,8 +2384,8 @@ impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
 
     fn allows(
         &self,
-        actor: &collab_types::FileActor,
-        _record_id: collab_types::FileRecordId,
+        actor: &fs_protocol::FileActor,
+        _record_id: fs_protocol::FileRecordId,
         action: RecordAction,
     ) -> bool {
         self.actor_is_certified(actor)
@@ -2522,7 +2522,7 @@ async fn pull_record_mesh_from_peer(
             RecordMeshResultV1::Denied => return Ok(false),
             _ => anyhow::bail!("record mesh returned an invalid inventory response"),
         };
-        let direct_actor = collab_types::FileActor {
+        let direct_actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(inventory_peer.user_public_key),
             device: collab_types::Ed25519PublicKey(inventory_peer.device_public_key),
         };
@@ -2679,7 +2679,7 @@ fn revisions_awaiting_receipt(
     records: &RecordPlane,
     registry: &Mutex<crate::availability::AvailabilityRegistry>,
     device: collab_types::Ed25519PublicKey,
-) -> Vec<collab_types::ContentRevisionV1> {
+) -> Vec<fs_protocol::ContentRevisionV1> {
     let revisions = records
         .repository
         .current_content_revisions(records.workspace_id);
@@ -2739,7 +2739,7 @@ async fn collect_replica_acks_from_peer(
 )]
 fn persist_workspace_replica_observation(
     registry: &Arc<Mutex<crate::availability::AvailabilityRegistry>>,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     local_device: collab_types::Ed25519PublicKey,
     observation: crate::availability::ReplicaObservation,
     observed_at: u64,
@@ -2760,7 +2760,7 @@ fn persist_workspace_replica_observation(
 /// when this registry has no row for it yet.
 fn record_replica_observation(
     registry: &mut crate::availability::AvailabilityRegistry,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     local_device: collab_types::Ed25519PublicKey,
     observation: crate::availability::ReplicaObservation,
     observed_at: u64,
@@ -3344,7 +3344,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
             continue;
         }
         if let Some(records) = &records {
-            let actor = collab_types::FileActor {
+            let actor = fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(identity.user_public_key()),
                 device: collab_types::Ed25519PublicKey(identity.device_public_key()),
             };

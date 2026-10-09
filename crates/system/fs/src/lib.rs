@@ -151,17 +151,17 @@ pub use availability::AvailabilityRegistry;
 #[cfg(feature = "filesystem")]
 pub use caps_file::{CapabilityFile, CapsError, Refresh};
 #[cfg(feature = "filesystem")]
-pub use collab_types::{
+pub use docstore::{DocStore, VersionManifest, VersionRef};
+#[cfg(feature = "filesystem")]
+pub use fs::QuickFS;
+#[cfg(feature = "filesystem")]
+pub use fs_protocol::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, RECIPIENT_CONTROL_VERSION,
     RecipientControlErrorCode, RecipientControlOperationV1, RecipientControlRequestV1,
     RecipientControlResponseV1, RecipientControlResultV1, RecipientFailureCodeV1,
     RecipientFailureV1, RecipientSubscriptionKeyV1, RecipientSubscriptionStatusV1,
 };
-#[cfg(feature = "filesystem")]
-pub use docstore::{DocStore, VersionManifest, VersionRef};
-#[cfg(feature = "filesystem")]
-pub use fs::QuickFS;
 #[cfg(feature = "filesystem")]
 pub use history::{
     FileHistoryStore, HISTORY_XATTR, HistoryError, HistoryProjectionV1, RecordHistorySnapshot,
