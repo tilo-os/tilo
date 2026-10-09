@@ -7,6 +7,8 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
+#[path = "mounted_code/read_recovery.rs"]
+mod read_recovery;
 
 // The mounted UI stays on the caller thread while Iroh and persistence can
 // progress independently, as on ShellNetwork's two-worker runtime.
@@ -38,6 +40,7 @@ pub(super) enum Journey {
     Document,
     PrivateAdmission,
     BlockedRead,
+    ReadRecovery,
 }
 
 pub(super) struct Context<'a> {
@@ -223,6 +226,8 @@ pub(super) async fn run(
     inspect_while_ui_caller_is_blocked(&context, &authority);
     if matches!(context.journey, Journey::BlockedRead) {
         blocked_read::run(&first, &mut mounted[0]).await;
+    } else if matches!(context.journey, Journey::ReadRecovery) {
+        read_recovery::run(&first, &mut mounted[0]).await;
     } else {
         edit_and_converge(
             &context,
