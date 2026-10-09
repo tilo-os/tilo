@@ -1494,13 +1494,7 @@ impl Widget for Button {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()

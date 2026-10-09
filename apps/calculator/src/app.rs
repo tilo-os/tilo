@@ -1359,12 +1359,7 @@ impl Widget for CalculatorApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        let area = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let area = ui::widget::placed(layout, origin);
         self.dirty |= area != self.area;
         self.area = area;
         self.relayout();

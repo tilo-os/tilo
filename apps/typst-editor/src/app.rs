@@ -1126,12 +1126,7 @@ impl Widget for TypstApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let rect = ui::widget::placed(layout, origin);
         self.layout_in(rect);
     }
 
