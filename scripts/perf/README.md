@@ -27,7 +27,7 @@ executable stand-alone; the higher-level flow is described below.
 
 - `latency_bench.py` — the nightly `latency` KPI group: a headless compositor
   times 600 pointer moves (input to finished frame, from the frame trace) and
-  40 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
+  100 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
   first frame, to the resting frame, dropped intervals), and writes records.
   `device_latency_bench.py` is its weekly hardware counterpart (kernel input to
   KMS presentation, through `tilo-vm`); see
