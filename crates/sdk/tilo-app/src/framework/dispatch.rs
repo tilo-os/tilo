@@ -445,10 +445,11 @@ impl<R: Resource> Dispatcher<R> {
         self.landed.clone()
     }
 
-    pub(crate) fn note_landed(&self, action: &str, answer: Option<serde_json::Value>) {
+    pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
         self.landed.set(Some(Landed {
             action: action.to_owned(),
-            answer,
+            answer: output.value.clone(),
+            created: output.resources.clone(),
         }));
     }
 
@@ -943,6 +944,8 @@ pub struct Landed {
     pub action: String,
     /// What it answered, if anything.
     pub answer: Option<serde_json::Value>,
+    /// The resources it created (`<kind>/<field>/<id>` for an item).
+    pub created: Vec<String>,
 }
 
 impl Landed {
@@ -950,17 +953,11 @@ impl Landed {
     /// "new" verb created first.
     #[must_use]
     pub fn minted(&self) -> Vec<tilo_resource::Id> {
-        self.answer
-            .as_ref()
-            .and_then(|answer| answer.get("minted"))
-            .and_then(serde_json::Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(tilo_resource::Id::from_raw)
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.created
+            .iter()
+            .filter_map(|resource| resource.rsplit('/').next())
+            .map(tilo_resource::Id::from_raw)
+            .collect()
     }
 }
 

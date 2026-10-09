@@ -1846,6 +1846,32 @@ pub(crate) fn control_draft_identity(
     Ok(control_identity_from_spec(resource, spec, continuation))
 }
 
+/// The item resources the action in `envelope` created: the ids it minted
+/// that its change stored as keys of a collection, in minting order.
+fn minted_items(
+    doc: &mut AutoCommit,
+    kind: &str,
+    envelope: &tilo_actions::ActionEnvelope,
+    before: &[ChangeHash],
+) -> Vec<String> {
+    let after = doc.get_heads();
+    let mut stored = std::collections::HashMap::new();
+    for patch in doc.diff(before, &after) {
+        if let automerge::PatchAction::PutMap { key, .. } = patch.action
+            && let Some((_, automerge::Prop::Map(field))) = patch.path.last()
+        {
+            stored.entry(key).or_insert_with(|| field.clone());
+        }
+    }
+    tilo_resource::minted_ids(envelope)
+        .map_while(|id| {
+            stored
+                .get(id.as_str())
+                .map(|field| format!("{kind}/{field}/{id}"))
+        })
+        .collect()
+}
+
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
 /// Who writes a document change `actor` makes here. An agent principal
 /// names one writer; a person may write from several devices at once.
@@ -2050,10 +2076,13 @@ pub(crate) fn execute_resource_operation(
                     })
                     .unwrap_or(serde_json::Value::Null)
             });
-        let output = tilo_actions::ActionOutput {
-            value,
-            ..tilo_actions::ActionOutput::default()
+        // A verb that created items names them, so the view that submitted
+        // it can show what it made.
+        let resources = match (applied.as_ref(), before.as_ref()) {
+            (Some(envelope), Some(before)) => minted_items(doc, &resource.kind, envelope, before),
+            _ => Vec::new(),
         };
+        let output = tilo_actions::ActionOutput { value, resources };
         if !matches!(
             spec.contract.execution,
             tilo_actions::ExecutionMode::Immediate
