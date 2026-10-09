@@ -287,28 +287,30 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
-# Signing material belongs only to the tag-only step. Ordinary dispatches
-# keep the same install tests and lane resources without receiving a key.
-desktop_tag_build=$(sed -n '/^      - name: Build, install-test and sign protected desktop release userspaces$/,/^      # The v4 artifact pins/p' "$desktop")
-desktop_candidate_build=$(sed -n '/^      - name: Build and install-test unsigned candidate userspaces$/,/^      - name: Build, install-test and sign protected desktop release userspaces$/p' "$desktop")
+# Native package lanes have neither private keys nor OIDC. A separate tag-only
+# broker job signs only successful install-tested artifacts after exact-main proof.
+desktop_signer=$(sed -n '/^  sign-rpm:$/,/^  host-session-e2e:$/p' "$desktop")
 desktop_validate=$(sed -n '/^  validate:$/,/^  package:$/p' "$desktop")
-desktop_package=$(sed -n '/^  package:$/,/^  host-session-e2e:$/p' "$desktop")
+desktop_package=$(sed -n '/^  package:$/,/^  sign-rpm:$/p' "$desktop")
 signing_boundary_ok=1
 for name in TILO_RPM_SIGNING_KEY_B64 TILO_RPM_SIGNING_KEY_ID; do
-  [[ $(grep -Fc "secrets.$name" "$desktop") == 1 ]] \
-    && grep -Fq "secrets.$name" <<<"$desktop_tag_build" \
-    || signing_boundary_ok=0
+  ! grep -Fq "secrets.$name" "$desktop" || signing_boundary_ok=0
 done
-grep -Fq "if: startsWith(github.ref, 'refs/tags/desktop-v')" <<<"$desktop_tag_build" \
-  && grep -Fq 'TILO_RPM_SIGNING_ENABLED: "1"' <<<"$desktop_tag_build" \
-  && grep -Fq "if: \${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}" <<<"$desktop_candidate_build" \
-  && grep -Fq 'TILO_RPM_SIGNING_ENABLED: "0"' <<<"$desktop_candidate_build" \
-  && ! grep -Fq 'secrets.' <<<"$desktop_candidate_build" \
+grep -Fq "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')" <<<"$desktop_signer" \
+  && grep -Fq 'enable-openid-connect: true' <<<"$desktop_signer" \
+  && grep -Fq 'needs: [validate, package]' <<<"$desktop_signer" \
+  && grep -Fq 'dist/rpm/sign-rpms.sh signed-fedora' <<<"$desktop_signer" \
+  && grep -Fq 'vars.TILO_RPM_SIGNING_FINGERPRINT' <<<"$desktop_signer" \
+  && ! grep -Fq 'enable-openid-connect' <<<"$desktop_package" \
+  && ! grep -Fq 'secrets.TILO_RPM_SIGNING' <<<"$desktop_package" \
   && grep -Fq 'run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin' <<<"$desktop_validate" \
   && grep -Fq 'needs: validate' <<<"$desktop_package" \
+  && grep -Fq 'needs: [validate, package, sign-rpm, host-session-e2e]' "$desktop" \
+  && grep -Fq "'signed-fedora-44-amd64' || 'fedora-44-amd64'" "$desktop" \
+  && ! grep -Fq -- '--env TILO_RPM_SIGNING' "$repo/dist/ci/run-package-job.sh" \
   || signing_boundary_ok=0
 if [[ $signing_boundary_ok == 1 ]]; then
-  ok 'desktop signing keys reach only tag packaging after exact-main qualification'
+  ok 'desktop isolated broker signs exact-main-qualified tested tag RPMs without exposing a key'
 else
   bad 'desktop signing boundary or pre-packaging qualification regressed'
 fi
