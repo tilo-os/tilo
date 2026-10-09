@@ -28,7 +28,8 @@ use fs::cloud::service::dispatch;
 use fs::cloud::volume::{DEFAULT_IDLE_POLL_MAX, Health, ROOT_INO};
 use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig, VolumeConfig};
 use runtime_fs::cloud::{
-    CloudClient, CloudMount, CloudRequest, CloudResponse, FileReply, FileRequest, MountHealth,
+    CloudClient, CloudMount, CloudRequest, CloudResponse, CloudSocket, FileReply, FileRequest,
+    MountHealth,
 };
 
 fn credential() -> Credential {
@@ -513,6 +514,7 @@ fn service_config(root: &Path, home: &Path) -> ServiceConfig {
         state_root: home.join("state"),
         refresher: std::sync::Arc::new(Published(accounts::HandoffStore::open_in(root))),
         control_socket: None,
+        file_socket: None,
     }
 }
 
@@ -840,11 +842,21 @@ fn the_control_socket_lists_mounts_without_credentials() {
     let mut account = serve(&server);
     let runtime = tempfile::tempdir().unwrap();
     let socket = runtime_fs::cloud::socket_in(runtime.path());
-    account.service.serve_control(&socket).unwrap();
+    let files_socket = runtime_fs::cloud::files_socket_in(runtime.path());
+    account
+        .service
+        .serve_control(&socket, CloudSocket::Accounts)
+        .unwrap();
+    account
+        .service
+        .serve_control(&files_socket, CloudSocket::Files)
+        .unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&socket).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        for path in [&socket, &files_socket] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
     let client = std::thread::spawn(move || {
         let mut client = CloudClient::connect(&socket).unwrap();
@@ -855,7 +867,32 @@ fn the_control_socket_lists_mounts_without_credentials() {
                 account: "files-1".into(),
             })
             .unwrap();
-        (mounts, raw)
+        // The account socket, which Settings' sandbox is granted, never
+        // reads, restores or shares a file.
+        let refused = [
+            FileRequest::Revisions {
+                path: "a.txt".into(),
+            },
+            FileRequest::RestoreRevision {
+                path: "a.txt".into(),
+                revision: "1".into(),
+            },
+            FileRequest::ShareLink {
+                path: "a.txt".into(),
+            },
+        ]
+        .map(|request| match client.file("files-1", request) {
+            Err(error) => error.to_string(),
+            Ok(reply) => format!("served: {reply:?}"),
+        });
+        // The file socket answers them.
+        let revisions = CloudClient::connect(&files_socket).unwrap().file(
+            "files-1",
+            FileRequest::Revisions {
+                path: "a.txt".into(),
+            },
+        );
+        (mounts, raw, refused, revisions)
     });
     let started = std::time::Instant::now();
     while !client.is_finished() {
@@ -866,7 +903,18 @@ fn the_control_socket_lists_mounts_without_credentials() {
         account.service.pump();
         std::thread::sleep(Duration::from_millis(5));
     }
-    let (mounts, raw): (Vec<CloudMount>, CloudResponse) = client.join().unwrap();
+    let (mounts, raw, refused, revisions) = client.join().unwrap();
+    let mounts: Vec<CloudMount> = mounts;
+    for answer in &refused {
+        assert_eq!(
+            answer, "this socket does not serve that request",
+            "the account socket served a file request"
+        );
+    }
+    assert!(
+        matches!(revisions, Ok(FileReply::Revisions(_))),
+        "the file socket answers revisions: {revisions:?}"
+    );
     assert_eq!(mounts.len(), 1);
     assert_eq!(mounts[0].account, "files-1");
     assert_eq!(mounts[0].health, Some(MountHealth::Healthy));

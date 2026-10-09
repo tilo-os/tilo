@@ -13,15 +13,17 @@
 //! - a mount reports health → the service records it in the account
 //!   status store Settings and Files read.
 //!
-//! The service also serves its mounts' control on a socket
-//! (`runtime_fs::cloud`, `$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`,
-//! mode 0600): list the mounts with their health and provider
-//! capabilities, sync one now (which also retries one that could not
-//! start), pause and resume one (remembered across restarts), and ask one
-//! for a file's revisions, to restore a revision or for a share link.
-//! Settings and Files publish these as actions; each request travels down
+//! The service also serves its mounts' control (`runtime_fs::cloud`) on two
+//! sockets, each mode 0600 in its own 0700 directory. The account socket
+//! (`$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock`, which Settings' sandbox
+//! is granted) lists the mounts with their health and provider
+//! capabilities, syncs one now (which also retries one that could not
+//! start), and pauses and resumes one (remembered across restarts). The
+//! file socket (`$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`) also
+//! asks a mount for a file's revisions, to restore a revision or for a
+//! share link; the account socket refuses those. Each request travels down
 //! the mount's stdin like a credential and its answer comes back on stdout.
-//! No credential crosses the socket.
+//! No credential crosses either socket.
 //!
 //! Neither this service nor its mounts open Settings' account vault. The
 //! service reads each account's short-lived credential from the handoff
@@ -48,7 +50,8 @@ use accounts::{
 };
 use cloud_source::{Credential, CredentialSource as _};
 use runtime_fs::cloud::{
-    CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, MountHealth,
+    CLOUD_FRAMING, CloudCapabilities, CloudMount, CloudRequest, CloudResponse, CloudSocket,
+    MountHealth,
 };
 
 use super::credential::{
@@ -105,9 +108,14 @@ pub struct ServiceConfig {
     /// rejected: [`accounts::CommandRefresher`] (Settings' credential
     /// helper) in production.
     pub refresher: Arc<dyn CredentialRefresher>,
-    /// Where to serve the control protocol (`runtime_fs::cloud`); `None`
-    /// serves none (tools and tests drive [`CloudService::request`]).
+    /// Where to serve the account socket ([`CloudSocket::Accounts`]: list,
+    /// sync now, pause, resume); `None` serves none (tools and tests drive
+    /// [`CloudService::request`]).
     pub control_socket: Option<PathBuf>,
+    /// Where to serve the file socket ([`CloudSocket::Files`]: everything,
+    /// file requests included); `None` serves none. It must not share a
+    /// directory with `control_socket`, which a sandbox may be granted.
+    pub file_socket: Option<PathBuf>,
 }
 
 /// How often accounts that could not start (offline, no credential yet)
@@ -528,11 +536,12 @@ impl CloudService {
         let _ = reply.send(response);
     }
 
-    /// Serve the control protocol on `path` from now on. Requests are
-    /// handled on the service's loop ([`Self::run`], [`Self::pump`]), like
-    /// an account change.
-    pub fn serve_control(&self, path: &Path) -> io::Result<()> {
-        bind_control(path, self.signals.clone())
+    /// Serve the control protocol on `path` from now on, answering what
+    /// `kind` serves and refusing the rest. Requests are handled on the
+    /// service's loop ([`Self::run`], [`Self::pump`]), like an account
+    /// change.
+    pub fn serve_control(&self, path: &Path, kind: CloudSocket) -> io::Result<()> {
+        bind_control(path, kind, self.signals.clone())
     }
 
     /// Answer one control request the way the socket does, handling mount
@@ -614,11 +623,31 @@ impl CloudService {
                 .join("accounts"),
         };
         let _watcher = watch_accounts(&accounts_dir, self.signals.clone())?;
-        if let Some(socket) = self.config.control_socket.clone()
-            && let Err(error) = self.serve_control(&socket)
-        {
-            // The mounts work without their control; keep serving them.
-            tracing::warn!(%error, "cannot serve cloud mount control");
+        // A grant of the account socket's directory must never reach file
+        // requests: a file socket inside it is not served.
+        let file_socket = self.config.file_socket.clone().filter(|files| {
+            let shared = self
+                .config
+                .control_socket
+                .as_deref()
+                .and_then(Path::parent)
+                .is_some_and(|granted| files.starts_with(granted));
+            if shared {
+                tracing::warn!("the cloud file socket shares the account socket's directory");
+            }
+            !shared
+        });
+        let sockets = [
+            (self.config.control_socket.clone(), CloudSocket::Accounts),
+            (file_socket, CloudSocket::Files),
+        ];
+        for (socket, kind) in sockets {
+            if let Some(socket) = socket
+                && let Err(error) = self.serve_control(&socket, kind)
+            {
+                // The mounts work without their control; keep serving them.
+                tracing::warn!(%error, ?kind, "cannot serve cloud mount control");
+            }
         }
         self.reconcile();
         loop {
@@ -659,8 +688,8 @@ fn wire_health(health: Health) -> MountHealth {
 
 /// Serve the control protocol on `path`: each request is handled on the
 /// service's own loop, like an account change. The socket is the user's
-/// alone (0600 in a 0700 directory).
-fn bind_control(path: &Path, signals: Sender<Signal>) -> io::Result<()> {
+/// alone (0600 in a 0700 directory), and answers only what `kind` serves.
+fn bind_control(path: &Path, kind: CloudSocket, signals: Sender<Signal>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         prepare_dir(parent)?;
     }
@@ -690,7 +719,7 @@ fn bind_control(path: &Path, signals: Sender<Signal>) -> io::Result<()> {
                 let spawned = std::thread::Builder::new()
                     .name("cloud-control-connection".into())
                     .spawn(move || {
-                        serve_connection(stream, &signals);
+                        serve_connection(stream, kind, &signals);
                         done.fetch_sub(1, Ordering::SeqCst);
                     });
                 if spawned.is_err() {
@@ -702,12 +731,20 @@ fn bind_control(path: &Path, signals: Sender<Signal>) -> io::Result<()> {
 }
 
 /// Serve one control connection until it closes, idles past
-/// [`CONTROL_IDLE`] or sends a bad frame.
-fn serve_connection(mut stream: UnixStream, signals: &Sender<Signal>) {
+/// [`CONTROL_IDLE`] or sends a bad frame. A request `kind` does not serve
+/// is refused here and never reaches the service's loop or a mount.
+fn serve_connection(mut stream: UnixStream, kind: CloudSocket, signals: &Sender<Signal>) {
     if stream.set_read_timeout(Some(CONTROL_IDLE)).is_err() {
         return;
     }
     while let Ok(Some(request)) = CLOUD_FRAMING.read_value::<_, CloudRequest>(&mut stream) {
+        if !kind.serves(&request) {
+            let refused = CloudResponse::Error("this socket does not serve that request".into());
+            if CLOUD_FRAMING.write_value(&mut stream, &refused).is_err() {
+                break;
+            }
+            continue;
+        }
         let (answer, answered) = mpsc::channel();
         if signals.send(Signal::Control(request, answer)).is_err() {
             break;

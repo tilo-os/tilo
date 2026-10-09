@@ -593,9 +593,13 @@ account status store. `sync-now` cuts a failure back-off short and runs a pass
 background sync and uploads until resumed, survives restarts, and leaves
 on-demand reads working while edits queue.
 
-Settings and Files reach the mounts through the service's control socket,
+Settings reaches the mounts through the service's account socket,
 `$XDG_RUNTIME_DIR/tilo-fs-cloud/control.sock` (`runtime_fs::cloud`, mode
-0600). It also answers file requests: a file's provider revisions, restoring
-one of them, and a share link, each refused unless the provider's capabilities
-include it. No credential crosses it. Files does not yet publish these file
-requests as entry actions.
+0600), whose directory its sandbox is granted. That socket lists, syncs,
+pauses and resumes mounts and refuses everything else. File requests (a
+file's provider revisions, restoring one of them, and a share link, each
+refused unless the provider's capabilities include it) are served only on the
+file socket, `$XDG_RUNTIME_DIR/tilo-fs-cloud-files/files.sock`, in a directory
+of its own that no grant of the account socket reaches. No credential crosses
+either socket. Files does not yet publish these file requests as entry
+actions, and no sandbox is granted the file socket yet.
