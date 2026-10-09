@@ -6035,10 +6035,36 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.start_bound_job_within(invoker, None, address, arguments, confirmed)
+    }
+
+    /// [`Self::start_bound_job_for`] within `ambient`: the task the invoker
+    /// is carrying out (an agent's run, its purpose), recorded with every
+    /// edit the operation makes.
+    ///
+    /// # Errors
+    /// As [`Self::start_bound_job_for`].
+    pub fn start_bound_job_within(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            crate::widget::ResourceOperationStart,
+        ),
+        tilo_actions::DoorError,
+    > {
         self.pump_component_wakes();
         let invocation = tilo_actions::InvocationId::new();
         let delivered = invoker.map(|invoker| {
-            let context = tilo_actions::ActionContext::default().with_invoker(invoker.clone());
+            let context = ambient
+                .cloned()
+                .unwrap_or_default()
+                .with_invoker(invoker.clone());
             crate::invocation_scope::Continuation {
                 admitted: self.admitted_kind(address, arguments),
                 invoker,

@@ -66,6 +66,10 @@ pub struct AttachedView {
     permissions: Rc<RefCell<PermissionContext>>,
     /// Who acts through the view: the invoker its operations are admitted for.
     me: String,
+    /// The invoker as admitted: its kind and the person it acts for.
+    invoker: tilo_actions::ActionInvoker,
+    /// The task the invoker is carrying out, recorded with what it does.
+    context: Option<tilo_actions::ActionContext>,
     landed: Landed,
     /// Everything taken or merged so far: what lies past it is this
     /// participant's own.
@@ -93,6 +97,33 @@ impl AttachedView {
         permissions: PermissionContext,
         created: bool,
     ) -> Result<Self, String> {
+        Self::open_for(
+            definition,
+            room,
+            checkout,
+            document,
+            &tilo_actions::ActionInvoker::actor(me),
+            permissions,
+            created,
+        )
+    }
+
+    /// [`Self::open`] for `invoker` — an agent, say, which may act for a
+    /// person — rather than a person by their id alone. Its changes are
+    /// written under the record writer's actor for its handle on this host.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn open_for(
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        checkout: RecordCheckout,
+        document: Vec<u8>,
+        invoker: &tilo_actions::ActionInvoker,
+        permissions: PermissionContext,
+        created: bool,
+    ) -> Result<Self, String> {
+        let me = invoker.actor.as_str();
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
@@ -127,7 +158,7 @@ impl AttachedView {
                 permissions: permissions.clone(),
                 author: UserId(me.to_owned()),
                 action_context: tilo_actions::ActionContext::default()
-                    .with_invoker(tilo_actions::ActionInvoker::actor(me)),
+                    .with_invoker(invoker.clone()),
             },
             &target,
         )
@@ -157,6 +188,8 @@ impl AttachedView {
             records,
             permissions,
             me: me.to_owned(),
+            invoker: invoker.clone(),
+            context: None,
             landed,
             frontier,
             fresh: created,
@@ -225,16 +258,41 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
-        if !self
-            .operations()
+        // The task may name the person the participant acts for now.
+        let invoker = self
+            .context
+            .as_ref()
+            .and_then(|context| context.invoker.clone())
+            .filter(|invoker| invoker.actor == self.invoker.actor)
+            .unwrap_or_else(|| self.invoker.clone());
+        self.invoke_as(invoker, address, arguments, confirmed)
+    }
+
+    /// [`Self::invoke`] for `invoker`, whom the host admitted for this one
+    /// invocation (an agent's, delivered to the app that owns the record):
+    /// the operation and every edit it makes are theirs. Any operation the
+    /// view offers — a document action, or an edit at the invoker's own
+    /// caret.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn invoke_as(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        if !tilo_actions::door::survey(&self.resources())
             .iter()
             .any(|entry| &entry.address == address)
         {
             return Err(DoorError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();
-        let (_, started) = self.frame.start_bound_job_for(
-            Some(tilo_actions::ActionInvoker::actor(self.me.clone())),
+        let (_, started) = self.frame.start_bound_job_within(
+            Some(invoker),
+            self.context.as_ref(),
             &ui_core::bound_dispatch::BoundActionAddress {
                 instance_id: INSTANCE,
                 address: address.clone(),
@@ -244,6 +302,69 @@ impl AttachedView {
         )?;
         self.frame.relayout();
         Ok(started.completed().unwrap_or_default())
+    }
+
+    /// Perform `invoke`, an action of the record's resource `R` built from
+    /// its typed reference (`Note::EDIT.with(..)`, `Invoke::edit(..)`),
+    /// through the view as [`Self::invoke`] does.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`], and when `invoke` does not bind or the view
+    /// publishes no `R`.
+    pub fn invoke_typed<R: tilo_resource::Resource>(
+        &mut self,
+        invoke: &tilo_resource::Invoke<R>,
+        confirmed: bool,
+    ) -> Result<ActionOutput, DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(DoorError::InvalidArguments(refusal.to_owned()));
+        }
+        let resource = self
+            .resources()
+            .into_iter()
+            .find(|resource| resource.kind == R::KIND)
+            .ok_or_else(|| DoorError::Unknown(ActionAddress::new(R::KIND, invoke.id)))?;
+        self.invoke(
+            &ActionAddress::new(resource.id.as_str(), invoke.id),
+            &invoke.arguments,
+            confirmed,
+        )
+    }
+
+    /// The task the participant carries out from now on (`None`: none),
+    /// recorded with each thing it does.
+    pub fn set_context(&mut self, context: Option<tilo_actions::ActionContext>) {
+        self.context = context;
+    }
+
+    /// Record one instruction that changed several records as one run in
+    /// this record's history: a marker, no content. Leaves with
+    /// [`Self::take_changes`]; whether anything was recorded.
+    pub fn record_run(
+        &mut self,
+        label: &str,
+        issued_by: Option<&str>,
+        decision: Option<&str>,
+        steps: &[ui_core::RunStep],
+    ) -> bool {
+        self.records
+            .with(&self.checkout.id, |doc| {
+                let by = doc.get_actor().to_hex_string();
+                let recorded = ui_core::record_run_with_details(
+                    doc,
+                    label,
+                    Some(&by),
+                    issued_by,
+                    Some(label),
+                    decision,
+                    steps,
+                );
+                if recorded.is_some() {
+                    tilo_resource::history::commit_stamped(doc);
+                }
+                recorded.is_some()
+            })
+            .unwrap_or(false)
     }
 
     /// The last action the view applied for the participant's latest
