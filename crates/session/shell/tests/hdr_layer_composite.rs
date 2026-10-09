@@ -502,12 +502,13 @@ fn the_hdr_composite_fits_the_frame_budget() {
     // Pipelines and the plane upload are paid once, not per frame.
     time(&[], 1);
     time(&layers, 2);
-    let median = |mut samples: Vec<Duration>| {
-        samples.sort();
-        samples[samples.len() / 2]
-    };
-    let plain = median((0..5).map(|i| time(&[], 10 + i)).collect());
-    let composited = median((0..5).map(|i| time(&layers, 20 + i)).collect());
+    // Alternate the two so load on a shared runner lands on both, and keep
+    // each one's fastest frame: noise only ever adds time.
+    let (mut plain, mut composited) = (Duration::MAX, Duration::MAX);
+    for i in 0..5 {
+        plain = plain.min(time(&[], 10 + 2 * i));
+        composited = composited.min(time(&layers, 11 + 2 * i));
+    }
     let extra = composited.saturating_sub(plain);
     let adapter = bridge.adapter_info().expect("adapter");
     eprintln!(
