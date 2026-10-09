@@ -270,6 +270,18 @@ fn a_verb_with_an_outbox_reaches_outside() {
     assert!(!spec("mail-to").contract.reversible);
     assert!(spec("retitle").contract.reversible);
     assert!(spec(tilo_resource::APPLY).contract.reversible);
+    assert_eq!(
+        tilo_resource::spec_kind(spec("mail-to")),
+        ActionKind::Outside
+    );
+    assert_eq!(
+        tilo_resource::spec_kind(spec("retitle")),
+        ActionKind::Undoable
+    );
+    assert_eq!(
+        tilo_resource::spec_kind(spec(tilo_resource::FIELD_EDIT)),
+        ActionKind::Undoable
+    );
 }
 
 #[test]
@@ -323,4 +335,27 @@ fn seed_availability_children_and_content() {
     const { assert!(Shelf::READABLE) };
     let content = Shelf::read_content(&shelf.state().unwrap(), shelf.doc(), None).unwrap();
     assert_eq!(content["cards"], 2);
+}
+
+#[test]
+fn an_input_that_does_not_bind_refuses_where_it_is_submitted() {
+    // A hand-written reference whose names do not match its input.
+    let wrong: tilo_resource::ActionRef<Shelf, (String,)> =
+        tilo_resource::ActionRef::new("add", &["title", "colour"]);
+    let invoke = wrong.with(("a".to_owned(),));
+    assert!(invoke.refusal().is_some());
+    assert!(invoke.arguments.is_empty());
+    assert!(wrong.try_with(("a".to_owned(),)).is_err());
+    let mut shelf = Replica::<Shelf>::new();
+    assert!(shelf.apply(invoke.clone()).is_err());
+    assert!(invoke.build(0).is_err());
+    assert!(
+        shelf
+            .apply(tilo_resource::Invoke::group([
+                Shelf::RENAME.with("x"),
+                invoke
+            ]))
+            .is_err()
+    );
+    assert_eq!(shelf.state().unwrap().name, "New shelf");
 }

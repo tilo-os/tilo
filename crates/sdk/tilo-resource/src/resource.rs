@@ -1248,6 +1248,18 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     })
 }
 
+/// What kind of action a published spec is: a view only reads, an effect
+/// reaches outside the document, and a document action changes only the
+/// document when the host's undo reverts it, else it reaches outside.
+#[must_use]
+pub fn spec_kind(spec: &ActionSpec) -> ActionKind {
+    match spec.kind {
+        OperationKind::View => ActionKind::Read,
+        OperationKind::Document if spec.contract.reversible => ActionKind::Undoable,
+        OperationKind::Effect | OperationKind::Document => ActionKind::Outside,
+    }
+}
+
 /// How much a requirement asks, least first.
 pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
     match requirement {

@@ -298,6 +298,17 @@ impl EffectDecl {
 
     /// The published action of this effect, taking `params` and encoding
     /// an invocation with `build`.
+    /// What kind of action the effect is: a view reads, anything else
+    /// reaches outside the document.
+    #[must_use]
+    pub fn action_kind(&self) -> crate::ActionKind {
+        if self.kind == OperationKind::View {
+            crate::ActionKind::Read
+        } else {
+            crate::ActionKind::Outside
+        }
+    }
+
     fn spec_with(
         &self,
         operation: &'static str,

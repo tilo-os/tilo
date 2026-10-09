@@ -104,6 +104,9 @@ impl<R: Resource> Replica<R> {
     /// # Errors
     /// Returns a refusal, an argument error or a document error.
     pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, ActionError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(ActionError::Refused(refusal.to_owned()));
+        }
         let Invoke { id, arguments, .. } = invoke;
         if id == crate::GROUP {
             let group = crate::group::build_group::<R>(&arguments, self.now_ms)

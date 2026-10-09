@@ -374,30 +374,69 @@ impl<R, A: Serialize> ActionRef<R, A> {
 
     /// The JSON arguments this input binds to: a verb's parameter struct
     /// as its fields, or positional inputs under the declared names.
-    pub fn arguments(&self, input: &A) -> serde_json::Map<String, serde_json::Value> {
-        let value = serde_json::to_value(input).unwrap_or(serde_json::Value::Null);
+    ///
+    /// # Errors
+    /// Returns why the input does not serialize, or does not have the shape
+    /// the declared names ask for.
+    pub fn try_arguments(
+        &self,
+        input: &A,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let id = self.id;
+        let value = serde_json::to_value(input).map_err(|error| format!("`{id}`: {error}"))?;
         match (self.params, value) {
-            ([], serde_json::Value::Object(fields)) => fields,
-            ([], _) => serde_json::Map::new(),
-            ([single], value) => serde_json::Map::from_iter([((*single).to_owned(), value)]),
-            (names, serde_json::Value::Array(values)) => names
+            ([], serde_json::Value::Object(fields)) => Ok(fields),
+            ([], serde_json::Value::Null) => Ok(serde_json::Map::new()),
+            ([], other) => Err(format!("`{id}` takes named arguments, not `{other}`")),
+            ([single], value) => Ok(serde_json::Map::from_iter([((*single).to_owned(), value)])),
+            (names, serde_json::Value::Array(values)) if values.len() == names.len() => Ok(names
                 .iter()
                 .map(|name| (*name).to_owned())
                 .zip(values)
-                .collect(),
-            _ => serde_json::Map::new(),
+                .collect()),
+            (names, other) => Err(format!(
+                "`{id}` takes {} arguments ({}), not `{other}`",
+                names.len(),
+                names.join(", ")
+            )),
         }
+    }
+
+    /// [`Self::try_arguments`] for a control binding: an input that does
+    /// not bind gives no arguments, which the binding's validation against
+    /// the published spec then refuses.
+    pub fn arguments(&self, input: &A) -> serde_json::Map<String, serde_json::Value> {
+        self.try_arguments(input).unwrap_or_default()
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
     /// A verb's parameter struct converts from its parameters in order: one
-    /// value, or a tuple of several.
+    /// value, or a tuple of several. An input that does not bind makes an
+    /// invocation that refuses with why ([`Invoke::refusal`]), never one
+    /// with empty arguments.
     pub fn with(&self, input: impl Into<A>) -> Invoke<R> {
+        let (arguments, refusal) = match self.try_arguments(&input.into()) {
+            Ok(arguments) => (arguments, None),
+            Err(refusal) => (serde_json::Map::new(), Some(refusal)),
+        };
         Invoke {
             id: self.id,
-            arguments: self.arguments(&input.into()),
+            arguments,
+            refusal,
             effect: false,
             marker: PhantomData,
+        }
+    }
+
+    /// [`Self::with`], reporting an input that does not bind at once.
+    ///
+    /// # Errors
+    /// Returns why the input does not bind.
+    pub fn try_with(&self, input: impl Into<A>) -> Result<Invoke<R>, String> {
+        let invoke = self.with(input);
+        match invoke.refusal {
+            Some(refusal) => Err(refusal),
+            None => Ok(invoke),
         }
     }
 }
@@ -475,6 +514,7 @@ impl<R, A: NoParams> ActionRef<R, A> {
         Invoke {
             id: self.id,
             arguments: serde_json::Map::new(),
+            refusal: None,
             effect: false,
             marker: PhantomData,
         }
@@ -486,6 +526,8 @@ impl<R, A: NoParams> ActionRef<R, A> {
 pub struct Invoke<R> {
     pub id: &'static str,
     pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Why the input it was built from does not bind, if it does not.
+    refusal: Option<String>,
     effect: bool,
     marker: PhantomData<fn() -> R>,
 }
@@ -495,6 +537,7 @@ impl<R> Clone for Invoke<R> {
         Self {
             id: self.id,
             arguments: self.arguments.clone(),
+            refusal: self.refusal.clone(),
             effect: self.effect,
             marker: PhantomData,
         }
@@ -506,6 +549,7 @@ impl<R> std::fmt::Debug for Invoke<R> {
         f.debug_struct("Invoke")
             .field("id", &self.id)
             .field("arguments", &self.arguments)
+            .field("refusal", &self.refusal)
             .field("effect", &self.effect)
             .finish()
     }
@@ -520,9 +564,16 @@ impl<R> Invoke<R> {
         Self {
             id: effect.id(),
             arguments: effect.arguments(),
+            refusal: None,
             effect: true,
             marker: PhantomData,
         }
+    }
+
+    /// Why the input this invocation was built from does not bind: such an
+    /// invocation refuses wherever it is submitted.
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
     }
 
     /// Whether this invokes an effect ([`Self::effect`]) rather than one of
@@ -545,6 +596,7 @@ impl<R: Resource> Invoke<R> {
                 crate::APPLY_PARAM.to_owned(),
                 serde_json::to_value(action)?,
             )]),
+            refusal: None,
             effect: false,
             marker: PhantomData,
         })
@@ -561,6 +613,7 @@ impl<R: Resource> Invoke<R> {
                 crate::EDIT_PARAM.to_owned(),
                 serde_json::to_value(edit)?,
             )]),
+            refusal: None,
             effect: false,
             marker: PhantomData,
         })
@@ -586,7 +639,11 @@ impl<R: Resource> Invoke<R> {
     /// one undo step. Members that are groups themselves are flattened.
     pub fn group(members: impl IntoIterator<Item = Self>) -> Self {
         let mut actions = Vec::new();
+        let mut refusal = None;
         for member in members {
+            if refusal.is_none() {
+                refusal.clone_from(&member.refusal);
+            }
             if member.is_group() {
                 if let Some(serde_json::Value::Array(inner)) =
                     member.arguments.get(crate::GROUP_PARAM)
@@ -610,6 +667,7 @@ impl<R: Resource> Invoke<R> {
                 crate::GROUP_PARAM.to_owned(),
                 serde_json::Value::Array(actions),
             )]),
+            refusal,
             effect: false,
             marker: PhantomData,
         }
@@ -626,6 +684,9 @@ impl<R: Resource> Invoke<R> {
     /// # Errors
     /// Returns why the arguments do not bind.
     pub fn build(&self, now_ms: i64) -> Result<R::Action, String> {
+        if let Some(refusal) = &self.refusal {
+            return Err(refusal.clone());
+        }
         crate::resource::build_action::<R>(self.id, &self.arguments, now_ms)
     }
 }
