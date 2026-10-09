@@ -138,7 +138,7 @@ D2 = 8
 
 [apps.store]
 D1 = 1
-D2 = 7
+D2 = 5
 
 [apps.terminal]
 D1 = 4
