@@ -5356,7 +5356,7 @@ fn activate_component_palette(
 ) {
     app.open_action_palette();
     let target = crate::bound_dispatch::BoundActionTarget {
-        physical_text: false,
+        input: crate::bound_dispatch::Input::Discrete,
         binding: handle.binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: handle.binding.instance_id,

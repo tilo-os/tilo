@@ -8,7 +8,8 @@ use std::rc::{Rc, Weak};
 
 use tilo_actions::ActionBinding;
 use tilo_resource::{
-    ActionDecl, Binds, Collection, Effect, Id, Model, Path, Resource, Segment, Settable,
+    ActionDecl, Binds, Collection, Edit, Effect, Id, Model, Params, Path, Resource, Segment,
+    Settable,
 };
 use ui_core::LocalState;
 use ui_core::i18n::LabelKey;
@@ -19,6 +20,7 @@ use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};
 use super::each::Each;
 use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects, Projection};
+use super::form::{Attached, Form, FormField, Forms, RecordField};
 use super::live::Live;
 use super::reactive::{Reads, Updaters};
 use super::scenario::{Run, RunMode};
@@ -81,6 +83,8 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     /// in a way no path names.
     pub(crate) path: Option<Vec<Segment>>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
+    /// The forms filled in in this scope ([`Self::form`]).
+    pub(crate) forms: Forms,
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
     pub(crate) feeds: super::history::HistoryFeeds,
@@ -119,6 +123,7 @@ impl<R: Resource> ViewCx<R> {
             item: None,
             path: Some(Vec::new()),
             controls: Rc::default(),
+            forms: Forms::default(),
             saved: LocalState::new(RecordSaveStatus::Saved),
             stages: Stages::new(),
             feeds: super::history::HistoryFeeds::default(),
@@ -551,22 +556,87 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     /// A button that submits one fully specified action: a verb with its
-    /// arguments (`Snippets::NEW_SNIPPET.with(..)`) or a field edit
-    /// (`p.favorite.set(true)`).
+    /// arguments (`Snippets::NEW_SNIPPET.with(..)`), a field edit
+    /// (`p.favorite.set(true)`) or a form ([`Form::submit`]).
     pub fn button(&self, label: impl Into<LabelKey>, submit: impl Submit<R>) -> Button {
         let label: LabelKey = label.into();
-        let invoke = match submit.into_invoke() {
-            Ok(invoke) => invoke,
-            Err(error) => {
-                super::controls::unbound::<R>(label.as_str(), &error);
-                return disabled(Button::new(label.as_str(), label.as_str()));
-            }
-        };
-        let id = self.control_id(invoke.id);
+        let id = self.control_id(submit.action_id());
         let button = Button::new(&id, label.as_str());
-        match self.actions().control_invocation(invoke) {
+        match submit.control_binding(&self.actions()) {
             Some(binding) => button.on_action(binding),
             None => disabled(button),
+        }
+    }
+
+    /// The form of the verb whose parameters are `P`
+    /// (`cx.form::<bookmarks::Add>()`): local values, never synced or
+    /// undone, that controls bind to with the parameters' paths
+    /// (`cx.input(bookmarks::Add::paths().url)`) and a button submits as one
+    /// invocation (`cx.button("bookmarks-add", form.submit())`). The same
+    /// form is answered for `P` everywhere in this scope.
+    pub fn form<P: Params<Resource = R>>(&self) -> Form<P> {
+        self.forms.get::<P>()
+    }
+
+    /// A text field for the text at `field`: a path into the record, whose
+    /// committed edits replace it ([`Path::replace`]; the keystrokes of one
+    /// word are one undo step), or into a form ([`Self::form`]).
+    pub fn input<M>(&self, field: impl Bound<R, String, M>) -> TextInput {
+        match field.attach(self, Path::replace) {
+            Attached::Record { id, state, binding } => {
+                let input = TextInput::from_state(&state).with_id(&id);
+                match binding {
+                    Some(binding) => input.on_action(*binding),
+                    None => input.disabled(true),
+                }
+            }
+            Attached::Local { id, state } => TextInput::from_state(&state).with_id(&id),
+        }
+    }
+
+    /// A checkbox for the flag at `field`, a path into the record or a form;
+    /// toggling sets it.
+    pub fn checkbox<M>(
+        &self,
+        label: impl Into<LabelKey>,
+        field: impl Bound<R, bool, M>,
+    ) -> Checkbox {
+        let label: LabelKey = label.into();
+        match field.attach(self, Path::set) {
+            Attached::Record { id, state, binding } => {
+                let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
+                match binding {
+                    Some(binding) => checkbox.on_action(*binding),
+                    None => checkbox.with_enabled(false),
+                }
+            }
+            Attached::Local { id, state } => {
+                Checkbox::from_state(&state).with_id(&id).with_label(label)
+            }
+        }
+    }
+
+    /// Any toolkit control for the value at `field`, a path into the record
+    /// or a form, setting it with each committed value:
+    /// `cx.control(Slider::from_state, p.volume)`.
+    pub fn control<V, C, M>(
+        &self,
+        make: impl FnOnce(&LocalState<V>) -> C,
+        field: impl Bound<R, V, M>,
+    ) -> C
+    where
+        V: Settable + 'static,
+        C: ActionControl<V>,
+    {
+        match field.attach(self, Path::set) {
+            Attached::Record { state, binding, .. } => {
+                let control = make(&state);
+                match binding {
+                    Some(binding) => control.bind_action(*binding),
+                    None => control.unavailable(),
+                }
+            }
+            Attached::Local { state, .. } => make(&state),
         }
     }
 
@@ -663,6 +733,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     path: path.clone(),
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),
+                    forms: Forms::default(),
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
@@ -900,6 +971,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
                     item: Some(id.clone()),
                     path,
                     controls: Rc::clone(&controls),
+                    forms: Forms::default(),
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
@@ -1007,53 +1079,54 @@ where
         state.set(initial);
         state
     }
+}
 
-    /// A text field showing the text at `path`; each committed edit replaces
-    /// it ([`Path::replace`]), and the keystrokes of one word are one undo
-    /// step.
-    pub fn input(&self, path: Path<R, String>) -> TextInput {
-        let id = self.path_control_id(&path);
-        let state = self.value_at(&path);
-        let input = TextInput::from_state(&state).with_id(&id);
-        match self
-            .actions()
-            .edit_binding(path, |path, text: String| path.replace(text))
-        {
-            Some(binding) => input.on_action(binding),
-            None => input.disabled(true),
-        }
+/// What a control shows and changes: a field of the record, by its
+/// [`Path`], or a field of a form ([`ViewCx::form`]), by the path into the
+/// verb's parameters. `M` tells the two apart and is always inferred.
+pub trait Bound<R: Resource, V, M>: Sized {
+    #[doc(hidden)]
+    fn attach<T: 'static>(
+        self,
+        cx: &ViewCx<R, T>,
+        edit: fn(&Path<R, V>, V) -> Edit<R>,
+    ) -> Attached<V>;
+}
+
+impl<R, V> Bound<R, V, RecordField> for Path<R, V>
+where
+    R: Resource<State = R> + Model,
+    V: PartialEq + Default + Clone + Send + Sync + 'static,
+{
+    fn attach<T: 'static>(
+        self,
+        cx: &ViewCx<R, T>,
+        edit: fn(&Path<R, V>, V) -> Edit<R>,
+    ) -> Attached<V> {
+        let id = cx.path_control_id(&self);
+        let state = cx.value_at(&self);
+        let binding = cx.actions().edit_binding(self, edit).map(Box::new);
+        Attached::Record { id, state, binding }
     }
+}
 
-    /// A checkbox showing the flag at `path`; toggling sets it.
-    pub fn checkbox(&self, label: impl Into<LabelKey>, path: Path<R, bool>) -> Checkbox {
-        let id = self.path_control_id(&path);
-        let state = self.value_at(&path);
-        let label: LabelKey = label.into();
-        let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
-        match self
-            .actions()
-            .edit_binding(path, |path, value: bool| path.set(value))
-        {
-            Some(binding) => checkbox.on_action(binding),
-            None => checkbox.with_enabled(false),
-        }
-    }
-
-    /// Any toolkit control showing the value at `path` and setting it with
-    /// each committed value: `cx.control(Slider::from_state, p.volume)`.
-    pub fn control<V, C>(&self, make: impl FnOnce(&LocalState<V>) -> C, path: Path<R, V>) -> C
-    where
-        V: Settable + PartialEq + Default + Clone + 'static,
-        C: ActionControl<V>,
-    {
-        let control = make(&self.value_at(&path));
-        match self
-            .actions()
-            .edit_binding(path, |path, value: V| path.set(value))
-        {
-            Some(binding) => control.bind_action(binding),
-            None => control.unavailable(),
-        }
+impl<R, P, V> Bound<R, V, FormField> for Path<P, V>
+where
+    R: Resource,
+    P: Params<Resource = R>,
+    V: serde::Serialize + Default + Send + Sync + 'static,
+{
+    fn attach<T: 'static>(
+        self,
+        cx: &ViewCx<R, T>,
+        _edit: fn(&Path<R, V>, V) -> Edit<R>,
+    ) -> Attached<V> {
+        let state = cx.form::<P>().field(&self);
+        let id = std::iter::once(P::ACTION.id.to_owned())
+            .chain(self.segments().iter().map(ToString::to_string))
+            .collect::<Vec<_>>()
+            .join("-");
+        Attached::Local { id, state }
     }
 }
 

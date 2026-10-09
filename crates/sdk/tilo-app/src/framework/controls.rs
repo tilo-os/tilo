@@ -205,6 +205,30 @@ impl<R: Resource> Actions<R> {
             .ok()
     }
 
+    /// The binding of a button that invokes `R`'s action `id` with the
+    /// arguments `arguments` makes when it is pressed (a form's values).
+    pub(crate) fn deferred_binding(
+        &self,
+        id: &str,
+        arguments: impl Fn() -> Result<serde_json::Map<String, serde_json::Value>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Option<ActionBinding<()>> {
+        let key = self.key(id);
+        let spec = match self.spec(&key) {
+            Ok(spec) => spec,
+            Err(why) => {
+                unbound::<R>(&format!("`{key}`"), &why);
+                return None;
+            }
+        };
+        let published = self.published.borrow();
+        ActionBinding::fallible(&published, &spec, move |()| arguments())
+            .map_err(|error| unbound::<R>(&format!("`{key}`"), &error.to_string()))
+            .ok()
+    }
+
     /// The binding of the field at `path` for a control with input `V`:
     /// each committed value becomes the field edit `edit(path, value)`.
     /// `None`, and a failure in tests, when the resource has no field edits

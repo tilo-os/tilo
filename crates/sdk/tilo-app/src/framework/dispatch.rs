@@ -7,9 +7,11 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use tilo_actions::{
-    ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation,
+    ActionAddress, ActionBinding, ActionContext, ActionError, ActionInvoker, ControlInvocation,
     PermissionRequirement,
 };
+
+use super::controls::Actions;
 use tilo_resource::{Edit, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
@@ -21,15 +23,35 @@ use ui_core::widget::controls::AttributedControlInvocation;
 /// made at a path (`p.favorite.set(true)`), a verb with its arguments, or an
 /// invocation built some other way. No app writes an action id or an
 /// argument map.
-pub trait Submit<R: Resource> {
+pub trait Submit<R: Resource>: Sized {
+    /// The public id of the action this submits.
+    fn action_id(&self) -> &'static str;
+
     /// The invocation of the host door this submits.
     ///
     /// # Errors
     /// Returns why it cannot be submitted.
     fn into_invoke(self) -> Result<Invoke<R>, String>;
+
+    /// The binding of a button that submits this when pressed, or `None`
+    /// (and a failure in tests) when the resource does not publish it.
+    fn control_binding(self, actions: &Actions<R>) -> Option<ActionBinding<()>> {
+        let id = self.action_id();
+        match self.into_invoke() {
+            Ok(invoke) => actions.control_invocation(invoke),
+            Err(error) => {
+                super::controls::unbound::<R>(&format!("`{id}`"), &error);
+                None
+            }
+        }
+    }
 }
 
 impl<R: Resource> Submit<R> for Invoke<R> {
+    fn action_id(&self) -> &'static str {
+        self.id
+    }
+
     fn into_invoke(self) -> Result<Invoke<R>, String> {
         match self.refusal() {
             Some(refusal) => Err(refusal.to_owned()),
@@ -39,6 +61,10 @@ impl<R: Resource> Submit<R> for Invoke<R> {
 }
 
 impl<R: Resource> Submit<R> for Edit<R> {
+    fn action_id(&self) -> &'static str {
+        tilo_resource::FIELD_EDIT
+    }
+
     fn into_invoke(self) -> Result<Invoke<R>, String> {
         Invoke::edit(&self).map_err(|error| error.to_string())
     }
@@ -461,11 +487,12 @@ impl<R: Resource> Dispatcher<R> {
     /// verb (`dispatcher.submit(Snippets::DELETE.with(id))`) through the
     /// door, after the event, as a control bound to it would.
     pub fn submit(&self, submit: impl Submit<R>) {
+        let id = submit.action_id();
         match submit.into_invoke() {
             Ok(invoke) => self.invoke(invoke),
             Err(error) => {
-                super::controls::unbound::<R>("a submission", &error);
-                self.refuse(tilo_resource::FIELD_EDIT, error);
+                super::controls::unbound::<R>(&format!("`{id}`"), &error);
+                self.refuse(id, error);
             }
         }
     }

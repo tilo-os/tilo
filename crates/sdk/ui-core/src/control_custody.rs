@@ -106,7 +106,7 @@ impl ControlOwner {
             },
             Self::Component(binding) => {
                 PendingControlOrigin::Component(crate::bound_dispatch::BoundActionTarget {
-                    physical_text: false,
+                    input: crate::bound_dispatch::Input::Discrete,
                     binding: binding.clone(),
                     address: crate::bound_dispatch::BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -131,7 +131,11 @@ enum DomainEntry {
 struct Producer {
     id: ControlProducerId,
     discipline: ControlProducerDiscipline,
-    pending: VecDeque<(ControlRequestId, ControlInvocation, bool)>,
+    pending: VecDeque<(
+        ControlRequestId,
+        ControlInvocation,
+        crate::bound_dispatch::Input,
+    )>,
 }
 /// A retained producer does not keep its owner, registry or widget alive.
 #[derive(Clone)]
@@ -399,7 +403,7 @@ impl ControlDomain {
                         {
                             let mut origin = owner.origin(&invocation);
                             if let PendingControlOrigin::Component(target) = &mut origin {
-                                target.physical_text = physical_text;
+                                target.input = physical_text;
                             }
                             output.push(OwnedControl {
                                 origin,
@@ -468,7 +472,7 @@ impl ControlOutbox {
         }
         producer
             .pending
-            .push_back((id, invocation, crate::bound_dispatch::physical_text()));
+            .push_back((id, invocation, crate::bound_dispatch::input()));
         Ok(LocalEmission::Queued(id))
     }
     pub fn replace(&self, invocation: ControlInvocation) -> Result<LocalEmission, EmitError> {
@@ -490,7 +494,7 @@ pub(crate) struct ControlHolder {
 }
 enum HolderStorage {
     Legacy {
-        pending: VecDeque<(ControlInvocation, bool)>,
+        pending: VecDeque<(ControlInvocation, crate::bound_dispatch::Input)>,
         emitted: bool,
     },
     Registered(ControlOutbox),
@@ -559,9 +563,8 @@ impl ControlHolder {
         let old = std::mem::replace(&mut self.storage, HolderStorage::Registered(outbox.clone()));
         if let HolderStorage::Legacy { pending, .. } = old {
             for (invocation, physical_text) in pending {
-                let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
-                    outbox.emit(invocation)
-                });
+                let _ =
+                    crate::bound_dispatch::with_input(physical_text, || outbox.emit(invocation));
             }
         }
         Ok(())
@@ -593,7 +596,7 @@ impl ControlHolder {
                         }
                     }
                 }
-                pending.push_back((invocation, crate::bound_dispatch::physical_text()));
+                pending.push_back((invocation, crate::bound_dispatch::input()));
                 Ok(RawControlEmission::LegacyPending)
             }
         }
@@ -602,7 +605,7 @@ impl ControlHolder {
         match &mut self.storage {
             HolderStorage::Legacy { pending, .. } => {
                 pending.pop_front().map(|(invocation, physical_text)| {
-                    crate::bound_dispatch::note_drained_physical_text(physical_text);
+                    crate::bound_dispatch::note_drained_input(physical_text);
                     invocation
                 })
             }
