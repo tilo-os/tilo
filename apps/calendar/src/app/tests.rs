@@ -532,8 +532,7 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
             // Serialized callers and deferred widget imports share the real decoder
             // and executor; rejection cannot leave the preceding valid event behind.
             let encoded = crate::actions::encode(&batch);
-            let mut registry = tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(crate::actions::register);
             let decoded = registry.decode(&encoded).unwrap();
             let mut transport = tilo_actions::LocalTransport::new();
             assert!(

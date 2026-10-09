@@ -400,9 +400,7 @@ mod tests {
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// Dispatch an action through the executor, exactly as the on-screen

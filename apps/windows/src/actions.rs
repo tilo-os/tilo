@@ -501,9 +501,7 @@ mod tests {
     };
 
     fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        register(&mut registry);
-        registry
+        ActionRegistry::with(register)
     }
 
     fn set_route(app_id: &str, route: Route) -> WindowsAction {
