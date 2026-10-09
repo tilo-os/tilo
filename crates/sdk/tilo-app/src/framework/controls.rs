@@ -120,6 +120,9 @@ pub struct Actions<R: Resource> {
     /// The app whose resource this is, for the keys of its actions.
     app: &'static str,
     published: Rc<RefCell<tilo_actions::Resource>>,
+    /// Another record than the app's own, published at this id, whose
+    /// actions a live row may offer; `None` for the app's own resource.
+    record: Option<Rc<str>>,
     marker: PhantomData<fn() -> R>,
 }
 
@@ -128,6 +131,7 @@ impl<R: Resource> Clone for Actions<R> {
         Self {
             app: self.app,
             published: Rc::clone(&self.published),
+            record: self.record.clone(),
             marker: PhantomData,
         }
     }
@@ -138,8 +142,35 @@ impl<R: Resource> Actions<R> {
         Self {
             app,
             published: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
+            record: None,
             marker: PhantomData,
         }
+    }
+
+    /// These actions as another record's, published at `record`: a live row
+    /// may offer them ([`Self::operation`]) where it may change it.
+    pub(crate) fn routed_to(mut self, record: &str, editable: bool) -> Self {
+        self.record = editable.then(|| Rc::from(record));
+        self
+    }
+
+    /// `decl` — a bound field edit ([`tilo_resource::ActionDecl::edit`],
+    /// `edit_asking`) or verb of another record — as an operation a live
+    /// row offers ([`LiveRow::operation`](super::LiveRow::operation)),
+    /// carried out on that record as its person (*this* app's notification
+    /// rule on the app's row). `None` for the app's own resource, whose row
+    /// edits are [`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations),
+    /// and where the record is read only here.
+    #[must_use]
+    pub fn operation(
+        &self,
+        decl: &tilo_resource::ActionDecl<R>,
+    ) -> Option<tilo_actions::ActionSpec> {
+        let record = self.record.as_deref()?;
+        Some(super::record::route_spec(
+            tilo_resource::declaration_spec(decl),
+            record,
+        ))
     }
 
     /// Follow the canonical publication of this same hosted resource.

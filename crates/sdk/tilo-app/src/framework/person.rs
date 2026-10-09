@@ -15,7 +15,6 @@ use super::live::Live;
 use super::record::{Held, RecordDoor};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
-use ui_core::automerge::ChangeHash;
 use ui_core::history_mode::HistoryOwner;
 use ui_core::record::RecordKind;
 use ui_core::record::person::{PersonRecord as StoredRecord, PersonRecords};
@@ -52,28 +51,32 @@ struct Shared<P: Resource> {
     app_id: &'static str,
     app_title: &'static str,
     me: String,
-    /// The heads the state was read at.
-    heads: RefCell<Vec<ChangeHash>>,
+    /// The state, followed change by change: what views of the record read.
+    live: Live<P>,
+    /// The same state, for controls bound to it.
     state: LocalState<Rc<P::State>>,
-    revision: Cell<u64>,
     /// The record as views and the door edit it.
     held: RefCell<Option<Rc<Held<P>>>>,
 }
 
 impl<P: Resource> Shared<P> {
-    /// Read the state again when the record moved. Whether it did.
+    /// Follow the record when it moved, reading only what changed. Whether
+    /// it did.
     fn refresh(&self) -> bool {
-        let heads = self.record.heads();
-        if *self.heads.borrow() == heads {
-            return false;
-        }
-        let Some(Ok(state)) = self.record.read(P::read) else {
-            return false;
+        let moved = match self.record.read(|doc| self.live.sync(doc)) {
+            Some(Ok(moved)) => moved,
+            Some(Err(error)) => {
+                tracing::warn!(kind = P::KIND, %error, "person record unreadable");
+                false
+            }
+            None => false,
         };
-        *self.heads.borrow_mut() = heads;
-        self.state.set(Rc::new(state));
-        self.revision.set(self.revision.get().wrapping_add(1));
-        true
+        // Views of the record follow it whole: it is small.
+        let _ = self.live.take_change();
+        if moved {
+            self.state.set(self.live.get());
+        }
+        moved
     }
 }
 
@@ -101,7 +104,7 @@ impl<P: Resource> PersonRecord<P> {
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.shared.refresh();
-        self.shared.revision.get()
+        self.shared.live.revision()
     }
 
     /// Apply `action` now: one change of the record, attributed to the
@@ -384,7 +387,7 @@ impl PersonState {
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unavailable"))
             .ok()?;
         let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
-        let held = Rc::new(held::<P>(&shared, edits)?);
+        let held = Rc::new(held::<P>(&shared, edits));
         *shared.held.borrow_mut() = Some(Rc::clone(&held));
         if !own {
             self.opened.borrow_mut().insert(
@@ -418,8 +421,11 @@ impl PersonState {
         record: StoredRecord,
         owner: Option<&'static str>,
     ) -> Option<Rc<Shared<P>>> {
-        let state = record.read(P::read)?.ok()?;
-        let heads = record.heads();
+        let reader = record
+            .read(tilo_resource::Reader::<P>::read)?
+            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unreadable"))
+            .ok()?;
+        let live = Live::new(reader);
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
             record,
@@ -427,9 +433,8 @@ impl PersonState {
             app_id: self.app_id,
             app_title: self.app_title,
             me: self.me.clone(),
-            heads: RefCell::new(heads),
-            state: LocalState::new(Rc::new(state)),
-            revision: Cell::new(0),
+            state: LocalState::new(live.get()),
+            live,
             held: RefCell::new(None),
         });
         let weak = Rc::downgrade(&shared);
@@ -490,7 +495,7 @@ impl PersonState {
             seen: Cell::new(None),
         });
         // The section's record lives as long as the section is held.
-        let held = Rc::new(section_held(&shared, &section)?);
+        let held = Rc::new(section_held(&shared, &section));
         let stepping = Rc::downgrade(&shared);
         self.published.borrow_mut().push(Published {
             id: held.id().to_owned(),
@@ -599,27 +604,17 @@ impl PersonState {
 
 /// The record `shared` as views and the door edit it: read into a state of
 /// its own that follows the record, changed as the person.
-fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Option<Held<P>> {
-    let live = Live::new(
-        shared
-            .record
-            .read(tilo_resource::Reader::<P>::read)?
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unreadable"))
-            .ok()?,
-    );
+fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
-    Some(Held::new(
+    Held::new(
         resource_id(P::KIND),
         format!("Your {}", P::LABEL.to_lowercase()),
         edits,
-        live,
-        move |live: &Live<P>| {
-            let Some(shared) = following.upgrade() else {
-                return;
-            };
-            if let Some(Err(error)) = shared.record.read(|doc| live.sync(doc)) {
-                tracing::warn!(kind = P::KIND, %error, "person record unreadable");
+        shared.live.clone(),
+        move |_: &Live<P>| {
+            if let Some(shared) = following.upgrade() {
+                shared.refresh();
             }
         },
         move |action: &P::Action, invoker: &ActionInvoker| {
@@ -628,7 +623,7 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Option<Held<P>> {
                 .ok_or_else(|| ActionError::Refused("the record is closed".into()))?;
             PersonRecord { shared }.apply_as(action, invoker)
         },
-    ))
+    )
 }
 
 /// A settings section kept as a record: the section it writes, and the
@@ -689,30 +684,22 @@ where
 
 /// The settings section `section`, kept in the record `shared`, as views
 /// and the door edit it.
-fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section<T>>) -> Option<Held<T>>
+fn section_held<T>(shared: &Rc<Shared<T>>, section: &Rc<Section<T>>) -> Held<T>
 where
     T: Resource<State = T> + Fields + SettingsSchema,
 {
     section.follow(shared);
-    let live = Live::new(
-        shared
-            .record
-            .read(tilo_resource::Reader::<T>::read)?
-            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings record unreadable"))
-            .ok()?,
-    );
+    shared.refresh();
     let (following, following_section) = (Rc::clone(shared), Rc::clone(section));
     let (applying, applying_section) = (Rc::clone(shared), Rc::clone(section));
-    Some(Held::new(
+    Held::new(
         format!("settings:{}", T::KIND),
         T::LABEL.to_owned(),
         true,
-        live,
-        move |live: &Live<T>| {
+        shared.live.clone(),
+        move |_: &Live<T>| {
             following_section.follow(&following);
-            if let Some(Err(error)) = following.record.read(|doc| live.sync(doc)) {
-                tracing::warn!(kind = T::KIND, %error, "settings record unreadable");
-            }
+            following.refresh();
         },
         move |action: &T::Action, invoker: &ActionInvoker| {
             PersonRecord {
@@ -722,7 +709,7 @@ where
             applying_section.write(&applying, &super::record::action_id(action), &invoker.actor);
             Ok(())
         },
-    ))
+    )
 }
 
 impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {

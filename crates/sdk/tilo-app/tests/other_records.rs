@@ -355,21 +355,24 @@ impl ResourceApp for BindingApp {
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         let display = cx.settings::<Display>();
-        let actions = cx.record_actions(&display).unwrap();
         let shown = LocalState::new(display.get().high_contrast);
-        let binding = actions
-            .edit_binding(
-                Display::paths().high_contrast,
-                tilo_app::tilo_resource::Path::set,
+        cx.record(&display, |cx| {
+            let binding = cx
+                .actions()
+                .edit_binding(
+                    Display::paths().high_contrast,
+                    tilo_app::tilo_resource::Path::set,
+                )
+                .unwrap();
+            Box::new(
+                Column::new().push(Box::new(
+                    Checkbox::from_state(&shown)
+                        .with_id("contrast")
+                        .on_action(binding),
+                )),
             )
-            .unwrap();
-        Box::new(
-            Column::new().push(Box::new(
-                Checkbox::from_state(&shown)
-                    .with_id("contrast")
-                    .on_action(binding),
-            )),
-        )
+        })
+        .unwrap()
     }
 }
 
@@ -391,20 +394,23 @@ impl ResourceApp for MappingApp {
 
     fn view(cx: &mut ViewCx<Board>) -> Element {
         let display = cx.settings::<Display>();
-        let actions = cx.record_actions(&display).unwrap();
         let large = LocalState::new(false);
-        let binding = actions
-            .edit_binding_with(Display::paths().scale, |path, large: bool| {
-                Ok(path.set(if large { 2.0 } else { 1.0 }))
-            })
-            .unwrap();
-        Box::new(
-            Column::new().push(Box::new(
-                Checkbox::from_state(&large)
-                    .with_id("large")
-                    .on_action(binding),
-            )),
-        )
+        cx.record(&display, |cx| {
+            let binding = cx
+                .actions()
+                .edit_binding_with(Display::paths().scale, |path, large: bool| {
+                    Ok(path.set(if large { 2.0 } else { 1.0 }))
+                })
+                .unwrap();
+            Box::new(
+                Column::new().push(Box::new(
+                    Checkbox::from_state(&large)
+                        .with_id("large")
+                        .on_action(binding),
+                )),
+            )
+        })
+        .unwrap()
     }
 }
 
@@ -419,7 +425,7 @@ fn a_control_whose_input_is_not_the_fields_value_maps_it_to_the_edit() {
 #[derive(Default)]
 struct Rules {
     rect: tilo_app::prelude::Rect,
-    contrast: Option<tilo_app::framework::RecordOperations<Display>>,
+    contrast: Option<tilo_app::framework::Actions<Display>>,
 }
 
 impl Widget for Rules {
@@ -465,7 +471,7 @@ impl ResourceSurface<Board> for Rules {
 
     fn attach(&mut self, cx: tilo_app::framework::SurfaceCx<Board>) {
         let display = cx.settings::<Display>();
-        self.contrast = cx.record_operations(&display);
+        self.contrast = cx.record_actions(&display);
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

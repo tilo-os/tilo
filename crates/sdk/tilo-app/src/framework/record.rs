@@ -4,8 +4,9 @@
 //!
 //! Such a record is a resource like the app's own. A view binds its fields by
 //! path and its verbs by reference in a scope of its own
-//! ([`ViewCx::record`](super::ViewCx::record)); a surface submits through its
-//! dispatcher ([`SurfaceCx::record_dispatcher`](super::SurfaceCx::record_dispatcher)).
+//! ([`ViewCx::record`](super::ViewCx::record)); a surface binds its controls
+//! and live rows with the record's actions
+//! ([`SurfaceCx::record_actions`](super::SurfaceCx::record_actions)).
 //! It is published beside the app's resource with its field edits and verbs,
 //! so the palette, agents and scripts change it through the same door. Only
 //! the person whose record it is changes it (or software acting for them),
@@ -152,7 +153,7 @@ fn route(
 }
 
 /// The document action `spec` carried out on the record `record`.
-fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
+pub(crate) fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::ActionSpec {
     let record = record.to_owned();
     spec.routed(RECORD_ACTION_TYPE, move |action| {
         let routed = RecordAction {
@@ -170,40 +171,6 @@ fn route_spec(spec: tilo_actions::ActionSpec, record: &str) -> tilo_actions::Act
     // lets only its person change it.
     .of_kind(ActionKind::Read)
     .with_need_of(|_| ActionNeed::of(ActionKind::Read))
-}
-
-/// Field edits and verbs of another record, offered where the app's own
-/// actions cannot go: on a live row (*this* app's notification rule, on the
-/// app's row). See [`SurfaceCx::record_operations`].
-pub struct RecordOperations<P: Resource> {
-    id: String,
-    editable: bool,
-    marker: std::marker::PhantomData<fn() -> P>,
-}
-
-impl<P: Resource> Clone for RecordOperations<P> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            editable: self.editable,
-            marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<P: Resource> RecordOperations<P> {
-    /// `decl` (a bound field edit, [`tilo_resource::ActionDecl::edit`], or
-    /// one asking its value) as an operation a live row offers
-    /// ([`LiveRow::operation`](super::LiveRow::operation)), carried out on
-    /// the record as its person. `None` where the record is read only here.
-    #[must_use]
-    pub fn operation(
-        &self,
-        decl: &tilo_resource::ActionDecl<P>,
-    ) -> Option<tilo_actions::ActionSpec> {
-        self.editable
-            .then(|| route_spec(tilo_resource::declaration_spec(decl), &self.id))
-    }
 }
 
 /// A held record with its type erased, as the host publishes and answers
@@ -432,14 +399,20 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         part: impl FnOnce(&mut ViewCx<P>) -> Element,
     ) -> Option<Element> {
         let held = record.held(sealed::Storage(&self.storage))?;
-        let dispatch = self.record_dispatch(&held);
+        let dispatch = record_dispatch(&self.dispatch, &held);
+        let actions = record_actions(
+            self.dispatch.app_id(),
+            &self.storage,
+            self.alive.clone(),
+            Rc::clone(&held),
+        );
         let mut cx = ViewCx::<P> {
             live: held.live().clone(),
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
             alive: self.alive.clone(),
             dispatch,
-            action_bindings: Actions::new(self.dispatch.app_id(), Rc::new(held.publish())),
+            action_bindings: actions,
             item: None,
             path: Some(Vec::new()),
             controls: Rc::clone(&self.controls),
@@ -453,45 +426,29 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             effects: Effects::inert(),
         };
         let element = part(&mut cx);
-        let (updaters, actions) = (cx.updaters, cx.action_bindings);
+        let updaters = cx.updaters;
         let followed = Cell::new(held.live().revision());
         self.storage.follow_with(self.alive.clone(), move || {
             held.sync();
             let revision = held.live().revision();
             if followed.replace(revision) != revision {
-                actions.update(held.publish());
                 updaters.run(&held.live().get(), &Change::Everything);
             }
         });
         Some(element)
     }
-
-    /// The dispatcher of another record than the app's own, for code that
-    /// submits to it outside a [`Self::record`] part. `None` where the
-    /// record cannot be held.
-    pub fn record_dispatcher<P: Resource>(
-        &self,
-        record: &impl OtherRecord<P>,
-    ) -> Option<Dispatcher<P>> {
-        record
-            .held(sealed::Storage(&self.storage))
-            .map(|held| self.record_dispatch(&held))
-    }
-
-    fn record_dispatch<P: Resource>(&self, held: &Rc<Held<P>>) -> Dispatcher<P> {
-        record_dispatch(&self.dispatch, held)
-    }
 }
 
-/// The published actions of `held`, for controls a surface or a view binds
-/// itself, kept current with the record while `alive` lives.
+/// The published actions of `held`, kept current with the record while
+/// `alive` lives: what a record's view part binds, and a surface's own
+/// controls and live rows ([`Actions::operation`]).
 fn record_actions<P: Resource>(
     app: &'static str,
     storage: &ViewStorage,
     alive: std::rc::Weak<()>,
     held: Rc<Held<P>>,
 ) -> Actions<P> {
-    let actions = Actions::new(app, Rc::new(held.publish()));
+    let actions = Actions::new(app, Rc::new(held.publish())).routed_to(held.id(), held.editable());
     let following = actions.clone();
     let followed = Cell::new(held.live().revision());
     storage.follow_with(alive, move || {
@@ -504,40 +461,13 @@ fn record_actions<P: Resource>(
     actions
 }
 
-impl<R: Resource, T: 'static> ViewCx<R, T> {
-    /// The published actions of another record than the app's own, for
-    /// controls built outside a [`Self::record`] part: `bind` its verbs,
-    /// `edit_binding` its paths. `None` where the record cannot be held.
-    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
-        let held = record.held(sealed::Storage(&self.storage))?;
-        Some(record_actions(
-            self.dispatch.app_id(),
-            &self.storage,
-            self.alive.clone(),
-            held,
-        ))
-    }
-}
-
 impl<R: Resource> SurfaceCx<R> {
-    /// Another record's field edits and verbs for the live rows the surface
-    /// publishes ([`RecordOperations`]). `None` where the record cannot be
+    /// The published actions of another record than the app's own — the
+    /// person's own record, a settings section: a hand surface binds its
+    /// controls to the record's verbs and field edits with them, as to its
+    /// own, submits through [`Actions`]' bindings, and offers them on its
+    /// live rows ([`Actions::operation`]). `None` where the record cannot be
     /// held.
-    pub fn record_operations<P: Resource>(
-        &self,
-        record: &impl OtherRecord<P>,
-    ) -> Option<RecordOperations<P>> {
-        let held = record.held(sealed::Storage(&self.storage))?;
-        Some(RecordOperations {
-            id: held.id().to_owned(),
-            editable: held.editable(),
-            marker: std::marker::PhantomData,
-        })
-    }
-
-    /// The published actions of another record than the app's own, as
-    /// [`ViewCx::record_actions`]: a hand surface binds its controls to the
-    /// record's verbs and field edits with them, as to its own.
     pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
         let held = record.held(sealed::Storage(&self.storage))?;
         Some(record_actions(
@@ -546,20 +476,6 @@ impl<R: Resource> SurfaceCx<R> {
             self.alive.clone(),
             held,
         ))
-    }
-
-    /// The dispatcher of another record than the app's own, as
-    /// [`ViewCx::record_dispatcher`]: a surface reads the record itself
-    /// ([`PersonRecord::with`](super::PersonRecord::with),
-    /// [`Setting::get`](super::Setting::get)) and submits its field edits
-    /// and verbs here.
-    pub fn record_dispatcher<P: Resource>(
-        &self,
-        record: &impl OtherRecord<P>,
-    ) -> Option<Dispatcher<P>> {
-        record
-            .held(sealed::Storage(&self.storage))
-            .map(|held| record_dispatch(&self.dispatch, &held))
     }
 }
 
