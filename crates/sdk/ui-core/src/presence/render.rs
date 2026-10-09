@@ -649,6 +649,9 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
 /// Paint pointers, then tethers, then pills — in that layer order so a
 /// later peer's halo can't wash over an earlier peer's name. `viewport`
 /// bounds the pills; positions are assumed already filtered to it.
+///
+/// Returns the bounds, in scene coordinates, of everything painted: each
+/// pointer's halo, each tether and each pill with its shadow.
 pub fn draw_peer_cursors(
     scene: &mut Scene,
     transform: Affine,
@@ -656,9 +659,10 @@ pub fn draw_peer_cursors(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if peers.is_empty() {
-        return;
+        return painted;
     }
     let requests: Vec<PillRequest> = peers
         .iter()
@@ -671,6 +675,7 @@ pub fn draw_peer_cursors(
 
     for p in peers {
         let bounds = Rect::from_center_size(p.pos, (FADE_DOT_BOUNDS, FADE_DOT_BOUNDS));
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             draw_peer_dot(scene, transform, theme, p.pos, p.color, p.is_agent);
         });
@@ -687,6 +692,7 @@ pub fn draw_peer_cursors(
         line.move_to(from);
         line.line_to(to);
         let bounds = Rect::from_points(from, to).inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             scene.stroke(
                 &Stroke::new(1.5),
@@ -700,6 +706,7 @@ pub fn draw_peer_cursors(
 
     for (p, place) in peers.iter().zip(&placements) {
         let bounds = place.rect.inflate(FADE_EDGE, FADE_EDGE);
+        painted.push(transform.transform_rect_bbox(bounds));
         faded(scene, transform, p.opacity, bounds, |scene| {
             draw_peer_pill_kind(
                 scene,
@@ -713,6 +720,7 @@ pub fn draw_peer_cursors(
             );
         });
     }
+    painted
 }
 
 /// Room around a pointer's centre that covers its halo, shadow and ring.
@@ -1216,6 +1224,9 @@ fn mist_tag(
 /// peers get moving dots and collision-free name pills; off-screen peers
 /// become directional edge mist. This is the compositor-facing sibling of
 /// [`draw_remote_presence`], which resolves cursors from a [`PresenceCtx`].
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]).
 pub fn draw_peer_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1223,11 +1234,15 @@ pub fn draw_peer_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     peers: &[PeerCursor],
-) {
+) -> Vec<Rect> {
     let mut on_screen = Vec::new();
+    let mut painted = Vec::new();
     for peer in peers {
         let target = Point::new(peer.pos.0, peer.pos.1);
         if let Some(mist) = super::geom::edge_mist_for(viewport, target) {
+            // Drawn untransformed; the rail and the name tag stay inside
+            // the band.
+            painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
             faded(scene, Affine::IDENTITY, peer.opacity, viewport, |scene| {
                 draw_edge_mist(
                     scene,
@@ -1243,7 +1258,15 @@ pub fn draw_peer_presence(
             on_screen.push(peer.clone());
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 /// The one call the app makes each frame to render all cross-process peer
