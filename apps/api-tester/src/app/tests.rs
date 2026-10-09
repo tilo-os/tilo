@@ -239,8 +239,10 @@ fn renaming_the_active_environment_keeps_it_active() {
     assert_eq!(a.active_env.as_ref(), Some(&active));
     assert_eq!(a.env_state.get(), "Live");
 
-    a.open_form(FormMode::DeleteEnvironment, FormTarget::default());
-    push(&a, Cmd::SubmitForm);
+    push(
+        &a,
+        Cmd::PickEnvironment("Delete environment\u{2026}".into()),
+    );
     drain(&mut a, &mut doc);
     resync(&mut a, &doc);
     assert!(a.environments.iter().all(|e| e.id != active));
@@ -352,22 +354,24 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
 
     // Cancelling changes nothing.
     let heads = doc.get_heads();
-    a.open_form(FormMode::DeleteRequest, FormTarget::default());
+    a.open_form(FormMode::RenameRequest, FormTarget::default());
     push(&a, Cmd::CancelForm);
     drain(&mut a, &mut doc);
     assert!(a.form.is_none());
     assert_eq!(doc.get_heads(), heads);
 
-    // Deleting from a row removes it and keeps the builder's selection.
-    a.open_form(
-        FormMode::DeleteRequest,
-        FormTarget {
+    // Deleting from a row removes it (once the host has the person's
+    // consent, which resolving here stands for) and keeps the builder's
+    // selection. No sheet of the window's own asks first.
+    push(
+        &a,
+        Cmd::DeleteRequest(FormTarget {
             collection: Some(collection),
             request: Some(request),
-        },
+        }),
     );
-    push(&a, Cmd::SubmitForm);
     drain(&mut a, &mut doc);
+    assert!(a.form.is_none(), "the host asks, not the window");
     let remaining: usize = a.collections.iter().map(|c| c.requests.len()).sum();
     assert_eq!(remaining, 6, "one of the seven demo requests is gone");
     let (ci, ri) = a.selected.expect("the builder's request is still selected");

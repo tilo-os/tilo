@@ -50,13 +50,17 @@ use crate::vars;
 const NO_ENV: &str = "No environment";
 
 /// What the environment picker offers besides the environments themselves,
-/// and the sheet each opens. The first needs no active environment.
-const ENVIRONMENT_COMMANDS: [(&str, FormMode); 5] = [
-    ("New environment\u{2026}", FormMode::NewEnvironment),
-    ("Rename environment\u{2026}", FormMode::RenameEnvironment),
-    ("Add variable\u{2026}", FormMode::NewVariable),
-    ("Delete variable\u{2026}", FormMode::DeleteVariable),
-    ("Delete environment\u{2026}", FormMode::DeleteEnvironment),
+/// and the sheet each opens; deleting the environment opens none, the host
+/// asks. The first needs no active environment.
+const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
+    ("New environment\u{2026}", Some(FormMode::NewEnvironment)),
+    (
+        "Rename environment\u{2026}",
+        Some(FormMode::RenameEnvironment),
+    ),
+    ("Add variable\u{2026}", Some(FormMode::NewVariable)),
+    ("Delete variable\u{2026}", Some(FormMode::DeleteVariable)),
+    ("Delete environment\u{2026}", None),
 ];
 
 /// A pane of the split: `slot` with room between it and the divider, which
@@ -527,10 +531,8 @@ impl ApiTesterApp {
             "save-request" => FormMode::SaveRequest,
             "rename-collection" => FormMode::RenameCollection,
             "rename-request" => FormMode::RenameRequest,
-            "delete-request" => FormMode::DeleteRequest,
             "new-environment" => FormMode::NewEnvironment,
             "rename-environment" => FormMode::RenameEnvironment,
-            "delete-environment" => FormMode::DeleteEnvironment,
             "new-variable" => FormMode::NewVariable,
             "delete-variable" => FormMode::DeleteVariable,
             _ => return None,
@@ -554,10 +556,8 @@ impl ApiTesterApp {
         "form-save-request",
         "form-rename-collection",
         "form-rename-request",
-        "form-delete-request",
         "form-new-environment",
         "form-rename-environment",
-        "form-delete-environment",
         "form-new-variable",
         "form-delete-variable",
     ];
@@ -828,6 +828,7 @@ impl ApiTesterApp {
                 Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, &edit),
                 Cmd::PickEnvironment(choice) => self.pick_environment(&choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
+                Cmd::DeleteRequest(target) => self.delete_request(target),
                 Cmd::CancelForm => self.close_form(),
                 Cmd::SubmitForm => self.submit_form(),
             }
@@ -968,42 +969,23 @@ impl ApiTesterApp {
 
     fn open_form(&mut self, mode: FormMode, target: FormTarget) {
         let target = self.resolve_target(target);
-        let (initial, subject) = match mode {
-            FormMode::RenameCollection => {
-                let name = target
-                    .collection
-                    .as_ref()
-                    .and_then(|id| self.collection_named(id))
-                    .map_or(String::new(), |c| c.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::RenameRequest => {
-                let name = self
-                    .request_in(&target)
-                    .map_or(String::new(), |r| r.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::DeleteRequest => (
-                String::new(),
-                self.request_in(&target)
-                    .map_or(String::new(), |r| r.name.clone()),
-            ),
-            FormMode::RenameEnvironment => {
-                let name = self
-                    .active_environment()
-                    .map_or(String::new(), |e| e.name.clone());
-                (name.clone(), name)
-            }
-            FormMode::DeleteEnvironment => (
-                String::new(),
-                self.active_environment()
-                    .map_or(String::new(), |e| e.name.clone()),
-            ),
-            FormMode::SaveRequest => (self.request.name.clone(), String::new()),
+        let initial = match mode {
+            FormMode::RenameCollection => target
+                .collection
+                .as_ref()
+                .and_then(|id| self.collection_named(id))
+                .map_or(String::new(), |c| c.name.clone()),
+            FormMode::RenameRequest => self
+                .request_in(&target)
+                .map_or(String::new(), |r| r.name.clone()),
+            FormMode::RenameEnvironment => self
+                .active_environment()
+                .map_or(String::new(), |e| e.name.clone()),
+            FormMode::SaveRequest => self.request.name.clone(),
             FormMode::NewCollection
             | FormMode::NewEnvironment
             | FormMode::NewVariable
-            | FormMode::DeleteVariable => (String::new(), String::new()),
+            | FormMode::DeleteVariable => String::new(),
         };
         self.nav.show(ui::widget::NavPane::Content);
         // In drawer mode, choosing a sidebar command must uncover the
@@ -1012,7 +994,7 @@ impl ApiTesterApp {
         let fields = Fields::new(&initial);
         self.slots
             .dialog
-            .set(dialog::build(mode, &subject, &fields, &self.sink));
+            .set(dialog::build(mode, &fields, &self.sink));
         self.form = Some(OpenForm {
             mode,
             target,
@@ -1028,11 +1010,35 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
+    /// Delete the saved request `target` names (the one in the builder when
+    /// none): the host asks the person to confirm.
+    fn delete_request(&mut self, target: FormTarget) {
+        let target = self.resolve_target(target);
+        if let (Some(collection), Some(request)) = (target.collection, target.request) {
+            self.submit(Workspace::DELETE_REQUEST.with(verbs::DeleteRequest {
+                collection,
+                request,
+            }));
+        }
+        self.dirty = true;
+    }
+
+    /// Delete the active environment: the host asks the person to confirm.
+    fn delete_environment(&mut self) {
+        if let Some(id) = self.active_env.clone() {
+            self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
+        }
+        self.dirty = true;
+    }
+
     fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
         let mode = match action {
             "Save request…" => FormMode::SaveRequest,
             "Rename request…" => FormMode::RenameRequest,
-            "Delete request…" => FormMode::DeleteRequest,
+            "Delete request…" => {
+                self.delete_request(FormTarget::default());
+                return Ok(());
+            }
             _ => return Err(format!("unknown request action `{action}`")),
         };
         self.open_form(mode, FormTarget::default());
@@ -1115,14 +1121,6 @@ impl ApiTesterApp {
                     );
                 }
             }
-            FormMode::DeleteRequest => {
-                if let (Some(collection), Some(request)) = (target.collection, target.request) {
-                    self.submit(Workspace::DELETE_REQUEST.with(verbs::DeleteRequest {
-                        collection,
-                        request,
-                    }));
-                }
-            }
             FormMode::NewEnvironment => {
                 let name = if name.is_empty() {
                     format!("Environment {}", self.environments.len() + 1)
@@ -1134,11 +1132,6 @@ impl ApiTesterApp {
             FormMode::RenameEnvironment => {
                 if let Some(id) = self.active_env.clone().filter(|_| !name.is_empty()) {
                     self.submit(paths.environments.item(&id).name.replace(name));
-                }
-            }
-            FormMode::DeleteEnvironment => {
-                if let Some(id) = self.active_env.clone() {
-                    self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
                 }
             }
             FormMode::NewVariable => self.set_variable(&fields),
@@ -1235,7 +1228,10 @@ impl ApiTesterApp {
             .iter()
             .find(|(label, _)| *label == choice)
         {
-            self.open_form(*mode, FormTarget::default());
+            match mode {
+                Some(mode) => self.open_form(*mode, FormTarget::default()),
+                None => self.delete_environment(),
+            }
         } else {
             let next = if choice == NO_ENV {
                 Some(None)

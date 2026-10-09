@@ -473,6 +473,7 @@ type = "string"
 
 [[resources.verbs]]
 description = "Delete a collection and the requests it holds."
+destructive = true
 id = "delete-collection"
 kind = "undoable"
 label = "Delete a collection and the requests it holds"
@@ -556,6 +557,7 @@ type = "string"
 
 [[resources.verbs]]
 description = "Delete a saved request."
+destructive = true
 id = "delete-request"
 kind = "undoable"
 label = "Delete a saved request"
@@ -592,6 +594,7 @@ type = "string"
 
 [[resources.verbs]]
 description = "Delete an environment and its variables."
+destructive = true
 id = "delete-environment"
 kind = "undoable"
 label = "Delete an environment and its variables"

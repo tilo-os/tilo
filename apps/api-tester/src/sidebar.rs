@@ -218,12 +218,12 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
                         .and_then(|(_, requests)| requests.get(ri))
                         .cloned(),
                 };
-                let mode = if action == DELETE {
-                    FormMode::DeleteRequest
+                let cmd = if action == DELETE {
+                    Cmd::DeleteRequest(target)
                 } else {
-                    FormMode::RenameRequest
+                    Cmd::OpenForm(FormMode::RenameRequest, target)
                 };
-                action_sink.borrow_mut().push(Cmd::OpenForm(mode, target));
+                action_sink.borrow_mut().push(cmd);
             },
         )
         .on_section_action(move |section, _| {

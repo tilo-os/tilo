@@ -148,12 +148,17 @@ fn verbs_make_open_save_and_remove_records() {
     assert_eq!(copy.name, "Saved copy");
     assert_eq!(copy.url, "https://x.test");
 
-    workspace
-        .apply(Workspace::DELETE_REQUEST.with(workspace::DeleteRequest {
+    let delete = || {
+        Workspace::DELETE_REQUEST.with(workspace::DeleteRequest {
             collection: collection.clone(),
             request: request.clone(),
-        }))
-        .unwrap();
+        })
+    };
+    assert!(
+        workspace.apply(delete()).is_err(),
+        "deleting asks for confirmation"
+    );
+    workspace.apply_confirmed(delete()).unwrap();
     assert!(
         workspace
             .apply(Workspace::OPEN_REQUEST.with(workspace::OpenRequest {
@@ -173,7 +178,7 @@ fn verbs_make_open_save_and_remove_records() {
         Some(environment.clone())
     );
     workspace
-        .apply(Workspace::DELETE_ENVIRONMENT.with(environment))
+        .apply_confirmed(Workspace::DELETE_ENVIRONMENT.with(environment))
         .unwrap();
     assert_eq!(
         workspace.state().unwrap().active_environment,
@@ -181,7 +186,7 @@ fn verbs_make_open_save_and_remove_records() {
         "deleting the active environment leaves none active"
     );
     workspace
-        .apply(Workspace::DELETE_COLLECTION.with(collection))
+        .apply_confirmed(Workspace::DELETE_COLLECTION.with(collection))
         .unwrap();
     assert!(workspace.state().unwrap().collections.is_empty());
 }
@@ -582,7 +587,7 @@ fn history_entries_render_as_the_apps_sentences() {
     )
     .unwrap();
     app.call_by(agent, &item, "delete-collection", serde_json::json!({}))
-        .unwrap();
+        .expect_err("deleting asks for confirmation");
 
     let english = LOCALES
         .iter()
@@ -612,7 +617,49 @@ fn history_entries_render_as_the_apps_sentences() {
             "Saved a request to Billing",
             "Created the environment Staging",
             "Switched to the environment Staging",
-            "Deleted the collection Billing",
         ]
     );
+}
+
+/// Deleting from the window asks once, in the host's dialog: the window has
+/// no confirmation sheet of its own, and nothing is deleted before consent.
+#[test]
+fn deleting_from_the_window_asks_the_host_once() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    for invoke in crate::seed::workspace() {
+        app.invoke(invoke).unwrap();
+    }
+    app.settle();
+    let count = |app: &TestApp<ApiTesterShell>| -> usize {
+        app.state()
+            .collections
+            .values()
+            .map(|collection| collection.requests.len())
+            .sum()
+    };
+    let before = count(&app);
+    app.effect(&crate::actions::ApiTesterEffect::RequestMenu {
+        action: "Delete request\u{2026}".into(),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(count(&app), before, "deleting waits for consent");
+    assert!(
+        !app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Delete this request?"),
+        "the window asks nothing of its own"
+    );
+    app.harness().type_text("CONFIRM");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        count(&app),
+        before - 1,
+        "the confirmed delete applied: {:?}",
+        app.harness().control_failures()
+    );
+    assert!(app.undo(), "the delete is one undo step");
+    assert_eq!(count(&app), before);
 }

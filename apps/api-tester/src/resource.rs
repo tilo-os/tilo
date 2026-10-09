@@ -58,7 +58,7 @@ impl Workspace {
     }
 
     /// Delete a collection and the requests it holds.
-    #[action(item = collections)]
+    #[action(destructive, item = collections)]
     pub fn delete_collection(&mut self, collection: &Id) -> Result<(), Refusal> {
         self.collections
             .remove(collection)
@@ -141,7 +141,7 @@ impl Workspace {
     }
 
     /// Delete a saved request.
-    #[action(item = collections)]
+    #[action(destructive, item = collections)]
     pub fn delete_request(
         &mut self,
         collection: &Id,
@@ -171,7 +171,7 @@ impl Workspace {
     }
 
     /// Delete an environment and its variables.
-    #[action(item = environments)]
+    #[action(destructive, item = environments)]
     pub fn delete_environment(&mut self, environment: &Id) -> Result<(), Refusal> {
         self.environments
             .remove(environment)
@@ -328,7 +328,6 @@ impl ApiTesterShell {
         "form-rename-request",
         "form-new-environment",
         "form-rename-environment",
-        "form-delete-environment",
         "form-new-variable",
         "form-delete-variable",
     ];

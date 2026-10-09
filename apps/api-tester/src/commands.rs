@@ -122,6 +122,8 @@ pub(crate) enum Cmd {
     },
     PickEnvironment(String),
     OpenForm(FormMode, FormTarget),
+    /// Delete a saved request, once the person confirms what the host asks.
+    DeleteRequest(FormTarget),
     SubmitForm,
     CancelForm,
 }
@@ -133,10 +135,8 @@ pub(crate) enum FormMode {
     SaveRequest,
     RenameCollection,
     RenameRequest,
-    DeleteRequest,
     NewEnvironment,
     RenameEnvironment,
-    DeleteEnvironment,
     NewVariable,
     DeleteVariable,
 }
@@ -149,10 +149,8 @@ impl FormMode {
             Self::SaveRequest => "Save request",
             Self::RenameCollection => "Rename collection",
             Self::RenameRequest => "Rename request",
-            Self::DeleteRequest => "Delete this request?",
             Self::NewEnvironment => "New environment",
             Self::RenameEnvironment => "Rename environment",
-            Self::DeleteEnvironment => "Delete this environment?",
             Self::NewVariable => "Add variable",
             Self::DeleteVariable => "Delete variable",
         }
@@ -164,8 +162,6 @@ impl FormMode {
             Self::NewCollection | Self::NewEnvironment => "Create",
             Self::SaveRequest => "Save",
             Self::RenameCollection | Self::RenameRequest | Self::RenameEnvironment => "Rename",
-            Self::DeleteRequest => "Delete request",
-            Self::DeleteEnvironment => "Delete environment",
             Self::NewVariable => "Add variable",
             Self::DeleteVariable => "Delete variable",
         }
@@ -181,14 +177,10 @@ impl FormMode {
 
     pub(crate) fn needs_name(self) -> bool {
         !self.needs_variable_fields()
-            && !matches!(self, Self::DeleteRequest | Self::DeleteEnvironment)
     }
 
     pub(crate) fn is_destructive(self) -> bool {
-        matches!(
-            self,
-            Self::DeleteRequest | Self::DeleteEnvironment | Self::DeleteVariable
-        )
+        matches!(self, Self::DeleteVariable)
     }
 }
 
