@@ -14,6 +14,11 @@ Each adapter reads what a benchmark already prints and emits records through
   user downloads. The apps are those with a budget in
   `tools/perf/tapp-size-budget/` (the default collection); runtime and
   provider stubs and withdrawn packages are left out and named in `meta`.
+- `runtime-sizes MEASUREMENTS_JSON`: what `runtime_size_ratchet.py published
+  --measurements` read from the newest published shared runtime
+  (`libruntime_dylib.so`) of each architecture. Each of its numbers is one
+  sample of `footprint.runtime.<metric>.<arch>`: `bytes`, `relocation_bytes`,
+  `relocated_bytes` (bytes) and `symbol_relocations` (count).
 - `workspace-switch LOG...`: the compositor's `WORKSPACE-SWITCH` session-log
   lines (`crates/session/shell/src/compositor/switch_latency.rs`), one per
   switch, become `latency.workspace_switch.first_frame` (chord to the first
@@ -38,6 +43,7 @@ Usage:
 
     python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
+    python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py workspace-switch --env-json env.json session.log >> results.jsonl
     python3 tools/perf/adapters.py idle-wakeups --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
@@ -60,6 +66,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import record  # noqa: E402
+import runtime_size_ratchet  # noqa: E402
 import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
@@ -114,6 +121,26 @@ def tapp_sizes(entries: dict[str, Any], env: dict[str, Any],
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(f"footprint.tapp.bytes.{arch}", "bytes", sizes, meta=meta, **base)
             for arch, sizes in sorted(by_arch.items())]
+
+
+def runtime_sizes(measured: dict[str, Any], env: dict[str, Any]) -> list[record.Record]:
+    """Records for the published shared runtime of each architecture."""
+    runtimes = measured.get("runtimes") or {}
+    if not runtimes:
+        raise ValueError("the runtime measurements name no architecture")
+    base = {name: value for name, value in env.items() if name != "meta"}
+    records = []
+    for arch, values in sorted(runtimes.items()):
+        meta = {**env.get("meta", {}), "registry_sequence": str(measured.get("sequence", "")),
+                "version": str(values.get("version", "")), "runtime": str(values.get("runtime", ""))}
+        for metric in runtime_size_ratchet.METRICS:
+            value = values[metric]
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"runtime {arch} {metric}: invalid measurement {value!r}")
+            unit = "count" if metric == "symbol_relocations" else "bytes"
+            records.append(record.from_samples(f"footprint.runtime.{metric}.{arch}", unit, [float(value)],
+                                               meta=meta, **base))
+    return records
 
 
 SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
@@ -260,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
     sizes = commands.add_parser("tapp-sizes", help="records from the registry entries index")
     sizes.add_argument("--env-json", required=True, type=Path)
     sizes.add_argument("entries", type=Path)
+    runtime = commands.add_parser("runtime-sizes", help="records from the published runtime's measurements")
+    runtime.add_argument("--env-json", required=True, type=Path)
+    runtime.add_argument("measurements", type=Path)
     switch = commands.add_parser("workspace-switch", help="records from WORKSPACE-SWITCH session-log lines")
     switch.add_argument("--env-json", required=True, type=Path)
     switch.add_argument("logs", nargs="+", type=Path)
@@ -287,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
             samples = [sample for path in args.logs
                        for sample in switch_samples(path.read_text(encoding="utf-8", errors="replace"))]
             records = workspace_switch(samples, env)
+        elif args.command == "runtime-sizes":
+            records = runtime_sizes(json.loads(args.measurements.read_text(encoding="utf-8")), env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         else:

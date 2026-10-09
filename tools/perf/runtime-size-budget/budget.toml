@@ -1,0 +1,51 @@
+# Budgets for the shared app runtime, libruntime_dylib.so, per architecture.
+# tools/perf/runtime_size_ratchet.py reads this file (TIL-604).
+#
+# - Release / apps fails when the dylib it has just built is over a budget
+#   below plus every raise under raises/.
+# - Perf / scheduled (footprint group) fails when the newest published
+#   so.tilo.runtime is over one, and records the four numbers as
+#   footprint.runtime.<metric>.<arch>.
+# - CI / fast quality fails when a budget grows without a raise file new in
+#   the same change.
+#
+# The metrics, all read from the ELF file:
+#   bytes               the file a device downloads when an app's runtime is missing
+#   relocation_bytes    dynamic relocation tables the loader reads at every app start
+#   relocated_bytes     distinct 4 KiB pages those relocations write: private,
+#                       dirty memory in every app process before main
+#   symbol_relocations  relocations that need a symbol lookup at every app start
+#
+# A budget is a measurement plus `headroom`, rounded up to 64 KiB (a count to
+# 64). Budgets only decrease. Intended growth adds raises/<change>.toml, one
+# file per change; when the runtime shrinks, both gates print the lower budget
+# to commit here. DEVELOPMENT.md ("Runtime size") has the steps.
+headroom = 0.01
+architectures = ["x86_64", "aarch64"]
+
+# What the runtime should cost (TIL-604): at most 150 MB, relocation tables
+# under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
+# few enough symbol lookups for relocation to take under 3 ms. Every app loads
+# a DT_NEEDED library, so none of needed_absent belongs there: media libraries
+# are for the apps that play media. The gates report a target not met; the
+# budgets below are what fails. Targets only tighten.
+[targets]
+bytes = 150000000
+relocation_bytes = 1000000
+relocated_bytes = 4000000
+symbol_relocations = 5000
+needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
+
+# Measured on the published so.tilo.runtime 0.1.90033 (registry sequence 809,
+# 2026-10-09).
+[runtime.x86_64]
+bytes = 244383744
+relocation_bytes = 10223616
+relocated_bytes = 7798784
+symbol_relocations = 62912
+
+[runtime.aarch64]
+bytes = 225705984
+relocation_bytes = 10223616
+relocated_bytes = 7733248
+symbol_relocations = 62912

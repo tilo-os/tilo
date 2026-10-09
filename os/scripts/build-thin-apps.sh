@@ -103,6 +103,12 @@ fi
 # supported app argument; reaching main (any status except the loader's 127)
 # is enough for this ABI check.
 rust_target_libdir=$(rustc --print target-libdir)
+# The shared runtime's relocations run in every app process (TIL-604); the
+# wrapper packs them. Without RELR it was linked without the wrapper.
+readelf -dW "$TARGET_DIR/$PROFILE/libruntime_dylib.so" | grep -Fq '(RELR)' || {
+    echo "libruntime_dylib.so was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
+    exit 1
+}
 for index in "${!binaries[@]}"; do
     binary=${binaries[$index]}
     crate=${selected_crates[$index]}

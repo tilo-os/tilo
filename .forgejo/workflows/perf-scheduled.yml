@@ -201,12 +201,14 @@ jobs:
           if-no-files-found: warn
 
   # App package size: the newest signed tapp of every app in the public
-  # registry index, per architecture. A runner-independent byte count.
+  # registry index, per architecture. A runner-independent byte count. Also
+  # the shared runtime every app maps, fetched from the same registry (two
+  # ~240 MB downloads, hence the timeout).
   footprint:
     needs: plan
     if: needs.plan.outputs.footprint == 'true'
     runs-on: runner-quality
-    timeout-minutes: 10
+    timeout-minutes: 25
     container:
       image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
@@ -236,6 +238,24 @@ jobs:
         run: >-
           python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
           --summary "$GITHUB_STEP_SUMMARY"
+
+      # The shared runtime (TIL-604; DEVELOPMENT.md, "Runtime size"): the
+      # newest published libruntime_dylib.so of each architecture against
+      # tools/perf/runtime-size-budget/, recorded as footprint.runtime.*.
+      # Records are written before the gate's verdict, so a run over budget
+      # still enters the store.
+      - name: Published runtime within its size budget
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 tools/perf/runtime_size_ratchet.py published "$RUNNER_TEMP/entries.json" \
+            --measurements "$RUNNER_TEMP/runtime.json" --summary "$GITHUB_STEP_SUMMARY"
+          status=$?
+          [[ -s $RUNNER_TEMP/runtime.json ]] || exit 1
+          python3 tools/perf/adapters.py runtime-sizes --env-json perf/env.json "$RUNNER_TEMP/runtime.json" \
+            >> perf/footprint.jsonl || exit 1
+          exit "$status"
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
