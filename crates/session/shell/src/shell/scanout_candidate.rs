@@ -97,15 +97,15 @@ impl DrawnOnTop {
 /// `inner`, then `outer`: what `outer * inner` computes, spelled out because
 /// the workspace denies operator arithmetic on non-primitive types.
 fn then(inner: Affine, outer: Affine) -> Affine {
-    let [a, b, c, d, e, f] = outer.as_coeffs();
-    let [g, h, i, j, k, l] = inner.as_coeffs();
+    let [oxx, oyx, oxy, oyy, otx, oty] = outer.as_coeffs();
+    let [ixx, iyx, ixy, iyy, itx, ity] = inner.as_coeffs();
     Affine::new([
-        a * g + c * h,
-        b * g + d * h,
-        a * i + c * j,
-        b * i + d * j,
-        a * k + c * l + e,
-        b * k + d * l + f,
+        oxx * ixx + oxy * iyx,
+        oyx * ixx + oyy * iyx,
+        oxx * ixy + oxy * iyy,
+        oyx * ixy + oyy * iyy,
+        oxx * itx + oxy * ity + otx,
+        oyx * itx + oyy * ity + oty,
     ])
 }
 
