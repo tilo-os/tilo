@@ -2453,7 +2453,7 @@ impl TerminalWidget {
     /// The command lines `run` asks this terminal's process to run reach it
     /// through `queue`, which the view carrying out the session's outbox
     /// shares.
-    pub(crate) fn run_through(&mut self, queue: crate::runs::RunQueue) {
+    pub fn run_through(&mut self, queue: crate::runs::RunQueue) {
         queue.set_pane(if self.emulating { &self.pane_id } else { "" });
         self.runs.queue = queue;
     }

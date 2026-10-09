@@ -12,7 +12,6 @@ version = 1
 [[resources]]
 kind = "settings.appearance"
 label = "Appearance"
-verbs = []
 version = 1
 
 [[resources.fields]]
@@ -149,6 +148,20 @@ path = "distinct_letters"
 stored = "value"
 title = '"Always distinguish similar letters": I, l, 1 and 0, O set apart in'
 type = "Option<bool>"
+
+[[resources.verbs]]
+description = "Set the theme every app draws with; Automatic is light by day and dark by night."
+id = "choose-theme"
+kind = "undoable"
+label = "Set the theme every app draws with; Automatic is light by day and"
+
+[[resources.verbs.params]]
+name = "theme"
+required = true
+
+[resources.verbs.params.schema]
+description = "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
+type = "string"
 
 [[resources]]
 kind = "settings.accessibility"

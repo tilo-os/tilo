@@ -232,6 +232,40 @@ pub mod __private {
         }
     }
 
+    /// Run `change` on the item of type `T` at `path` of the record `R`,
+    /// reading only that item, then write what changed as field edits at
+    /// its path, each checked: an item method applied.
+    ///
+    /// # Errors
+    /// There is no such item, it does not read as `T`, the method refused,
+    /// or an edit did not apply.
+    pub fn apply_item<R, T>(
+        doc: &mut crate::Doc,
+        cx: &mut crate::ActionCx,
+        path: &[crate::Segment],
+        change: impl FnOnce(&mut T, &mut crate::ActionCx) -> Result<(), crate::Refusal>,
+    ) -> Result<(), crate::Refusal>
+    where
+        R: crate::Fields,
+        T: crate::Model,
+    {
+        let refused = |error: crate::ModelError| crate::Refusal::new(error.to_string());
+        let obj = crate::Path::<R, T>::from_segments(path.to_vec())
+            .object(doc)
+            .ok_or_else(|| crate::Refusal::new("no such item"))?;
+        let map = automerge::Value::Object(automerge::ObjType::Map);
+        let before = T::load(doc, &map, &obj).map_err(refused)?;
+        let mut after = T::load(doc, &map, &obj).map_err(refused)?;
+        change(&mut after, cx)?;
+        crate::Model::check(&after)?;
+        let mut edits: Vec<crate::Edit<R>> = Vec::new();
+        before.diff(&after, path, &mut edits);
+        for edit in edits {
+            edit.apply(doc, cx).map_err(refused)?;
+        }
+        Ok(())
+    }
+
     /// The first non-empty line of the text `value` carries: one part of a
     /// label.
     pub fn first_line<T: crate::Model>(value: &T) -> Option<String> {

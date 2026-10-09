@@ -535,6 +535,9 @@ pub struct CodeApp {
     /// panel keeps embedding the widget from the app crate rather than shipping a
     /// second, weaker emulator.
     terminal: Option<ui::widget::Embedded<terminal::TerminalView>>,
+    /// The command lines asked of the terminal's session, handed from the
+    /// project's outbox to the terminal that types them.
+    terminal_runs: terminal::runs::RunQueue,
     /// True while the terminal owns keyboard input (the user clicked into it).
     /// Cleared when a press lands anywhere else.
     terminal_focused: bool,
@@ -930,6 +933,7 @@ impl CodeApp {
             bound_node: default,
             seeded: false,
             terminal: None,
+            terminal_runs: terminal::runs::RunQueue::default(),
             terminal_focused: false,
             lsp: None,
             lsp_language: None,
@@ -1323,6 +1327,11 @@ impl CodeApp {
         }
         files.sort_by_key(|file| file.path.matches('/').count());
         self.project_files(files);
+    }
+
+    /// The queue the terminal takes the project's asked command lines from.
+    pub(crate) fn terminal_runs(&self) -> terminal::runs::RunQueue {
+        self.terminal_runs.clone()
     }
 
     /// What shows file `id` when a search hit or an agent's `open` names
@@ -2102,6 +2111,7 @@ impl CodeApp {
                         dispatch.child(crate::resource::TERMINAL_RESOURCE_ID, actions::terminal),
                     );
                 }
+                w.run_through(self.terminal_runs.clone());
                 if let Some(session) = self
                     .live_state
                     .as_ref()

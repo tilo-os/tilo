@@ -246,6 +246,25 @@ impl<R: Resource> Derived<R> {
         self
     }
 
+    /// Offer a field edit whose one value its caller supplies
+    /// ([`ActionDecl::edit_asking`]): "Rename playlist" on the playlist.
+    #[must_use]
+    pub fn with_edit_asking<V>(
+        mut self,
+        id: &'static str,
+        label: impl Into<String>,
+        param: &'static str,
+        description: &'static str,
+        make: impl Fn(V) -> crate::Edit<R> + Send + Sync + 'static,
+    ) -> Self
+    where
+        V: serde::de::DeserializeOwned + crate::JsonSchema,
+    {
+        let decl = ActionDecl::<R>::edit_asking(id, label, param, description, make);
+        self.effects.push(crate::resource::declaration_spec(&decl));
+        self
+    }
+
     /// The child resource this is published as.
     #[must_use]
     pub fn publish(&self) -> tilo_actions::Resource {

@@ -827,6 +827,42 @@ impl<R: Resource> Clone for ActionDecl<R> {
 }
 
 impl<R: Resource> ActionDecl<R> {
+    /// A field edit whose one value its caller supplies, offered as the
+    /// action `id` labelled `label`: the parameter `param` (described by
+    /// `description`, typed by `V`'s schema) becomes the edit `make(value)`.
+    /// What a row offers when the edit is bound to it but its value is not
+    /// ("Rename playlist", "Add a song to this playlist").
+    pub fn edit_asking<V>(
+        id: &'static str,
+        label: impl Into<String>,
+        param: &'static str,
+        description: &'static str,
+        make: impl Fn(V) -> crate::Edit<R> + Send + Sync + 'static,
+    ) -> Self
+    where
+        V: DeserializeOwned + crate::JsonSchema,
+    {
+        let schema = V::json_schema();
+        let declared = ActionParam::required_owned(
+            param,
+            crate::__private::param_type_of(&schema),
+            description,
+        )
+        .with_schema(schema);
+        Self::new(id, label, vec![declared], move |args, now_ms| {
+            let value = args
+                .to_json()
+                .remove(param)
+                .ok_or_else(|| format!("`{param}` is missing"))?;
+            let value: V =
+                serde_json::from_value(value).map_err(|error| format!("`{param}`: {error}"))?;
+            let mut action = R::edit_action(make(value))
+                .ok_or_else(|| format!("{} has no field edits", R::LABEL))?;
+            R::stamp(&mut action, now_ms);
+            Ok(action)
+        })
+    }
+
     /// The field edit `edit` offered as the action `id` labelled `label`,
     /// its value bound: what a place or a live row offers ("Use Proton for
     /// Adobe Reader"), checked and recorded as the edit itself.

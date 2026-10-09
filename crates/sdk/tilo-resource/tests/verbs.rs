@@ -562,6 +562,13 @@ impl Book {
     pub fn remove(&mut self, people: &Id) {
         self.people.remove(people);
     }
+
+    /// Change a card's first name.
+    #[action(item = people)]
+    pub fn rename(person: &mut Person, cx: &mut ActionCx, first: String) {
+        let _ = cx.now_ms();
+        person.first = first;
+    }
 }
 
 #[test]
@@ -692,4 +699,50 @@ fn an_edit_under_a_map_key_is_about_that_entry_and_a_set_names_its_element() {
         field.new.as_ref().and_then(|new| new.as_str()),
         Some("urgent")
     );
+}
+
+#[test]
+fn an_item_method_reads_and_writes_its_item_alone() {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ReadDoc as _, ScalarValue, Value};
+    let mut book = Replica::<Book>::new();
+    book.apply(Book::ADD.with(("Ada".to_owned(), "Lovelace".to_owned(), String::new())))
+        .unwrap();
+    book.apply(Book::ADD.with(("Charles".to_owned(), "Babbage".to_owned(), String::new())))
+        .unwrap();
+    let state = book.state().unwrap();
+    let ids: Vec<Id> = state.people.ids().cloned().collect();
+
+    // It is offered on each card, its id bound.
+    let tree = book.published().unwrap();
+    assert!(
+        tree.children
+            .iter()
+            .all(|card| card.actions.iter().any(|spec| spec.id == "rename"))
+    );
+
+    // Another card that no longer reads (written by a newer version) does
+    // not stop a change of this one: only this one is read.
+    let doc = book.doc_mut();
+    let Ok(Some((Value::Object(ObjType::Map), people))) = doc.get(automerge::ROOT, "people") else {
+        panic!("people is a map");
+    };
+    let Ok(Some((Value::Object(ObjType::Map), other))) = doc.get(&people, ids[1].as_str()) else {
+        panic!("the card is there");
+    };
+    doc.put(&other, "v", ScalarValue::Str("from the future".into()))
+        .unwrap();
+    doc.commit();
+    assert!(book.state().is_err(), "the whole book no longer reads");
+    let rename = Book::RENAME
+        .with((ids[0].clone(), "Augusta".to_owned()))
+        .build(0)
+        .unwrap();
+    tilo_actions::Action::apply(&rename, book.doc_mut()).unwrap();
+    let first = book.doc().get(&people, ids[0].as_str()).unwrap().unwrap().1;
+    let value = book.doc().get(&first, "v").unwrap().unwrap().1;
+    let person: Person = tilo_resource::read_key(book.doc(), &first, "v").unwrap();
+    let _ = value;
+    assert_eq!(person.first, "Augusta");
+    assert_eq!(person.last, "Lovelace");
 }

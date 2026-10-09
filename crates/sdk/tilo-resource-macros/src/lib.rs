@@ -373,6 +373,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let vis = &input.vis;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     let (check, label_parts) = container_options(&input.attrs)?;
+    let own_check_const = check.is_some();
     let paths_name = format_ident!("{}Paths", name);
     let mut paths_generics = input.generics.clone();
     paths_generics.params.insert(0, syn::parse_quote!(__R));
@@ -1070,6 +1071,12 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             /// an item can act.
             #[doc(hidden)]
             pub const __COLLECTIONS: &'static [&'static str] = &[#(#collection_names),*];
+
+            /// Whether the type holds an invariant of its own
+            /// (`#[model(check = path)]`), which a change of one item
+            /// cannot be checked against without the whole value.
+            #[doc(hidden)]
+            pub const __OWN_CHECK: bool = #own_check_const;
 
             /// The fields holding an `Outbox`, by name: verbs may act on an
             /// entry of one (`#[action(item = field)]`).

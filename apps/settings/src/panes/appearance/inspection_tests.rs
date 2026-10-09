@@ -1,5 +1,4 @@
 use super::*;
-use crate::effects::SettingsEffect;
 use crate::resource::SettingsShell;
 use ui::prelude::TestApp;
 
@@ -21,10 +20,6 @@ fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
 
 use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
 
-fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
-    app.effect(&SettingsEffect::from(effect)).unwrap();
-}
-
 #[test]
 fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_changes() {
     let mut app = TestApp::<SettingsShell>::new().unwrap();
@@ -35,12 +30,13 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
         serde_json::json!({ "theme": "Automatic" }),
     )
     .unwrap();
-    set(
+    crate::host::testing::edit_field(
         &mut app,
-        AppearanceEffect::SetDayNightSchedule {
-            schedule: "custom".into(),
-        },
-    );
+        crate::host::testing::APPEARANCE,
+        "schedule",
+        "custom",
+    )
+    .unwrap();
     edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
     edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
     let original = read(&mut app);

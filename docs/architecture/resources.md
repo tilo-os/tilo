@@ -181,7 +181,18 @@ impl Snippets {
   from the parameter types themselves.
   Agents, the palette and forms (§3.3) all use it.
 - Verbs run against the record the framework reads for them, and write back as
-  a diff. A verb that only touches one item reads only that item.
+  a diff. A verb that only touches one item is an item method: it takes the
+  item instead of `&mut self` and reads and writes only that item.
+
+  ```rust
+  /// Star a snippet.
+  #[action(item = snippets)]
+  pub fn star(snippet: &mut Snippet, on: bool) { snippet.favorite = on; }
+  ```
+
+  It is published with the item's id as its first parameter (`snippet`), and
+  on each item. A record with an invariant of its own (`#[model(check)]` on
+  the record) or a `queue` hook is still read whole for it.
 - `destructive` asks for confirmation from people; it does not change the kind.
 
 The resource attribute covers what used to need a hand-written `Resource`:
