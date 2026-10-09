@@ -3544,8 +3544,26 @@ fn importing_and_removing_books_keeps_one_identity() {
         assert_eq!(TestLibrary::read_library_entries(&doc).len(), 1);
 
         let id = app.library[0].id.clone();
-        app.dispatch(Action::RemoveFromLibrary(id), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::RemoveFromLibrary(id.clone()),
+            &mut Edits::lend(&mut doc),
+        );
         assert!(app.library.is_empty(), "removed from the shelf");
+        assert_eq!(
+            TestLibrary::read_library_entries(&doc).len(),
+            1,
+            "the library asks the person before it removes the book"
+        );
+        // The person agrees at the door.
+        let mut library =
+            ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(doc.clone());
+        library
+            .apply_confirmed(
+                crate::resource::Ebook::REMOVE_FROM_LIBRARY
+                    .with(crate::resource::books::RemoveFromLibrary { book: id }),
+            )
+            .unwrap();
+        doc = library.doc().clone();
         assert!(
             TestLibrary::read_library_entries(&doc).is_empty(),
             "and from the registry"

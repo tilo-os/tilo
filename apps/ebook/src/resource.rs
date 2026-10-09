@@ -219,7 +219,7 @@ impl Ebook {
     /// Add note
     ///
     /// Adds a note to a passage of a book.
-    #[action]
+    #[action(writes = annotations)]
     pub fn add_note(
         &mut self,
         cx: &mut ActionCx,
@@ -247,7 +247,7 @@ impl Ebook {
     /// Add comment
     ///
     /// Comments on a highlight.
-    #[action]
+    #[action(writes = annotations)]
     pub fn add_comment(
         &mut self,
         cx: &mut ActionCx,
@@ -275,7 +275,7 @@ impl Ebook {
     /// Toggle bookmark
     ///
     /// Bookmarks a paragraph, or removes its bookmark.
-    #[action]
+    #[action(writes = annotations)]
     pub fn toggle_bookmark(
         &mut self,
         cx: &mut ActionCx,
@@ -319,7 +319,7 @@ impl Ebook {
     ///
     /// Highlights a passage, one piece per paragraph, replacing the
     /// highlights it overlaps; with no pieces it only removes them.
-    #[action]
+    #[action(writes = annotations)]
     pub fn highlight(
         &mut self,
         cx: &mut ActionCx,
@@ -362,7 +362,7 @@ impl Ebook {
     /// Change colour
     ///
     /// Recolours a highlight, its pieces and its comments together.
-    #[action]
+    #[action(writes = annotations)]
     pub fn change_color(
         &mut self,
         #[param("The highlight: the id of one of its pieces or its group")] highlight: Uuid,
@@ -380,7 +380,7 @@ impl Ebook {
     /// Delete highlight
     ///
     /// Deletes a highlight with every comment on it.
-    #[action]
+    #[action(writes = annotations)]
     pub fn delete_highlight(
         &mut self,
         #[param("The highlight: the id of one of its pieces or its group")] highlight: Uuid,
@@ -393,7 +393,7 @@ impl Ebook {
     /// Delete
     ///
     /// Deletes a bookmark, a note or a comment.
-    #[action]
+    #[action(writes = annotations)]
     pub fn delete_annotation(
         &mut self,
         #[param("The bookmark's, note's or comment's id")] annotation: Uuid,
@@ -1144,7 +1144,7 @@ pub(crate) fn edit_doc(doc: &mut ui::automerge::AutoCommit, edit: &tilo_resource
 #[cfg(test)]
 fn put(library: &mut tilo_resource::Replica<Ebook>, edit: &tilo_resource::Edit<Ebook>) {
     library
-        .apply(Invoke::edit(edit).expect("a test's edit builds"))
+        .apply_confirmed(Invoke::edit(edit).expect("a test's edit builds"))
         .expect("a test's edit applies");
 }
 
