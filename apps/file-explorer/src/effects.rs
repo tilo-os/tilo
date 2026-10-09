@@ -139,6 +139,7 @@ pub enum FilesEffect {
     /// Undo move to Trash.
     ///
     /// Puts back what this window last moved to Trash.
+    #[effect(kind = "undoable")]
     UndoTrash,
     /// Empty Trash.
     ///

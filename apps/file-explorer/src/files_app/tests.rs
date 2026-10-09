@@ -6233,20 +6233,25 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
     let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
     widget.navigate(home.path().to_owned());
-    widget.follow_ops(&[]);
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
-    let queued = crate::file_ops::QueuedOp {
-        id: "clipboard-undo".into(),
-        device: "local".into(),
-        order: 0,
-        op: crate::file_ops::FileOp::Revert {
-            op: operation.clone(),
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
         },
-        outcome: Some(crate::file_ops::Outcome::Done {
-            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
-        }),
-    };
-    widget.follow_ops(&[queued]);
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
     assert_eq!(
         widget.status.as_deref(),
         Some(t("files-clipboard-undone").as_str())

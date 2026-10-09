@@ -21,7 +21,7 @@ const DE_FTL: &str = include_str!("../locales/de-DE.ftl");
 /// Region variants such as de-AT and de-CH negotiate to the complete German
 /// catalog, while ICU and Fluent keep the requested locale for number,
 /// plural and date rules.
-static CATALOG: EmbeddedCatalog = catalog();
+pub(crate) static CATALOG: EmbeddedCatalog = catalog();
 
 const fn catalog() -> EmbeddedCatalog {
     let catalog = EmbeddedCatalog::new(

@@ -27,7 +27,6 @@ pub mod archive;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
-mod doc;
 pub mod effects;
 pub mod external_drag;
 pub mod favorites;

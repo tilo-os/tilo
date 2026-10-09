@@ -1,341 +1,507 @@
-//! Files as a [`tilo_resource::Resource`]: the person's bookmarked places.
+//! Files as a resource: the person's bookmarked places and the filesystem
+//! changes made from Files.
 //!
-//! The document holds the places (pinned in the sidebar), in order, and every
-//! change to them is a [`FilesDocAction`] through the framework dispatcher.
-//! How a window shows folders (list or grid, sort, item size, hidden files)
-//! is the person's [`FilesPreferences`], which follow them to their other
-//! devices and are never seen by collaborators. The folder a window shows,
-//! its listing and selection are the window's own; filesystem work is
-//! effects on the live rows the surface publishes.
+//! The document holds the places (pinned in the sidebar), in order, and the
+//! queue of filesystem changes ([`FileExplorer::ops`]): each is a verb that
+//! queues a [`FileOp`] for the device whose disk it changes, which carries it
+//! out and settles it with what it changed. Undoing one queues its revert
+//! the same way. How a window shows folders (list or grid, sort, item size,
+//! hidden files) is the person's [`FilesPreferences`], which follow them to
+//! their other devices and are never seen by collaborators. The folder a
+//! window shows, its listing and selection are the window's own; its other
+//! work is effects on the live rows the surface publishes.
 
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
+use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, EncodedAction, ParamType,
+use ui::tilo_resource::{
+    self, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, Outbox, Refusal, Settled,
+    Undoing, resource,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::doc::{OpsDoc, PlacesDoc};
 use crate::effects::FilesEffect;
-use crate::file_ops::{FileOp, Outcome, QueuedOp};
-use crate::files_app::{
-    FileExplorerWidget, Ran, published_place_resources, published_template_resources,
-};
+use crate::file_ops::{Change, FileOp};
+use crate::files_app::{FileExplorerWidget, Ran};
+use crate::model::{SortBy, SortOrder, ViewMode};
 
-/// A change to the Files document: the bookmarked places (stored as
-/// [`crate::places`] names them, so they mean the same folder on every
-/// device) and the filesystem operations queued from Files.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FilesDocAction {
-    /// Bookmark `place` at position `at` (the end when `None`).
-    AddBookmark {
-        place: String,
-        at: Option<usize>,
-    },
-    /// Forget `place`.
-    RemoveBookmark {
-        place: String,
-    },
-    /// Move `place` to position `to`.
-    MoveBookmark {
-        place: String,
-        to: usize,
-    },
-    /// Queue the filesystem change `op` for `device` to carry out. Undoing
-    /// it queues the revert of the operation.
-    QueueFileOp {
-        id: String,
-        device: String,
-        op: FileOp,
-    },
-    /// The device carried out the operation `id`: record what it changed.
-    SettleFileOp {
-        id: String,
-        outcome: Outcome,
-    },
-    /// Record already published native objects without executing another copy.
-    RecordClipboardTransfer {
-        receipt: crate::files_app::ClipboardReceipt,
-        device: String,
-    },
-    /// Bookkeeping after native compensation of this exact queued receipt.
-    SettleClipboardUndo {
-        id: String,
-        operation: String,
-    },
-    SettleClipboardRedo {
-        id: String,
-        operation: String,
-    },
+/// How many carried-out filesystem changes the document keeps, so recent
+/// ones can still be undone.
+const KEPT_OPS: usize = 64;
+
+/// The most entries one move or copy takes.
+pub(crate) const MAX_MOVE_ENTRIES: usize = 256;
+
+/// One bookmarked place, stored as [`crate::places`] names it so it means
+/// the same folder on every device.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Bookmark {
+    /// Place
+    #[model(label)]
+    #[model(readonly)]
+    pub place: Atom,
 }
 
-impl Action for FilesDocAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::AddBookmark { place, at } => PlacesDoc::add(doc, place, *at)?,
-            Self::RemoveBookmark { place } => PlacesDoc::remove(doc, place)?,
-            Self::MoveBookmark { place, to } => PlacesDoc::move_to(doc, place, *to)?,
-            Self::QueueFileOp { id, device, op } => OpsDoc::queue(doc, id, device, op)?,
-            Self::SettleFileOp { id, outcome } => OpsDoc::settle(doc, id, outcome)?,
-            Self::RecordClipboardTransfer { receipt, device } => {
-                if uuid::Uuid::parse_str(&receipt.operation).is_err()
-                    || receipt.completed == 0
-                    || receipt.completed > 256
-                    || OpsDoc::ops(doc).iter().any(|op| op.id == receipt.operation)
-                {
-                    return Err(ActionError::Refused(
-                        "invalid or already recorded clipboard receipt".into(),
-                    ));
-                }
-                OpsDoc::queue(
-                    doc,
-                    &receipt.operation,
-                    device,
-                    &FileOp::ClipboardReceipt {
-                        operation: receipt.operation.clone(),
-                    },
-                )?;
-                OpsDoc::settle(
-                    doc,
-                    &receipt.operation,
-                    &Outcome::Done {
-                        changes: vec![crate::file_ops::Change::ClipboardTransfer {
-                            operation: receipt.operation.clone(),
-                        }],
-                    },
-                )?;
-            }
-            Self::SettleClipboardUndo { id, operation } => {
-                let ops = OpsDoc::ops(doc);
-                let matches = ops
-                    .iter()
-                    .find(|queued| queued.id == *id && queued.outcome.is_none())
-                    .and_then(|queued| match &queued.op {
-                        FileOp::Revert { op } => ops.iter().find(|original| original.id == *op),
-                        _ => None,
-                    })
-                    .is_some_and(|original| {
-                        matches!(&original.op,
-                        FileOp::ClipboardReceipt { operation: actual } if actual == operation)
-                    });
-                if !matches {
-                    return Err(ActionError::Refused(
-                        "clipboard Undo no longer names its recorded transfer".into(),
-                    ));
-                }
-                let original = clipboard_history_step(doc, operation, false)?;
-                ui::history_source::steps::settle_compensation(doc, original)
-                    .map_err(ActionError::Refused)?;
-                OpsDoc::settle(
-                    doc,
-                    id,
-                    &Outcome::Done {
-                        changes: vec![crate::file_ops::Change::ClipboardUndo {
-                            operation: operation.clone(),
-                        }],
-                    },
-                )?;
-            }
-            Self::SettleClipboardRedo { id, operation } => {
-                let ops = OpsDoc::ops(doc);
-                let matches = ops.iter().find(|queued| queued.id == *id && queued.outcome.is_none())
-                    .and_then(|queued| match &queued.op { FileOp::Revert { op } => ops.iter().find(|original| original.id == *op), _ => None })
-                    .is_some_and(|original| original.outcome.as_ref().is_some_and(|outcome| outcome.changes().iter().any(|change| matches!(change, crate::file_ops::Change::ClipboardUndo { operation: actual } if actual == operation))));
-                if !matches {
-                    return Err(ActionError::Refused(
-                        "clipboard Redo no longer names its recorded Undo".into(),
-                    ));
-                }
-                let original = clipboard_history_step(doc, operation, true)?;
-                ui::history_source::steps::settle_compensation(doc, original)
-                    .map_err(ActionError::Refused)?;
-                OpsDoc::settle(
-                    doc,
-                    id,
-                    &Outcome::Done {
-                        changes: vec![crate::file_ops::Change::ClipboardTransfer {
-                            operation: operation.clone(),
-                        }],
-                    },
-                )?;
-            }
+tilo_resource::json_model!(FileOp);
+
+/// A filesystem change queued for the device whose disk it changes.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct FileTask {
+    /// The device that alone carries it out.
+    pub device: String,
+    pub op: FileOp,
+}
+
+/// The Files document: the bookmarked places behind every Files window and
+/// the filesystem changes queued from Files.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct FileExplorer {
+    /// The bookmarked places, in order. Each is stored under an id derived
+    /// from the place, so two people pinning the same folder pin it once.
+    pub places: Collection<Bookmark>,
+    /// Filesystem changes, each settled by its device with what it changed.
+    pub ops: Outbox<FileTask, Vec<Change>>,
+}
+
+/// The id a bookmark of `place` is stored under.
+#[must_use]
+pub fn bookmark_id(place: &str) -> Id {
+    let digest = Sha256::digest(place.as_bytes());
+    Id::from_raw(format!(
+        "place-{}",
+        hex::encode(digest.get(..12).unwrap_or(&digest))
+    ))
+}
+
+/// `entry` of the folder `folder`: a name in it, or an absolute path.
+fn entry_path(folder: &str, entry: &str) -> Result<String, Refusal> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return Err(Refusal::new("an entry is named"));
+    }
+    if std::path::Path::new(entry).is_absolute() {
+        return Ok(entry.to_owned());
+    }
+    if !std::path::Path::new(folder).is_absolute() || entry.contains('/') {
+        return Err(Refusal::new(format!(
+            "`{entry}` is neither a name in the folder nor an absolute path"
+        )));
+    }
+    Ok(std::path::Path::new(folder)
+        .join(entry)
+        .display()
+        .to_string())
+}
+
+/// The paths of `entries` of `folder`: at least one, at most
+/// [`MAX_MOVE_ENTRIES`].
+fn entry_paths(folder: &str, entries: &[String]) -> Result<Vec<String>, Refusal> {
+    if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
+        return Err(Refusal::new(format!(
+            "name 1 to {MAX_MOVE_ENTRIES} entries"
+        )));
+    }
+    entries
+        .iter()
+        .map(|entry| entry_path(folder, entry))
+        .collect()
+}
+
+fn absolute_folder(folder: &str) -> Result<String, Refusal> {
+    if std::path::Path::new(folder).is_absolute() {
+        Ok(folder.to_owned())
+    } else {
+        Err(Refusal::new(format!("{folder} is not an absolute path")))
+    }
+}
+
+fn file_name(name: &str) -> Result<String, Refusal> {
+    let name = name.trim();
+    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+        return Err(Refusal::new("a name, without a slash"));
+    }
+    Ok(name.to_owned())
+}
+
+/// Queue `op` for `device` to carry out, forgetting the oldest settled
+/// changes beyond [`KEPT_OPS`].
+fn queue(
+    cx: &mut ActionCx,
+    ops: &mut Outbox<FileTask, Vec<Change>>,
+    device: String,
+    op: FileOp,
+) -> Result<(), Refusal> {
+    if device.trim().is_empty() {
+        return Err(Refusal::new("the device whose files change is named"));
+    }
+    ops.push(cx.id(), FileTask { device, op });
+    ops.prune(KEPT_OPS);
+    Ok(())
+}
+
+/// Record the native transfer `receipt` names, settled at once. Recorded
+/// again while it is taken back (a redo), it asks the host to make it again.
+fn record_native(
+    cx: &mut ActionCx,
+    ops: &mut Outbox<FileTask, Vec<Change>>,
+    device: String,
+    receipt: &crate::files_app::ClipboardReceipt,
+) -> Result<(), Refusal> {
+    if uuid::Uuid::parse_str(&receipt.operation).is_err()
+        || receipt.completed == 0
+        || receipt.completed > 256
+    {
+        return Err(Refusal::new("not a clipboard receipt"));
+    }
+    let operation = receipt.operation.clone();
+    let recorded = ops.entries().any(|(_, entry)| {
+        matches!(&entry.value.op, FileOp::ClipboardReceipt { operation: recorded } if *recorded == operation)
+    });
+    if !recorded {
+        let id = cx.id();
+        ops.push(
+            id.clone(),
+            FileTask {
+                device,
+                op: FileOp::ClipboardReceipt {
+                    operation: operation.clone(),
+                },
+            },
+        );
+        ops.settle(
+            &id,
+            Settled::Done(vec![Change::ClipboardTransfer { operation }]),
+        );
+        ops.prune(KEPT_OPS);
+        return Ok(());
+    }
+    // The latest settled step of this transfer says whether it is in effect.
+    let latest = ops
+        .entries()
+        .filter_map(|(id, entry)| Some((id, entry.settled.as_ref()?)))
+        .filter(|(_, settled)| {
+            settled.result().iter().any(|change| {
+                matches!(change, Change::ClipboardTransfer { operation: o } | Change::ClipboardUndo { operation: o } if *o == operation)
+            })
+        })
+        .last();
+    match latest {
+        Some((undone, settled))
+            if settled
+                .result()
+                .iter()
+                .any(|change| matches!(change, Change::ClipboardUndo { .. })) =>
+        {
+            let undone = undone.clone();
+            queue(
+                cx,
+                ops,
+                device,
+                FileOp::Revert {
+                    op: undone.as_str().to_owned(),
+                },
+            )
+        }
+        _ => Err(Refusal::new("the transfer is already recorded")),
+    }
+}
+
+#[resource(kind = "files.folder", label = "Folder", initialize = FileExplorer::with_default_places)]
+impl FileExplorer {
+    /// Pin a folder to the Favourites in the sidebar.
+    #[action(label = "Add to Favourites")]
+    pub fn add_bookmark(
+        &mut self,
+        #[param("Folder path on this device, or a stored place such as xdg:documents")]
+        place: String,
+        #[param("Position among the Favourites, from 0; the end when none")] at: Option<usize>,
+    ) -> Result<(), Refusal> {
+        let place = place.trim();
+        if place.is_empty() {
+            return Err(Refusal::new("a folder is named"));
+        }
+        let id = bookmark_id(place);
+        if self.places.get(&id).is_none() {
+            let len = self.places.len();
+            self.places.insert(
+                at.unwrap_or(len).min(len),
+                id,
+                Bookmark {
+                    place: Atom(place.to_owned()),
+                },
+            );
         }
         Ok(())
     }
 
-    /// Undoing a queued filesystem change takes it back on the filesystem:
-    /// the revert of the operation this action queues, queued the same way.
-    fn inverse_before(&self, doc: &ui::tilo_actions::Doc) -> Option<Self> {
-        let (id, device) = match self {
-            Self::QueueFileOp { id, device, .. } => (id, device),
-            Self::RecordClipboardTransfer { receipt, device } => (&receipt.operation, device),
-            _ => return None,
-        };
-        let queued = OpsDoc::fresh_id(doc, id);
-        Some(Self::QueueFileOp {
-            id: format!("{queued}-undo"),
-            device: device.clone(),
-            op: FileOp::Revert { op: queued },
-        })
+    /// Unpin a folder from the Favourites.
+    #[action(label = "Remove from Favourites")]
+    pub fn remove_bookmark(
+        &mut self,
+        #[param("Folder path on this device, or a stored place such as xdg:documents")]
+        place: String,
+    ) -> Result<(), Refusal> {
+        self.places
+            .remove(&bookmark_id(place.trim()))
+            .map(drop)
+            .ok_or_else(|| Refusal::new("the folder is not a favourite"))
     }
 
-    fn inverse_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
-        EncodedAction::encode(FileExplorer::ACTION_TYPE, &self.inverse_before(doc)?).ok()
+    /// Create a folder.
+    #[action(undo = Self::revert_queued)]
+    pub fn new_folder(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder to create it in")] parent: String,
+        #[param("Name of the new folder")] name: String,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::NewFolder {
+            parent: absolute_folder(&parent)?,
+            name: file_name(&name)?,
+        };
+        queue(cx, ops, device, op)
     }
 
-    fn redo_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
-        let Self::RecordClipboardTransfer { receipt, device } = self else {
-            return None;
+    /// Rename an entry.
+    #[action(undo = Self::revert_queued)]
+    pub fn rename(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder holding the entry")] folder: String,
+        #[param("The entry: its name in the folder, or its absolute path")] entry: String,
+        #[param("The new name")] name: String,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::Rename {
+            path: entry_path(&folder, &entry)?,
+            name: file_name(&name)?,
         };
-        let original = OpsDoc::ops(doc).into_iter()
-            .filter(|queued| matches!(&queued.op, FileOp::Revert { op } if op == &receipt.operation))
-            .filter(|queued| queued.outcome.as_ref().is_some_and(|outcome| outcome.changes().iter().any(|change| matches!(change, crate::file_ops::Change::ClipboardUndo { operation } if operation == &receipt.operation))))
-            .max_by_key(|queued| queued.order)?;
-        EncodedAction::encode(
-            FileExplorer::ACTION_TYPE,
-            &Self::QueueFileOp {
-                id: format!("{}-redo", original.id),
-                device: device.clone(),
-                op: FileOp::Revert { op: original.id },
+        queue(cx, ops, device, op)
+    }
+
+    /// Move entries to Trash; undo puts them back.
+    #[action(label = "Move to Trash", undo = Self::revert_queued)]
+    pub fn trash(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder holding the entries")] folder: String,
+        #[param("The entries: names in the folder, or absolute paths")] entries: Vec<String>,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::Trash {
+            paths: entry_paths(&folder, &entries)?,
+        };
+        queue(cx, ops, device, op)
+    }
+
+    /// Move entries into another folder in one step, keeping their names.
+    #[action(id = "move", label = "Move entries to folder", undo = Self::revert_queued)]
+    pub fn move_entries(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder holding the entries")] from: String,
+        #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
+        #[param("Absolute path of the destination folder")] to: String,
+        #[param("Create the destination folder when it does not exist (the default)")]
+        create: Option<bool>,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::Move {
+            paths: entry_paths(&from, &entries)?,
+            folder: absolute_folder(&to)?,
+            create: create.unwrap_or(true),
+        };
+        queue(cx, ops, device, op)
+    }
+
+    /// Copy entries into a folder; a copy whose name is taken gets a free
+    /// one.
+    #[action(undo = Self::revert_queued)]
+    pub fn copy_into(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute path of the folder holding the entries")] from: String,
+        #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
+        #[param("Absolute path of the destination folder")] to: String,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::Copy {
+            paths: entry_paths(&from, &entries)?,
+            folder: absolute_folder(&to)?,
+        };
+        queue(cx, ops, device, op)
+    }
+
+    /// Record a paste the native clipboard host already carried out, so it
+    /// is in history and undoable like any change: undo asks the host to
+    /// take back exactly what it transferred.
+    #[action(
+        id = "record-clipboard-transfer",
+        label = "Paste files",
+        undo = Self::revert_queued
+    )]
+    pub fn record_transfer(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The receiving device")] device: String,
+        #[param("The host's receipt of the transfer; grants no authority")]
+        receipt: crate::files_app::ClipboardReceipt,
+    ) -> Result<(), Refusal> {
+        record_native(cx, ops, device, &receipt)
+    }
+
+    /// Record a restore from Trash the native host already carried out, so
+    /// it is in history and undoable.
+    #[action(id = "record-trash-restore", label = "Restore file", undo = Self::revert_queued)]
+    pub fn record_restore(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The receiving device")] device: String,
+        #[param("The host's receipt of the restore; grants no authority")]
+        receipt: crate::files_app::ClipboardReceipt,
+    ) -> Result<(), Refusal> {
+        record_native(cx, ops, device, &receipt)
+    }
+
+    /// Record that the native host took back transfers before it could
+    /// answer (a restart, a killed process): the pending reverts of those
+    /// transfers settle as done, from the host's durable receipts.
+    #[action(
+        id = "record-recovered-undos",
+        label = "Recover clipboard transfers",
+        external
+    )]
+    pub fn record_recovered(
+        &mut self,
+        #[param("Clipboard operations the host's durable receipts show taken back")]
+        operations: Vec<String>,
+    ) -> Result<(), Refusal> {
+        let recovered: Vec<(Id, String)> = self
+            .ops
+            .pending()
+            .filter_map(|(id, task)| {
+                let (operation, redo) = native_compensation(self, task)?;
+                (!redo && operations.contains(&operation)).then(|| (id.clone(), operation))
+            })
+            .collect();
+        if recovered.is_empty() {
+            return Err(Refusal::new("no pending undo of those transfers"));
+        }
+        for (id, operation) in recovered {
+            self.ops.settle(
+                &id,
+                Settled::Done(vec![Change::ClipboardUndo { operation }]),
+            );
+        }
+        Ok(())
+    }
+
+    /// Take back a filesystem change: the device that made it compensates
+    /// what it recorded, in reverse order.
+    #[action(item = ops, undo = Self::revert_queued)]
+    pub fn revert(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        op: Id,
+    ) -> Result<(), Refusal> {
+        let device = ops.get(&op).ok_or("no such change")?.value.device.clone();
+        queue(
+            cx,
+            ops,
+            device,
+            FileOp::Revert {
+                op: op.as_str().to_owned(),
             },
         )
-        .ok()
-    }
-
-    fn inverse_requires_settlement(&self) -> bool {
-        matches!(self, Self::RecordClipboardTransfer { .. })
-    }
-
-    /// What a device reports it did is content from outside: it syncs, but
-    /// no undo takes it back (undoing the operation does).
-    fn change_kind(&self) -> ui::tilo_actions::ChangeKind {
-        match self {
-            Self::SettleFileOp { .. }
-            | Self::SettleClipboardUndo { .. }
-            | Self::SettleClipboardRedo { .. } => ui::tilo_actions::ChangeKind::External,
-            _ => ui::tilo_actions::ChangeKind::Content,
-        }
     }
 }
 
-/// Resolve the exact canonical transfer before changing any settlement state.
-fn clipboard_history_step(
-    doc: &mut Doc,
-    operation: &str,
-    redo: bool,
-) -> Result<automerge::ChangeHash, ActionError> {
-    let registry = ActionRegistry::with(ui::tilo_resource::group::register::<FileExplorer>);
-    let mut matching = Vec::new();
-    for hash in ui::history_source::steps::pending_compensations(doc) {
-        if ui::history_source::steps::compensation_is_redo(doc, hash) != redo {
-            continue;
+impl FileExplorer {
+    /// A new document's places: [`crate::places::DEFAULT_PLACES`].
+    fn with_default_places() -> Self {
+        let mut files = Self::default();
+        for place in crate::places::DEFAULT_PLACES {
+            files.places.push(
+                bookmark_id(place),
+                Bookmark {
+                    place: Atom((*place).to_owned()),
+                },
+            );
         }
-        let context = doc.get_change_meta_by_hash(&hash).and_then(|change| {
-            change
-                .message
-                .as_deref()
-                .and_then(ui::tilo_actions::ActionContext::from_change_message)
-        });
-        let Some(recorded) = context
-            .filter(|context| context.compensation.is_some())
-            .and_then(|context| context.action)
-        else {
-            continue;
-        };
-        if recorded.type_id != FileExplorer::ACTION_TYPE {
-            continue;
-        }
-        let Ok(action) = serde_json::from_slice::<FilesDocAction>(&recorded.payload) else {
-            continue;
-        };
-        if matches!(action, FilesDocAction::RecordClipboardTransfer { receipt, .. } if receipt.operation == operation)
-            && ui::tilo_actions::executor::verified_compensation(doc, hash, &registry)
-                .is_ok_and(|inverse| inverse.is_some())
-        {
-            matching.push(hash);
-        }
+        files
     }
-    let [hash] = matching.as_slice() else {
-        return Err(ActionError::Refused(
-            "clipboard receipt history absent, unverified or ambiguous".into(),
-        ));
-    };
-    Ok(*hash)
-}
 
-/// The Files document's state: the bookmarked places, in order, and the
-/// filesystem operations queued from Files.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct FilesState {
-    pub bookmarks: Vec<String>,
-    pub ops: Vec<QueuedOp>,
-}
+    /// Undoing a queued change queues its revert for the same device.
+    fn revert_queued<P>(undoing: Undoing<'_, Self, P>) -> Option<Invoke<Self>> {
+        Some(Self::REVERT.with(undoing.minted.first()?.clone()))
+    }
 
-impl FilesState {
-    /// The operations `device` still has to carry out, each with the outcome
-    /// of the operation it reverts (a revert waits until that one is
-    /// carried out).
-    pub fn pending_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
-        self.pending_all_for(device)
-            .into_iter()
-            .filter(|(_, (_, outcome))| {
-                outcome.as_ref().is_none_or(|outcome| {
-                    !outcome.changes().iter().any(|change| {
-                        matches!(
-                            change,
-                            crate::file_ops::Change::ClipboardTransfer { .. }
-                                | crate::file_ops::Change::ClipboardUndo { .. }
-                        )
-                    })
-                })
-            })
+    /// The bookmarked places, in order.
+    #[must_use]
+    pub fn bookmarks(&self) -> Vec<String> {
+        self.places
+            .values()
+            .map(|bookmark| bookmark.place.0.clone())
             .collect()
     }
 
-    pub(crate) fn pending_clipboard_for(
-        &self,
-        device: &str,
-    ) -> Vec<(String, (String, String, bool))> {
-        self.pending_all_for(device)
-            .into_iter()
-            .filter_map(|(id, (_, outcome))| {
-                outcome?.changes().iter().find_map(|change| match change {
-                    crate::file_ops::Change::ClipboardTransfer { operation } => {
-                        Some((id.clone(), (id.clone(), operation.clone(), false)))
-                    }
-                    crate::file_ops::Change::ClipboardUndo { operation } => {
-                        Some((id.clone(), (id.clone(), operation.clone(), true)))
-                    }
-                    _ => None,
-                })
-            })
-            .collect()
-    }
-
-    fn pending_all_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
-        self.ops
-            .iter()
-            .filter(|op| op.device == device && op.outcome.is_none())
-            .filter_map(|op| {
-                let reverting = match &op.op {
-                    FileOp::Revert { op: target } => {
-                        match self.ops.iter().find(|queued| queued.id == *target) {
-                            Some(queued) => Some(queued.outcome.clone()?),
-                            None => None,
-                        }
-                    }
-                    _ => None,
-                };
-                Some((op.id.clone(), (op.clone(), reverting)))
-            })
-            .collect()
+    /// The verb that queues `op` for `device`; none for a native transfer,
+    /// which only its receipt records.
+    pub(crate) fn queueing(device: &str, op: FileOp) -> Option<Invoke<Self>> {
+        let device = device.to_owned();
+        Some(match op {
+            FileOp::NewFolder { parent, name } => Self::NEW_FOLDER.with(file_explorer::NewFolder {
+                device,
+                parent,
+                name,
+            }),
+            FileOp::Rename { path, name } => Self::RENAME.with(file_explorer::Rename {
+                device,
+                folder: String::new(),
+                entry: path,
+                name,
+            }),
+            FileOp::Trash { paths } => Self::TRASH.with(file_explorer::Trash {
+                device,
+                folder: String::new(),
+                entries: paths,
+            }),
+            FileOp::Move {
+                paths,
+                folder,
+                create,
+            } => Self::MOVE_ENTRIES.with(file_explorer::MoveEntries {
+                device,
+                from: String::new(),
+                entries: paths,
+                to: folder,
+                create: Some(create),
+            }),
+            FileOp::Copy { paths, folder } => Self::COPY_INTO.with(file_explorer::CopyInto {
+                device,
+                from: String::new(),
+                entries: paths,
+                to: folder,
+            }),
+            FileOp::Revert { op } => Self::REVERT.with(Id::from_raw(op)),
+            FileOp::ClipboardReceipt { .. } => return None,
+        })
     }
 }
 
@@ -371,212 +537,50 @@ impl SettingsSchema for FilesPreferences {
     const SCOPE: Scope = Scope::Personal;
 }
 
-/// The Files resource: the bookmarked places behind every Files window.
-pub struct FileExplorer;
-
-impl FileExplorer {
-    pub(crate) const RECORD_CLIPBOARD_TRANSFER: ui::tilo_resource::ActionRef<
-        Self,
-        (crate::files_app::ClipboardReceipt, String),
-    > = ui::tilo_resource::ActionRef::new("record-clipboard-transfer", &["receipt", "device"]);
-    pub(crate) const RECORD_TRASH_RESTORE: ui::tilo_resource::ActionRef<
-        Self,
-        (crate::files_app::ClipboardReceipt, String),
-    > = ui::tilo_resource::ActionRef::new("record-trash-restore", &["receipt", "device"]);
-    pub(crate) const SETTLE_CLIPBOARD_UNDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
-        ui::tilo_resource::ActionRef::new("settle-clipboard-undo", &["id", "operation"]);
-    pub(crate) const SETTLE_CLIPBOARD_REDO: ui::tilo_resource::ActionRef<Self, (String, String)> =
-        ui::tilo_resource::ActionRef::new("settle-clipboard-redo", &["id", "operation"]);
-}
-
-impl Resource for FileExplorer {
-    const KIND: &'static str = "files.folder";
-    const LABEL: &'static str = "Folder";
-    const ACTION_TYPE: &'static str = "files.action";
-
-    type State = FilesState;
-    type Action = FilesDocAction;
-
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<FilesDocAction>(Self::ACTION_TYPE);
-    }
-
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        PlacesDoc::initialize(doc).map_err(|error| ModelError::invalid(error.to_string()))
-    }
-
-    fn read(doc: &Doc) -> Result<FilesState, ModelError> {
-        Ok(FilesState {
-            bookmarks: PlacesDoc::places(doc),
-            ops: OpsDoc::ops(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        let mut declarations = bookmark_declarations();
-        declarations.extend(clipboard_receipt_declarations());
-        declarations
-    }
-
-    fn children(state: &FilesState) -> Vec<tilo_actions::Resource> {
-        let mut children =
-            published_place_resources(&crate::files_app::device_places(&state.bookmarks));
-        children.extend(published_template_resources());
-        children
+pub(crate) fn view_mode_token(mode: ViewMode) -> &'static str {
+    match mode {
+        ViewMode::List => "list",
+        ViewMode::Grid => "grid",
     }
 }
 
-fn clipboard_record_declaration(name: &'static str, label: String) -> ActionDecl<FileExplorer> {
-    ActionDecl::new(
-        name,
-        label,
-        vec![
-            ActionParam::required(
-                "receipt",
-                ParamType::Object,
-                "Settled native transfer metadata; grants no authority",
-            ),
-            ActionParam::required("device", ParamType::Text, "Receiving device"),
-        ],
-        |args, _| {
-            let Some(ui::tilo_actions::ArgValue::Object(receipt)) = args.get("receipt") else {
-                return Err("clipboard receipt absent".into());
-            };
-            Ok(FilesDocAction::RecordClipboardTransfer {
-                receipt: serde_json::from_value(serde_json::Value::Object(receipt.clone()))
-                    .map_err(|error| error.to_string())?,
-                device: args
-                    .text("device")
-                    .ok_or("receiving device absent")?
-                    .to_owned(),
-            })
-        },
-    )
-    .tagged(ui::tilo_actions::PROGRAMMATIC_TAG)
-}
-
-fn clipboard_receipt_declarations() -> Vec<ActionDecl<FileExplorer>> {
-    vec![
-        clipboard_record_declaration(
-            "record-clipboard-transfer",
-            crate::i18n::t("files-history-paste-files"),
-        ),
-        clipboard_record_declaration(
-            "record-trash-restore",
-            crate::i18n::t("files-history-restore-file"),
-        ),
-        ActionDecl::new(
-            "settle-clipboard-undo",
-            "Record file compensation",
-            vec![
-                ActionParam::required("id", ParamType::Text, "Current queued Undo"),
-                ActionParam::required("operation", ParamType::Text, "Exact transfer receipt"),
-            ],
-            |args, _| {
-                Ok(FilesDocAction::SettleClipboardUndo {
-                    id: args.text("id").ok_or("queued Undo absent")?.to_owned(),
-                    operation: args
-                        .text("operation")
-                        .ok_or("transfer receipt absent")?
-                        .to_owned(),
-                })
-            },
-        )
-        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
-        ActionDecl::new(
-            "settle-clipboard-redo",
-            "Record file restoration",
-            vec![
-                ActionParam::required("id", ParamType::Text, "Current queued Redo"),
-                ActionParam::required("operation", ParamType::Text, "Exact transfer receipt"),
-            ],
-            |args, _| {
-                Ok(FilesDocAction::SettleClipboardRedo {
-                    id: args.text("id").ok_or("queued Redo absent")?.to_owned(),
-                    operation: args
-                        .text("operation")
-                        .ok_or("transfer receipt absent")?
-                        .to_owned(),
-                })
-            },
-        )
-        .tagged(ui::tilo_actions::PROGRAMMATIC_TAG),
-    ]
-}
-
-/// The stored place a caller names: a place as stored, or a folder path on
-/// this device.
-fn named_place(text: &str) -> String {
-    if crate::places::is_place(text) {
-        return text.to_owned();
+pub(crate) fn parse_view_mode(token: &str) -> ViewMode {
+    match token {
+        "grid" => ViewMode::Grid,
+        _ => ViewMode::List,
     }
-    crate::places::place_of(
-        std::path::Path::new(text),
-        crate::model::user_home().as_deref(),
-        &crate::favorites::UserDirs::from_system(),
-    )
 }
 
-fn place_argument(args: &ui::tilo_actions::ActionArgs) -> Result<String, String> {
-    args.text("path")
-        .filter(|path| !path.trim().is_empty())
-        .map(named_place)
-        .ok_or_else(|| "missing folder path".to_owned())
+pub(crate) fn sort_key_token(sort: SortBy) -> &'static str {
+    match sort {
+        SortBy::Name => "name",
+        SortBy::Size => "size",
+        SortBy::Modified => "modified",
+        SortBy::Type => "type",
+    }
 }
 
-fn path_param() -> ActionParam {
-    ActionParam::required(
-        "path",
-        ParamType::Text,
-        "Folder path on this device, or a stored place such as xdg:documents",
-    )
+pub(crate) fn parse_sort_key(token: &str) -> SortBy {
+    match token {
+        "size" => SortBy::Size,
+        "modified" => SortBy::Modified,
+        "type" => SortBy::Type,
+        _ => SortBy::Name,
+    }
 }
 
-fn bookmark_declarations() -> Vec<ActionDecl<FileExplorer>> {
-    vec![
-        ActionDecl::new(
-            "add-bookmark",
-            "Add to Favourites",
-            vec![path_param()],
-            |args, _| {
-                Ok(FilesDocAction::AddBookmark {
-                    place: place_argument(args)?,
-                    at: None,
-                })
-            },
-        )
-        .describe("Pin a folder to the Favourites in the sidebar."),
-        ActionDecl::new(
-            "remove-bookmark",
-            "Remove from Favourites",
-            vec![path_param()],
-            |args, _| {
-                Ok(FilesDocAction::RemoveBookmark {
-                    place: place_argument(args)?,
-                })
-            },
-        )
-        .describe("Unpin a folder from the Favourites."),
-        ActionDecl::new(
-            "move-bookmark",
-            "Move favourite",
-            vec![
-                path_param(),
-                ActionParam::required("to", ParamType::Integer, "New position, from 0"),
-            ],
-            |args, _| {
-                let to = args
-                    .integer("to")
-                    .and_then(|to| usize::try_from(to).ok())
-                    .ok_or_else(|| "missing or negative position".to_owned())?;
-                Ok(FilesDocAction::MoveBookmark {
-                    place: place_argument(args)?,
-                    to,
-                })
-            },
-        )
-        .describe("Reorder the Favourites."),
-    ]
+pub(crate) fn sort_order_token(order: SortOrder) -> &'static str {
+    match order {
+        SortOrder::Ascending => "ascending",
+        SortOrder::Descending => "descending",
+    }
+}
+
+pub(crate) fn parse_sort_order(token: &str) -> SortOrder {
+    match token {
+        "descending" => SortOrder::Descending,
+        _ => SortOrder::Ascending,
+    }
 }
 
 /// A row the window publishes, as the framework carries it.
@@ -646,16 +650,55 @@ impl ResourceApp for FileExplorerShell {
     fn fixture(fixture: &mut Fixture<FileExplorer>) {
         crate::scenarios::prepare(fixture);
     }
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&crate::i18n::CATALOG)
+    }
+}
+
+/// The native transfer `task` takes back (`false`) or makes again (`true`),
+/// when it reverts a step of one.
+fn native_compensation(state: &FileExplorer, task: &FileTask) -> Option<(String, bool)> {
+    let FileOp::Revert { op } = &task.op else {
+        return None;
+    };
+    let target = state.ops.outcome(&Id::from_raw(op.clone()))?;
+    target.result().iter().find_map(|change| match change {
+        Change::ClipboardTransfer { operation } => Some((operation.clone(), false)),
+        Change::ClipboardUndo { operation } => Some((operation.clone(), true)),
+        _ => None,
+    })
+}
+
+/// Carry out `task` on this device, given the record as it stands: a revert
+/// waits until the change it takes back is carried out.
+fn carry_out(state: &FileExplorer, task: &FileTask) -> EffectAnswer {
+    let reverting = match &task.op {
+        FileOp::Revert { op } => {
+            let op = Id::from_raw(op.clone());
+            match state.ops.outcome(&op) {
+                Some(settled) => Some(settled.result().clone()),
+                None if state.ops.get(&op).is_some() => {
+                    return Err("waiting for the change it takes back".into());
+                }
+                None => None,
+            }
+        }
+        _ => None,
+    };
+    Ok(Effected::settled(&crate::file_ops::execute(
+        &task.op,
+        reverting.as_deref(),
+    )))
 }
 
 impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
-    fn present(&mut self, state: &Rc<FilesState>) {
-        self.present_places(&state.bookmarks);
+    fn present(&mut self, state: &Rc<FileExplorer>) {
+        self.present_places(&state.bookmarks());
         self.follow_ops(&state.ops);
     }
 
     fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
-        self.attach_clipboard_compensation(&cx);
         if let Some(source) = cx.file_history() {
             self.show_file_history_in(source);
         }
@@ -669,18 +712,55 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
             }
         }
         // Each device carries out the filesystem changes queued for it, and
-        // records what it changed.
+        // records what it changed; a change asked for here runs under the
+        // invocation that asked, which completes once it settled.
+        let native = self.native_undo_queue();
         let ops = cx.device().map(|device| {
-            let device = device.to_owned();
-            cx.drain(
-                move |state: &FilesState| state.pending_for(&device),
-                |(queued, reverting): (QueuedOp, Option<Outcome>), cx| {
-                    let outcome = crate::file_ops::execute(&queued.op, reverting.as_ref());
-                    cx.apply(&FilesDocAction::SettleFileOp {
-                        id: queued.id,
-                        outcome,
+            let me = device.to_owned();
+            cx.outbox_awaited(
+                FileExplorer::paths().ops,
+                move |_, task: &FileTask| task.device == me,
+                move |_, task, cx| {
+                    let Some((operation, redo)) =
+                        cx.live().with(|state| native_compensation(state, &task))
+                    else {
+                        return cx.live().with(|state| carry_out(state, &task));
+                    };
+                    // The host acts for the invocation that asked for it.
+                    let invocation = cx
+                        .invocation()
+                        .ok_or("the clipboard host acts only for the change's own invocation")?;
+                    if native.borrow().len() >= 16 {
+                        return Err("clipboard compensation queue is full".into());
+                    }
+                    let expected = operation.clone();
+                    let reply = cx.reply_then(move |(), output, _| {
+                        if output
+                            .value
+                            .as_ref()
+                            .and_then(|value| value.get("operation"))
+                            .and_then(serde_json::Value::as_str)
+                            != Some(expected.as_str())
+                        {
+                            return Err(
+                                "clipboard Undo receipt differs from its current consequence"
+                                    .into(),
+                            );
+                        }
+                        let operation = expected.clone();
+                        Ok(Effected::settled(&Settled::Done(vec![if redo {
+                            Change::ClipboardTransfer { operation }
+                        } else {
+                            Change::ClipboardUndo { operation }
+                        }])))
                     });
-                    Ok(Effected::done())
+                    native.borrow_mut().push(crate::files_app::UndoRequest {
+                        redo,
+                        invocation,
+                        operation,
+                        reply,
+                    });
+                    Ok(Effected::Pending)
                 },
             )
         });
@@ -711,7 +791,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
             Ran::Done(None) => Effected::done(),
             Ran::Pending => {
                 self.await_effect(if recovery {
-                    cx.reply_then(|files, output, cx| {
+                    cx.reply_then(|_, output, cx| {
                         let value = output.value.ok_or("clipboard recovery receipt absent")?;
                         let operations: Vec<String> = serde_json::from_value(
                             value
@@ -720,16 +800,18 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                                 .clone(),
                         )
                         .map_err(|error| error.to_string())?;
-                        let device = files
-                            .clipboard_device()
-                            .ok_or("clipboard receiving device absent")?;
-                        let pending = cx.live().with(|state| state.pending_clipboard_for(&device));
-                        for (_, (id, operation, undone)) in pending {
-                            if !undone && operations.contains(&operation) {
-                                cx.invoke(
-                                    FileExplorer::SETTLE_CLIPBOARD_UNDO.with((id, operation)),
-                                );
-                            }
+                        // An Undo the host carried out before it could answer
+                        // (a restart, a killed process) is settled from its
+                        // durable receipt.
+                        let pending = cx.live().with(|state| {
+                            state.ops.pending().any(|(_, task)| {
+                                native_compensation(state, task).is_some_and(|(operation, redo)| {
+                                    !redo && operations.contains(&operation)
+                                })
+                            })
+                        });
+                        if pending {
+                            cx.invoke(FileExplorer::RECORD_RECOVERED.with(operations));
                         }
                         if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
                         {
@@ -745,19 +827,20 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                         .map_err(|error| error.to_string())?;
                         if receipt.completed > 0 {
                             files.follow_clipboard_receipt(&receipt);
-                            let action = if receipt.restore {
-                                FileExplorer::RECORD_TRASH_RESTORE
+                            let device = files
+                                .clipboard_device()
+                                .ok_or("clipboard receiving device absent")?;
+                            cx.invoke(if receipt.restore {
+                                FileExplorer::RECORD_RESTORE.with(file_explorer::RecordRestore {
+                                    device,
+                                    receipt: receipt.clone(),
+                                })
                             } else {
-                                FileExplorer::RECORD_CLIPBOARD_TRANSFER
-                            };
-                            cx.invoke(
-                                action.with((
-                                    receipt.clone(),
-                                    files
-                                        .clipboard_device()
-                                        .ok_or("clipboard receiving device absent")?,
-                                )),
-                            );
+                                FileExplorer::RECORD_TRANSFER.with(file_explorer::RecordTransfer {
+                                    device,
+                                    receipt: receipt.clone(),
+                                })
+                            });
                         }
                         if let Some(error) = receipt.error {
                             return Err(error);
@@ -776,34 +859,24 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         self.effect_statuses()
     }
 
-    /// Pin the folder shown to the Favourites, or unpin it.
+    /// Pin the folder shown to the Favourites, or unpin it; change the
+    /// files of the folder shown.
     fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
-        let Some(place) = self.current_place() else {
-            return self.file_op_declarations();
-        };
-        let pinned = self.current_is_favourite();
-        let id = if pinned {
-            "remove-current-bookmark"
-        } else {
-            "add-current-bookmark"
-        };
-        let label = if pinned {
-            "Remove this folder from Favourites"
-        } else {
-            "Add this folder to Favourites"
-        };
-        let mut declarations = vec![ActionDecl::new(id, label, Vec::new(), move |_, _| {
-            Ok(if pinned {
-                FilesDocAction::RemoveBookmark {
-                    place: place.clone(),
-                }
+        let mut declarations = Vec::new();
+        if let Some(place) = self.current_place() {
+            declarations.extend(if self.current_is_favourite() {
+                FileExplorer::REMOVE_BOOKMARK
+                    .bind(file_explorer::RemoveBookmark::paths().place, place)
+                    .declaration(
+                        "remove-current-bookmark",
+                        "Remove this folder from Favourites",
+                    )
             } else {
-                FilesDocAction::AddBookmark {
-                    place: place.clone(),
-                    at: None,
-                }
-            })
-        })];
+                FileExplorer::ADD_BOOKMARK
+                    .bind(file_explorer::AddBookmark::paths().place, place)
+                    .declaration("add-current-bookmark", "Add this folder to Favourites")
+            });
+        }
         declarations.extend(self.file_op_declarations());
         declarations
     }
@@ -833,23 +906,30 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
     use ui::prelude::TestApp;
-    use ui::tilo_resource::Invoke;
+    use ui::tilo_resource::{Replica, Settled};
 
-    /// A new document holds the standard places, published as the resource's
-    /// place children; the folder operations ride its publication.
+    /// A new document holds the standard places, which the window publishes
+    /// as rows that open; the filesystem verbs ride the resource.
     #[test]
     fn a_new_document_publishes_the_standard_places() {
-        let mut doc = AutoCommit::new();
-        FileExplorer::initialize(&mut doc).unwrap();
-        let state = FileExplorer::read(&doc).unwrap();
-        assert_eq!(state.bookmarks, crate::places::DEFAULT_PLACES);
+        let state = Replica::<FileExplorer>::new().state().unwrap();
+        assert_eq!(state.bookmarks(), crate::places::DEFAULT_PLACES);
 
         let published = ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &state);
         assert_eq!(published.kind, "files.folder");
         let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in ["add-bookmark", "remove-bookmark", "move-bookmark"] {
+        for expected in [
+            "add-bookmark",
+            "remove-bookmark",
+            "field-edit",
+            "new-folder",
+            "rename",
+            "trash",
+            "move",
+            "copy-into",
+            "revert",
+        ] {
             assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
         }
         let effects: Vec<String> = <FilesEffect as ui::tilo_resource::Effect>::specs()
@@ -879,59 +959,82 @@ mod tests {
         ] {
             assert!(!ids.contains(&gone), "`{gone}` is a preference: {ids:?}");
         }
+
+        let mut app = TestApp::<FileExplorerShell>::new().unwrap();
+        let rows = app.harness().resources();
+        let places: Vec<_> = rows
+            .iter()
+            .flat_map(|root| std::iter::once(root).chain(&root.children))
+            .filter(|row| row.kind == "files.place")
+            .collect();
+        assert!(!places.is_empty(), "the window publishes its places");
         assert!(
-            published
-                .children
+            places
                 .iter()
-                .filter(|child| child.kind == "files.place")
                 .all(|place| place.actions.iter().any(|a| a.id == "open")),
             "each place opens"
         );
     }
 
+    fn sync(a: &mut TestApp<FileExplorerShell>, b: &mut TestApp<FileExplorerShell>) {
+        let mut doc = b.peer_document();
+        a.merge_peer(&mut doc).unwrap();
+        b.merge_peer(&mut doc).unwrap();
+        a.settle();
+        b.settle();
+    }
+
+    fn pin(place: &str, at: Option<usize>) -> Invoke<FileExplorer> {
+        FileExplorer::ADD_BOOKMARK.with(file_explorer::AddBookmark {
+            place: place.into(),
+            at,
+        })
+    }
+
     /// Bookmarks are edited place by place, so two people pinning at once
-    /// both keep their pin.
+    /// both keep their pin, and the same folder pinned twice is one pin.
     #[test]
     fn bookmark_edits_are_granular() {
-        let mut app = TestApp::<FileExplorerShell>::new().unwrap();
-        app.invoke(
-            Invoke::apply(&FilesDocAction::AddBookmark {
-                place: "~/Projects".into(),
-                at: None,
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        app.merge_peer_edit(|peer| {
-            FilesDocAction::AddBookmark {
-                place: "/mnt/data".into(),
-                at: Some(1),
-            }
-            .apply(peer)
-            .unwrap();
-        });
-        let places = app.state().bookmarks;
+        let mut laptop = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let mut phone = TestApp::<FileExplorerShell>::on_device("phone").unwrap();
+        sync(&mut laptop, &mut phone);
+        laptop.invoke(pin("~/Projects", None)).unwrap();
+        laptop.invoke(pin("~/Shared", None)).unwrap();
+        phone.invoke(pin("/mnt/data", Some(1))).unwrap();
+        phone.invoke(pin("~/Shared", None)).unwrap();
+        sync(&mut laptop, &mut phone);
+        let places = laptop.state().bookmarks();
         assert!(places.contains(&"~/Projects".to_owned()), "{places:?}");
         assert_eq!(places[1], "/mnt/data");
+        assert_eq!(
+            places.iter().filter(|place| *place == "~/Shared").count(),
+            1,
+            "{places:?}"
+        );
+        assert_eq!(phone.state().bookmarks(), places, "both converge");
 
-        app.invoke(
-            Invoke::apply(&FilesDocAction::MoveBookmark {
-                place: "~/Projects".into(),
-                to: 0,
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        app.invoke(
-            Invoke::apply(&FilesDocAction::RemoveBookmark {
-                place: "xdg:music".into(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let places = app.state().bookmarks;
+        laptop
+            .invoke(
+                Invoke::edit(
+                    &FileExplorer::paths()
+                        .places
+                        .move_to(&bookmark_id("~/Projects"), 0),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        laptop
+            .invoke(FileExplorer::REMOVE_BOOKMARK.with("xdg:music".to_owned()))
+            .unwrap();
+        let places = laptop.state().bookmarks();
         assert_eq!(places[0], "~/Projects");
         assert!(!places.contains(&"xdg:music".to_owned()));
+        assert!(
+            laptop
+                .invoke(FileExplorer::REMOVE_BOOKMARK.with("xdg:music".to_owned()))
+                .is_err(),
+            "a folder that is not a favourite is refused"
+        );
     }
 
     /// Pinning a folder in the window is the resource's action: it lands in
@@ -940,7 +1043,7 @@ mod tests {
     fn pinning_a_folder_is_a_bookmark_action() {
         let folder = tempfile::tempdir().unwrap();
         let mut app = TestApp::<FileExplorerShell>::new().unwrap();
-        assert_eq!(app.state().bookmarks, crate::places::DEFAULT_PLACES);
+        assert_eq!(app.state().bookmarks(), crate::places::DEFAULT_PLACES);
         app.with_surface(|files: &mut FileExplorerWidget| {
             files.apply_command(crate::FileCommand::AddFavorite(folder.path().to_path_buf()))
         })
@@ -948,9 +1051,13 @@ mod tests {
         app.settle();
 
         let place = folder.path().display().to_string();
-        assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
+        assert!(
+            app.state().bookmarks().contains(&place),
+            "{:?}",
+            app.state()
+        );
         assert!(app.undo());
-        assert!(!app.state().bookmarks.contains(&place));
+        assert!(!app.state().bookmarks().contains(&place));
         let shown = app
             .with_surface(|files: &mut FileExplorerWidget| {
                 files.favorites().iter().any(|f| f.path == folder.path())
@@ -958,8 +1065,7 @@ mod tests {
             .unwrap();
         assert!(!shown, "the sidebar shows the stored places");
 
-        app.invoke(Invoke::apply(&FilesDocAction::AddBookmark { place, at: None }).unwrap())
-            .unwrap();
+        app.invoke(pin(&place, None)).unwrap();
         let shown = app
             .with_surface(|files: &mut FileExplorerWidget| {
                 files.favorites().iter().any(|f| f.path == folder.path())
@@ -1232,7 +1338,7 @@ mod tests {
             &mut app,
             &row("agenda.txt"),
             "move-to",
-            &serde_json::json!({"folder": projects}),
+            &serde_json::json!({"to": projects}),
         );
         assert!(folder.path().join("Projects/agenda.txt").exists());
         act_on(&mut app, &row("notes.txt"), "trash", &serde_json::json!({}));
@@ -1253,7 +1359,10 @@ mod tests {
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: instance,
-                    address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, id),
+                    address: ui::tilo_actions::ActionAddress::new(
+                        <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                        id,
+                    ),
                 },
                 args.as_object().unwrap(),
             )
@@ -1272,28 +1381,28 @@ mod tests {
             TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
         act(
             &mut app,
-            "new-folder",
+            "new-folder-here",
             &serde_json::json!({"name": "Projects"}),
         );
         assert!(folder.path().join("Projects").is_dir());
         act(
             &mut app,
-            "rename",
+            "rename-here",
             &serde_json::json!({"entry": "draft.txt", "name": "final.txt"}),
         );
         assert!(folder.path().join("final.txt").exists());
         let projects = folder.path().join("Projects").display().to_string();
         act(
             &mut app,
-            "move",
-            &serde_json::json!({"entries": ["final.txt"], "folder": projects}),
+            "move-here",
+            &serde_json::json!({"entries": ["final.txt"], "to": projects}),
         );
         assert!(folder.path().join("Projects/final.txt").exists());
         let ops = app.state().ops;
         assert_eq!(ops.len(), 3, "{ops:?}");
         assert!(
-            ops.iter()
-                .all(|op| op.outcome.as_ref().is_some_and(|o| o.error().is_none()))
+            ops.entries()
+                .all(|(_, op)| op.settled.as_ref().is_some_and(Settled::is_done))
         );
 
         // Undo takes the move back on the filesystem, then the rename.
@@ -1311,7 +1420,10 @@ mod tests {
         let refused = app.harness().invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: instance,
-                address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, "trash"),
+                address: ui::tilo_actions::ActionAddress::new(
+                    <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                    "trash-here",
+                ),
             },
             serde_json::json!({"entries": ["missing.txt"]})
                 .as_object()
@@ -1345,6 +1457,108 @@ mod tests {
         );
         act(&mut app, "add-current-bookmark", &serde_json::json!({}));
         let place = folder.path().join("Projects").display().to_string();
-        assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
+        assert!(
+            app.state().bookmarks().contains(&place),
+            "{:?}",
+            app.state()
+        );
+    }
+
+    /// A change queued for another device waits for that device: only the
+    /// device whose disk it names carries it out, and both see what it did.
+    #[test]
+    fn only_the_device_a_change_names_carries_it_out() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().display().to_string();
+        let mut laptop = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let mut phone = TestApp::<FileExplorerShell>::on_device("phone").unwrap();
+        sync(&mut laptop, &mut phone);
+        laptop
+            .invoke(FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
+                device: "phone".into(),
+                parent,
+                name: "Inbox".into(),
+            }))
+            .unwrap();
+        laptop.settle();
+        assert!(!root.path().join("Inbox").exists(), "the laptop waits");
+        assert_eq!(laptop.state().ops.pending().count(), 1);
+
+        sync(&mut laptop, &mut phone);
+        assert!(
+            root.path().join("Inbox").is_dir(),
+            "the phone carried it out"
+        );
+        sync(&mut laptop, &mut phone);
+        let state = laptop.state();
+        let (id, _) = state.ops.entries().next().unwrap();
+        assert_eq!(
+            state.ops.outcome(id),
+            Some(&Settled::Done(vec![Change::Created {
+                path: root.path().join("Inbox").display().to_string()
+            }])),
+            "what it did reaches every replica"
+        );
+    }
+
+    /// What the person did to Files reads as the app's sentences.
+    #[test]
+    fn history_entries_render_as_the_apps_sentences() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("draft.txt"), b"x").unwrap();
+        let folder = root.path().display().to_string();
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let before = app.versions().len();
+        let kind = <FileExplorer as ui::tilo_resource::Resource>::KIND;
+        let agent = ui::tilo_actions::ActionInvoker::actor("agent:claude")
+            .with_kind(ui::tilo_actions::ActorKind::Agent)
+            .acting_for("ada");
+        for (verb, args) in [
+            ("add-bookmark", serde_json::json!({ "place": "~/Projects" })),
+            (
+                "new-folder",
+                serde_json::json!({ "device": "laptop", "parent": folder, "name": "Inbox" }),
+            ),
+            (
+                "rename",
+                serde_json::json!({
+                    "device": "laptop",
+                    "folder": folder,
+                    "entry": "draft.txt",
+                    "name": "final.txt",
+                }),
+            ),
+        ] {
+            app.call_by(agent.clone(), kind, verb, args)
+                .unwrap_or_else(|error| panic!("{verb}: {error:?}"));
+        }
+        app.settle();
+        let english = include_str!("../locales/en-US.ftl");
+        let catalogue = tilo_history::Catalogue::new("en-US", &[english]);
+        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let sentences: Vec<String> = app
+            .versions()
+            .into_iter()
+            .skip(before)
+            .filter_map(|version| version.context)
+            .filter(|entry| entry.change != ui::tilo_actions::ChangeKind::External)
+            // A test host names the app after the action type's stem
+            // (`files`), not the app that hosts the record; read the entry
+            // as the app's own host records it.
+            .map(|mut entry| {
+                if let Some(ui::tilo_actions::entry::Did::Verb(verb)) = &mut entry.what {
+                    FileExplorerShell::ID.clone_into(&mut verb.action.app);
+                }
+                reader.sentence(&entry.with_app(FileExplorerShell::ID, FileExplorerShell::TITLE))
+            })
+            .collect();
+        assert_eq!(
+            sentences,
+            [
+                "Added ~/Projects to Favourites",
+                "Created the folder Inbox",
+                "Renamed draft.txt to final.txt",
+            ]
+        );
     }
 }
