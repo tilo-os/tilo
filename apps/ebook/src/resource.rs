@@ -646,6 +646,32 @@ impl Ebook {
                 block: None,
             })
             .with_effect(&lifecycle)
+            // Going to and selecting a passage of this book, asking where.
+            .with_effect_asking(
+                &BooksEffect::SelectPassage {
+                    book: book.clone(),
+                    chapter: Some(0),
+                    start_block: 0,
+                    start_char: None,
+                    end_block: None,
+                    end_char: None,
+                },
+                &[
+                    "chapter",
+                    "start_block",
+                    "start_char",
+                    "end_block",
+                    "end_char",
+                ],
+            )
+            .with_effect_asking(
+                &BooksEffect::GoTo {
+                    book: book.clone(),
+                    chapter: Some(0),
+                    block: None,
+                },
+                &["chapter", "block"],
+            )
             .with(Self::REMOVE_FROM_LIBRARY.bind(books::RemoveFromLibrary::paths().book, book));
         let highlighted: std::collections::HashSet<Uuid> = marks
             .iter()
@@ -1072,10 +1098,7 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
     /// Where the reader is in the open book: its page chrome, a row beside
     /// the library.
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.reading_row()
-            .into_iter()
-            .chain(self.book_rows())
-            .collect()
+        self.reading_row().into_iter().collect()
     }
 
     /// The reading position, or the book, chapter, annotation or location a
@@ -1083,7 +1106,6 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.reading_row()
             .filter(|row| row.id() == id)
-            .or_else(|| self.book_rows().into_iter().find(|row| row.id() == id))
             .or_else(|| self.search_row(id))
     }
 

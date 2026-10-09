@@ -5412,35 +5412,6 @@ impl BooksApp {
             .map(|ctx| live_row(crate::actions::reading_resource(&ctx)))
     }
 
-    /// Each book on the shelf as a row offering to go to and select a
-    /// passage of it, asking for the place (the open book's chapter
-    /// filled in); the library publishes the book's own verbs and effects
-    /// on the same place.
-    pub(crate) fn book_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let open = self.open_book().map(|book| book.id.clone());
-        self.record
-            .entries
-            .values()
-            .map(|entry| {
-                let chapter = if open.as_deref() == Some(entry.id.as_str()) {
-                    self.chapter
-                } else {
-                    0
-                };
-                crate::actions::passage_effects(&entry.id, chapter)
-                    .into_iter()
-                    .fold(
-                        ui::framework::LiveRow::new(
-                            crate::resource::book_place_resource(&entry.id),
-                            "ebook.library.book",
-                            entry.title.clone(),
-                        ),
-                        ui::framework::LiveRow::operation,
-                    )
-            })
-            .collect()
-    }
-
     /// The book, chapter, annotation or location a search hit names, with
     /// what opens it. Its edits are the library's own, on the published row.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {

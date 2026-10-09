@@ -2106,6 +2106,10 @@ destructive = true
 id = "remove-from-library"
 kind = "undoable"
 label = "Remove from library"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "book"
@@ -2168,6 +2172,10 @@ description = "Add note  Adds a note to a passage of a book."
 id = "add-note"
 kind = "undoable"
 label = "Add note"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "passage"
@@ -2242,6 +2250,10 @@ description = "Add comment  Comments on a highlight."
 id = "add-comment"
 kind = "undoable"
 label = "Add comment"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "highlight"
@@ -2265,6 +2277,10 @@ description = "Toggle bookmark  Bookmarks a paragraph, or removes its bookmark."
 id = "toggle-bookmark"
 kind = "undoable"
 label = "Toggle bookmark"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "book"
@@ -2305,6 +2321,10 @@ description = "Highlight  Highlights a passage, one piece per paragraph, replaci
 id = "highlight"
 kind = "undoable"
 label = "Highlight"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "book"
@@ -2393,6 +2413,10 @@ description = "Change colour  Recolours a highlight, its pieces and its comments
 id = "change-color"
 kind = "undoable"
 label = "Change colour"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "highlight"
@@ -2423,6 +2447,10 @@ description = "Delete highlight  Deletes a highlight with every comment on it."
 id = "delete-highlight"
 kind = "undoable"
 label = "Delete highlight"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "highlight"
@@ -2438,6 +2466,10 @@ description = "Delete  Deletes a bookmark, a note or a comment."
 id = "delete-annotation"
 kind = "undoable"
 label = "Delete"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "annotation"
@@ -2469,6 +2501,10 @@ destructive = true
 id = "delete-scheme"
 kind = "undoable"
 label = "Delete scheme"
+writes = [
+    "record",
+    "annotations.*",
+]
 
 [[resources.verbs.params]]
 name = "scheme"
