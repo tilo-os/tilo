@@ -45,17 +45,20 @@ impl CapnpBrokerState {
         } else {
             return Err("current certificate authority unavailable".into());
         }
-        let tree = self
+        let verified = VerifiedJoinIdentity::of(cert, self.capped_in(&room, cert));
+        let admitted = self
             .membership
             .as_ref()
             .ok_or("membership unavailable")?
-            .snapshot()?;
-        let admitted = admit_verified_join_at(
-            &tree,
-            &CrdtRoute::cluster(&room),
-            VerifiedJoinIdentity::of(cert, self.capped_in(&room, cert)),
-            now / 1_000_000_000,
-        )?;
+            .decide_in_room(&room, |workspace| {
+                admit_verified_join_at(
+                    workspace,
+                    &CrdtRoute::cluster(&room),
+                    verified,
+                    now / 1_000_000_000,
+                )
+            })??;
+
         Ok(VerifiedActionCaller {
             room,
             presentation: Vec::new(),

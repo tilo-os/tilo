@@ -146,6 +146,20 @@ impl Joined {
             .collect()
     }
 
+    /// One joined room as [`Self::workspaces`] describes it, built alone:
+    /// asking about one room never rebuilds every other joined room.
+    pub(super) fn workspace(&self, room: RoomId) -> Option<Workspace> {
+        if !self.owner.rooms().contains(&room) {
+            return None;
+        }
+        self.current_room(room).ok().map(|(workspace, _)| workspace)
+    }
+
+    /// Whether this profile has joined any room.
+    pub(super) fn is_empty(&self) -> bool {
+        self.owner.rooms().is_empty()
+    }
+
     // Use the same current custody check as an enrolled relay session. Merely
     // retaining a peer or its device key cannot authenticate a selected root.
     fn current_room(&self, room: RoomId) -> Result<(Workspace, String), String> {
