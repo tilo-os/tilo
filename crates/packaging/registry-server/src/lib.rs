@@ -55,6 +55,7 @@ pub use storage::{
     DroppedVersion, HistoryCompaction, HistoryCompactionReport, PendingSubmission,
     PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewRecord,
     ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
+    TwinReport,
 };
 
 /// Bind the server to `addr` and run until the listener errors or

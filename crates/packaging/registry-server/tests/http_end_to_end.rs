@@ -478,6 +478,76 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
                 .await
                 .is_err()
         );
+
+        // phase: stored_objects_are_served_as_checked_compressed_twins
+        // Storing an object writes its zstd twin; the twin is served as an
+        // immutable `application/zstd` body with no Content-Encoding, and
+        // only while it decompresses to the object it is named for.
+        let binary_hex = binary.to_hex();
+        let decompress = |body: &[u8], limit: usize| {
+            let mut out = Vec::new();
+            tilo_app_package::compressed::decompress_bounded(body, limit as u64, &mut out)
+                .expect("twin decompresses");
+            out
+        };
+        for (path, raw) in [
+            (
+                format!("/blobs/{binary_hex}.zst"),
+                b"reviewed binary".to_vec(),
+            ),
+            (format!("/artifacts/{digest}.tapp.zst"), full.clone()),
+        ] {
+            let twin = client.get(url(h.addr, &path)).send().await.unwrap();
+            assert_eq!(twin.status(), reqwest::StatusCode::OK, "{path}");
+            assert_eq!(twin.headers()["content-type"], "application/zstd");
+            assert_eq!(
+                twin.headers()
+                    .get_all("cache-control")
+                    .iter()
+                    .collect::<Vec<_>>(),
+                ["public, max-age=31536000, immutable"],
+                "exactly one Cache-Control, so an edge cache may keep it"
+            );
+            assert!(twin.headers().get("content-encoding").is_none());
+            let body = twin.bytes().await.unwrap();
+            assert_eq!(decompress(&body, raw.len()), raw, "{path}");
+        }
+        let data = h.tmp.path();
+        let twin_file = data.join("payload-blobs").join(format!("{binary_hex}.zst"));
+        assert!(twin_file.exists(), "storing the blob wrote its twin");
+        // A twin of other bytes is never served under this name.
+        std::fs::write(
+            &twin_file,
+            tilo_app_package::compressed::compress(b"reviewed binarY").unwrap(),
+        )
+        .unwrap();
+        let tampered = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            tampered.status(),
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        // Without a twin the route is a 404 and clients take the raw blob.
+        std::fs::remove_file(&twin_file).unwrap();
+        let missing = client
+            .get(url(h.addr, &format!("/blobs/{binary_hex}.zst")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(
+            blobs.fetch_all(&[binary]).await.unwrap()[0].as_ref(),
+            b"reviewed binary"
+        );
+        // The backfill writes exactly the missing twin.
+        let report = h.storage.compress_stored_objects().unwrap();
+        assert_eq!(report.written, 1, "{report:?}");
+        assert!(report.present >= 2, "{report:?}");
+        assert!(twin_file.exists());
+        assert_eq!(h.storage.compress_stored_objects().unwrap().written, 0);
     }
 }
 
