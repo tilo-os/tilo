@@ -36,13 +36,14 @@ relocated_bytes = 4000000
 symbol_relocations = 5000
 needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 
-# Measured on the published so.tilo.runtime 0.1.90033 (registry sequence 809,
-# 2026-10-09).
+# x86_64: Release / apps 90216 (TIL-604, packed relocations and
+# -Bsymbolic-functions). aarch64: the published so.tilo.runtime 0.1.90033
+# (registry sequence 809, 2026-10-09), until a build measures it.
 [runtime.x86_64]
-bytes = 244383744
-relocation_bytes = 10223616
+bytes = 234618880
+relocation_bytes = 458752
 relocated_bytes = 7798784
-symbol_relocations = 62912
+symbol_relocations = 13696
 
 [runtime.aarch64]
 bytes = 225705984

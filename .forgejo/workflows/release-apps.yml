@@ -639,15 +639,19 @@ jobs:
           python3 tools/perf/runtime_size_ratchet.py measure target/thin-app/libruntime_dylib.so
           --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
       # What the loader spends on it, reported only: glibc's statistics for
-      # one built app reaching main (build-thin-apps.sh's own ABI check).
+      # one built app reaching main (build-thin-apps.sh's own ABI check). The
+      # app's block is the one with the runtime's relocations; RELR entries
+      # are not in glibc's "relative relocations" count.
       - name: Report the runtime's loader cost
         shell: bash
         run: |
           set -euo pipefail
           app=$(find target/thin-app -maxdepth 1 -type f -executable ! -name '*.so' ! -name '*.d' | sort | head -1)
           [[ -n $app ]] || { echo "no built app to load" >&2; exit 1; }
-          stats=$(LD_DEBUG=statistics LD_LIBRARY_PATH="target/thin-app:$(rustc --print target-libdir)" \
-            timeout 60 "$app" --help 2>&1 >/dev/null </dev/null | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
+          # Resolved first: an assignment beside LD_DEBUG would print rustc's own statistics.
+          libdir=$(rustc --print target-libdir)
+          stats=$(LD_DEBUG=statistics LD_LIBRARY_PATH="target/thin-app:$libdir" \
+            "$app" --help 2>&1 >/dev/null </dev/null | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
           [[ -n $stats ]] || { echo "the loader printed no statistics for $app" >&2; exit 1; }
           printf '%s --help\n%s\n' "$(basename "$app")" "$stats" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Generate unpublished receipt with canonical verifiers
