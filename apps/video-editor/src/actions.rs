@@ -4340,9 +4340,7 @@ mod tests {
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// An editor with the sample project seeded into its document, its in-memory

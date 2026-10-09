@@ -1740,8 +1740,9 @@ mod command_path_tests {
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
         let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = ui::tilo_actions::ActionRegistry::with(
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
+        );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
         let mut handlers = Widget::resource_operation_handlers(&files);

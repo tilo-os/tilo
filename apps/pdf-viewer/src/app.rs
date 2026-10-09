@@ -6741,8 +6741,7 @@ mod tests {
             let mut state_b = ui::State::new();
             state_b.doc = AutoCommit::load(&base).expect("clone shared base");
             let (mut b, _) = app_with_state();
-            let mut registry = tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(crate::actions::register);
 
             // One peer authors an ordered duplicate/reorder sequence. The envelope
             // carries the generated occurrence id, so the other replica need not

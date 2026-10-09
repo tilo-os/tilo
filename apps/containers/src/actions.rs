@@ -56,9 +56,7 @@ mod tests {
             doc
         },
         registry: {
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            Containers::register(&mut registry);
-            registry
+            ui::tilo_actions::ActionRegistry::with(Containers::register)
         },
         resources: |doc| published(doc),
         palette: ["Open web-frontend", "Open postgres"],
