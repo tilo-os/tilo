@@ -197,7 +197,7 @@ def checked_provenance(output, metadata):
         if len(sources) != 1 or not re.fullmatch(r"[0-9]+", str(invocation)):
             continue
         if metadata["hardware_profile"] == "lenovo-83ed":
-            if (external.get("generation") != 1
+            if (external.get("generation", 0) < 1
                     or external.get("architecture") != "aarch64"
                     or external.get("hardwareProfile") != "lenovo-83ed"
                     or not isinstance(external.get("firmwareManifestSha256"), str)
