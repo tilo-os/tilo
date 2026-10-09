@@ -2456,20 +2456,9 @@ mod tests {
     // widget — proving the whole chain, not just `apply_name`.
     // -----------------------------------------------------------------
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use ui::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
         ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(

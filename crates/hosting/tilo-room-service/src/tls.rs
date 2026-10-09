@@ -4,7 +4,6 @@
 //! service's own internal certificate, pinned here.
 use anyhow::{Context, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use std::sync::Arc;
@@ -43,13 +42,9 @@ pub fn public_config(
     domain: &str,
 ) -> Result<Arc<rustls::ServerConfig>> {
     let (chain, key) = if let Some((chain, key)) = certificate {
-        (
-            CertificateDer::pem_file_iter(chain)
-                .context("read TILO_ROOMS_TLS_CERT")?
-                .collect::<Result<Vec<_>, _>>()
-                .context("parse TILO_ROOMS_TLS_CERT")?,
-            PrivateKeyDer::from_pem_file(key).context("read TILO_ROOMS_TLS_KEY")?,
-        )
+        tilo_moq::tls::load_pem(chain, key)
+            .map_err(anyhow::Error::msg)
+            .context("load TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY")?
     } else {
         eprintln!(
             "tilo-room-service: no TILO_ROOMS_TLS_CERT; serving a self-signed *.{domain} certificate"
@@ -62,12 +57,9 @@ pub fn public_config(
                 .map_err(anyhow::Error::msg)?,
         )
     };
-    let mut config = rustls::ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(chain, key)?;
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
+    Ok(Arc::new(
+        tilo_moq::tls::https_server_config(chain, key).map_err(anyhow::Error::msg)?,
+    ))
 }
 
 #[derive(Debug)]

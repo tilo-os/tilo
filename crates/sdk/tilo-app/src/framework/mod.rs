@@ -370,7 +370,8 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use view::{Bound, EffectsHandle, ViewCx};
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod headless_results_tests;
 
 /// Record content and canonical hashing. Use the store borrowed through

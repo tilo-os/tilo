@@ -293,6 +293,40 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
     }
 }
 
+/// Which rows a [`CapnpBrokerState::eager_catalogue`] pass builds. Every
+/// scope lists the same providers and puts each row it builds through the
+/// same checks; a narrower one only skips the rows of providers nobody asked
+/// about.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RowScope<'a> {
+    /// Who publishes, and no rows.
+    None,
+    /// Every row the caller is offered.
+    All,
+    /// The rows of this one provider.
+    Provider(&'a str),
+}
+
+impl RowScope<'_> {
+    /// Whether rows of `provider` are built.
+    fn wants(self, provider: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Provider(wanted) => wanted == provider,
+        }
+    }
+
+    /// Whether rows of the live instance `peer_id` are built.
+    fn wants_peer(self, peer_id: u64) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Provider(wanted) => wanted == peer_id.to_string(),
+        }
+    }
+}
+
 /// The content an application's open action is asked to show. Its text
 /// argument is a content hash; a typed caller (MCP) sends its argument map
 /// in the canonical envelope, and an empty map is a plain open.
@@ -448,7 +482,7 @@ impl CapnpBrokerState {
             return true;
         }
         if let Some(row) = self
-            .eager_catalogue(person, true)
+            .eager_catalogue(person, RowScope::Provider(&target.provider))
             .0
             .into_iter()
             .find(|row| {
@@ -599,10 +633,10 @@ impl CapnpBrokerState {
         })
     }
 
-    /// Every live published surface, carrying its actions only when
-    /// `with_actions`: who publishes is copied, not every app's whole
-    /// surface, when that is all a caller asked.
-    fn live_surfaces(&self, with_actions: bool) -> Vec<PublishedSurface> {
+    /// Every live published surface, carrying its actions only where
+    /// `scope` builds that surface's rows: who publishes is copied, not every
+    /// app's whole surface, when that is all a caller asked.
+    fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
         self.surfaces
             .lock()
             .map(|surfaces| {
@@ -613,7 +647,7 @@ impl CapnpBrokerState {
                         peer_id: surface.peer_id,
                         app_id: surface.app_id.clone(),
                         route: surface.route.clone(),
-                        actions: if with_actions {
+                        actions: if scope.wants_peer(surface.peer_id) {
                             surface.actions.clone()
                         } else {
                             Vec::new()
@@ -629,33 +663,28 @@ impl CapnpBrokerState {
         clippy::too_many_lines,
         reason = "one authorization pass projects live surfaces, directories, governance and launchers so no source can skip the caller's checks"
     )]
-    /// Every eager row `caller` is offered: live application actions its
-    /// role may invoke, the workspace's own governance actions, and — for a
-    /// caller on this machine — launching an application it may open. An
-    /// action the caller may not use is absent. Alongside them, the
-    /// publishers the caller may browse or invoke.
+    /// Every eager row `caller` is offered within `scope`: live application
+    /// actions its role may invoke, the workspace's own governance actions,
+    /// and — for a caller on this machine — launching an application it may
+    /// open. An action the caller may not use is absent. Alongside them, the
+    /// publishers the caller may browse or invoke, whatever the scope.
+    ///
+    /// A narrower scope only leaves other providers' rows out: each row it
+    /// builds passes the same checks, and comes out the same, as in
+    /// [`RowScope::All`]. The installed applications and the keyboard
+    /// shortcut settings are read at most once, and only when a workspace
+    /// provider's rows are built.
     pub(super) fn eager_catalogue(
         &self,
         caller: &Caller,
-        with_rows: bool,
+        scope: RowScope<'_>,
     ) -> (Vec<CatalogueRow>, Vec<CatalogueProvider>) {
         // Retained surfaces of closed apps are the launchable catalogue's,
-        // and a providers-only answer needs no live surface's actions.
-        let surfaces = self.live_surfaces(with_rows);
+        // and only the providers whose rows are built need their actions.
+        let surfaces = self.live_surfaces(scope);
         let roots = self.action_directory_roots();
-        // Listed once for every workspace's open and close rows.
-        let applications = self
-            .services
-            .launcher
-            .as_ref()
-            .filter(|_| with_rows && caller.room().is_some())
-            .map(|launcher| launcher.applications())
-            .unwrap_or_default();
-        let closes_applications = self
-            .services
-            .launcher
-            .as_ref()
-            .is_some_and(|launcher| launcher.closes_applications());
+        // Listed at most once, for every workspace's open and close rows.
+        let mut applications = None;
         let mut rows = Vec::new();
         let mut providers = Vec::new();
         // Keyboard shortcuts are this device's own settings: offered to
@@ -664,8 +693,8 @@ impl CapnpBrokerState {
             .services
             .keyboard_shortcuts
             .as_ref()
-            .filter(|_| with_rows && caller.device_public_key().is_none())
-            .map(|service| (service, settings_store::hardware::ShortcutConfig::load()));
+            .filter(|_| caller.device_public_key().is_none());
+        let mut keymap = None;
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
@@ -681,7 +710,7 @@ impl CapnpBrokerState {
                     record_id: surface.route.record_id.clone(),
                     browsable: roots.iter().any(|root| root.peer_id == surface.peer_id),
                 });
-                if !with_rows {
+                if !scope.wants_peer(surface.peer_id) {
                     continue;
                 }
                 rows.extend(
@@ -714,7 +743,7 @@ impl CapnpBrokerState {
                     &policy,
                     now,
                     &live_apps,
-                    with_rows.then_some(&mut rows),
+                    (scope, &mut rows),
                     &mut providers,
                 );
             }
@@ -737,7 +766,8 @@ impl CapnpBrokerState {
                     browsable: true,
                 });
             }
-            if !with_rows {
+            let provider = workspace_provider(&room);
+            if !scope.wants(&provider) {
                 continue;
             }
             if let Some(governance) = self.services.workspace_governance.as_ref() {
@@ -757,7 +787,7 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(workspace_provider(&room), governance.app_id(), descriptor)
+                            action_row(provider.clone(), governance.app_id(), descriptor)
                         }),
                 );
             }
@@ -777,14 +807,16 @@ impl CapnpBrokerState {
                             )
                         })
                         .map(|descriptor| {
-                            action_row(workspace_provider(&room), SHORTCUTS_APP_ID, descriptor)
+                            action_row(provider.clone(), SHORTCUTS_APP_ID, descriptor)
                         }),
                 );
             }
-            if let Some((service, keymap)) = &keyboard {
+            if let Some(service) = keyboard {
+                let keymap =
+                    keymap.get_or_insert_with(settings_store::hardware::ShortcutConfig::load);
                 rows.extend(
                     service
-                        .catalogue_rows(&workspace_provider(&room), keymap)
+                        .catalogue_rows(&provider, keymap)
                         .into_iter()
                         .filter(|row| {
                             row.action.as_ref().is_some_and(|descriptor| {
@@ -801,7 +833,13 @@ impl CapnpBrokerState {
                         }),
                 );
             }
-            if caller.room().is_some() {
+            if caller.room().is_some()
+                && let Some(launcher) = self.services.launcher.as_ref()
+            {
+                let applications = applications.get_or_insert_with(|| {
+                    (launcher.applications(), launcher.closes_applications())
+                });
+                let (applications, closes_applications) = (&applications.0, applications.1);
                 rows.extend(
                     applications
                         .iter()
@@ -815,11 +853,7 @@ impl CapnpBrokerState {
                             ) == CapDecision::Allow
                         })
                         .map(|app| {
-                            action_row(
-                                workspace_provider(&room),
-                                &app.package_id,
-                                app_open_descriptor(app),
-                            )
+                            action_row(provider.clone(), &app.package_id, app_open_descriptor(app))
                         }),
                 );
                 rows.extend(
@@ -837,7 +871,7 @@ impl CapnpBrokerState {
                         })
                         .map(|app| {
                             action_row(
-                                workspace_provider(&room),
+                                provider.clone(),
                                 &app.package_id,
                                 app_close_descriptor(&app.package_id, &app.display_name),
                             )
@@ -857,7 +891,7 @@ impl CapnpBrokerState {
         policy: &Actor,
         now: u64,
         live_apps: &std::collections::HashSet<String>,
-        mut rows: Option<&mut Vec<CatalogueRow>>,
+        (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
         providers: &mut Vec<CatalogueProvider>,
     ) {
         let room = workspace.room.to_string();
@@ -872,7 +906,7 @@ impl CapnpBrokerState {
                 ) == CapDecision::Allow
         }) {
             let provider = launchable_provider(&surface);
-            if let Some(rows) = rows.as_deref_mut() {
+            if scope.wants(&provider) {
                 rows.extend(
                     surface
                         .actions
@@ -963,12 +997,14 @@ impl CapnpBrokerState {
         {
             return self.query_directory(caller, &root, query);
         }
-        // `max_results: 0` asks only who publishes; skip building rows.
-        let providers_only = query.provider.is_none() && query.max_results == 0;
-        let (mut rows, providers) = self.eager_catalogue(caller, !providers_only);
-        if let Some(provider) = &query.provider {
-            rows.retain(|row| &row.provider == provider);
-        }
+        // `max_results: 0` asks only who publishes, and a named provider
+        // only its own rows: build no row nobody asked for.
+        let scope = match query.provider.as_deref() {
+            Some(provider) => RowScope::Provider(provider),
+            None if query.max_results == 0 => RowScope::None,
+            None => RowScope::All,
+        };
+        let (rows, providers) = self.eager_catalogue(caller, scope);
         let revision = format!(
             "{}.{}",
             self.published_surfaces_generation(),
@@ -2034,7 +2070,8 @@ impl CapnpBrokerState {
         }
         let operation = automation::decode_library(action, argument)
             .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
-        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let catalog =
+            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let keymap = library.keymap();
         let room = workspace.room.to_string();
         let plan = automation::plan_library(
@@ -2279,7 +2316,8 @@ impl CapnpBrokerState {
                 reason: "the shortcut no longer has that trigger".into(),
             });
         }
-        let catalog = tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, true).0);
+        let catalog =
+            tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let others = self
             .decide_for(caller, room, |workspace, _, _| workspace.shortcuts.clone())
             .unwrap_or_default();
@@ -2855,6 +2893,7 @@ mod app_close_tests {
     use super::super::{
         BrokerActor, BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher, PublishedSurface,
     };
+    use super::RowScope;
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
@@ -2864,10 +2903,14 @@ mod app_close_tests {
     struct Launcher {
         closes: bool,
         closed: Mutex<Vec<(String, String)>>,
+        /// How often the installed-application list was read.
+        listed: std::sync::atomic::AtomicUsize,
     }
 
     impl crate::services::LauncherServices for Launcher {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            self.listed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             vec![crate::services::LaunchableApplication {
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
@@ -2936,7 +2979,7 @@ mod app_close_tests {
 
     fn app_actions(state: &CapnpBrokerState, caller: &Caller) -> Vec<String> {
         state
-            .eager_catalogue(caller, true)
+            .eager_catalogue(caller, RowScope::All)
             .0
             .into_iter()
             .filter_map(|row| row.action)
@@ -2990,6 +3033,90 @@ mod app_close_tests {
                 )
                 .is_err()
         );
+    }
+
+    /// The page `query` answers `caller`, and how often it read the
+    /// installed-application list.
+    fn answered(
+        state: &Arc<CapnpBrokerState>,
+        launcher: &Launcher,
+        caller: &Caller,
+        query: &tilo_actions::remote::CatalogueQuery,
+    ) -> (tilo_actions::remote::CataloguePage, usize) {
+        let before = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
+        let page = state
+            .action_query(caller, query)
+            .wait_timeout(std::time::Duration::from_secs(5))
+            .ok()
+            .flatten()
+            .expect("an eager query answers at once")
+            .expect("the caller may query");
+        let after = launcher.listed.load(std::sync::atomic::Ordering::SeqCst);
+        (page, after.saturating_sub(before))
+    }
+
+    #[test]
+    fn a_provider_scoped_query_builds_only_that_provider() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        let workspace = tilo_actions::remote::workspace_provider(&room);
+        let query = |provider: Option<&str>, max_results| tilo_actions::remote::CatalogueQuery {
+            provider: provider.map(str::to_owned),
+            max_results,
+            ..Default::default()
+        };
+
+        // An application instance's own rows never read the installed list.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(Some("4"), 1));
+        assert_eq!(listed, 0);
+        assert!(page.rows.iter().all(|row| row.provider == "4"));
+        // Nor does asking only who publishes; the instance is still listed.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(None, 0));
+        assert_eq!(listed, 0);
+        assert!(page.rows.is_empty());
+        assert!(
+            page.providers
+                .iter()
+                .any(|provider| provider.provider == "4")
+        );
+        // The workspace's own rows read it once, for open and close alike.
+        let (page, listed) = answered(&state, &launcher, &caller, &query(Some(&workspace), 64));
+        assert_eq!(listed, 1);
+        assert!(page.rows.iter().all(|row| row.provider == workspace));
+        assert!(page.rows.iter().any(|row| {
+            row.action
+                .as_ref()
+                .is_some_and(|action| action.address.action == "close")
+        }));
+        let (_, listed) = answered(&state, &launcher, &caller, &query(None, 64));
+        assert_eq!(listed, 1);
+
+        // A scope only leaves other providers' rows out: what it builds is
+        // what the whole catalogue offers that provider, and nothing else.
+        let (all, providers) = state.eager_catalogue(&caller, RowScope::All);
+        for provider in ["4", workspace.as_str()] {
+            let (scoped, scoped_providers) =
+                state.eager_catalogue(&caller, RowScope::Provider(provider));
+            let expected = all
+                .iter()
+                .filter(|row| row.provider == provider)
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(scoped, expected, "{provider}");
+            assert_eq!(scoped_providers, providers);
+        }
+        let (none, none_providers) = state.eager_catalogue(&caller, RowScope::None);
+        assert!(none.is_empty());
+        assert_eq!(none_providers, providers);
+
+        // Authority is still decided per row: a caller without a role is
+        // offered nothing, scoped or not.
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
+        let (rows, _) = state.eager_catalogue(&stranger, RowScope::Provider(&workspace));
+        assert!(rows.is_empty());
     }
 
     #[test]

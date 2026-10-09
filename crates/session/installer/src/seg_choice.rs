@@ -301,14 +301,7 @@ mod tests {
     use super::*;
     use crate::control::{Press, Presses};
 
-    fn arrow(key: NamedKey) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     #[test]
     fn arrowing_fires_the_neighbouring_segments_action() {
@@ -337,7 +330,7 @@ mod tests {
             let mut handled = false;
             let mut focus_target = None;
             choice.handle_event(
-                &arrow(key),
+                &named_key(key),
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),

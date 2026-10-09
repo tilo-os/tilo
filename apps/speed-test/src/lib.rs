@@ -9,16 +9,6 @@
     clippy::cast_sign_loss,
     reason = "app-local arithmetic over small bounded quantities"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod app;
 pub mod locales;

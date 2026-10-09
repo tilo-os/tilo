@@ -37,6 +37,11 @@ mod support;
 
 mod common;
 
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;

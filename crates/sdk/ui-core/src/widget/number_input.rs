@@ -1406,26 +1406,9 @@ mod tests {
         );
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::cursor_moved;
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
 
     #[test]
     fn number_text_parses_and_formats_with_units_signs_and_precision() {
@@ -1548,19 +1531,19 @@ mod tests {
             );
 
             // Click + once: 70 → 72.
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0);
             assert_eq!(n.take_changed(), Some(72.0));
 
             // Click + again: already at max → no move, no report.
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 72.0, "clamped at max");
             assert_eq!(n.take_changed(), None, "no change when already clamped");
 
             // Click − : 72 → 70.
-            dispatch(&mut n, &cursor(minus_c.0, minus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(minus_c.0, minus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), 70.0);
             assert_eq!(n.take_changed(), Some(70.0));
         }
@@ -1604,8 +1587,8 @@ mod tests {
                 n.plus_rect.x0.midpoint(n.plus_rect.x1),
                 n.plus_rect.y0.midpoint(n.plus_rect.y1),
             );
-            dispatch(&mut n, &cursor(plus_c.0, plus_c.1));
-            dispatch(&mut n, &press());
+            dispatch(&mut n, &cursor_moved(plus_c.0, plus_c.1));
+            dispatch(&mut n, &mouse_press());
             assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
             assert!(!Widget::is_focusable(&n));
         }

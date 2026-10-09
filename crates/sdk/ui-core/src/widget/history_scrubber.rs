@@ -1588,6 +1588,7 @@ impl HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
@@ -1760,29 +1761,6 @@ mod tests {
         preview_callback_fires_on_button_click();
         scrubber_with_no_entries_is_a_no_op();
         drag_saturates_at_endpoints();
-    }
-
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
     }
 
     fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
@@ -2135,28 +2113,11 @@ mod version_tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn key(k: winit::keyboard::Key) -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(

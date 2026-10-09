@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -187,6 +188,39 @@ def overlap(a, b) -> float:
 
 TRACE = "$HOME/.local/state/tilo/session-logs/frame-trace.csv"
 TRACE_FLUSH_S = 1.05
+SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
+
+# The compositor's own timing of each workspace switch
+# (crates/session/shell/src/compositor/switch_latency.rs), one session-log line each.
+SWITCH_FIELDS = ("first_queued_us", "first_shown_us", "settled_queued_us", "settled_shown_us",
+                 "frames", "dropped", "interval_us")
+SWITCH_LINE = re.compile(r"(?:^|\s)WORKSPACE-SWITCH ((?:[a-z_]+=[0-9]+ ?)+)$")
+
+
+def parse_switch_lines(text: str) -> list[dict]:
+    """Every `WORKSPACE-SWITCH` line in `text`, in order."""
+    samples = []
+    for line in text.splitlines():
+        match = SWITCH_LINE.search(line.rstrip())
+        if match is None:
+            continue
+        fields = dict(pair.split("=", 1) for pair in match.group(1).split())
+        if any(name not in fields for name in SWITCH_FIELDS):
+            raise Unobservable(f"a WORKSPACE-SWITCH line lacks fields: {line.strip()}")
+        samples.append({name: int(fields[name]) for name in SWITCH_FIELDS})
+    return samples
+
+
+def session_log_mark(ctx) -> int:
+    """Lines in the session log now; `switch_lines_after` reads past them."""
+    out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)
+    digits = [l.strip() for l in out.splitlines() if l.strip().isdigit()]
+    return int(digits[0]) if digits else 0
+
+
+def switch_lines_after(ctx, mark: int) -> list[dict]:
+    return parse_switch_lines(ctx.vm.exec(
+        f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
 
 
 def _parse_trace(text: str) -> tuple[list[dict], str]:

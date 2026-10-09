@@ -1284,7 +1284,8 @@ fn system_bundle_tree_is_root_owned(
     false
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod system_bundle_tree_policy_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};

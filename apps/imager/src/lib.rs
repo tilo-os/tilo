@@ -99,7 +99,6 @@
     test,
     allow(
         clippy::string_slice,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )

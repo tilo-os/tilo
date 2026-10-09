@@ -179,8 +179,8 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
         assert!(state.certificate_authority.set(room.authority.clone()).is_ok());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge));
         let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        std::io::Write::write_all(&mut client, &collab_types::local_transport::COLLAB_LAUNCH_MAGIC).unwrap();
-        let handoff = serde_json::to_vec(&serde_json::json!({"protocol":collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,"app_id":room.route.app_id,"workspace_id":room.route.cluster_id})).unwrap();
+        std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC).unwrap();
+        let handoff = serde_json::to_vec(&serde_json::json!({"protocol":launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,"app_id":room.route.app_id,"workspace_id":room.route.cluster_id})).unwrap();
         std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_FRAMING.encode(&handoff).unwrap()).unwrap();
         let (rpc, server, client) = signed_worker::rpc_pair(state.clone(), 991, server, client, None, directories);
         let handle = rpc.join_channel(&room.route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();

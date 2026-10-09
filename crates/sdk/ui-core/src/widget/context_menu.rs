@@ -1956,6 +1956,8 @@ mod a11y_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
     use automerge::AutoCommit;
     use std::sync::Arc;
 
@@ -2138,13 +2140,6 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
     fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -2160,13 +2155,6 @@ mod tests {
             delta: MouseScrollDelta::LineDelta(0.0, y),
             phase: TouchPhase::Moved,
         }
-    }
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
     }
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -2200,7 +2188,7 @@ mod tests {
             let row0_y = r.y0 + PADDING + ROW_HEIGHT / 2.0;
             let p = Point::new(r.x0 + 20.0, row0_y);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "a row click is consumed");
             assert_eq!(
                 fired.load(Ordering::SeqCst),
@@ -2217,7 +2205,7 @@ mod tests {
             let r = m.get_rect();
             let p = Point::new(r.x1 + 50.0, r.y1 + 50.0);
             dispatch(&mut m, &cursor_at(p));
-            let handled = dispatch(&mut m, &left_press());
+            let handled = dispatch(&mut m, &mouse_press());
             assert!(handled, "outside click is swallowed (not passed through)");
             assert!(!m.is_open(), "outside click dismisses the menu");
             assert_eq!(
@@ -2229,7 +2217,7 @@ mod tests {
 
         fn esc_dismisses() {
             let (mut m, _f) = open_menu();
-            let handled = dispatch(&mut m, &key(NamedKey::Escape));
+            let handled = dispatch(&mut m, &named_key(NamedKey::Escape));
             assert!(handled);
             assert!(!m.is_open(), "Esc closes the menu");
         }
@@ -2283,13 +2271,13 @@ mod tests {
         fn keyboard_nav_skips_separator_and_enter_selects() {
             let (mut m, fired) = open_menu();
             // Down → first action (idx 0).
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(0));
             // Down again → must skip the separator (idx 1) and land on idx 2.
-            dispatch(&mut m, &key(NamedKey::ArrowDown));
+            dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
             // Enter selects the hovered row.
-            dispatch(&mut m, &key(NamedKey::Enter));
+            dispatch(&mut m, &named_key(NamedKey::Enter));
             assert_eq!(
                 fired.load(Ordering::SeqCst),
                 100,
@@ -2306,7 +2294,7 @@ mod tests {
 
             dispatch(&mut menu, &cursor_at(point));
             assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
-            assert!(dispatch(&mut menu, &left_press()));
+            assert!(dispatch(&mut menu, &mouse_press()));
             assert_eq!(fired.load(Ordering::SeqCst), 0);
             assert_eq!(menu.take_selection(), None);
             assert!(menu.is_open(), "a rejected activation keeps the menu open");
@@ -2316,9 +2304,9 @@ mod tests {
             let (mut menu, fired) = open_menu();
             menu.set_item_enabled(0, false);
 
-            dispatch(&mut menu, &key(NamedKey::ArrowDown));
+            dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             assert_eq!(menu.hovered(), Some(2));
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
 
             assert_eq!(fired.load(Ordering::SeqCst), 100);
             assert_eq!(menu.take_selection(), Some(2));
@@ -2412,17 +2400,17 @@ mod tests {
             let last = menu.item_rect(19).unwrap().center();
             assert_eq!(menu.item_at([last.x, last.y]), Some(19));
             dispatch(&mut menu, &cursor_at(last));
-            dispatch(&mut menu, &left_press());
+            dispatch(&mut menu, &mouse_press());
             assert_eq!(menu.take_selection(), Some(19));
             assert_eq!(menu.take_selection(), None);
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             menu.focus_first_action();
             for _ in 0..19 {
-                dispatch(&mut menu, &key(NamedKey::ArrowDown));
+                dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
             }
             assert_eq!(menu.hovered(), Some(19));
             assert!(menu.item_rect(19).is_some());
-            dispatch(&mut menu, &key(NamedKey::Enter));
+            dispatch(&mut menu, &named_key(NamedKey::Enter));
             assert_eq!(menu.take_selection(), Some(19));
             menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
             dispatch(&mut menu, &wheel(100.0));
@@ -2689,20 +2677,8 @@ mod nested_and_anchored_tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn key(named: NamedKey) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Named(named),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::named_key;
     fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -2780,7 +2756,7 @@ mod nested_and_anchored_tests {
             .and_then(|(_, menu)| menu.item_rect(1))
             .unwrap();
         dispatch(&mut m, &cursor_at(nested_row.center()));
-        dispatch(&mut m, &left_press());
+        dispatch(&mut m, &mouse_press());
         assert_eq!(fired.load(Ordering::SeqCst), 1);
         assert_eq!(m.take_submenu_selection(), Some((1, 1)));
         assert!(!m.is_open());
@@ -2790,13 +2766,13 @@ mod nested_and_anchored_tests {
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
         paint(&mut m);
         m.focus_item(1);
-        dispatch(&mut m, &key(NamedKey::ArrowRight));
+        dispatch(&mut m, &named_key(NamedKey::ArrowRight));
         assert!(m.is_submenu_open());
         assert_eq!(
             m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
             Some(0)
         );
-        dispatch(&mut m, &key(NamedKey::ArrowLeft));
+        dispatch(&mut m, &named_key(NamedKey::ArrowLeft));
         assert!(!m.is_submenu_open());
         assert!(m.is_open(), "Left closes only the nested menu");
         let node = Widget::accessibility(&m).unwrap();

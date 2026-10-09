@@ -5210,7 +5210,8 @@ mod platform;
 #[cfg(test)]
 mod platform_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn test_symlink() {
     std::os::unix::fs::symlink("a", "b").unwrap();
 }

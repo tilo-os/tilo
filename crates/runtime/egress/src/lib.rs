@@ -55,11 +55,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::arithmetic_side_effects,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]

@@ -30,13 +30,7 @@ fn cursor_at(pt: Point) -> WindowEvent {
     }
 }
 
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::mouse_press;
 
 fn key_event(logical: Key) -> WindowEvent {
     crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
@@ -196,7 +190,7 @@ fn menu_pointer_selection_and_dismissal() {
     );
     dispatch(&mut p, &cursor_at(row2.center()));
     assert_eq!(p.highlighted(), 2, "the pointer moves the highlight");
-    assert!(dispatch(&mut p, &left_press()));
+    assert!(dispatch(&mut p, &mouse_press()));
     assert_eq!(p.take_selection(), Some(2));
     assert!(!p.is_open());
 
@@ -206,7 +200,7 @@ fn menu_pointer_selection_and_dismissal() {
     let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
     dispatch(&mut p, &cursor_at(outside));
     assert!(
-        dispatch(&mut p, &left_press()),
+        dispatch(&mut p, &mouse_press()),
         "the outside click is swallowed"
     );
     assert!(!p.is_open());

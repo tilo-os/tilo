@@ -1,5 +1,6 @@
 use super::{MusicApp, Track};
-#[cfg(all(test, feature = "audio"))]
+#[cfg(test)]
+#[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 

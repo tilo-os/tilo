@@ -755,16 +755,10 @@ impl Widget for SlashMenu {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::ElementState;
+
     use winit::keyboard::SmolStr;
 
-    fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            logical_key,
-            text.map(SmolStr::new),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::key_press;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))

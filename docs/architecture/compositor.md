@@ -159,12 +159,18 @@ hand-off. It is also where the pacing tail comes from: on a nested run
 at 92.5% on-cadence, the off-cadence spans carry a median 4.1 ms of
 client dispatch against 2.5 ms for the on-cadence ones, and the worst
 gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. The
-cause is per-commit buffer capture (`foreign::ForeignFrameStore::capture_commit`
-copies an SHM buffer, or reads back a dma-buf) running inline on the
-logic thread, so a client that commits faster than the compositor
-presents makes the compositor late. Moving capture off the logic thread,
-or coalescing commits so only the newest buffer per surface is imported
-per frame, is the follow-up — and the frame trace already measures it.
+cause was per-commit buffer capture running inline on the logic thread,
+so a client that commits faster than the compositor presents made the
+compositor late. Capture now runs on workers, coalesced to the newest
+buffer per surface. For a dma-buf no thread waits on the client's GPU:
+the commit's buffer is captured once the loop sees its implicit fence
+signal, so a slow client delays only its own commits. The shared GPU
+route imports each client buffer once and submits its copy into a
+compositor-owned texture without waiting; `tilo-frame-settle` releases
+the commit when that copy finished. A client frame still costs two
+full-frame GPU copies (that copy, then Vello's atlas copy at paint);
+removing the first needs the client's buffer held until the frame that
+last drew it retires, which is also what client scanout needs.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
@@ -225,7 +231,7 @@ The Wayland state is decoupled from the graphical backend so the compositor's lo
 The frame builder (`crates/session/shell/src/compositor/frame.rs`) produces one `vello::Scene` per output per frame:
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
-2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
+2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are imported on the presenting device (`shell::gpu_frames`), once per client buffer, and drawn from a compositor-owned texture the presenter copies into Vello's image atlas.
 3. Hand the scene to the presenter — the render thread where the backend
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).

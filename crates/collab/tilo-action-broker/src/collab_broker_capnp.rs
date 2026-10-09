@@ -878,13 +878,16 @@ fn verify_join_presentation(
     }
     let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
         .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
-    VerifyingKey::from_bytes(&cert.device_public_key)
-        .map_err(|_| "device certificate contains an invalid device key".to_string())?
-        .verify(
-            &runtime_identity::collaboration_join_signing_bytes(&presentation.workspace_id),
-            &Signature::from_bytes(&proof),
-        )
-        .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())?;
+    let room = presentation.workspace_id.as_str();
+    admission_memo::join_proof_verified(&cert.device_public_key, room, &proof, || {
+        VerifyingKey::from_bytes(&cert.device_public_key)
+            .map_err(|_| "device certificate contains an invalid device key".to_string())?
+            .verify(
+                &runtime_identity::collaboration_join_signing_bytes(room),
+                &Signature::from_bytes(&proof),
+            )
+            .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
+    })?;
     // Without an authority to ask who governs the room, every foreign device
     // is held to the cap; the caller refines this where it has one.
     Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
@@ -1572,6 +1575,7 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+mod admission_memo;
 mod app_consent;
 mod launchable;
 mod local_action_host;
@@ -1632,6 +1636,8 @@ impl CapnpBrokerState {
         if uuid::Uuid::parse_str(room).is_err() || presentation.len() > 16 * 1024 {
             return Err("invalid certified invocation caller".into());
         }
+        #[cfg(test)]
+        admission_memo::count_verification();
         let admitted = verify_join_identity(
             &CrdtRoute::cluster(room),
             presentation,
@@ -1687,6 +1693,9 @@ impl CapnpBrokerState {
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
         self.checked_policy_time(caller.policy_time.as_ref())?;
+        if let Some(admitted) = admission_memo::admitted_now(caller) {
+            return Ok(admitted);
+        }
         let current = if let Some(evidence) = &caller.network {
             self.verify_network_action_caller_with_policy_time(
                 evidence,
@@ -11756,7 +11765,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
         match stream.try_io(tokio::io::Interest::READABLE, || {
             peek_launch_marker(stream, &mut partial)
         }) {
-            Ok(marker) => return Ok(marker == collab_types::local_transport::COLLAB_LAUNCH_MAGIC),
+            Ok(marker) => return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if partial {
                     if ready.is_read_closed() {
@@ -11789,8 +11798,8 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
 fn peek_launch_marker(
     stream: &tokio::net::UnixStream,
     partial: &mut bool,
-) -> std::io::Result<[u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()]> {
-    let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
+) -> std::io::Result<[u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()]> {
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
     // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
     // the live socket for this entire call. MSG_PEEK leaves the Cap'n
     // Proto header untouched for legacy/raw clients.
@@ -11861,7 +11870,7 @@ async fn authenticate_launcher_handoff(
         "pid {pid} launching {} in room {}",
         handoff.app_id, handoff.workspace_id
     );
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+    if handoff.protocol != launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION
         || handoff.app_id.trim().is_empty()
         || handoff.workspace_id.trim().is_empty()
     {
@@ -11962,13 +11971,13 @@ async fn read_launcher_handoff(
     // record. Unsupported kernels keep ordinary collaboration available.
     let media_process = native_media::PeerProcess::from_socket(stream);
 
-    let mut marker = [0_u8; collab_types::local_transport::COLLAB_LAUNCH_MAGIC.len()];
+    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
     stream.read_exact(&mut marker).await.map_err(|error| {
         capnp::Error::failed(format!(
             "could not read collaboration launch marker: {error}"
         ))
     })?;
-    if marker != collab_types::local_transport::COLLAB_LAUNCH_MAGIC {
+    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
         return Err(capnp::Error::failed(
             "collaboration launch marker changed while being read".into(),
         ));
@@ -12474,16 +12483,13 @@ pub mod tests {
         // What tilo-launcher writes before handing the descriptor to the app.
         let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
         let handoff = serde_json::to_vec(&serde_json::json!({
-            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": "so.tilo.calculator",
             "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
         }))
         .expect("handoff json");
-        std::io::Write::write_all(
-            &mut stream,
-            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
-        )
-        .expect("marker");
+        std::io::Write::write_all(&mut stream, &launcher::services::COLLAB_LAUNCH_MAGIC)
+            .expect("marker");
         std::io::Write::write_all(
             &mut stream,
             &launcher::services::COLLAB_LAUNCH_FRAMING
@@ -12539,13 +12545,13 @@ pub mod tests {
     #[cfg(test)]
     fn launcher_handoff_bytes(app_id: &str, room: &str) -> (Vec<u8>, Vec<u8>) {
         let handoff = serde_json::to_vec(&serde_json::json!({
-            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
             "app_id": app_id,
             "workspace_id": room,
         }))
         .expect("handoff json");
         (
-            collab_types::local_transport::COLLAB_LAUNCH_MAGIC.to_vec(),
+            launcher::services::COLLAB_LAUNCH_MAGIC.to_vec(),
             launcher::services::COLLAB_LAUNCH_FRAMING
                 .encode(&handoff)
                 .expect("framed handoff"),
@@ -12642,7 +12648,7 @@ pub mod tests {
     #[tokio::test]
     async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
         use tokio::io::AsyncWriteExt as _;
-        let marker = collab_types::local_transport::COLLAB_LAUNCH_MAGIC;
+        let marker = launcher::services::COLLAB_LAUNCH_MAGIC;
         let (head, tail) = marker.split_at(marker.len() / 2);
         let pause = LAUNCH_MARKER_COMPLETION / 6;
 

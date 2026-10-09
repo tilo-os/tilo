@@ -2914,7 +2914,8 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(all(test, feature = "local-daemons"))]
+#[cfg(test)]
+#[cfg(feature = "local-daemons")]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 

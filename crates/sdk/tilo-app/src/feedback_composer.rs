@@ -407,7 +407,8 @@ fn delivery_label(state: &DeliveryState) -> &'static str {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(
     clippy::expect_used,
     reason = "assertions prove the production component journey"

@@ -66,6 +66,10 @@ pub struct FileRestoreReceiptV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "outcome", deny_unknown_fields)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "moved verbatim from collab-types, whose crate-level allow covered it; boxing the receipt is a public API change outside this move"
+)]
 pub enum CheckedHistoryOutcomeV1 {
     Applied {
         receipt: FileRestoreReceiptV1,

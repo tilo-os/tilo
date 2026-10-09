@@ -15,7 +15,7 @@ use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 /// Mock content widget recording every [`Widget::handle_event`] call by
@@ -421,13 +421,7 @@ fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowE
     })
 }
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
     pump_with_modifiers(h, event, winit::event::Modifiers::default())
@@ -689,13 +683,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
     touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four();
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
@@ -735,7 +723,7 @@ fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) 
     paint(h);
     let p = point_of(&h.host);
     pump(h, &cursor_moved_at(p));
-    pump(h, &left_button_pressed());
+    pump(h, &mouse_press());
 }
 
 /// Paint, re-lay-out, paint again — the two-frame settle the shell
@@ -1423,7 +1411,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             let more = h.host.search_filters.search_more_rect;
             assert!(more.area() > 0.0, "the last kind is reached through More");
             pump(&mut h, &cursor_moved_at(more.center()));
-            pump(&mut h, &left_button_pressed());
+            pump(&mut h, &mouse_press());
             h.host.search_filters.more_open = true;
             settle(&mut h, vw, vh);
         }
@@ -1438,7 +1426,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             "opening More must give the last kind a clickable rect"
         );
         pump(&mut h, &cursor_moved_at(target.center()));
-        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &mouse_press());
 
         assert_eq!(
             h.host.active_kind_filter,
@@ -1760,7 +1748,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
 
-        let released = left_button_released();
+        let released = mouse_release();
         let handled = pump(&mut h, &released);
 
         assert!(
@@ -1842,7 +1830,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         let _ = pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
         assert!(
-            !pump(&mut h, &left_button_pressed()),
+            !pump(&mut h, &mouse_press()),
             "a click in the old Help-pill corner must not be claimed by shell chrome"
         );
         assert!(
@@ -1885,7 +1873,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .expect("the visible Power tile has semantic geometry");
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
@@ -1906,7 +1894,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
 
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(
             h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
@@ -2668,7 +2656,7 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert!(!lens.contains(workspace_point));
         pump(&mut h, &cursor_moved_at(workspace_point));
         h.log.borrow_mut().clear();
-        assert!(!pump(&mut h, &left_button_pressed()));
+        assert!(!pump(&mut h, &mouse_press()));
         assert!(
             h.log
                 .borrow()
@@ -2831,7 +2819,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
             position: PhysicalPosition::new(read.center().x, read.center().y),
         }
     ));
-    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &mouse_press()));
     assert!(h.host.notification_center.is_reading());
     settle(&mut h, width, height);
     let back = h.host.qs_notification_back_rect();
@@ -2842,7 +2830,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
             position: PhysicalPosition::new(back.center().x, back.center().y),
         }
     ));
-    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &mouse_press()));
     assert!(!h.host.notification_center.is_reading());
     assert_eq!(h.chrome.borrow().notification_history().len(), original);
     assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
@@ -2995,8 +2983,8 @@ fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
         .clone();
     let point = h.host.workspace_settings_overlay.name_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(point)));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(pump(&mut h, &left_button_released()));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
     assert_eq!(
         h.chrome.borrow().editing_workspace_name.as_deref(),
         Some(original.as_str())
@@ -3030,8 +3018,8 @@ fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
     );
     let point = h.host.workspace_settings_overlay.name_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(point)));
-    assert!(pump(&mut h, &left_button_pressed()));
-    assert!(pump(&mut h, &left_button_released()));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
     assert!(pump_with_modifiers(
         &mut h,
         &key_pressed(Key::Character("a".into())),
@@ -3123,8 +3111,8 @@ fn workspace_name_native_render_and_resize_matrix() {
         settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
         let point = h.host.workspace_settings_overlay.name_rect().center();
         assert!(pump(&mut h, &cursor_moved_at(point)));
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert!(pump(&mut h, &left_button_released()));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
         assert!(h.chrome.borrow().editing_workspace_name.is_some());
         assert!(pump_with_modifiers(
             &mut h,
@@ -3206,8 +3194,8 @@ fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() 
         settle(&mut h, 1280.0, 800.0);
         let point = h.host.workspace_settings_overlay.name_rect().center();
         assert!(pump(&mut h, &cursor_moved_at(point)));
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert!(pump(&mut h, &left_button_released()));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
         let mut held = key_pressed(Key::Named(NamedKey::Enter));
         if let WindowEvent::KeyboardInput { event, .. } = &mut held {

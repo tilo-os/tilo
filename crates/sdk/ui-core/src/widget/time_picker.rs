@@ -949,12 +949,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
         WindowEvent::MouseWheel {

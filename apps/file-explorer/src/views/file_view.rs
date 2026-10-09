@@ -17,7 +17,8 @@
 //! [`ListSlot`] the host keeps, so scrolling and column widths survive a
 //! rebuild; the grid recomputes its ephemeral state (hover) from the cursor.
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

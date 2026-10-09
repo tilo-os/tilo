@@ -384,7 +384,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         let outside = Point::new(20.0, 400.0);
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(outside), mods);
-        let _ = pump(&mut h, &left_button_pressed(), mods);
+        let _ = pump(&mut h, &mouse_press(), mods);
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -572,7 +572,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -868,8 +868,8 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let mut focus = None;
         for event in [
             cursor_moved_at(next.center()),
-            left_button_pressed(),
-            left_button_released(),
+            mouse_press(),
+            mouse_release(),
         ] {
             let mut handled = false;
             h.host.handle_event(
@@ -2043,21 +2043,9 @@ fn cursor_moved_at(p: Point) -> WindowEvent {
     }
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 /// Paint one frame, which is what populates every cached hit rect.
 fn paint(h: &mut Harness) {
@@ -2092,13 +2080,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(row.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled);
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_none()
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -2171,13 +2159,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(invite.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
         assert!(
             h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
             "the press remains cancellable"
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2202,13 +2190,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(join.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
         assert!(
             h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
             "the press remains cancellable"
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2315,7 +2303,7 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
     let panel = h.host.collaborators_overlay.panel_rect();
     let mods = Modifiers::default();
     let _ = pump(h, &cursor_moved_at(panel.center()), mods);
-    let _ = pump(h, &left_button_pressed(), mods);
+    let _ = pump(h, &mouse_press(), mods);
     assert!(
         h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
         "a click in a panel with no buttons queued no peer-sync work"
@@ -2664,7 +2652,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
         // MouseInput carries no position; seed `last_cursor` via CursorMoved first.
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(p), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
 
         assert!(
             handled,
@@ -2686,7 +2674,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(close.center()), mods);
-        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
         assert!(!h.chrome.borrow().overlays.ws_settings);
     }
 
@@ -2951,12 +2939,12 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     }
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(
         h.host.followed_peer.is_none(),
         "the intended person is only armed"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(
         h.host.followed_peer.as_deref(),
         Some("ada"),
@@ -3038,18 +3026,18 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         .accessibility_rect_for_path(&[5])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("bob"));
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert_eq!(
         h.host.followed_peer.as_deref(),
         Some("bob"),
         "Stop remains cancellable"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(
         h.host.followed_peer.is_none(),
         "a repeated completed click stops Bob"
@@ -3068,13 +3056,13 @@ fn people_completed_click_defers_follow_until_release() {
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     capture_people_completed(&mut h, "pressed");
     assert!(
         h.host.followed_peer.is_none(),
         "a press must remain cancellable"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3089,7 +3077,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
         if lose_focus {
             let _ = pump(&mut h, &WindowEvent::Focused(false), mods);
         } else {
@@ -3105,7 +3093,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
             }
             paint(&mut h);
         }
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
         capture_people_completed(
             &mut h,
             if lose_focus {
@@ -3209,16 +3197,16 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     paint(&mut h);
     h.chrome.borrow_mut().overlays.collaborators = true;
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3232,7 +3220,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     let ada = {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -3255,7 +3243,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
             .insert(0, ada);
     }
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
 }
 
@@ -3269,7 +3257,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
     paint(&mut h);
     let moved = h
@@ -3279,10 +3267,10 @@ fn people_completed_resize_does_not_move_an_armed_click() {
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3314,8 +3302,8 @@ fn people_status_dismissal_cancels_the_hidden_editor_before_reopen() {
         &cursor_moved_at(Point::new(100.0, 300.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     h.chrome.borrow_mut().overlays.collaborators = true;
     paint(&mut h);
@@ -3445,9 +3433,9 @@ fn people_status_activity_transition_discards_only_the_unpublished_draft() {
     assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
     let activity = h.host.collaborators_overlay.activity_rect();
     assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.host.status_editing, "press is still cancellable");
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     assert!(!h.host.status_editing);
     assert!(h.host.status_draft.is_empty());
@@ -3544,8 +3532,8 @@ fn people_status_pointer_reentry_preserves_the_draft() {
         )),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(
         h.host.status_draft, expected,
         "clicking the active field must not reload the saved status"
@@ -3642,9 +3630,9 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
     let activity = h.host.collaborators_overlay.activity_rect();
     assert!(h.host.rect.contains(activity.center()));
     assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
 }
 
@@ -3666,13 +3654,13 @@ fn people_status_pointer_drag_selection_edits_the_host_draft() {
         )),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(
         &mut h,
         &cursor_moved_at(Point::new(rect.x1 - 8.0, rect.center().y)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_ne!(
         h.host.status_selection.anchor,
         h.host.status_selection.cursor
@@ -3708,8 +3696,8 @@ fn people_status_pointer_places_unicode_caret_at_physical_scale_two() {
         rect.center().y * 2.0,
     );
     assert!(pump_at_scale(&mut h, &cursor_moved_at(point), mods, 2.0));
-    assert!(pump_at_scale(&mut h, &left_button_pressed(), mods, 2.0));
-    assert!(pump_at_scale(&mut h, &left_button_released(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_press(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_release(), mods, 2.0));
     assert_eq!(
         h.host.status_selection,
         ui::text_selection::Selection::collapsed(0)
@@ -3736,7 +3724,7 @@ fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
         &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(
         &mut h,
         &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
@@ -3763,7 +3751,7 @@ fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
         Some(scrolled),
         "focus loss ends the shared scrollbar drag"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
     assert!(h.host.followed_peer.is_none());
 }
@@ -3809,7 +3797,7 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
         &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
     paint(&mut h);
     let after_resize = h.host.primary_vertical_scroll().expect("resized People");
@@ -3824,7 +3812,7 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
         Some(after_resize),
         "resize cancels the old thumb drag"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
     assert!(h.host.followed_peer.is_none());
 }

@@ -9,9 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
-use collab_types::{
-    ContentHash, Ed25519PublicKey, FileActor, FileRecordId, FileVersionId, Signature, verify_event,
-};
+use collab_types::{Ed25519PublicKey, Signature, verify_event};
+use fs_protocol::{ContentHash, FileActor, FileRecordId, FileVersionId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,7 +45,7 @@ struct ReplicaObservationView<'a> {
     domain: &'static str,
     protocol_version: u16,
     workspace_id: uuid::Uuid,
-    revision: &'a collab_types::ContentRevisionV1,
+    revision: &'a fs_protocol::ContentRevisionV1,
     nonce: [u8; 32],
     actor: FileActor,
     issued_at_ms: u64,
@@ -55,8 +54,8 @@ struct ReplicaObservationView<'a> {
 
 impl ReplicaObservation {
     fn verify_persisted(&self) -> bool {
-        let revision = collab_types::ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+        let revision = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: self.record_id,
             version_id: self.version_id,
             content_hash: self.content_hash,
@@ -497,7 +496,7 @@ impl AvailabilityRegistry {
     /// Returns an error when the supplied revision is invalid or state cannot persist.
     pub fn track_current_revision(
         &mut self,
-        revision: collab_types::ContentRevisionV1,
+        revision: fs_protocol::ContentRevisionV1,
         kind: RecordKind,
         parent: Option<FileRecordId>,
         observed_at_ms: u64,
@@ -861,8 +860,8 @@ mod tests {
 
     fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {
         let device = SigningKey::generate(&mut UnwrapErr(SysRng));
-        let revision = collab_types::ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+        let revision = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: record.record_id,
             version_id: version,
             content_hash: Some(ContentHash([4; 32])),

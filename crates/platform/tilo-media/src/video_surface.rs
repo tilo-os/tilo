@@ -433,7 +433,8 @@ pub fn parse_in_formats(blob: &[u8]) -> Vec<PlaneFormat> {
     parse().unwrap_or_default()
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::dmabuf::{Colorimetry, DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888, DmabufImage};

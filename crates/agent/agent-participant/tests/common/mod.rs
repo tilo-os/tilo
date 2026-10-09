@@ -47,6 +47,29 @@ pub fn catalogue() -> AppCatalogue {
     AppCatalogue::new(component_apps())
 }
 
+/// A record's document as JSON: a page's replica, or the copy an agent's
+/// confined record holds.
+pub trait Body {
+    /// The document, as `AutoSerde` writes it.
+    fn body(&self) -> String;
+}
+
+fn json(doc: &automerge::AutoCommit) -> String {
+    serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()
+}
+
+impl Body for tilo_agent_participant::Replica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
+impl Body for tilo_agent_participant::ConfinedReplica {
+    fn body(&self) -> String {
+        self.read(json).unwrap()
+    }
+}
+
 /// Something an agent can drive: a replica, or a participant's record.
 pub trait Driveable {
     /// Every operation the record publishes.

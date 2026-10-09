@@ -73,6 +73,28 @@ pub fn key_event(logical_key: Key, text: Option<SmolStr>, state: ElementState) -
     )
 }
 
+/// `logical_key` pressed, typing `text`.
+#[must_use]
+pub fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
+    keyboard_input(key_event(
+        logical_key,
+        text.map(SmolStr::new),
+        ElementState::Pressed,
+    ))
+}
+
+/// The named key `key` pressed; it types nothing.
+#[must_use]
+pub fn named_key(key: NamedKey) -> WindowEvent {
+    key_press(Key::Named(key), None)
+}
+
+/// The character key `text` pressed, typing it.
+#[must_use]
+pub fn char_key(text: &str) -> WindowEvent {
+    key_press(Key::Character(SmolStr::new(text)), Some(text))
+}
+
 /// `event` delivered to the window as real keyboard input.
 #[must_use]
 pub fn keyboard_input(event: KeyEvent) -> WindowEvent {

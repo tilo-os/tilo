@@ -61,7 +61,7 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 6, reports)
+        self.assertEqual(len(reports), 7, reports)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
@@ -92,6 +92,58 @@ class TappSizes(unittest.TestCase):
     def test_an_empty_index_fails(self):
         with self.assertRaises(ValueError):
             adapters.tapp_sizes({"entries": []}, ENV)
+
+
+SWITCH_SOURCE = ROOT / "crates/session/shell/src/compositor/switch_latency.rs"
+
+
+def switch_line(first: int, settled: int, dropped: int = 0, interval: int = 16_667) -> str:
+    return (f"WORKSPACE-SWITCH first_queued_us={first - 1000} first_shown_us={first} "
+            f"settled_queued_us={settled - 1000} settled_shown_us={settled} frames=25 dropped={dropped} "
+            f"interval_us={interval}")
+
+
+class WorkspaceSwitch(unittest.TestCase):
+    def test_each_switch_line_is_one_sample(self):
+        log = "\n".join(["tilo compositor listening on \"wayland-1\"", switch_line(9_000, 412_000),
+                         "KEY-LATENCY app=x key_to_commit_us=1 key_to_submit_us=2 key_to_present_us=3",
+                         "2026-10-09T01:20:00Z " + switch_line(17_000, 430_000, dropped=2)])
+        samples = adapters.switch_samples(log)
+        self.assertEqual([sample["first_shown_us"] for sample in samples], [9_000, 17_000])
+        records = {item.kpi: item for item in adapters.workspace_switch(samples, ENV)}
+        self.assertEqual(sorted(records), ["latency.workspace_switch.dropped_frames",
+                                           "latency.workspace_switch.first_frame",
+                                           "latency.workspace_switch.settled"])
+        first = records["latency.workspace_switch.first_frame"]
+        self.assertEqual((first.unit, first.n, first.p50, first.max), ("ms", 2, 9.0, 17.0))
+        self.assertEqual(records["latency.workspace_switch.settled"].max, 430.0)
+        dropped = records["latency.workspace_switch.dropped_frames"]
+        self.assertEqual((dropped.unit, dropped.max), ("count", 2.0))
+        self.assertEqual(first.meta, {"interval_us": "16667", "frames_min": "25"})
+
+    def test_a_named_variant(self):
+        samples = adapters.switch_samples(switch_line(5_000, 405_000, interval=6_944))
+        kpis = [item.kpi for item in adapters.workspace_switch(samples, ENV, "hw.workspace_switch.{}.144hz")]
+        self.assertIn("hw.workspace_switch.first_frame.144hz", kpis)
+
+    def test_no_switch_and_a_truncated_line_fail(self):
+        with self.assertRaisesRegex(ValueError, "WORKSPACE-SWITCH"):
+            adapters.workspace_switch(adapters.switch_samples("no switches here"), ENV)
+        with self.assertRaisesRegex(ValueError, "lacks"):
+            adapters.switch_samples("WORKSPACE-SWITCH first_queued_us=1 frames=3")
+
+    def test_the_fields_are_the_compositors(self):
+        """The parser reads the fields the Rust `Display` writes, in its order."""
+        source = SWITCH_SOURCE.read_text()
+        written = re.findall(r"\b([a-z_]+)=\{\}", source[source.index('"WORKSPACE-SWITCH'):])
+        self.assertEqual(tuple(written), adapters.SWITCH_FIELDS)
+
+    def test_every_nightly_latency_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        nightly = {kpi for kpi in budgets.kpis if kpi.startswith("latency.")}
+        produced = {item.kpi for item in adapters.workspace_switch(
+            adapters.switch_samples(switch_line(5_000, 405_000)), ENV)} | {"latency.input_to_frame.pointer"}
+        self.assertEqual(nightly, produced)
 
 
 if __name__ == "__main__":

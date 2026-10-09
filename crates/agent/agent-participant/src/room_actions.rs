@@ -12,12 +12,14 @@
 //!   no provider lists rows for the records open on the room's shared
 //!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
 //!   naming a record's provider lists every action that record publishes.
-//! - **Invoke.** The record is held as a replica of its resource
-//!   ([`Replica`]) from what the service opened of it, the operation runs
-//!   through the resource's own door (permission, confirmation and argument
-//!   binding exactly as for a person), and the change is sealed and signed as
-//!   the host device's own, so every page receives it as an ordinary durable
-//!   change.
+//! - **Invoke.** The record is held as a replica of its resource in its own
+//!   confined app worker ([`ConfinedReplica`]) from what the service opened
+//!   of it, the operation runs there through the resource's own door
+//!   (permission, confirmation and argument binding exactly as for a person),
+//!   and the change it returns is admitted through the isolate, then sealed
+//!   and signed here as the host device's own, so every page receives it as
+//!   an ordinary durable change. No app code runs in this process, beside
+//!   the host's key ([`crate::worker`]).
 //! - **Tickets.** Invocation ids are idempotent: a retry reports the original
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
@@ -43,9 +45,10 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 
-use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::apps::{AppCatalogue, Seed};
 use crate::host::{CatalogueFactory, HostEndpoint};
 use crate::participant::actions::{RECORD_PROVIDER, record_provider};
+use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
@@ -86,7 +89,7 @@ pub struct RoomMember {
 }
 
 /// Current governed read policy supplied by the authenticated host boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ViewReadPolicy {
     /// Governed room whose current policy authorized the exact source record.
     pub room: String,
@@ -101,7 +104,7 @@ pub struct ViewReadPolicy {
 }
 
 impl ViewReadPolicy {
-    fn permissions(&self) -> ui::permissions::PermissionContext {
+    pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::from_capabilities(
             ui::permissions::Actor::person(Some(self.role), self.person.clone())
                 .in_room(self.room.clone()),
@@ -487,9 +490,9 @@ impl HostActions {
     }
 }
 
-/// One record held on the service thread.
+/// One record held on the service thread, in its own app worker.
 struct Mounted {
-    app: Replica,
+    app: ConfinedReplica,
     /// Digests of the bodies already merged into it.
     seen: HashSet<[u8; 32]>,
     used: u64,
@@ -643,7 +646,7 @@ fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
 }
 
 /// What a held record publishes that its door runs now.
-fn live_actions(app: &Replica) -> Vec<tilo_actions::ActionDescriptor> {
+fn live_actions(app: &ConfinedReplica) -> Vec<tilo_actions::ActionDescriptor> {
     app.survey()
 }
 
@@ -796,7 +799,7 @@ impl Worker {
                 };
                 self.mounted.remove(&oldest);
             }
-            let app = Replica::open(
+            let app = ConfinedReplica::open(
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
@@ -828,20 +831,18 @@ impl Worker {
     /// Records of the room an app of the catalogue opens: those on the
     /// shared desktop first, then the most recently changed.
     fn records(&self, state: &RoomState) -> Vec<DocumentRoute> {
-        let desktop: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = state
-            .records
-            .iter()
-            .map(|(route, changes)| {
-                (
-                    route.clone(),
-                    changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
-                )
-            })
-            .collect();
         let on_desktop = state
             .room
             .as_deref()
-            .map(|room| crate::participant::desktop_records(&desktop, room))
+            .and_then(|room| state.records.get(&crate::participant::desktop_route(room)))
+            .map(|changes| {
+                use tilo_automerge::ApplyIncoming as _;
+                let mut desktop = automerge::AutoCommit::new();
+                for (_, bytes) in changes {
+                    let _ = desktop.load_incoming(bytes);
+                }
+                crate::participant::desktop_records(&desktop)
+            })
             .unwrap_or_default();
         let mut routes: Vec<DocumentRoute> = state
             .records
@@ -875,12 +876,12 @@ impl Worker {
         let source = link
             .view_document(workspace, caller, &route)
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let mut doc = automerge::AutoCommit::new();
-        tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &source.bytes)
-            .map_err(|_| refuse())?;
-        let descriptors =
-            self.catalogue
-                .resource_views(&route.app_id, &doc, wanted, &first.permissions());
+        let app_id = self.catalogue.get(&route.app_id).ok_or_else(refuse)?.app_id;
+        // The document is decoded and the app's resource published in a
+        // confined worker, never here.
+        let mut views = ConfinedViews::load(app_id, source.bytes)
+            .map_err(|reason| ActionHostError::Unavailable { reason })?;
+        let descriptors = views.views(wanted, &first).map_err(|_| refuse())?;
         let fresh = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)
             .ok_or_else(refuse)?;
@@ -891,9 +892,7 @@ impl Worker {
         {
             return Err(refuse());
         }
-        let current =
-            self.catalogue
-                .resource_views(&route.app_id, &doc, wanted, &fresh.permissions());
+        let current = views.views(wanted, &fresh).map_err(|_| refuse())?;
         let rows = descriptors
             .into_iter()
             .filter(|descriptor| current.contains(descriptor))
@@ -959,7 +958,7 @@ impl Worker {
                 }
             };
             if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(read) = reads::CanonicalRead::prepare(
+                && let Ok(mut read) = reads::CanonicalRead::prepare(
                     &self.catalogue,
                     link.as_ref(),
                     workspace_id,
@@ -1029,7 +1028,7 @@ impl Worker {
         route.cluster_id = link
             .view_read_policy(workspace, caller, &route.app_id, &route.record)?
             .room;
-        let read = reads::CanonicalRead::prepare(
+        let mut read = reads::CanonicalRead::prepare(
             &self.catalogue,
             link.as_ref(),
             workspace,
@@ -1235,7 +1234,14 @@ impl Worker {
             .app
             .invoke(&target.address, &arguments, confirmed)
             .map_err(|error| door_outcome(&error))?;
-        let mutation = mounted.app.take_mutation();
+        let mutation = mounted.app.take_mutation().map_err(|error| {
+            Outcome::Failed(ActionFailure {
+                code: "commit_failed".into(),
+                message: error.to_string(),
+                details: None,
+                retryable: false,
+            })
+        })?;
         if let Some(mutation) = mutation {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(|reason| {
@@ -1331,7 +1337,7 @@ impl Worker {
         app: &str,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
-        let mut hosted = Replica::open(
+        let hosted = ConfinedReplica::open(
             &self.catalogue,
             app,
             room,
@@ -1345,7 +1351,10 @@ impl Worker {
             cluster_id: room.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
-        if let Some(mutation) = hosted.take_mutation() {
+        if let Some(mutation) = hosted
+            .take_mutation()
+            .map_err(|error| refused(error.to_string()))?
+        {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(refused)?;
         }

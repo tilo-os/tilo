@@ -1249,7 +1249,8 @@ pub fn resume_folder(
     let destination = absolute(&journal.document.destination).map_err(|e| e.to_string())?;
     migration::copy_folder_internal(&source, &destination, cancelled, progress, Some(journal))
 }
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::setup::test_support::isolated;
@@ -2188,7 +2189,8 @@ pub(super) mod crash_injection {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     #[test]
     fn journaled_copy_refuses_before_mutation_until_native_durability_is_available() {

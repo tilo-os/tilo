@@ -1653,7 +1653,11 @@ impl App {
         for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
-                    let _ = reply.send(self.published_action_directory_page(query));
+                    // A cancelled caller never receives this page. Do not consume
+                    // its one-use continuation before admitting a live response.
+                    if !reply.is_closed() {
+                        let _ = reply.send(self.published_action_directory_page(query));
+                    }
                 }
                 ActionDirectoryRequest::Resolve {
                     revision,

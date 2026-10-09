@@ -764,12 +764,7 @@ mod tests {
         handled
     }
 
-    fn moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn button(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
@@ -812,11 +807,11 @@ mod tests {
     #[test]
     fn painted_targets_cancel_a_press_when_its_registered_geometry_moves() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         assert!(send(&mut targets, &button(ElementState::Pressed)));
         targets.begin_frame();
         targets.target("seven", Rect::new(100.0, 100.0, 140.0, 140.0), "7");
-        send(&mut targets, &moved(110.0, 110.0));
+        send(&mut targets, &cursor_moved(110.0, 110.0));
         assert!(
             send(&mut targets, &button(ElementState::Released)),
             "the old press owns its cancelled release"
@@ -831,7 +826,7 @@ mod tests {
     fn painted_targets_cancel_pointer_activation_on_focus_loss() {
         let mut targets = keys();
         targets.set_host_focus(true);
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         send(&mut targets, &button(ElementState::Pressed));
         targets.set_host_focus(false);
         assert!(send(&mut targets, &button(ElementState::Released)));
@@ -844,7 +839,7 @@ mod tests {
     #[test]
     fn painted_targets_escape_cancels_and_consumes_the_pointer_release() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         send(&mut targets, &button(ElementState::Pressed));
         let escape =
             crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
@@ -856,7 +851,7 @@ mod tests {
     #[test]
     fn a_click_on_a_painted_target_hovers_presses_and_activates_it() {
         let mut targets = keys();
-        send(&mut targets, &moved(10.0, 10.0));
+        send(&mut targets, &cursor_moved(10.0, 10.0));
         assert!(targets.interaction("seven").hovered);
         assert!(send(&mut targets, &button(ElementState::Pressed)));
         assert!(targets.interaction("seven").pressed);
@@ -866,12 +861,12 @@ mod tests {
 
         // Pressed on one target, released on another: nothing fires.
         send(&mut targets, &button(ElementState::Pressed));
-        send(&mut targets, &moved(60.0, 10.0));
+        send(&mut targets, &cursor_moved(60.0, 10.0));
         send(&mut targets, &button(ElementState::Released));
         assert!(targets.take_activated().is_empty());
 
         // A disabled target shows but takes nothing.
-        send(&mut targets, &moved(110.0, 10.0));
+        send(&mut targets, &cursor_moved(110.0, 10.0));
         assert!(!send(&mut targets, &button(ElementState::Pressed)));
         assert!(targets.interaction("nine").disabled);
     }

@@ -1108,13 +1108,7 @@ mod tests {
         }
     }
 
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     pub(crate) fn key(named: NamedKey) -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
@@ -1199,7 +1193,7 @@ mod tests {
         let target = sf.clear_rect().center();
         assert!(target.x > 0.0);
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(sf.is_empty());
         assert_eq!(sf.take_dirty().as_deref(), Some(""));
@@ -1213,7 +1207,7 @@ mod tests {
         assert!(sf.collapsed(&Theme::dark()));
         draw(&mut sf);
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(Point::new(10.0, 10.0)));
-        let (_, focus) = ctx_event(&mut sf, &taffy, node, &press());
+        let (_, focus) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         let input_node = taffy.children(node).unwrap()[0];
         assert_eq!(focus, Some(input_node), "the icon button focuses the field");
         sf.input.set_focus(true);
@@ -1262,7 +1256,7 @@ mod tests {
         assert_ne!(sf.escalate_rect, Rect::ZERO, "Search everywhere shows");
         let target = sf.escalate_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(take_control_invocation(&mut sf).is_some());
         sf.set_count(Some(FilterCount::new(3, 12)));
@@ -1291,7 +1285,7 @@ mod tests {
         draw(&mut sf);
         let target = sf.scope_token_rect.center();
         let _ = ctx_event(&mut sf, &taffy, node, &move_to(target));
-        let (handled, _) = ctx_event(&mut sf, &taffy, node, &press());
+        let (handled, _) = ctx_event(&mut sf, &taffy, node, &mouse_press());
         assert!(handled);
         assert!(sf.take_scope_cleared());
     }

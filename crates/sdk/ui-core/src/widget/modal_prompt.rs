@@ -363,7 +363,7 @@ mod tests {
     use crate::widget::ModalDialog;
     use automerge::AutoCommit;
     use vello::kurbo::Point;
-    use winit::event::{ElementState, MouseButton};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
@@ -405,10 +405,10 @@ mod tests {
         let body = PromptBody::confirm_phrase("Everything on sdb will be erased.", "sdb");
         let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
         assert!(!d.content().confirms());
-        dispatch(&mut d, &char_event("s"));
-        dispatch(&mut d, &char_event("d"));
+        dispatch(&mut d, &char_key("s"));
+        dispatch(&mut d, &char_key("d"));
         assert!(!d.content().confirms());
-        dispatch(&mut d, &char_event("b"));
+        dispatch(&mut d, &char_key("b"));
         assert!(d.content().confirms(), "the phrase confirms");
         let node = Widget::accessibility(d.content()).unwrap();
         assert_eq!(node.name.as_deref(), Some("Type sdb to confirm"));
@@ -418,13 +418,7 @@ mod tests {
         );
     }
 
-    fn char_event(ch: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(ch.into()),
-            Some(ch.into()),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -433,13 +427,7 @@ mod tests {
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn dispatch(d: &mut ModalDialog<PromptBody>, event: &WindowEvent) {
         let mut taffy = TaffyTree::<()>::new();
@@ -504,8 +492,8 @@ mod tests {
         {
             let body = PromptBody::new("Name", "New volume");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("h"));
-            dispatch(&mut d, &char_event("i"));
+            dispatch(&mut d, &char_key("h"));
+            dispatch(&mut d, &char_key("i"));
             assert_eq!(
                 d.content().value(),
                 "hi",
@@ -518,7 +506,7 @@ mod tests {
             let body = PromptBody::new("Name", "").with_initial("old-name");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
             assert_eq!(d.content().value(), "old-name");
-            dispatch(&mut d, &char_event("x"));
+            dispatch(&mut d, &char_key("x"));
             assert_eq!(
                 d.content().value(),
                 "x",
@@ -530,16 +518,16 @@ mod tests {
         {
             let body = PromptBody::new("Name", "hint");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("a"));
-            dispatch(&mut d, &char_event("b"));
+            dispatch(&mut d, &char_key("a"));
+            dispatch(&mut d, &char_key("b"));
             let center = d.dialog_rect().center();
             dispatch(&mut d, &cursor_at(center));
-            dispatch(&mut d, &left_press());
+            dispatch(&mut d, &mouse_press());
             assert!(
                 d.content().is_focused(),
                 "the field stays focused after an in-box click",
             );
-            dispatch(&mut d, &char_event("c"));
+            dispatch(&mut d, &char_key("c"));
             assert!(
                 d.content().value().contains('c'),
                 "typing continues to reach the field after the click",
@@ -550,7 +538,7 @@ mod tests {
         {
             let body = PromptBody::new("Notes", "").multiline(true);
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-            dispatch(&mut d, &char_event("a"));
+            dispatch(&mut d, &char_key("a"));
             let ev = crate::synthetic_input::key_event(
                 Key::Named(NamedKey::Enter),
                 None,
@@ -566,7 +554,7 @@ mod tests {
                     is_synthetic: false,
                 },
             );
-            dispatch(&mut d, &char_event("b"));
+            dispatch(&mut d, &char_key("b"));
             assert_eq!(
                 d.content().value(),
                 "a\nb",

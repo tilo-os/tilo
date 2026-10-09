@@ -5045,7 +5045,7 @@ impl MailApp {
 mod tests {
     use super::*;
     use automerge::ReadDoc;
-    use winit::event::{Modifiers, MouseButton};
+    use winit::event::Modifiers;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -5053,30 +5053,12 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(s.into()),
-            Some(s.into()),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::char_key;
+    use ui::synthetic_input::named_key;
 
     /// Route `ev` to the app through the tree it was last laid out in (a
     /// bare node before any layout).
@@ -5107,13 +5089,7 @@ mod tests {
         handled
     }
 
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
@@ -5358,8 +5334,8 @@ mod tests {
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {
         dispatch(app, &cursor_at(p), doc);
-        let pressed = dispatch(app, &left_press(), doc);
-        let released = dispatch(app, &left_release(), doc);
+        let pressed = dispatch(app, &mouse_press(), doc);
+        let released = dispatch(app, &mouse_release(), doc);
         pressed || released
     }
 
