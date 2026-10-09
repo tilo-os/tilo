@@ -13,8 +13,10 @@ use tilo_actions::{
     ExecutionLocus, OperationKind, ParamType, PermissionRequirement,
 };
 
+use crate::action::ActionKind;
 use crate::delta::Delta;
 use crate::model::{Doc, ModelError};
+use crate::path::Edit;
 use crate::reader::Demand;
 
 /// A resource type. Implement it by hand for a type with its own storage
@@ -88,7 +90,7 @@ pub trait Resource: Sized + 'static {
     /// (the paragraph being typed in) is then placed without asking the
     /// document, which for a large document is the costly part of reading a
     /// change. The default knows nothing, and the document is asked.
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<crate::delta::Path> {
+    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<crate::delta::ObjPath> {
         let _ = (state, obj);
         None
     }
@@ -329,6 +331,31 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// Whether the resource's actions include field edits ([`Edit`]),
+    /// published as [`FIELD_EDIT`]. `#[resource]` records have them.
+    const EDITS: bool = false;
+
+    /// The action a field edit of this resource is, when it has field edits
+    /// ([`Self::EDITS`]).
+    fn edit_action(edit: Edit<Self>) -> Option<Self::Action> {
+        let _ = edit;
+        None
+    }
+
+    /// Stamp the origin's clock on an action as the door admits it. A caller
+    /// never supplies the time an action carries.
+    fn stamp(action: &mut Self::Action, now_ms: i64) {
+        let _ = (action, now_ms);
+    }
+
+    /// What kind of action `action` is: whether it only reads, changes only
+    /// the document, or reaches outside it. Derived by `#[resource]` from
+    /// what each verb is able to do, never declared.
+    fn kind_of(action: &Self::Action) -> ActionKind {
+        let _ = action;
+        ActionKind::Undoable
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
@@ -349,6 +376,57 @@ pub trait Resource: Sized + 'static {
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
+
+/// The id of the action a resource with field edits ([`Resource::EDITS`])
+/// publishes for them: one [`Edit`] given as JSON, a path and an operation.
+pub const FIELD_EDIT: &str = "field-edit";
+/// The parameter of [`FIELD_EDIT`] carrying the edit.
+pub const EDIT_PARAM: &str = "edit";
+
+/// Read a field edit given as JSON into the action it is.
+fn read_edit<R: Resource>(value: serde_json::Value) -> Result<R::Action, String> {
+    let edit: Edit<R> = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    R::edit_action(edit).ok_or_else(|| format!("{} has no field edits", R::LABEL))
+}
+
+/// The published spec of [`FIELD_EDIT`].
+fn field_edit_spec<R: Resource>() -> ActionSpec {
+    ActionSpec::typed(
+        FIELD_EDIT,
+        format!("Edit a {} field", R::LABEL),
+        "Field edit as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned(
+                EDIT_PARAM,
+                ParamType::Object,
+                "The path of the field from the record's root, and the operation",
+            )
+            .with_schema(<Edit<R> as crate::JsonSchema>::json_schema()),
+        ],
+        |args| {
+            let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
+                return refused::<R>("missing edit");
+            };
+            match read_edit::<R>(serde_json::Value::Object(value.clone())) {
+                Ok(mut action) => {
+                    R::stamp(&mut action, origin_now_ms());
+                    encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
+                }
+                Err(reason) => refused::<R>(&reason),
+            }
+        },
+    )
+    .with_description(
+        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+    )
+    // Controls and agents edit fields; a person picks named actions or edits
+    // the field in place.
+    .programmatic()
+    // A field edit changes only the document.
+    .reversible()
+    .with_history_label(apply_label::<R>)
+}
 
 /// The edits of a resource whose document holds nothing. An app whose data
 /// lives entirely outside any document — credentials in this device's
@@ -1102,7 +1180,8 @@ fn apply_spec<R: Resource>() -> ActionSpec {
                 return refused::<R>("missing action");
             };
             match read_apply::<R>(serde_json::Value::Object(value.clone())) {
-                Ok(action) => {
+                Ok(mut action) => {
+                    R::stamp(&mut action, origin_now_ms());
                     encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
                 }
                 Err(reason) => refused::<R>(&reason),
@@ -1115,6 +1194,9 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
+    // A typed value of the resource's own vocabulary changes only the
+    // document, and the host's undo reverts it.
+    .reversible()
     // Offered to whoever may take the least of its edits; each value needs
     // what that edit needs.
     .requiring(R::least_permission())
@@ -1268,6 +1350,9 @@ pub(crate) fn publish_parts<R: Resource>(
     resource = resource
         .with_action(apply_spec::<R>())
         .with_action(group_spec::<R>());
+    if R::EDITS {
+        resource = resource.with_action(field_edit_spec::<R>());
+    }
     if R::AUDITED_LOW_MUTATIONS {
         resource = resource
             .with_action(crate::low_mutation::apply_spec::<R>())
@@ -1297,7 +1382,18 @@ pub fn build_action<R: Resource>(
             .get(APPLY_PARAM)
             .cloned()
             .ok_or_else(|| "missing action".to_owned())?;
-        return read_apply::<R>(value);
+        let mut action = read_apply::<R>(value)?;
+        R::stamp(&mut action, now_ms);
+        return Ok(action);
+    }
+    if id == FIELD_EDIT && R::EDITS {
+        let value = arguments
+            .get(EDIT_PARAM)
+            .cloned()
+            .ok_or_else(|| "missing edit".to_owned())?;
+        let mut action = read_edit::<R>(value)?;
+        R::stamp(&mut action, now_ms);
+        return Ok(action);
     }
     let decl = R::declarations()
         .into_iter()

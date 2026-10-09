@@ -199,7 +199,7 @@ impl Delta {
 /// Where an object sits: the path from the root to it, as `(parent, prop)`
 /// pairs, root first — what a state already knowing an object answers
 /// without asking the document (see [`Resource::locate`](crate::Resource::locate)).
-pub type Path = Vec<(ObjId, Prop)>;
+pub type ObjPath = Vec<(ObjId, Prop)>;
 
 /// Above this many new changes, or operations in them, a delta is
 /// [`Delta::everything`]: reading the change would cost about as much as
@@ -222,7 +222,7 @@ impl Delta {
     pub fn from_changes(
         doc: &Doc,
         changes: &[automerge::Change],
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Self {
         let mut index: HashMap<ObjId, Touched> = HashMap::new();
         let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
@@ -269,7 +269,7 @@ fn mark_path(
     doc: &Doc,
     obj: &ObjId,
     created: &HashMap<ObjId, (ObjId, Option<String>)>,
-    locate: &dyn Fn(&ObjId) -> Option<Path>,
+    locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     located: &mut std::collections::HashSet<ObjId>,
     index: &mut HashMap<ObjId, Touched>,
 ) {
@@ -290,7 +290,7 @@ fn mark_path(
             current = parent.clone();
             continue;
         }
-        let path: Option<Path> = locate(&current).or_else(|| {
+        let path: Option<ObjPath> = locate(&current).or_else(|| {
             let parents: Vec<automerge::Parent> = doc.parents(&current).ok()?.collect();
             // An object no longer reachable changes nothing anyone reads.
             if parents.iter().any(|parent| !parent.visible) {
@@ -360,7 +360,7 @@ impl Tracker {
     pub fn delta_located(
         &mut self,
         doc: &mut Doc,
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
         // Closes the open transaction, so its edits are part of the delta.
         doc.get_heads();
@@ -373,7 +373,7 @@ impl Tracker {
     pub fn committed_delta_located(
         &mut self,
         doc: &Doc,
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
         let heads = doc.committed_heads();
         let committed = doc.committed_document();

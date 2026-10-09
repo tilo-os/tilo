@@ -30,6 +30,13 @@ thread_local! {
 pub struct Counted(pub String);
 
 impl Model for Counted {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         LOADS.with(|loads| loads.set(loads.get() + 1));
         String::load(doc, value, id).map(Self)

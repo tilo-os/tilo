@@ -17,7 +17,9 @@ use std::collections::BTreeMap;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
+use crate::action::{ActionCx, Refusal};
 use crate::delta::{Delta, Touch};
+use crate::path::{EditOp, Path, Segment, Settable};
 
 /// The document every resource lives in.
 pub type Doc = AutoCommit;
@@ -36,6 +38,9 @@ pub enum ModelError {
     Invalid { path: String, message: String },
     #[error("document error: {0}")]
     Automerge(#[from] automerge::AutomergeError),
+    /// A [`check`](Model::check) refused the change, in its own words.
+    #[error("{0}")]
+    Refused(String),
 }
 
 impl ModelError {
@@ -66,9 +71,21 @@ impl ModelError {
                     format!("{segment}.{path}")
                 };
             }
-            Self::Automerge(_) => {}
+            Self::Automerge(_) | Self::Refused(_) => {}
         }
         self
+    }
+
+    /// A check's refusal.
+    #[must_use]
+    pub fn refused(refusal: Refusal) -> Self {
+        Self::Refused(refusal.0)
+    }
+
+    /// An edit whose operation the value at its path does not support.
+    #[must_use]
+    pub fn unsupported(op: &EditOp) -> Self {
+        Self::invalid(format!("this value has no `{}` edit", op.name()))
     }
 }
 
@@ -136,6 +153,40 @@ impl Slot<'_> {
         })
     }
 
+    /// Add `by` to the counter in this slot, creating it holding `by`.
+    ///
+    /// # Errors
+    /// Returns the document's write error.
+    pub fn increment(self, doc: &mut Doc, by: i64) -> Result<(), ModelError> {
+        let counter = matches!(
+            self.current(doc)?,
+            Some((Value::Scalar(scalar), _)) if matches!(scalar.as_ref(), ScalarValue::Counter(_))
+        );
+        if by == 0 && counter {
+            return Ok(());
+        }
+        match (self, counter) {
+            (Slot::Key(obj, key), true) => doc.increment(obj, key, by)?,
+            (Slot::Index(obj, index), true) => doc.increment(obj, index, by)?,
+            (slot, _) => {
+                let start = match slot.current(doc)? {
+                    Some((value, _)) => match scalar(&value) {
+                        Some(ScalarValue::Int(value)) => *value,
+                        _ => 0,
+                    },
+                    None => 0,
+                };
+                let value = ScalarValue::counter(start.saturating_add(by));
+                match slot {
+                    Slot::Key(obj, key) => doc.put(obj, key, value)?,
+                    Slot::Index(obj, index) => doc.put(obj, index, value)?,
+                    Slot::Insert(obj, index) => doc.insert(obj, index, value)?,
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Remove whatever occupies this slot (a no-op for a new list element).
     ///
     /// # Errors
@@ -166,6 +217,59 @@ pub trait Model: Sized {
     /// How the value is laid out in the document; see [`Shape`](crate::Shape).
     /// Types written whole keep the default.
     const SHAPE: crate::Shape = crate::Shape::Value;
+
+    /// Whether this type or any value inside it has a `#[model(check)]`
+    /// invariant; [`Self::check`] has nothing to do otherwise.
+    const CHECKS: bool = false;
+
+    /// The typed paths into a value of this type, rooted in the record `R`:
+    /// a struct of field paths for a record, the [`Path`] itself for a value
+    /// edited whole or through its own operations.
+    type Paths<R>: Clone;
+
+    /// The paths of the value at `path`.
+    fn paths_at<R>(path: Path<R, Self>) -> Self::Paths<R>;
+
+    /// The value as JSON: what [`EditOp::Set`] carries and history shows.
+    fn to_json(&self) -> serde_json::Value;
+
+    /// A value from its [`Self::to_json`] form.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when `value` has another shape.
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError>;
+
+    /// Apply the field edit `op` at `path`, below the value in `slot`,
+    /// touching only what it changes, then run the invariants of the values
+    /// it touched. The default edits a value only as a whole.
+    ///
+    /// # Errors
+    /// Returns why the path or operation does not fit, or a refusal.
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        let _ = cx;
+        edit_whole::<Self>(doc, slot, path, op)
+    }
+
+    /// Run every `#[model(check)]` invariant of this value and the values
+    /// inside it.
+    ///
+    /// # Errors
+    /// Returns the first refusal.
+    fn check(&self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    /// What names this value for people (`#[model(label)]`): history, search,
+    /// agents and item resources use it.
+    fn label(&self) -> Option<String> {
+        None
+    }
 
     /// Read from the value a parent found in its slot.
     ///
@@ -231,6 +335,23 @@ pub trait Fields: Model {
     /// `#[derive(Model)]` lists them; the default has none.
     fn item_collections(&self) -> Vec<crate::items::ItemCollection> {
         Vec::new()
+    }
+
+    /// Apply the field edit `op` at `path` below the map `obj`; see
+    /// [`Model::edit`]. `#[derive(Model)]` routes each field segment to its
+    /// field; the default edits nothing.
+    ///
+    /// # Errors
+    /// Returns why the path or operation does not fit, or a refusal.
+    fn edit_fields(
+        doc: &mut Doc,
+        obj: &ObjId,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        let _ = (doc, obj, path, cx);
+        Err(ModelError::unsupported(op))
     }
 
     /// Bring fields read earlier from the map `obj` up to date after the
@@ -300,6 +421,50 @@ pub fn write_key<T: Model>(
         .map_err(|error| error.at(key))
 }
 
+/// [`Model::edit`] for a value edited only as a whole: `set` at its own
+/// path, checked before it is written.
+///
+/// # Errors
+/// Returns why the path or operation does not fit, or a refusal.
+pub fn edit_whole<T: Model>(
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    path: &[Segment],
+    op: &EditOp,
+) -> Result<(), ModelError> {
+    if let Some(segment) = path.first() {
+        return Err(ModelError::invalid(format!(
+            "nothing inside this value is called `{segment}`"
+        )));
+    }
+    match op {
+        EditOp::Set { value } => {
+            let value = T::from_json(value)?;
+            value.check().map_err(ModelError::refused)?;
+            value.store(doc, slot)
+        }
+        other => Err(ModelError::unsupported(other)),
+    }
+}
+
+/// The JSON shape error of [`Model::from_json`].
+pub(crate) fn json_shape(expected: &'static str) -> ModelError {
+    ModelError::shape(expected)
+}
+
+/// Implements the path items of a type edited whole or through its own
+/// operations: its paths are the [`Path`] itself.
+#[macro_export]
+macro_rules! leaf_paths {
+    () => {
+        type Paths<R> = $crate::Path<R, Self>;
+        fn paths_at<R>(path: $crate::Path<R, Self>) -> $crate::Path<R, Self> {
+            path
+        }
+    };
+}
+pub(crate) use crate::leaf_paths;
+
 fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     match value {
         Value::Scalar(scalar) => Some(scalar.as_ref()),
@@ -307,7 +472,19 @@ fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     }
 }
 
+impl Settable for bool {}
 impl Model for bool {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Bool(*self)
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::Bool(value) => Ok(*value),
+            serde_json::Value::Null => Ok(false),
+            _ => Err(json_shape("a boolean")),
+        }
+    }
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Boolean(value)) => Ok(*value),
@@ -325,7 +502,24 @@ impl Model for bool {
 
 macro_rules! integer_model {
     ($($ty:ty),*) => {$(
+        impl Settable for $ty {}
         impl Model for $ty {
+            leaf_paths!();
+            fn to_json(&self) -> serde_json::Value {
+                serde_json::Value::from(*self)
+            }
+            fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+                let wide: i128 = match value {
+                    serde_json::Value::Number(number) => number
+                        .as_i64()
+                        .map(i128::from)
+                        .or_else(|| number.as_u64().map(i128::from))
+                        .ok_or_else(|| json_shape("an integer"))?,
+                    serde_json::Value::Null => 0,
+                    _ => return Err(json_shape("an integer")),
+                };
+                <$ty>::try_from(wide).map_err(|_| ModelError::invalid("integer out of range"))
+            }
             fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
                 let wide: i128 = match scalar(value) {
                     Some(ScalarValue::Int(value)) => i128::from(*value),
@@ -352,7 +546,22 @@ macro_rules! integer_model {
 }
 integer_model!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize);
 
+impl Settable for f64 {}
 impl Model for f64 {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Number::from_f64(*self)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number)
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::Number(number) => {
+                number.as_f64().ok_or_else(|| json_shape("a number"))
+            }
+            serde_json::Value::Null => Ok(0.0),
+            _ => Err(json_shape("a number")),
+        }
+    }
     #[allow(
         clippy::cast_precision_loss,
         reason = "integers written by older schemas widen to the stored float"
@@ -374,7 +583,19 @@ impl Model for f64 {
     }
 }
 
+impl Settable for f32 {}
 impl Model for f32 {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        f64::from(*self).to_json()
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an f32 field stores what it wrote, widened"
+    )]
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        f64::from_json(value).map(|value| value as f32)
+    }
     #[allow(
         clippy::cast_possible_truncation,
         reason = "an f32 field stores what it wrote, widened"
@@ -394,7 +615,43 @@ impl Model for f32 {
 /// splicing only the changed span, so concurrent typing in one field merges
 /// character by character. A string scalar written by an older schema reads
 /// too and is upgraded on the first write.
+impl Settable for String {}
 impl Model for String {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.clone())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::String(text) => Ok(text.clone()),
+            serde_json::Value::Null => Ok(Self::new()),
+            _ => Err(json_shape("text")),
+        }
+    }
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        _cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        let edit = match op {
+            EditOp::Splice { at, delete, insert } if path.is_empty() => crate::TextEdit::Splice {
+                at: *at,
+                delete: *delete,
+                insert: insert.clone(),
+            },
+            EditOp::Replace { text } if path.is_empty() => {
+                crate::TextEdit::ReplaceText { text: text.clone() }
+            }
+            _ => return edit_whole::<Self>(doc, slot, path, op),
+        };
+        let text = slot.object(doc, ObjType::Text)?;
+        edit.apply_under(doc, &text).map_err(|error| match error {
+            tilo_actions::ActionError::Refused(reason) => ModelError::Refused(reason),
+            other => ModelError::invalid(other.to_string()),
+        })
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         match value {
             Value::Object(ObjType::Text) => Ok(doc.text(id)?),
@@ -486,7 +743,15 @@ fn splice_changed_span(
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Atom(pub String);
 
+impl Settable for Atom {}
 impl Model for Atom {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.0.clone())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         String::load(doc, value, id).map(Self)
     }
@@ -498,7 +763,20 @@ impl Model for Atom {
     }
 }
 
+impl Settable for uuid::Uuid {}
 impl Model for uuid::Uuid {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::String(self.to_string())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::String(text) => {
+                Self::parse_str(text).map_err(|error| ModelError::invalid(error.to_string()))
+            }
+            _ => Err(json_shape("a uuid")),
+        }
+    }
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Str(text)) => {
@@ -513,8 +791,44 @@ impl Model for uuid::Uuid {
 }
 
 /// `None` is an absent key (or a null list element).
+impl<T: Settable> Settable for Option<T> {}
 impl<T: Model> Model for Option<T> {
     const SHAPE: crate::Shape = T::SHAPE;
+    const CHECKS: bool = T::CHECKS;
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.as_ref()
+            .map_or(serde_json::Value::Null, Model::to_json)
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::Null => Ok(None),
+            value => T::from_json(value).map(Some),
+        }
+    }
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        if path.is_empty() && matches!(op, EditOp::Set { .. }) {
+            return edit_whole::<Self>(doc, slot, path, op);
+        }
+        match slot.current(doc)? {
+            Some((value, _)) if !matches!(scalar(&value), Some(ScalarValue::Null)) => {
+                T::edit(doc, slot, path, op, cx)
+            }
+            _ => Err(ModelError::invalid("the value is absent")),
+        }
+    }
+    fn check(&self) -> Result<(), Refusal> {
+        self.as_ref().map_or(Ok(()), Model::check)
+    }
+    fn label(&self) -> Option<String> {
+        self.as_ref().and_then(Model::label)
+    }
 
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if matches!(scalar(value), Some(ScalarValue::Null)) {
@@ -555,8 +869,35 @@ impl<T: Model> Model for Option<T> {
     }
 }
 
+impl<T: Settable> Settable for Box<T> {}
 impl<T: Model> Model for Box<T> {
     const SHAPE: crate::Shape = T::SHAPE;
+    const CHECKS: bool = T::CHECKS;
+    type Paths<R> = T::Paths<R>;
+    fn paths_at<R>(path: Path<R, Self>) -> T::Paths<R> {
+        T::paths_at(path.cast())
+    }
+    fn to_json(&self) -> serde_json::Value {
+        (**self).to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        T::from_json(value).map(Box::new)
+    }
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        T::edit(doc, slot, path, op, cx)
+    }
+    fn check(&self) -> Result<(), Refusal> {
+        (**self).check()
+    }
+    fn label(&self) -> Option<String> {
+        (**self).label()
+    }
 
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         T::load(doc, value, id).map(Box::new)
@@ -585,7 +926,32 @@ impl<T: Model> Model for Box<T> {
 /// in place, the tail is inserted or deleted. Use
 /// [`Collection`](crate::Collection) for items with identity, where a move or
 /// a concurrent insert must not rewrite the neighbours.
+impl<T: Model> Settable for Vec<T> {}
 impl<T: Model> Model for Vec<T> {
+    const CHECKS: bool = T::CHECKS;
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.iter().map(Model::to_json).collect())
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    T::from_json(item).map_err(|error| error.at(&index.to_string()))
+                })
+                .collect(),
+            serde_json::Value::Null => Ok(Self::new()),
+            _ => Err(json_shape("a list")),
+        }
+    }
+    fn check(&self) -> Result<(), Refusal> {
+        if T::CHECKS {
+            self.iter().try_for_each(Model::check)?;
+        }
+        Ok(())
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::List)) {
             return Err(ModelError::shape("a list"));
@@ -628,7 +994,63 @@ impl<T: Model> Model for Vec<T> {
 }
 
 /// A map reconciled key by key.
+impl<T: Model> Settable for BTreeMap<String, T> {}
 impl<T: Model> Model for BTreeMap<String, T> {
+    const CHECKS: bool = T::CHECKS;
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Object(
+            self.iter()
+                .map(|(key, value)| (key.clone(), value.to_json()))
+                .collect(),
+        )
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        match value {
+            serde_json::Value::Object(entries) => entries
+                .iter()
+                .map(|(key, value)| {
+                    T::from_json(value)
+                        .map(|value| (key.clone(), value))
+                        .map_err(|error| error.at(key))
+                })
+                .collect(),
+            serde_json::Value::Null => Ok(Self::new()),
+            _ => Err(json_shape("a map")),
+        }
+    }
+    fn edit(
+        doc: &mut Doc,
+        slot: Slot<'_>,
+        path: &[Segment],
+        op: &EditOp,
+        cx: &mut ActionCx,
+    ) -> Result<(), ModelError> {
+        match (path.split_first(), op) {
+            (None, EditOp::RemoveKey { key }) => {
+                let map = slot.object(doc, ObjType::Map)?;
+                Slot::Key(&map, key).remove(doc)
+            }
+            (Some((Segment::Key(key), rest)), op) => {
+                let map = slot.object(doc, ObjType::Map)?;
+                if rest.is_empty() && matches!(op, EditOp::Set { .. }) {
+                    return edit_whole::<T>(doc, Slot::Key(&map, key), rest, op)
+                        .map_err(|error| error.at(key));
+                }
+                if doc.get(&map, key.as_str())?.is_none() {
+                    return Err(ModelError::invalid(format!("no entry `{key}`")));
+                }
+                T::edit(doc, Slot::Key(&map, key), rest, op, cx).map_err(|error| error.at(key))
+            }
+            _ => edit_whole::<Self>(doc, slot, path, op),
+        }
+    }
+    fn check(&self) -> Result<(), Refusal> {
+        if T::CHECKS {
+            self.values().try_for_each(Model::check)?;
+        }
+        Ok(())
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a map"));
@@ -694,10 +1116,20 @@ impl<T: Model> Model for BTreeMap<String, T> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Json<T>(pub T);
 
+impl<T> Settable for Json<T> where T: serde::Serialize + serde::de::DeserializeOwned + Default {}
 impl<T> Model for Json<T>
 where
     T: serde::Serialize + serde::de::DeserializeOwned + Default,
 {
+    leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.0).unwrap_or(serde_json::Value::Null)
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        serde_json::from_value(value.clone())
+            .map(Self)
+            .map_err(|error| ModelError::invalid(error.to_string()))
+    }
     fn load(_: &Doc, value: &Value<'_>, _: &ObjId) -> Result<Self, ModelError> {
         match scalar(value) {
             Some(ScalarValue::Str(text)) => serde_json::from_str(text)

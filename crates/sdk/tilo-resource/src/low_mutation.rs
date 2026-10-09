@@ -32,7 +32,11 @@ pub(crate) fn build_action<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<R::Action, String> {
     bounded(arguments)?;
-    let action = crate::resource::build_action::<R>(crate::APPLY, arguments, 0)?;
+    let action = crate::resource::build_action::<R>(
+        crate::APPLY,
+        arguments,
+        crate::resource::origin_now_ms(),
+    )?;
     check::<R>(&action)?;
     Ok(action)
 }
@@ -65,6 +69,7 @@ pub(crate) fn apply_spec<R: Resource>() -> ActionSpec {
         |args| crate::resource::encode_built::<R>(build_action::<R>(&args.to_json())),
     )
     .programmatic()
+    .reversible()
     .requiring(R::least_permission())
     .with_permission_of(|args| {
         build_action::<R>(&args.to_json()).map_or(PermissionRequirement::Write, |action| {

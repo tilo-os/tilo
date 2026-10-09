@@ -236,7 +236,7 @@ pub struct RichTextState {
     containers: Containers,
     /// Where the rich text sits in its document: empty at the root, the
     /// path to the field's map when it is a field of another resource.
-    root_path: tilo_resource::Path,
+    root_path: tilo_resource::ObjPath,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -245,7 +245,7 @@ pub struct RichTextState {
     /// Where the objects of loaded and featured paragraphs sit (the
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
-    objects: HashMap<ObjId, tilo_resource::Path>,
+    objects: HashMap<ObjId, tilo_resource::ObjPath>,
     /// The objects indexed for each paragraph, so forgetting one touches
     /// only its own.
     paragraph_objects: HashMap<String, Vec<ObjId>>,
@@ -462,8 +462,8 @@ fn containers_of(doc: &Doc, root: &ObjId) -> Result<Containers, ModelError> {
 }
 
 /// The path from the document's root to `obj`, root first.
-fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::Path {
-    let mut path: tilo_resource::Path = doc
+fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::ObjPath {
+    let mut path: tilo_resource::ObjPath = doc
         .parents(obj)
         .map(|parents| parents.map(|parent| (parent.obj, parent.prop)).collect())
         .unwrap_or_default();
@@ -484,7 +484,7 @@ fn paragraph_objects(
     c: &Containers,
     root_path: &[(ObjId, automerge::Prop)],
     id: &str,
-) -> Vec<(ObjId, tilo_resource::Path)> {
+) -> Vec<(ObjId, tilo_resource::ObjPath)> {
     use automerge::Prop;
     let Some(block) = block_obj(doc, &c.blocks, id) else {
         return Vec::new();
@@ -550,7 +550,7 @@ impl Resource for RichText {
 
     /// A change to a paragraph on screen is placed from the index kept of
     /// its objects.
-    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::Path> {
+    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
         state.objects.get(obj).cloned()
     }
 

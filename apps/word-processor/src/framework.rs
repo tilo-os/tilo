@@ -49,7 +49,7 @@ impl Resource for Document {
         <RichText as Resource>::read(doc)
     }
 
-    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::Path> {
+    fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::ObjPath> {
         <RichText as Resource>::locate(state, obj)
     }
 

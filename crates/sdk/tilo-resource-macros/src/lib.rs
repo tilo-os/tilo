@@ -92,9 +92,16 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 mod effect;
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is one independent field attribute"
+)]
 struct FieldOptions {
     rename: Option<String>,
     skip: bool,
+    label: bool,
+    readonly: bool,
+    unit: bool,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -103,17 +110,39 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("skip") {
                 options.skip = true;
-                Ok(())
             } else if meta.path.is_ident("rename") {
                 let value: syn::LitStr = meta.value()?.parse()?;
                 options.rename = Some(value.value());
-                Ok(())
+            } else if meta.path.is_ident("label") {
+                options.label = true;
+            } else if meta.path.is_ident("readonly") {
+                options.readonly = true;
+            } else if meta.path.is_ident("unit") {
+                options.unit = true;
             } else {
-                Err(meta.error("expected `skip` or `rename = \"...\"`"))
+                return Err(meta
+                    .error("expected `skip`, `rename = \"...\"`, `label`, `readonly` or `unit`"));
             }
+            Ok(())
         })?;
     }
     Ok(options)
+}
+
+/// `#[model(check = path)]` on the type.
+fn container_check(attrs: &[Attribute]) -> syn::Result<Option<syn::Path>> {
+    let mut check = None;
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("model")) {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("check") {
+                check = Some(meta.value()?.parse::<syn::Path>()?);
+                Ok(())
+            } else {
+                Err(meta.error("expected `check = path` on the type"))
+            }
+        })?;
+    }
+    Ok(check)
 }
 
 #[allow(
@@ -126,144 +155,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     match &input.data {
         Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let mut reads = Vec::new();
-                let mut missing = Vec::new();
-                let mut writes = Vec::new();
-                let mut refreshes = Vec::new();
-                let mut texts = Vec::new();
-                let mut shapes = Vec::new();
-                let mut collections = Vec::new();
-                for field in &fields.named {
-                    let ident = field.ident.as_ref().ok_or_else(|| {
-                        syn::Error::new(field.span(), "named field without a name")
-                    })?;
-                    let ty = &field.ty;
-                    let options = field_options(&field.attrs)?;
-                    let key = options.rename.unwrap_or_else(|| ident.to_string());
-                    if options.skip {
-                        reads.push(quote!(#ident: ::core::default::Default::default()));
-                        missing.push(quote!(#ident: ::core::default::Default::default()));
-                        continue;
-                    }
-                    reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
-                    missing.push(quote!(
-                        #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
-                    ));
-                    writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
-                    refreshes.push(
-                        quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;),
-                    );
-                    texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
-                    shapes.push(quote!(#krate::FieldShape {
-                        key: #key,
-                        shape: <#ty as #krate::Model>::SHAPE,
-                    }));
-                    if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
-                        let field_name = ident.to_string();
-                        collections.push(quote!(#krate::items::ItemCollection {
-                            field: #field_name,
-                            items: self
-                                .#ident
-                                .iter()
-                                .map(|(id, item)| {
-                                    (::core::clone::Clone::clone(id), #krate::__private::item_label(id, item))
-                                })
-                                .collect(),
-                        }));
-                    }
-                }
-                let item_collections = if collections.is_empty() {
-                    quote!()
-                } else {
-                    quote! {
-                        fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
-                            ::std::vec![#(#collections),*]
-                        }
-                    }
-                };
-                Ok(quote! {
-                    impl #impl_generics #krate::Model for #name #type_generics #where_clause {
-                        const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
-
-                        fn load(
-                            doc: &#krate::Doc,
-                            value: &#krate::__private::Value<'_>,
-                            id: &#krate::__private::ObjId,
-                        ) -> ::core::result::Result<Self, #krate::ModelError> {
-                            match value {
-                                #krate::__private::Value::Object(#krate::__private::ObjType::Map) => {
-                                    <Self as #krate::Fields>::read_fields(doc, id)
-                                }
-                                _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
-                            }
-                        }
-                        fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
-                            ::core::result::Result::Ok(Self { #(#missing,)* })
-                        }
-                        fn store(
-                            &self,
-                            doc: &mut #krate::Doc,
-                            slot: #krate::Slot<'_>,
-                        ) -> ::core::result::Result<(), #krate::ModelError> {
-                            let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
-                            <Self as #krate::Fields>::write_fields(self, doc, &obj)
-                        }
-                        fn refresh(
-                            &mut self,
-                            doc: &#krate::Doc,
-                            value: &#krate::__private::Value<'_>,
-                            id: &#krate::__private::ObjId,
-                            delta: &#krate::Delta,
-                        ) -> ::core::result::Result<(), #krate::ModelError> {
-                            match value {
-                                #krate::__private::Value::Object(#krate::__private::ObjType::Map) => {
-                                    <Self as #krate::Fields>::refresh_fields(self, doc, id, delta)
-                                }
-                                _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
-                            }
-                        }
-                        fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
-                            let _ = &out;
-                            #(#texts)*
-                        }
-                    }
-                    impl #impl_generics #krate::Fields for #name #type_generics #where_clause {
-                        fn read_fields(
-                            doc: &#krate::Doc,
-                            obj: &#krate::__private::ObjId,
-                        ) -> ::core::result::Result<Self, #krate::ModelError> {
-                            let _ = (&doc, &obj);
-                            ::core::result::Result::Ok(Self { #(#reads,)* })
-                        }
-                        fn write_fields(
-                            &self,
-                            doc: &mut #krate::Doc,
-                            obj: &#krate::__private::ObjId,
-                        ) -> ::core::result::Result<(), #krate::ModelError> {
-                            let _ = (&doc, &obj);
-                            #(#writes)*
-                            ::core::result::Result::Ok(())
-                        }
-
-                        #item_collections
-                        fn refresh_fields(
-                            &mut self,
-                            doc: &#krate::Doc,
-                            obj: &#krate::__private::ObjId,
-                            delta: &#krate::Delta,
-                        ) -> ::core::result::Result<(), #krate::ModelError> {
-                            let _ = (&doc, &obj, &delta);
-                            if delta.under(obj).is_all() {
-                                *self = <Self as #krate::Fields>::read_fields(doc, obj)?;
-                                return ::core::result::Result::Ok(());
-                            }
-                            #(#refreshes)*
-                            ::core::result::Result::Ok(())
-                        }
-                    }
-                })
-            }
+            Fields::Named(fields) => derive_named(input, fields),
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 let ty = fields
                     .unnamed
@@ -273,6 +165,35 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
                         const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
+                        const CHECKS: bool = <#ty as #krate::Model>::CHECKS;
+                        type Paths<__R> = #krate::Path<__R, Self>;
+
+                        fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
+                            path
+                        }
+                        fn to_json(&self) -> #krate::__private::serde_json::Value {
+                            #krate::Model::to_json(&self.0)
+                        }
+                        fn from_json(
+                            value: &#krate::__private::serde_json::Value,
+                        ) -> ::core::result::Result<Self, #krate::ModelError> {
+                            <#ty as #krate::Model>::from_json(value).map(Self)
+                        }
+                        fn edit(
+                            doc: &mut #krate::Doc,
+                            slot: #krate::Slot<'_>,
+                            path: &[#krate::Segment],
+                            op: &#krate::EditOp,
+                            cx: &mut #krate::ActionCx,
+                        ) -> ::core::result::Result<(), #krate::ModelError> {
+                            <#ty as #krate::Model>::edit(doc, slot, path, op, cx)
+                        }
+                        fn check(&self) -> ::core::result::Result<(), #krate::Refusal> {
+                            #krate::Model::check(&self.0)
+                        }
+                        fn label(&self) -> ::core::option::Option<::std::string::String> {
+                            #krate::Model::label(&self.0)
+                        }
 
                         fn load(
                             doc: &#krate::Doc,
@@ -345,7 +266,32 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 |ident| quote!(::core::result::Result::Ok(Self::#ident)),
             );
             Ok(quote! {
+                impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
+
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                    type Paths<__R> = #krate::Path<__R, Self>;
+
+                    fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
+                        path
+                    }
+                    fn to_json(&self) -> #krate::__private::serde_json::Value {
+                        let text = match self { #(Self::#idents => #names,)* };
+                        #krate::__private::serde_json::Value::String(::std::string::String::from(text))
+                    }
+                    fn from_json(
+                        value: &#krate::__private::serde_json::Value,
+                    ) -> ::core::result::Result<Self, #krate::ModelError> {
+                        match value {
+                            #krate::__private::serde_json::Value::String(text) => match text.as_str() {
+                                #(#names => ::core::result::Result::Ok(Self::#idents),)*
+                                other => ::core::result::Result::Err(#krate::ModelError::invalid(
+                                    ::std::format!("unknown variant `{other}`"),
+                                )),
+                            },
+                            #krate::__private::serde_json::Value::Null => <Self as #krate::Model>::missing(),
+                            _ => ::core::result::Result::Err(#krate::ModelError::shape("a variant name")),
+                        }
+                    }
                     fn load(
                         doc: &#krate::Doc,
                         value: &#krate::__private::Value<'_>,
@@ -378,6 +324,413 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "Model does not derive for unions",
         )),
     }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear expansion reads better than helpers threading a dozen token lists"
+)]
+fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<Tokens> {
+    let krate = krate();
+    let name = &input.ident;
+    let vis = &input.vis;
+    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let check = container_check(&input.attrs)?;
+    let paths_name = format_ident!("{}Paths", name);
+    let mut paths_generics = input.generics.clone();
+    paths_generics.params.insert(0, syn::parse_quote!(__R));
+    let (paths_impl_generics, paths_type_generics, _) = paths_generics.split_for_impl();
+    let generic_args: Vec<Tokens> = input
+        .generics
+        .params
+        .iter()
+        .map(|param| match param {
+            syn::GenericParam::Type(ty) => {
+                let ident = &ty.ident;
+                quote!(#ident)
+            }
+            syn::GenericParam::Lifetime(lifetime) => {
+                let lifetime = &lifetime.lifetime;
+                quote!(#lifetime)
+            }
+            syn::GenericParam::Const(constant) => {
+                let ident = &constant.ident;
+                quote!(#ident)
+            }
+        })
+        .collect();
+
+    let mut reads = Vec::new();
+    let mut missing = Vec::new();
+    let mut writes = Vec::new();
+    let mut refreshes = Vec::new();
+    let mut texts = Vec::new();
+    let mut shapes = Vec::new();
+    let mut collections = Vec::new();
+    let mut path_fields = Vec::new();
+    let mut path_inits = Vec::new();
+    let mut path_clones = Vec::new();
+    let mut to_json = Vec::new();
+    let mut from_json = Vec::new();
+    let mut edit_arms = Vec::new();
+    let mut checks = Vec::new();
+    let mut checks_const = vec![if check.is_some() {
+        quote!(true)
+    } else {
+        quote!(false)
+    }];
+    let mut label = None;
+    let mut readonly_fields = Vec::new();
+    for field in &fields.named {
+        let ident = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new(field.span(), "named field without a name"))?;
+        let ty = &field.ty;
+        let field_vis = &field.vis;
+        let options = field_options(&field.attrs)?;
+        let key = options.rename.clone().unwrap_or_else(|| ident.to_string());
+        if options.skip {
+            reads.push(quote!(#ident: ::core::default::Default::default()));
+            missing.push(quote!(#ident: ::core::default::Default::default()));
+            from_json.push(quote!(#ident: ::core::default::Default::default()));
+            continue;
+        }
+        let field_name = ident.to_string();
+        let title = doc_lines(&field.attrs)
+            .into_iter()
+            .find(|line| !line.is_empty())
+            .map_or_else(
+                || humanize(&field_name),
+                |line| line.trim_end_matches('.').to_owned(),
+            );
+        let (unit, readonly, is_label) = (options.unit, options.readonly, options.label);
+        if is_label {
+            if label.is_some() {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "one field per type is its `#[model(label)]`",
+                ));
+            }
+            label = Some(ident.clone());
+        }
+        reads.push(quote!(#ident: #krate::read_key::<#ty>(doc, obj, #key)?));
+        missing.push(quote!(
+            #ident: <#ty as #krate::Model>::missing().map_err(|error| error.at(#key))?
+        ));
+        writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
+        refreshes
+            .push(quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;));
+        texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
+        shapes.push(quote!(#krate::FieldShape {
+            key: #key,
+            name: #field_name,
+            title: #title,
+            shape: <#ty as #krate::Model>::SHAPE,
+            unit: #unit,
+            readonly: #readonly,
+            label: #is_label,
+        }));
+        path_fields.push(quote!(#field_vis #ident: <#ty as #krate::Model>::Paths<__R>));
+        path_inits.push(quote!(#ident: <#ty as #krate::Model>::paths_at(
+            path.child(#krate::Segment::Field(::std::string::String::from(#key)))
+        )));
+        path_clones.push(quote!(#ident: ::core::clone::Clone::clone(&self.#ident)));
+        to_json.push(quote!(
+            fields.insert(::std::string::String::from(#key), #krate::Model::to_json(&self.#ident));
+        ));
+        from_json.push(quote!(#ident: match fields.get(#key) {
+            ::core::option::Option::Some(value) => <#ty as #krate::Model>::from_json(value),
+            ::core::option::Option::None => <#ty as #krate::Model>::missing(),
+        }
+        .map_err(|error| error.at(#key))?));
+        if readonly {
+            readonly_fields.push(key.clone());
+            edit_arms.push(quote!(#key => {
+                return ::core::result::Result::Err(#krate::ModelError::Refused(
+                    ::std::format!("`{}` is changed only by the record's actions", #field_name),
+                ));
+            }));
+        } else {
+            edit_arms.push(quote!(#key => <#ty as #krate::Model>::edit(
+                doc,
+                #krate::Slot::Key(obj, #key),
+                rest,
+                op,
+                cx,
+            )
+            .map_err(|error| error.at(#key))?,));
+        }
+        checks.push(quote!(#krate::Model::check(&self.#ident)?;));
+        checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));
+        if last_ident(ty).is_some_and(|(name, _)| name == "Collection") {
+            collections.push(quote!(#krate::items::ItemCollection {
+                field: #field_name,
+                items: self
+                    .#ident
+                    .iter()
+                    .map(|(id, item)| {
+                        (::core::clone::Clone::clone(id), #krate::__private::item_label(id, item))
+                    })
+                    .collect(),
+            }));
+        }
+    }
+    let item_collections = if collections.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn item_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
+                ::std::vec![#(#collections),*]
+            }
+        }
+    };
+    let own_check = check.as_ref().map_or_else(
+        || quote!(),
+        |path| quote!(#krate::__private::check_outcome(#path(self))?;),
+    );
+    let check_after_edit = check.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                let current = <Self as #krate::Fields>::read_fields(doc, obj)?;
+                #krate::__private::check_outcome(#path(&current)).map_err(#krate::ModelError::refused)?;
+            }
+        },
+    );
+    let whole_set = if readonly_fields.is_empty() {
+        quote! {
+            let value = <Self as #krate::Model>::from_json(value)?;
+            #krate::Model::check(&value).map_err(#krate::ModelError::refused)?;
+            <Self as #krate::Fields>::write_fields(&value, doc, obj)?;
+        }
+    } else {
+        quote! {
+            let _ = value;
+            return ::core::result::Result::Err(#krate::ModelError::Refused(
+                ::std::string::String::from("a record with read-only fields is not replaced whole"),
+            ));
+        }
+    };
+    let label_fn = label.as_ref().map_or_else(
+        || quote!(),
+        |ident| {
+            quote! {
+                fn label(&self) -> ::core::option::Option<::std::string::String> {
+                    let mut text = ::std::vec::Vec::new();
+                    #krate::Model::collect_text(&self.#ident, &mut text);
+                    text.into_iter()
+                        .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
+                        .find(|line| !line.is_empty())
+                }
+            }
+        },
+    );
+    let paths_doc = format!("The typed paths into a [`{name}`], one per field.");
+    let paths_fn_doc = format!("The typed paths into a [`{name}`], rooted at it.");
+    Ok(quote! {
+        impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+            const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
+            const CHECKS: bool = #(#checks_const)||*;
+            type Paths<__R> = #paths_name<__R, #(#generic_args),*>;
+
+            fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {
+                #paths_name {
+                    #(#path_inits,)*
+                    __path: path,
+                }
+            }
+
+            fn to_json(&self) -> #krate::__private::serde_json::Value {
+                let mut fields = #krate::__private::serde_json::Map::new();
+                #(#to_json)*
+                #krate::__private::serde_json::Value::Object(fields)
+            }
+
+            fn from_json(
+                value: &#krate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, #krate::ModelError> {
+                let fields = match value {
+                    #krate::__private::serde_json::Value::Object(fields) => fields,
+                    #krate::__private::serde_json::Value::Null => {
+                        return <Self as #krate::Model>::missing();
+                    }
+                    _ => return ::core::result::Result::Err(#krate::ModelError::shape("an object")),
+                };
+                let _ = fields;
+                ::core::result::Result::Ok(Self { #(#from_json,)* })
+            }
+
+            fn edit(
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+                path: &[#krate::Segment],
+                op: &#krate::EditOp,
+                cx: &mut #krate::ActionCx,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
+                <Self as #krate::Fields>::edit_fields(doc, &obj, path, op, cx)
+            }
+
+            fn check(&self) -> ::core::result::Result<(), #krate::Refusal> {
+                if !<Self as #krate::Model>::CHECKS {
+                    return ::core::result::Result::Ok(());
+                }
+                #own_check
+                #(#checks)*
+                ::core::result::Result::Ok(())
+            }
+
+            #label_fn
+
+            fn load(
+                doc: &#krate::Doc,
+                value: &#krate::__private::Value<'_>,
+                id: &#krate::__private::ObjId,
+            ) -> ::core::result::Result<Self, #krate::ModelError> {
+                match value {
+                    #krate::__private::Value::Object(#krate::__private::ObjType::Map) => {
+                        <Self as #krate::Fields>::read_fields(doc, id)
+                    }
+                    _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
+                }
+            }
+            fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
+                ::core::result::Result::Ok(Self { #(#missing,)* })
+            }
+            fn store(
+                &self,
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let obj = slot.object(doc, #krate::__private::ObjType::Map)?;
+                <Self as #krate::Fields>::write_fields(self, doc, &obj)
+            }
+            fn refresh(
+                &mut self,
+                doc: &#krate::Doc,
+                value: &#krate::__private::Value<'_>,
+                id: &#krate::__private::ObjId,
+                delta: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                match value {
+                    #krate::__private::Value::Object(#krate::__private::ObjType::Map) => {
+                        <Self as #krate::Fields>::refresh_fields(self, doc, id, delta)
+                    }
+                    _ => ::core::result::Result::Err(#krate::ModelError::shape("a map")),
+                }
+            }
+            fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
+                let _ = &out;
+                #(#texts)*
+            }
+        }
+
+        impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
+
+        impl #impl_generics #krate::Fields for #name #type_generics #where_clause {
+            fn read_fields(
+                doc: &#krate::Doc,
+                obj: &#krate::__private::ObjId,
+            ) -> ::core::result::Result<Self, #krate::ModelError> {
+                let _ = (&doc, &obj);
+                ::core::result::Result::Ok(Self { #(#reads,)* })
+            }
+            fn write_fields(
+                &self,
+                doc: &mut #krate::Doc,
+                obj: &#krate::__private::ObjId,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let _ = (&doc, &obj);
+                #(#writes)*
+                ::core::result::Result::Ok(())
+            }
+
+            #[allow(unreachable_code, reason = "a record without fields has nothing to edit")]
+            fn edit_fields(
+                doc: &mut #krate::Doc,
+                obj: &#krate::__private::ObjId,
+                path: &[#krate::Segment],
+                op: &#krate::EditOp,
+                cx: &mut #krate::ActionCx,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let _ = (&doc, &obj, &cx);
+                match path.split_first() {
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#edit_arms)*
+                            other => {
+                                return ::core::result::Result::Err(#krate::ModelError::invalid(
+                                    ::std::format!("no field `{other}`"),
+                                ));
+                            }
+                        }
+                    }
+                    ::core::option::Option::None => match op {
+                        #krate::EditOp::Set { value } => {
+                            #whole_set
+                        }
+                        other => {
+                            return ::core::result::Result::Err(#krate::ModelError::unsupported(other));
+                        }
+                    },
+                    ::core::option::Option::Some((segment, _)) => {
+                        return ::core::result::Result::Err(#krate::ModelError::invalid(
+                            ::std::format!("nothing in this record is called `{segment}`"),
+                        ));
+                    }
+                }
+                #check_after_edit
+                ::core::result::Result::Ok(())
+            }
+
+            #item_collections
+            fn refresh_fields(
+                &mut self,
+                doc: &#krate::Doc,
+                obj: &#krate::__private::ObjId,
+                delta: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let _ = (&doc, &obj, &delta);
+                if delta.under(obj).is_all() {
+                    *self = <Self as #krate::Fields>::read_fields(doc, obj)?;
+                    return ::core::result::Result::Ok(());
+                }
+                #(#refreshes)*
+                ::core::result::Result::Ok(())
+            }
+        }
+
+        #[doc = #paths_doc]
+        #vis struct #paths_name #paths_impl_generics #where_clause {
+            #(#path_fields,)*
+            __path: #krate::Path<__R, #name #type_generics>,
+        }
+
+        impl #paths_impl_generics ::core::clone::Clone for #paths_name #paths_type_generics #where_clause {
+            fn clone(&self) -> Self {
+                Self {
+                    #(#path_clones,)*
+                    __path: ::core::clone::Clone::clone(&self.__path),
+                }
+            }
+        }
+
+        impl #paths_impl_generics #paths_name #paths_type_generics #where_clause {
+            /// The path of the whole value.
+            #vis fn path(&self) -> &#krate::Path<__R, #name #type_generics> {
+                &self.__path
+            }
+        }
+
+        impl #impl_generics #name #type_generics #where_clause {
+            #[doc = #paths_fn_doc]
+            #vis fn paths() -> #paths_name<Self, #(#generic_args),*> {
+                <Self as #krate::Model>::paths_at(#krate::Path::root())
+            }
+        }
+    })
 }
 
 fn snake_case(name: &str) -> String {
@@ -1005,16 +1358,20 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
                 match &action.operation {
                     #(#permissions)*
+                    #action_enum::FieldEdit(_) => #krate::__private::PermissionRequirement::Write,
                 }
             }
 
             #least_fn
         }
     };
-    let body = if arms.is_empty() {
-        quote!(match *self {})
-    } else {
-        quote!(match self { #(#arms)* })
+    let body = quote! {
+        match self {
+            #(#arms)*
+            Self::FieldEdit(_) => ::core::result::Result::Err(#krate::Refusal::new(
+                "a field edit applies at its path",
+            )),
+        }
     };
 
     Ok(quote! {
@@ -1025,10 +1382,20 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         #[serde(crate = #serde_path, tag = "action", content = "args")]
         pub enum #action_enum {
             #(#variants,)*
+            /// A field edit: a path into the record and an operation.
+            #[serde(rename = "field-edit")]
+            FieldEdit(#krate::Edit<#self_ty>),
         }
 
         impl #krate::Operation for #action_enum {
             type Record = #self_ty;
+            fn edit(&self) -> ::core::option::Option<&#krate::Edit<#self_ty>> {
+                match self {
+                    Self::FieldEdit(edit) => ::core::option::Option::Some(edit),
+                    #[allow(unreachable_patterns, reason = "a record may have no verbs")]
+                    _ => ::core::option::Option::None,
+                }
+            }
             #[allow(unused_variables, reason = "a method may ignore the action context")]
             fn perform(
                 &self,
@@ -1073,6 +1440,32 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
                 ::std::vec![#(#decls),*]
+            }
+
+            const EDITS: bool = true;
+
+            fn edit_action(edit: #krate::Edit<Self>) -> ::core::option::Option<Self::Action> {
+                ::core::option::Option::Some(#krate::Stamped {
+                    operation: #action_enum::FieldEdit(edit),
+                    now_ms: 0,
+                })
+            }
+
+            fn stamp(action: &mut Self::Action, now_ms: i64) {
+                action.now_ms = now_ms;
+            }
+
+            fn kind_of(action: &Self::Action) -> #krate::ActionKind {
+                #krate::Operation::kind(&action.operation)
+            }
+
+            fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
+                match (&previous.operation, &next.operation) {
+                    (#action_enum::FieldEdit(previous), #action_enum::FieldEdit(next)) => {
+                        previous.coalesces(next)
+                    }
+                    _ => false,
+                }
             }
 
             #permission_fn

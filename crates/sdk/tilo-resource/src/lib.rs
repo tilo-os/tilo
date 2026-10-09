@@ -121,36 +121,41 @@ pub mod kind;
 mod low_mutation;
 pub mod model;
 pub mod order;
+pub mod path;
 pub mod reader;
 pub mod replica;
 pub mod resource;
 pub mod schema;
 pub mod shape;
+pub mod storage;
 pub mod text;
 
 pub use action::{
-    ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
+    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal,
+    Stamped,
 };
 pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
-pub use delta::{Delta, Path, Touch, Touched, Tracker};
+pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use kind::{Kinds, ResourceKind};
 pub use low_mutation::{APPLY_LOW, GROUP_LOW};
 pub use model::{
-    Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
+    Atom, Doc, Fields, Json, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key,
 };
+pub use path::{Edit, EditOp, Path, Segment, Settable};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, ScopeDecl, SearchBody,
-    SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText, SearchWeight, SharedRecord,
-    action_label, bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
-    reset_type_schemas, scope_contains,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
+    ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
+    SearchWeight, SharedRecord, action_label, bind_declaration, build_action, declaration_spec,
+    encode, origin_now_ms, publish, reset_type_schemas, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
+pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use text::{PlainText, TextEdit};
 pub use tilo_actions::PermissionRequirement;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
@@ -189,6 +194,14 @@ pub mod __private {
             .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
             .find(|line| !line.is_empty())
             .unwrap_or_else(|| id.to_string())
+    }
+
+    /// A `#[model(check)]` function's result as a refusal.
+    ///
+    /// # Errors
+    /// Returns the check's refusal.
+    pub fn check_outcome<O: crate::Outcome>(outcome: O) -> Result<(), crate::Refusal> {
+        outcome.into_result()
     }
 
     /// Decode a declared operation from bound arguments.
