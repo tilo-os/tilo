@@ -23,12 +23,19 @@
 headroom = 0.01
 architectures = ["x86_64", "aarch64"]
 
+# Apps that play no media. Release / apps fails when a built one, or the
+# runtime itself, loads a library of needed_absent at exec (TIL-713). Only
+# grows.
+apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
+
 # What the runtime should cost (TIL-604): at most 150 MB, relocation tables
 # under 1 MB, at most 4 MB of relocation-dirtied memory per app process, and
 # few enough symbol lookups for relocation to take under 3 ms. Every app loads
 # a DT_NEEDED library, so none of needed_absent belongs there: media libraries
-# are for the apps that play media. The gates report a target not met; the
-# budgets below are what fails. Targets only tighten.
+# are for the apps that play media, and the runtime loads them on first use
+# (tools/ci/runtime-dylib-lazy-link.py, TIL-713); the gates fail on one. The
+# other targets are reported when not met; the budgets below are what fails.
+# Targets only tighten.
 [targets]
 bytes = 150000000
 relocation_bytes = 1000000
