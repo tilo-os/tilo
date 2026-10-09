@@ -1743,8 +1743,10 @@ async fn apply_home_peer_projection(
         if let Some(runtime) = runtimes.get(&room) {
             let next = room_users.get(&room).cloned().unwrap_or_default();
             let mut runtime = runtime.lock().await;
-            if runtime.admitted_users != next {
-                runtime.admitted_users = next;
+            let changed = runtime.admitted_users != next;
+            runtime.admitted_users = next;
+            drop(runtime);
+            if changed {
                 crate::authority_epoch::bump();
             }
         }
