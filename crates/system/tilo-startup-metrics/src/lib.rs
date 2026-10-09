@@ -23,10 +23,11 @@
 //! {
 //!   "origin_epoch_ms": 1783250000000,
 //!   "origin_epoch_us": 1783250000000123,
-//!   "exec_to_main_us": 41000,
 //!   "launcher": [
 //!     { "name": "launcher-start",     "epoch_us": 1783249999880000 },
-//!     { "name": "sandbox-argv-ready", "epoch_us": 1783249999950000 }
+//!     { "name": "sandbox-argv-ready", "epoch_us": 1783249999930000 },
+//!     { "name": "sandbox-entered",    "epoch_us": 1783249999950000 },
+//!     { "name": "sandbox-exec",       "epoch_us": 1783249999955000 }
 //!   ],
 //!   "events": [
 //!     { "name": "main-start",           "ns": 0 },
@@ -37,18 +38,16 @@
 //! }
 //! ```
 //!
-//! `origin_epoch_us` is `origin_epoch_ms` at microsecond precision. The other two fields
-//! cover the time before `main`, which the process's own clock cannot see:
-//!
-//! - `launcher` holds the phase marks of the `tilo-launcher` process that set up this
-//!   app's sandbox, in Unix-epoch microseconds ([`handoff_mark`], handed over in
-//!   [`LAUNCHER_MARKS_ENV`]). Its last mark is taken just before the sandbox is spawned,
-//!   so `origin_epoch_us` minus that mark is bubblewrap, the Landlock shim and the
-//!   dynamic loader.
-//! - `exec_to_main_us` (Linux only, else `null`) is the time from this process's
-//!   creation, as the kernel recorded it in `/proc/self/stat`, to [`init`]: mostly the
-//!   dynamic loader and library constructors. The kernel's start time has clock-tick
-//!   (10 ms) resolution.
+//! `origin_epoch_us` is `origin_epoch_ms` at microsecond precision. `launcher` covers
+//! the time before `main`, which the process's own clock cannot see: the phase marks of
+//! the `tilo-launcher` process that set up this app's sandbox, in Unix-epoch
+//! microseconds ([`handoff_mark`], handed over in [`LAUNCHER_MARKS_ENV`]). The launcher's
+//! last own mark, `sandbox-argv-ready`, is taken just before it spawns bubblewrap; the
+//! sandbox shim adds `sandbox-entered` when it starts inside the sandbox and
+//! `sandbox-exec` just before it executes the app ([`handoff_entry`]), so
+//! `origin_epoch_us` minus `sandbox-exec` is the dynamic loader and library
+//! constructors. (The app cannot read `/proc` under Landlock, so it cannot time its own
+//! exec.)
 
 #![cfg_attr(
     test,
@@ -236,7 +235,6 @@ struct Metrics {
     origin: Instant,
     origin_epoch_ms: u128,
     origin_epoch_us: u128,
-    exec_to_main_us: Option<u128>,
     launcher: Vec<HandoffEvent>,
     events: Mutex<Vec<Event>>,
     output_path: std::path::PathBuf,
@@ -252,7 +250,6 @@ impl Metrics {
             origin,
             origin_epoch_ms: origin_epoch_us / 1_000,
             origin_epoch_us,
-            exec_to_main_us: exec_to_main_us(),
             launcher: launcher_marks.map(parse_handoff).unwrap_or_default(),
             events: Mutex::new(Vec::with_capacity(16)),
             output_path,
@@ -263,7 +260,6 @@ impl Metrics {
         serde_json::json!({
             "origin_epoch_ms": self.origin_epoch_ms,
             "origin_epoch_us": self.origin_epoch_us,
-            "exec_to_main_us": self.exec_to_main_us,
             "launcher": self.launcher,
             "events": events,
         })
@@ -274,34 +270,6 @@ impl Metrics {
 struct Event {
     name: String,
     ns: u128,
-}
-
-/// Microseconds from this process's creation to now, on Linux: the kernel's
-/// `starttime` (field 22 of `/proc/self/stat`, in clock ticks since boot)
-/// against `CLOCK_BOOTTIME`, the clock it is counted on.
-#[cfg(target_os = "linux")]
-fn exec_to_main_us() -> Option<u128> {
-    // `/proc` reports times in USER_HZ, which is 100 on every architecture
-    // Tilo ships (x86_64, aarch64); the kernel's own HZ never shows here.
-    const USER_HZ: u128 = 100;
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    // The command name (field 2) is parenthesised and may itself hold spaces
-    // or parentheses; every later field follows its last `)`. Field 3 is the
-    // first after it, so field 22 is the 20th.
-    let (_, fields) = stat.rsplit_once(')')?;
-    let ticks: u128 = fields.split_whitespace().nth(19)?.parse().ok()?;
-    let started_us = ticks.checked_mul(1_000_000)?.checked_div(USER_HZ)?;
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let now_us = u128::try_from(now.tv_sec)
-        .ok()?
-        .checked_mul(1_000_000)?
-        .checked_add(u128::try_from(now.tv_nsec).ok()? / 1_000)?;
-    now_us.checked_sub(started_us)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn exec_to_main_us() -> Option<u128> {
-    None
 }
 
 /// The variable `tilo-launcher` sets in the sandbox it starts, holding its own
@@ -385,6 +353,35 @@ pub fn handoff_env_value() -> Option<String> {
     let marks = HANDOFF.get()?.as_ref()?;
     let marks = marks.lock().unwrap_or_else(PoisonError::into_inner);
     (!marks.is_empty()).then(|| encode_handoff(&marks))
+}
+
+/// One [`LAUNCHER_MARKS_ENV`] entry for `name` at now, for a process between
+/// the launcher and the app (the sandbox shim) to append to the value it
+/// passes on. `None` for a name the app would drop.
+#[must_use]
+pub fn handoff_entry(name: &str) -> Option<String> {
+    handoff_name_ok(name).then(|| {
+        let epoch_us = u128::from(tilo_clock::unix_now_ns()) / 1_000;
+        format!("{name}@{epoch_us}")
+    })
+}
+
+/// Whether the startup is still being captured: until [`close_startup`].
+static STARTUP_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// [`mark`], only until the first frame is presented ([`close_startup`]): for
+/// code that also runs on every later rebuild, which must not rewrite the
+/// startup file each time.
+#[inline]
+pub fn startup_mark(name: &str) {
+    if STARTUP_OPEN.load(std::sync::atomic::Ordering::Relaxed) {
+        mark(name);
+    }
+}
+
+/// End the startup: later [`startup_mark`]s record nothing.
+pub fn close_startup() {
+    STARTUP_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Enable capture. Idempotent — subsequent calls are no-ops. Reads
@@ -611,17 +608,19 @@ mod tests {
         );
     }
 
+    /// The shim's exec mark, appended to the launcher's value, precedes the
+    /// app's own origin, so origin minus it is the loader's time.
     #[test]
     fn exec_origin_precedes_init() {
-        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), None);
-        let exec_to_main = metrics.payload(&[])["exec_to_main_us"].as_u64();
-        if cfg!(target_os = "linux") {
-            // The harness created this process before the test ran; a loaded
-            // CI machine can take long to get here, so bound the age loosely.
-            let us = exec_to_main.unwrap();
-            assert!(us < 600_000_000, "process started {us} us ago");
-        } else {
-            assert_eq!(exec_to_main, None);
-        }
+        let launcher = encode_handoff(&[HandoffEvent {
+            name: "sandbox-argv-ready".into(),
+            epoch_us: 1,
+        }]);
+        let value = format!("{launcher},{}", handoff_entry("sandbox-exec").unwrap());
+        let metrics = Metrics::start(std::env::temp_dir().join("unused.json"), Some(&value));
+        let exec = metrics.launcher.last().unwrap();
+        assert_eq!(exec.name, "sandbox-exec");
+        assert!(exec.epoch_us <= metrics.origin_epoch_us);
+        assert_eq!(handoff_entry("Not A Mark"), None);
     }
 }
