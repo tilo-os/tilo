@@ -1118,7 +1118,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             fixture
                 .app
                 .resolve_action_directory(&revision, &second, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found(_)
+            runtime_collab::ActionDirectoryResolution::Found { .. }
         ));
         fixture
             .app

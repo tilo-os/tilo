@@ -2454,15 +2454,18 @@ impl ActionDirectoryRequestQueue {
         tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
         ActionDirectoryBridgeError,
     > {
-        if validate_directory_target_input(
-            &target.cluster_id,
-            &target.revision,
-            &target.address.resource,
-            &target.address.action,
-            argument.as_deref(),
-            confirmation.as_ref(),
-        )
-        .is_err()
+        // A start names the revision its target was chosen at: the
+        // admission is bound to it, never to the directory as it is now.
+        if target.revision.is_empty()
+            || validate_directory_target_input(
+                &target.cluster_id,
+                &target.revision,
+                &target.address.resource,
+                &target.address.action,
+                argument.as_deref(),
+                confirmation.as_ref(),
+            )
+            .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
@@ -2721,7 +2724,9 @@ struct InvocationInputs<'a> {
     context: Option<tilo_actions::ActionContext>,
 }
 /// Who an admission is held for and where it came from: genuine durable
-/// caller evidence, the directory revision the target was chosen at, a
+/// caller evidence, the directory revision the target was admitted at (the
+/// one the caller chose it at or, when it named none, the one its owner
+/// resolved it against; `None` only for an action no directory resolved), a
 /// private owner and original caller, the original policy time a retained
 /// invocation keeps, and a task-owned durable identity. Each call site names
 /// every field, so no custody input is filled implicitly.
@@ -4135,15 +4140,36 @@ impl CapnpBrokerState {
         let decoded = runtime_collab::decode_action_directory_resolution(resolution)
             .map_err(|error| error.to_string())?;
         match decoded {
-            runtime_collab::ActionDirectoryResolution::Found(row)
-                if row.resource == resource
-                    && row.action.as_deref() == Some(action)
-                    && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-                        .map_err(|error| error.to_string())? =>
+            runtime_collab::ActionDirectoryResolution::Found {
+                row,
+                revision: resolved,
+            } if row.resource == resource
+                && row.action.as_deref() == Some(action)
+                && permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
+                    .map_err(|error| error.to_string())? =>
             {
-                Ok(runtime_collab::ActionDirectoryResolution::Found(row))
+                // A named revision is the one resolved; only an empty one
+                // takes the owner's word for which revision it read, and
+                // only in the shape a caller could have named itself.
+                let resolved = if revision.is_empty() {
+                    resolved.filter(|resolved| {
+                        validate_directory_identifier(
+                            resolved,
+                            "resolved revision",
+                            DIRECTORY_MAX_QUERY_REVISION_BYTES,
+                            true,
+                        )
+                        .is_ok()
+                    })
+                } else {
+                    Some(revision.to_owned())
+                };
+                Ok(runtime_collab::ActionDirectoryResolution::Found {
+                    row,
+                    revision: resolved,
+                })
             }
-            runtime_collab::ActionDirectoryResolution::Found(_) => {
+            runtime_collab::ActionDirectoryResolution::Found { .. } => {
                 Ok(runtime_collab::ActionDirectoryResolution::NotFound)
             }
             other => Ok(other),
@@ -4172,6 +4198,9 @@ impl CapnpBrokerState {
             address: tilo_actions::ActionAddress { resource, action },
         } = target;
         let peer_id = *peer_id;
+        if revision.is_empty() {
+            return Err(ActionDirectoryBridgeError::InvalidRequest);
+        }
         validate_directory_target_input(
             cluster_id,
             revision,
@@ -4196,7 +4225,7 @@ impl CapnpBrokerState {
             )
             .await
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
+        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = resolved else {
             return Err(match resolved {
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
                     ActionDirectoryBridgeError::StaleRevision
@@ -13346,6 +13375,8 @@ pub mod tests {
                         &state.row(),
                     )
                     .expect("test directory row encodes");
+                    // As a current owner does: the revision it resolved at.
+                    out.set_resolved_revision(state.revision.as_str());
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),

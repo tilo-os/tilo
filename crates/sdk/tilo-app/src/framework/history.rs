@@ -188,8 +188,7 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
         if let HistoryEdit::Redo { steps: count } = &self.edit {
             let scope = Scope::invoking(doc);
-            let mut registry = tilo_actions::ActionRegistry::new();
-            tilo_resource::group::register::<R>(&mut registry);
+            let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<R>);
             let mut original = doc.fork();
             return steps::redo_with(doc, &scope, limit(*count, 1), |version| {
                 if tilo_actions::executor::verified_compensation(
@@ -246,8 +245,7 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
                 1,
             ),
         };
-        let mut registry = tilo_actions::ActionRegistry::new();
-        tilo_resource::group::register::<R>(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(tilo_resource::group::register::<R>);
         let mut original = doc.fork();
         let compensate = |version: &Version| {
             let Some(action) = tilo_actions::executor::verified_compensation(

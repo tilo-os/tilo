@@ -2068,9 +2068,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms: None,
         };
         let mut started = self.start_confirmed(&mut request).await;
-        if current && started.as_ref().is_err_and(|error| error.contains(STALE)) {
+        if current
+            && started.as_ref().is_err_and(|error| {
+                error.contains(STALE)
+                    || error.contains(tilo_actions::remote::CONFIRMED_ACTION_NEEDS_REVISION)
+            })
+        {
             // An app built before revisionless resolution refuses none as a
-            // moved revision: name the one it is at now.
+            // moved revision, and an action asking for confirmation needs
+            // the revision it is confirmed at: name the one it is at now.
             request.revision = Some(self.current_revision(&request.target.provider).await?);
             started = self.start_confirmed(&mut request).await;
         }
@@ -2330,7 +2336,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .await?
         {
             tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                // The phrase is the one the contract asks at this revision;
+                // the retry is bound to it, so a contract that moved on
+                // since is refused rather than answered with a stale phrase.
                 request.confirmation = Some(tilo_actions::remote::Confirmation::Phrase(phrase));
+                request.revision = Some(revision);
                 self.start(request.clone()).await
             }
             _ => Err(error),

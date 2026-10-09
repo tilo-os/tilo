@@ -1989,9 +1989,9 @@ mod tests {
     use ui::prelude::TestApp;
 
     fn registry() -> ui::tilo_actions::ActionRegistry {
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <PrintDefaults as ui::tilo_resource::Resource>::register(&mut registry);
-        registry
+        ui::tilo_actions::ActionRegistry::with(
+            <PrintDefaults as ui::tilo_resource::Resource>::register,
+        )
     }
 
     thread_local! {

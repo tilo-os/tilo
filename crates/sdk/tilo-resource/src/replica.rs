@@ -67,8 +67,7 @@ impl<R: Resource> Replica<R> {
     /// A replica of an existing document.
     #[must_use]
     pub fn from_doc(doc: Doc) -> Self {
-        let mut registry = ActionRegistry::new();
-        crate::group::register::<R>(&mut registry);
+        let registry = ActionRegistry::with(crate::group::register::<R>);
         Self {
             doc,
             registry,

@@ -31,7 +31,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                         .resolve_published_action(903, "original-r1", "workspace:atlas", "open")
                         .await
                         .unwrap(),
-                    runtime_collab::ActionDirectoryResolution::Found(_)
+                    runtime_collab::ActionDirectoryResolution::Found { .. }
                 ));
                 assert!(
                     handle
@@ -64,7 +64,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                             .resolve_published_action(903, "original-r1", "workspace:atlas", "open")
                             .await
                             .unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found(_)
+                        runtime_collab::ActionDirectoryResolution::Found { .. }
                     ));
                     continue;
                 }
@@ -113,7 +113,7 @@ async fn reliable_resolution_binding_uses_exact_captured_signed_worker() {
                         .resolve_published_action(903, "original-r1", "workspace:atlas", "open")
                         .await
                         .unwrap(),
-                    runtime_collab::ActionDirectoryResolution::Found(_)
+                    runtime_collab::ActionDirectoryResolution::Found { .. }
                 ));
                 assert!(
                     handle

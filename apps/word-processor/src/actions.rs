@@ -255,9 +255,7 @@ mod tests {
     use ui::testing::action_contract::spec_encoding;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// The view catalogue exposes zoom reset as a typed operation; the resource catalogue exposes the
