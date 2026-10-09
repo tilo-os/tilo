@@ -374,6 +374,13 @@ pub trait Resource: Sized + 'static {
         let _ = (action, now_ms);
     }
 
+    /// The schemas of the own vocabularies of the record's fields
+    /// ([`Operations`](crate::Operations)), by field path pattern (`*` for
+    /// every item): what a field edit in that vocabulary carries.
+    fn op_schemas() -> Vec<(String, serde_json::Value)> {
+        Vec::new()
+    }
+
     /// Whether the declared action `action` can be taken in `state`, and why
     /// not when it cannot. `#[resource(available = path)]` answers it.
     fn availability(state: &Self::State, action: &str) -> tilo_actions::Availability {
@@ -428,6 +435,25 @@ fn read_edit<R: Resource>(value: serde_json::Value) -> Result<R::Action, String>
     R::edit_action(edit).ok_or_else(|| format!("{} has no field edits", R::LABEL))
 }
 
+/// The schema of a field edit of `R`: the generic one, with the
+/// vocabularies of its fields' own operations named for `rich`.
+pub(crate) fn edit_schema<R: Resource>() -> serde_json::Value {
+    let mut schema = <Edit<R> as crate::JsonSchema>::json_schema();
+    let ops = R::op_schemas();
+    if !ops.is_empty()
+        && let Some(properties) = schema
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        let alternatives = ops
+            .into_iter()
+            .map(|(path, schema)| crate::schema::describe(schema, &format!("An edit of `{path}`")))
+            .collect();
+        properties.insert("rich".into(), crate::schema::one_of(alternatives));
+    }
+    schema
+}
+
 /// The published spec of [`FIELD_EDIT`].
 fn field_edit_spec<R: Resource>() -> ActionSpec {
     ActionSpec::typed(
@@ -441,7 +467,7 @@ fn field_edit_spec<R: Resource>() -> ActionSpec {
                 ParamType::Object,
                 "The path of the field from the record's root, and the operation",
             )
-            .with_schema(<Edit<R> as crate::JsonSchema>::json_schema()),
+            .with_schema(edit_schema::<R>()),
         ],
         |args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {

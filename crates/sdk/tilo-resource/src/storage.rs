@@ -594,6 +594,33 @@ fn grid_map(doc: &mut Doc, slot: Slot<'_>) -> Result<ObjId, ModelError> {
 impl<T: Model> Model for Grid<T> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    fn op_coalesces(
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        match path.split_first() {
+            Some((Segment::Cell { .. }, rest)) => T::op_coalesces(rest, previous, next),
+            _ => None,
+        }
+    }
+    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        match path.split_first() {
+            Some((Segment::Cell { .. }, rest)) => T::op_continuable(rest, op),
+            _ => None,
+        }
+    }
+    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
+        match path.split_first() {
+            Some((Segment::Cell { row, column }, rest)) => {
+                self.cell(row, column)?.op_lands(rest, op)
+            }
+            _ => None,
+        }
+    }
+    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        T::op_schemas(&format!("{prefix}*."), out);
+    }
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "rows": self.rows.ids().map(Id::as_str).collect::<Vec<_>>(),

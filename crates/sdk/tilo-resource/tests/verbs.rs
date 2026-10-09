@@ -170,6 +170,11 @@ fn ids_and_parameter_names_are_public_names() {
         .unwrap();
     assert_eq!(arguments["title"], "x");
     assert_eq!(<shelf::Rename as Params>::ACTION.id, "retitle");
+    // A form reaches the parameters' paths through the trait.
+    assert_eq!(
+        <shelf::Rename as Params>::paths().name.segments(),
+        [tilo_resource::Segment::Field("title".into())]
+    );
 }
 
 #[test]

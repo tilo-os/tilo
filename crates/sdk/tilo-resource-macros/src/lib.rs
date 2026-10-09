@@ -381,6 +381,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut label = None;
     let mut readonly_fields = Vec::new();
     let mut get_arms = Vec::new();
+    let mut op_coalesce_arms = Vec::new();
+    let mut op_continuable_arms = Vec::new();
+    let mut op_lands_arms = Vec::new();
+    let mut op_schemas = Vec::new();
     let mut collection_names = Vec::new();
     let mut item_label_arms = Vec::new();
     let mut item_searches = Vec::new();
@@ -427,6 +431,13 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .push(quote!(#krate::refresh_key::<#ty>(&mut self.#ident, doc, obj, #key, delta)?;));
         texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
         get_arms.push(quote!(#key => #krate::Model::get_at(&self.#ident, rest),));
+        op_coalesce_arms
+            .push(quote!(#key => <#ty as #krate::Model>::op_coalesces(rest, previous, next),));
+        op_continuable_arms.push(quote!(#key => <#ty as #krate::Model>::op_continuable(rest, op),));
+        op_lands_arms.push(quote!(#key => #krate::Model::op_lands(&self.#ident, rest, op),));
+        op_schemas.push(quote! {
+            <#ty as #krate::Model>::op_schemas(&::std::format!("{prefix}{}.", #key), out);
+        });
         let ty_text = quote!(#ty)
             .to_string()
             .replace(" < ", "<")
@@ -635,6 +646,72 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
 
             #label_fn
+
+            fn op_coalesces(
+                path: &[#krate::Segment],
+                previous: &#krate::__private::serde_json::Value,
+                next: &#krate::__private::serde_json::Value,
+            ) -> ::core::option::Option<bool> {
+                let _ = (previous, next);
+                match path.split_first() {
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#op_coalesce_arms)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn op_continuable(
+                path: &[#krate::Segment],
+                op: &#krate::__private::serde_json::Value,
+            ) -> ::core::option::Option<bool> {
+                let _ = op;
+                match path.split_first() {
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#op_continuable_arms)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn op_lands(
+                &self,
+                path: &[#krate::Segment],
+                op: &#krate::__private::serde_json::Value,
+            ) -> ::core::option::Option<#krate::Place> {
+                let _ = op;
+                match path.split_first() {
+                    ::core::option::Option::Some((#krate::Segment::Field(key), rest)) => {
+                        let _ = rest;
+                        match key.as_str() {
+                            #(#op_lands_arms)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn op_schemas(
+                prefix: &str,
+                out: &mut ::std::vec::Vec<(::std::string::String, #krate::__private::serde_json::Value)>,
+            ) {
+                // A type nested in itself has no vocabulary of its own
+                // deeper than this.
+                if prefix.matches('.').count() > 16 {
+                    return;
+                }
+                let _ = &out;
+                #(#op_schemas)*
+            }
 
             fn get_at(
                 &self,
