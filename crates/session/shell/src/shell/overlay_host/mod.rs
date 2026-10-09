@@ -2003,6 +2003,12 @@ impl ShellOverlayHost {
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 
+    /// Settles on the next change to any app invocation's status, for a
+    /// control reply waiting on its job. `None` before the broker attaches.
+    pub fn next_invocation_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_invocation_change()
+    }
+
     pub(crate) fn attach_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,

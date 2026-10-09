@@ -351,13 +351,10 @@ impl CapnpBrokerState {
             uuid::Uuid::from_bytes(request.binding.host),
             request.invocation,
         )?;
-        if existing.as_ref().is_some_and(|record| {
-            record
-                .intent
-                .get("request")
-                .unwrap_or(&serde_json::Value::Null)
-                != &request.intent()
-        }) {
+        if existing
+            .as_ref()
+            .is_some_and(|record| !record.admitted_request_is(&request.intent()))
+        {
             return Err("invocation identity reused with different intent".into());
         }
         Ok(existing)
