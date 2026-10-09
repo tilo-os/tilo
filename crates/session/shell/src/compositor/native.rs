@@ -8551,6 +8551,7 @@ pub fn run() {
             frame_builder.enable_onboarding(identity_dir);
         }
     }
+    frame_builder.follow_settings(live_settings.clone());
     frame_builder.enable_configured_theme();
     let mut capture_executor = CaptureExecutor::default();
     let floating_surface_service = match FloatingSurfaceService::start() {

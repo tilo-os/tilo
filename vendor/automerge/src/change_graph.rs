@@ -201,6 +201,11 @@ impl ChangeGraph {
         self.hashes.get(index)
     }
 
+    /// Every change's hash, by node index: the order the changes were added.
+    pub(crate) fn hashes(&self) -> &[ChangeHash] {
+        &self.hashes
+    }
+
     pub(crate) fn max_op(&self) -> u64 {
         self.max_op as u64
     }
