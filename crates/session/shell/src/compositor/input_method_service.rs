@@ -37,9 +37,13 @@ const PACKAGE_KIND: &str = "service";
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
-pub fn osk_preference() -> OskPreference {
+/// The on-screen keyboard preference in `settings`.
+pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OskPreference {
     OskPreference::from_setting(
-        settings_store::load_section("accessibility").get("on_screen_keyboard"),
+        settings
+            .document
+            .get("accessibility")
+            .and_then(|section| section.get("on_screen_keyboard")),
     )
 }
 
@@ -567,21 +571,29 @@ impl InputMethodServices {
     }
 
     /// Re-read the preferences that decide the owner and apply the decision.
-    pub fn reload(&mut self, state: &mut State) {
-        self.reload_for_scope(state, &settings_store::keyboard_sources::active_scope());
+    pub fn reload(&mut self, state: &mut State, settings: &settings_store::live::Snapshot) {
+        self.reload_for_scope(
+            state,
+            settings,
+            &settings_store::keyboard_sources::active_scope(),
+        );
     }
 
-    pub fn reload_for_scope(&mut self, state: &mut State, scope: &str) {
-        let input = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+    pub fn reload_for_scope(
+        &mut self,
+        state: &mut State,
+        settings: &settings_store::live::Snapshot,
+        scope: &str,
+    ) {
+        let input =
+            settings_store::hardware::RichInputConfig::from_section(&settings.section("input"));
         let input = settings_store::keyboard_sources::effective(&input, scope);
         self.primary_layout = input
             .sources()
             .first()
             .map_or_else(|| "us".to_string(), |source| source.id.clone());
         self.engine = input.active_input_method();
-        self.osk_preference = osk_preference();
+        self.osk_preference = osk_preference(settings);
         self.refresh_installed(state);
         self.apply(state);
     }
@@ -798,6 +810,15 @@ mod tests {
         }
     }
 
+    /// The fixture's settings file as the compositor's live snapshot would
+    /// hold it.
+    fn saved_settings() -> settings_store::live::Snapshot {
+        settings_store::live::Snapshot {
+            generation: 0,
+            document: settings_store::load(),
+        }
+    }
+
     fn wait_for(mut ready: impl FnMut() -> bool) {
         let started = Instant::now();
         while !ready() {
@@ -813,7 +834,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn installed_keyboard_update_revokes_old_authority_before_replacement() {
         let mut fixture = InstalledServiceFixture::new();
-        fixture.methods.reload(&mut fixture.state);
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
         wait_for(|| fixture.osk().process_group().is_some());
         let old_group = fixture.osk().process_group().unwrap();
         let old_running = Arc::clone(&fixture.osk().running);
@@ -897,7 +920,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn unrelated_package_update_preserves_the_current_keyboard_launch() {
         let mut fixture = InstalledServiceFixture::new();
-        fixture.methods.reload(&mut fixture.state);
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
         wait_for(|| fixture.osk().process_group().is_some());
         let group = fixture.osk().process_group();
         let running = Arc::clone(&fixture.osk().running);
