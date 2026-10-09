@@ -2390,6 +2390,7 @@ fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use automerge::AutoCommit;
     use std::fs;
     use winit::event::ElementState;
@@ -2402,28 +2403,6 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_press;
-
-    fn dispatch(picker: &mut FilePicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        picker.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     /// Exercises the real `std::fs::read_dir` path rather than a mock.
     fn temp_tree() -> (tempfile::TempDir, PathBuf) {
@@ -2559,7 +2538,9 @@ mod tests {
             for index in [0, 1] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &mouse_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut single, &mouse_press());
             }
             assert_eq!(single.selected_indices(), vec![1]);
 
@@ -2570,7 +2551,9 @@ mod tests {
             for index in [0, 1] {
                 let center = multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut multiple, &cursor_at(center));
-                dispatch_mods(&mut multiple, &mouse_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut multiple, &mouse_press());
             }
             assert_eq!(multiple.selected_indices(), vec![0, 1]);
 
@@ -2582,10 +2565,9 @@ mod tests {
                 &mut keyboard_single,
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
             );
-            dispatch_mods(
+            Dispatch::new().modifiers(shift()).send(
                 &mut keyboard_single,
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
-                shift(),
             );
             assert_eq!(keyboard_single.selected_indices(), vec![1]);
         }
@@ -2630,7 +2612,9 @@ mod tests {
             for index in [1, 2] {
                 let center = single.entry_rect(index).unwrap().center();
                 dispatch(&mut single, &cursor_at(center));
-                dispatch_mods(&mut single, &mouse_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut single, &mouse_press());
             }
             assert_eq!(single.selected_indices(), vec![2]);
 
@@ -2639,7 +2623,9 @@ mod tests {
             for index in [1, 2] {
                 let center = default_multiple.entry_rect(index).unwrap().center();
                 dispatch(&mut default_multiple, &cursor_at(center));
-                dispatch_mods(&mut default_multiple, &mouse_press(), ctrl());
+                Dispatch::new()
+                    .modifiers(ctrl())
+                    .send(&mut default_multiple, &mouse_press());
             }
             assert_eq!(default_multiple.selected_indices(), vec![1, 2]);
         }
@@ -2937,10 +2923,14 @@ mod tests {
             // entries: [nested(dir), alpha.txt(1), beta.txt(2)]. Select both files.
             let r1 = picker.entry_rect(1).unwrap().center();
             dispatch(&mut picker, &cursor_at(r1));
-            dispatch_mods(&mut picker, &mouse_press(), ctrl());
+            Dispatch::new()
+                .modifiers(ctrl())
+                .send(&mut picker, &mouse_press());
             let r2 = picker.entry_rect(2).unwrap().center();
             dispatch(&mut picker, &cursor_at(r2));
-            dispatch_mods(&mut picker, &mouse_press(), ctrl());
+            Dispatch::new()
+                .modifiers(ctrl())
+                .send(&mut picker, &mouse_press());
             assert_eq!(picker.selected_indices(), vec![1, 2]);
             picker.click_open();
             match picker.take_outcome() {
@@ -3059,11 +3049,9 @@ mod tests {
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
             assert!(crate::ime::ImeWindowState::from_widget(&picker).is_none());
-            dispatch_mods(
-                &mut picker,
-                &key_named(winit::keyboard::NamedKey::Tab),
-                shift(),
-            );
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Filename));
             dispatch(&mut picker, &key_char("x"));
             assert_eq!(picker.filename(), "x");
@@ -3201,7 +3189,9 @@ mod tests {
             dispatch(&mut picker, &key_named(NamedKey::Enter));
             dispatch(&mut picker, &key_named(NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Replace));
-            dispatch_mods(&mut picker, &key_named(NamedKey::Tab), shift());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::KeepExisting));
             dispatch(&mut picker, &key_named(NamedKey::ArrowRight));
             assert_eq!(picker.focus, Some(PickerFocus::Replace));
@@ -3326,7 +3316,9 @@ mod tests {
         picker.set_rect(Rect::new(0.0, 0.0, 600.0, 420.0));
         Widget::set_focus(&mut picker, true);
 
-        dispatch_mods(&mut picker, &key_char("a"), ctrl());
+        Dispatch::new()
+            .modifiers(ctrl())
+            .send(&mut picker, &key_char("a"));
         dispatch(&mut picker, &key_char("x"));
         assert_eq!(
             picker.filename(),
@@ -3354,28 +3346,6 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_release;
-
-    fn dispatch_mods(picker: &mut FilePicker, event: &WindowEvent, mods: winit::event::Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        picker.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     fn ctrl() -> winit::event::Modifiers {
         let mut s = winit::keyboard::ModifiersState::empty();
@@ -3583,11 +3553,9 @@ mod tests {
             // button that cannot act.
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::Cancel));
-            dispatch_mods(
-                &mut picker,
-                &key_named(winit::keyboard::NamedKey::Tab),
-                shift(),
-            );
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut picker, &key_named(winit::keyboard::NamedKey::Tab));
             assert_eq!(picker.focus, Some(PickerFocus::List));
 
             picker.set_selection(1);

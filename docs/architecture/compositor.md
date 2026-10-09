@@ -172,6 +172,26 @@ also converts `BGRA` and forces `X` alpha), so a client frame costs one
 full-frame GPU copy — at 3840×2160, 66 MB of GPU memory traffic instead of
 the 133 MB of the earlier copy-then-atlas route.
 
+An SHM commit still copies on the logic thread — the client's pool may only
+be read inside Smithay's guarded mapping — but only its buffer damage, when
+the surface's previous commit was an SHM buffer of the same size
+(`ForeignFrameStore::capture_shm_commit`). Any other commit (a dmabuf, an
+unmap, a commit the capture never saw), a failure, unknown damage or a resize
+clears that base and the next copy is whole. A damaged copy carries the
+generation of the commit it is relative to, and the worker lays it only over
+the frame it built for exactly that commit (`build_shm_frame`); against
+anything else the copy is dropped and the next one forced whole — never laid
+over another frame or over zeros. The worker writes into the frame the
+previous one replaced when nothing draws it any more, so a caret blink in a
+4K terminal moves kilobytes, not 33 MB; that spare is released once the
+worker idles. Queued damaged copies chain rather than replace each other,
+and a whole copy supersedes them, which bounds a slow worker's queue.
+Published frames are shared `Arc`s: publication swaps one under the
+frame-store lock and the tile draws the stored pixels without a copy. What
+remains is the CPU swizzle of the damage and Vello's upload of the whole
+image into its atlas; the next step is a persistent per-surface GPU texture
+that takes only the damaged rows straight from the guarded pool copy.
+
 Drawing from the client's buffer means the compositor decides when it goes
 back. Smithay sends `wl_buffer.release` for the replaced buffer the moment
 the next commit applies, so the commit handler takes the applied buffer out
@@ -280,18 +300,24 @@ crosshair, which follow the pointer, keep every frame dense.
 
 ### Composited frames: GBM render targets, dumb-buffer fallback
 
-Eligibility is decided per output. An output with a normal transform, no
-colour transform, a hardware cursor plane, event-driven page flips, and a
-renderer on the same PCI function as its scanout card renders direct,
+Eligibility is decided per output. An output with no colour transform, a
+hardware cursor plane, event-driven page flips, and a renderer on the same
+PCI function as its scanout card renders direct, however it is rotated and
 however many other outputs there are: the DRM backend allocates two linear
-GBM buffer objects the size of that output (XRGB8888, or a 10-bit or
+GBM buffer objects the size of that output's mode (XRGB8888, or a 10-bit or
 half-float format in HDR) with `SCANOUT | RENDERING`, registers them as KMS
 framebuffers (`add_planar_framebuffer`), and imports them into Vulkan as
 render targets (`ui::dmabuf_import`). Vello renders the scene through the
 output's `OutputView` (the scene translated to the output's position) into
-a retained surface of the output's size, then copies, PQ-encodes or
+a retained surface of the output's upright size, then copies, PQ-encodes or
 HDR-composites it into the back slot, and the backend flips to it
-(`VelloDrmBridge::paint_output_until`). Every output keeps its own retained
+(`VelloDrmBridge::paint_output_until`). A rotated output's final pass reads
+each scanout pixel from the surface pixel it shows
+(`shell/output_orientation.wgsl`, `shell::render::orientation`): the same
+permutation the readback applies on the CPU, so the pixels are identical,
+and damage still maps onto the upright surface by translation alone. KMS
+plane rotation is not used: the legacy KMS path and linear buffers leave
+quarter turns unsupported on most drivers. Every output keeps its own retained
 surface and two-slot ring; the renderer and the device are shared. A slot
 stays owned by KMS until its page-flip event retires it, so the renderer
 never touches the front or flip-pending slot. Page-flip events are drained
@@ -333,32 +359,108 @@ swizzles straight into its dumb buffer; with several outputs the bridge's
 target grows to the bounding box of all of them (logged once), which is
 rendered once, and only the outputs on the readback receive their sub-rect.
 It returns to one output's size once every output renders direct again.
+The phase summary's `readback_bytes` and `cpu_pixel_passes` (passes over an
+output's pixels on the CPU: rotate and swizzle or PQ encode, and an ICC
+profile's copy and qcms pass) are both zero while every output renders
+direct. An ICC-profiled output still takes this path every frame; a GPU
+colour LUT is the remaining step (TIL-660).
 
-### No client fullscreen fast path
+### Fullscreen client scanout
 
-These are the compositor's own buffers. **A client's buffer is never
-handed to KMS**: a fullscreen client pays exactly the same cost as a
-windowed one — its buffer is imported, drawn into the scene as a
-full-viewport image, and the whole scene is rendered and presented.
-`compositor::gpu_import` imports client dma-bufs via EGL into a GL texture
-that it *reads back to CPU bytes*; that is a path to `peniko::ImageBrush`,
-the opposite direction from scanout.
+A fullscreen client whose buffer is the only thing visible on its output is
+not composited: the direct path page-flips the client's own dma-buf onto
+the primary plane (`backend/drm/client_scanout.rs`). The frame costs no
+raster, no copy into a scanout slot and no Vello submission — one flip —
+and the client's pixels reach the panel a render earlier.
 
-**What building it entails.** Importing a client dmabuf as a KMS
-framebuffer (`drmModeAddFB2WithModifiers`); negotiating format and
-modifier against the primary plane's advertised set, and re-negotiating
-when the client's allocation changes; holding the buffer alive and
-un-released until the flip that shows it retires, or the client
-overwrites a buffer mid-scanout; and a tested fallback for every case
-where the plane refuses — wrong format, wrong modifier, scaling needed,
-a flip that fails at commit time.
+**Which frames qualify.** The proof is structural, about the scene each
+frame actually encodes, so an overlay nobody listed still disqualifies the
+frame it appears in:
 
-**No client qualification logic is wired either**, deliberately. Deciding
-"does this frame qualify for the short route" (one visible surface,
-covering the output, no chrome overlay, not locked, no notifications, no
-remote cursors) is tractable on its own, but a decision with no route
-behind it is a switch wired to nothing. The decision and the route land
-together.
+- The frame builder (`FrameBuilder::paint_with_damage`) records whether the
+  fullscreen surface drew exactly one fill of one whole image, outside any
+  layer, and whether anything was drawn after it: a popup, the on-screen
+  keyboard, night light, a colour filter or the magnifier (which redraws
+  every pixel without drawing more) all void it
+  (`shell::scanout_candidate::DrawnOnTop`). Through the output's
+  magnification the image must land on whole scene pixels at unit scale
+  (`pixel_exact_origin`); on several magnified displays their scene
+  rectangles must not overlap. The result is `FramePaint::scanout`, with a
+  fingerprint of the finished scene: anything the loop appends afterwards
+  (a drag, a presentation surface) voids it on that frame
+  (`FramePaint::scanout_candidate`).
+- Per output, the presenter requires the direct path's own contract (no
+  colour transform, hardware cursor plane, renderer on the scanout card)
+  plus: the output is upright (a rotated scanout would show the buffer
+  unturned), the candidate covers exactly this output, it is a
+  client dma-buf (`gpu_frames::client_frame`), the buffer is opaque
+  (`XRGB8888`, the format the output's 8-bit targets have — a legacy flip
+  cannot change formats), the output is SDR and the frame composites no
+  HDR layer (`client_scanout_rejection`).
+- KMS is asked before anything changes. The primary plane's `IN_FORMATS`
+  must list the buffer's format and modifier; the buffer becomes a
+  framebuffer (`ADDFB2` with modifiers) and a `TEST_ONLY` atomic commit
+  of it on the primary plane must pass. The verdict is remembered per
+  buffer, a refusal included, and forgotten when the CRTC is set up again.
+  The flips themselves stay legacy page flips, so atomic is enabled on the
+  card only for that test (mode aspect-ratio flags, which atomic would
+  turn on, are switched back off).
+
+Captures, screencasts and peer streams never read the presenter's output:
+they render the scene themselves (`FrameBuilder::capture_scene`), so
+scanout changes nothing they see, and capture protection, which only
+applies to those copies, needs no check here.
+
+Anything refused composites the same frame, so the output only ever shows
+this frame or the one before it. Moving between the two routes is a page
+flip at a vblank either way. While an output scans out, the frame's damage
+on it is owed to its retained surface (`defer_output`; a lone output's is
+invalidated), so the first composited frame after it repaints everything
+the client covered. A client that commits nothing new while the desktop
+below changes keeps its flip (`DirectOutcome::Kept`).
+
+**Holding the buffer.** A client buffer KMS shows, or has queued, is held
+by the output's targets (`ClientHold`): the `GpuFrame` it was imported for
+carries the lease that gives the buffer back (see client buffer release
+above), and the hold drops it only when the flip that replaces it — the
+client's next buffer, or a composited target — retires. Its framebuffer is
+removed only after that, never while KMS reads it. A pause for a VT
+switch, a demotion and output power-off put the CRTC back on the dumb
+front first; the holds go with the targets after that. Scanout flips go
+through the same present gate, retirement and vblank pacing as composited
+direct frames.
+
+The session log says `client_scanout_status=active` when an output starts
+scanning a client out and `client_scanout_status=inactive reason=…` when it
+stops or a candidate is refused, once per change. The `DRM render phase
+summary` counts `client_scanout_frames` beside `direct_frames`.
+`TILO_CLIENT_SCANOUT=0` composites every frame, for A/B measurement or a
+driver that misbehaves.
+
+**Not yet:** clients that allocate `ARGB8888` (an opaque region covering the
+surface would let them qualify), linux-dmabuf v4 feedback with a scanout
+tranche (so clients allocate a modifier the plane takes), and windowed
+video on overlay planes, which needs atomic presentation.
+
+**Verifying on hardware.** CI's llvmpipe cannot exercise KMS planes; the
+decision logic is unit-tested (`scanout_candidate`, `client_scanout`, the
+fullscreen phases in `shell::frame`). On a `tilo-vm` slot with a real GPU —
+a `device` target (`tilo-vm vm add`) or a VM with the GPU passed through:
+
+1. `tilo-vm swap shell` from the branch, then play a 4K60 video fullscreen
+   in an opaque client (`mpv --fs`, or `vkcube` made fullscreen).
+2. `tilo-vm logs -n 400` shows `client_scanout_status=active`, and the
+   phase summaries count `client_scanout_frames` at the refresh rate while
+   `direct_frames` stays near zero. `intel_gpu_top` (or `radeontop`) shows
+   the render engine idle apart from the video decoder.
+3. Raise a notification or the volume OSD over it: the log shows
+   `inactive reason="no fullscreen client on top"`, the overlay appears on
+   that frame without a flash, and scanout resumes when it is gone.
+4. Switch VT away and back: no page-flip `EACCES` in the log, and scanout
+   resumes.
+5. `CLIENT-BUFFER-RELEASE` lines keep p50 within about one refresh
+   interval: buffers go back as their replacing flip retires.
+6. Repeat with `TILO_CLIENT_SCANOUT=0` for the composited baseline.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 

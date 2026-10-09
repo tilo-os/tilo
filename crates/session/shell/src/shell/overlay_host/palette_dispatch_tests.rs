@@ -1498,6 +1498,54 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
 }
 
 #[test]
+fn dictation_model_setup_uses_semantic_normal_launcher_and_never_grants_capture() {
+    use crate::compositor::dictation::{DictationStatus, runtime::RuntimeError};
+    let (mut host, _) = host_with_chrome();
+    let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = std::rc::Rc::clone(&launches);
+    host.app_launcher = std::rc::Rc::new(move |_, package_id, _| {
+        recorded.borrow_mut().push(package_id.to_string());
+    });
+    host.layers
+        .dictation
+        .status(DictationStatus::Unavailable(RuntimeError::Worker(
+            agent_provider_config::speech::SpeechError::ModelUnavailable,
+        )));
+    let node = host
+        .layers
+        .dictation
+        .accessibility(host.layer_geometry(&[]))
+        .unwrap();
+    let target = node
+        .children
+        .first()
+        .unwrap()
+        .action_target
+        .as_ref()
+        .unwrap();
+    let mut doc = automerge::AutoCommit::new();
+    assert!(host.perform_semantic_action(
+        target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(launches.borrow().as_slice(), &["so.tilo.settings"]);
+    assert_eq!(
+        host.layers.dictation.take_request(),
+        Some(dictation_layer::Request::Cancel(None))
+    );
+    assert!(!host.layers.dictation.is_open());
+    assert!(!host.perform_semantic_action(
+        target,
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(launches.borrow().len(), 1);
+}
+
+#[test]
 fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     fn with_peer_sync_enabled_is_idempotent() {
         let host = ShellOverlayHost::new(Box::new(Container::new()))
@@ -1576,6 +1624,85 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
     peer_sync_can_be_enabled_after_first_login_host_is_built();
     invite_manager_fails_closed_without_invite_capability();
     the_composer_refuses_to_mint_for_nobody();
+}
+
+/// The invite composer, the policy and the issuer give one answer: a member
+/// holding a delegated `Invite` grant in a room another person governs is not
+/// offered a composer the issuer would refuse, and the issuer refuses with the
+/// policy's reason; without the grant both refuse for lack of permission.
+#[test]
+fn delegated_inviter_follows_the_capability_policy() {
+    use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
+    use crate::shell::state::{CapOverride, PeerOrigin, RoomAuthority, Scope, Subject, Verb};
+
+    let mut tree = WorkspaceTree::default();
+    let local = tree.append_empty_workspace("Joined room");
+    tree.desktop.active = local;
+    let room = tree.room_of(local).expect("room");
+    tree.room_authority.insert(
+        room,
+        RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
+    );
+    tree.desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .expect("workspace")
+        .set_owner("remote-owner");
+    let handle = tree.shared();
+    let chrome = ChromeState::new_with_handle(handle.clone());
+    chrome.borrow_mut().peer_sync_enabled = true;
+    let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
+    let carol = crate::shell::state::local_user_id_for_room(&room);
+    let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
+    let issue = || {
+        net.issue_invite_named_with_role(
+            local,
+            3600,
+            "Dave",
+            crate::network::invite::InviteRole::Editor,
+        )
+    };
+
+    let refused = InviteRoute::Refused(InviteRefusal::NotPermitted);
+    assert_eq!(route(), refused, "without a grant Carol may not invite");
+    assert!(!host.may_invite_here(), "so she is offered no composer");
+    assert_eq!(
+        issue().expect_err("and the issuer refuses her"),
+        refused.refusal().expect("a refusal has a reason"),
+    );
+
+    handle
+        .write()
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .expect("workspace")
+        .capabilities
+        .push(CapOverride::grant(
+            Subject::person(carol),
+            Scope::Workspace,
+            Verb::Invite,
+        ));
+
+    assert_eq!(
+        route(),
+        InviteRoute::ViaGovernor,
+        "the grant lets Carol invite, but only the governing device signs invitations"
+    );
+    assert!(
+        !host.may_invite_here(),
+        "the composer is not offered where the issuer cannot issue"
+    );
+    assert_eq!(
+        issue().expect_err("the issuer sends Carol to the owner"),
+        InviteRoute::ViaGovernor
+            .refusal()
+            .expect("a refusal has a reason"),
+    );
 }
 
 // Proves both halves of the invite-token crossing (mint → clipboard

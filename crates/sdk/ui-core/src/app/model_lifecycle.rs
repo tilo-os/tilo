@@ -334,7 +334,8 @@ impl super::App {
     }
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let changed = self.service_local_control_history();
+        let history_changed = self.refresh_local_undo_discovery();
+        let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]

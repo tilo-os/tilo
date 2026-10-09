@@ -1531,6 +1531,17 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "dictation-consent"
+            | "dictation-listening"
+            | "dictation-finishing"
+            | "dictation-model-required" => {
+                #[cfg(debug_assertions)]
+                self.host_mut()
+                    .seed_dictation_for_shots(name)
+                    .map_err(str::to_owned)?;
+                #[cfg(not(debug_assertions))]
+                return Err("dictation shots require a debug build".into());
+            }
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -2978,6 +2989,10 @@ impl ShellDriver {
         "emoji-picker",
         "display-confirm",
         "portal-permission",
+        "dictation-consent",
+        "dictation-listening",
+        "dictation-finishing",
+        "dictation-model-required",
         "notifications",
         "notifications-one",
         "notifications-dnd",
@@ -3162,6 +3177,8 @@ mod tests {
 
     #[test]
     fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
         // Phase `driver_scene_setup_covers_catalogue`.
         // Smoke for `scene_setup` — drive every named scene and verify it
         // returns Ok, then verify a fresh driver returns Err for an

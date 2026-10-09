@@ -113,6 +113,8 @@ mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(not(target_arch = "wasm32"))]
+mod room_access;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;

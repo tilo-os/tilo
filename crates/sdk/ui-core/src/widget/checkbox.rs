@@ -702,6 +702,7 @@ fn square_box(rect: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
@@ -828,42 +829,23 @@ mod tests {
             assert!(row_rect.width() > 300.0, "row={row_rect:?}");
 
             let device = winit::event::DeviceId::dummy();
-            let mut doc = AutoCommit::new();
-            let mut handled = false;
-            let mut focus = None;
-            checkbox.handle_event(
+            let mut sender = Dispatch::new().layout(&tree, node);
+            let moved = sender.send(
+                &mut checkbox,
                 &WindowEvent::CursorMoved {
                     device_id: device,
-                    position: (320.0, checkbox.rect.center().y).into(),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
+                    position: (320.0, row_rect.center().y).into(),
                 },
             );
-            checkbox.handle_event(
+            let pressed = sender.send(
+                &mut checkbox,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
 
             assert!(checkbox.is_checked());
             assert_eq!(focus, Some(node));
@@ -1030,43 +1012,24 @@ mod tests {
             let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-            let mut handled = false;
-
-            c.handle_event(
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut c,
                 &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            c.handle_event(
+            let pressed = sender.send(
+                &mut c,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
 
             assert!(focus.is_none(), "disabled checkbox must not request focus");
             assert!(!handled, "disabled checkbox must not swallow input");

@@ -404,9 +404,8 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 }
 
 #[test]
-fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
+fn workspace_root_rebuild_frames_carry_the_new_scene() {
     let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
-    frame.set_workspace_clip_supported(true);
     frame.relayout();
     let warm = frame.paint_with_damage();
     assert!(
@@ -414,7 +413,7 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
         "the desktop before the switch records source commands"
     );
     frame.with_chrome(|chrome| {
-        chrome.add_workspace("clip after rebuild");
+        chrome.add_workspace("frames after rebuild");
     });
     let mut document = AutoCommit::new();
     let document_root = automerge::ROOT;
@@ -423,28 +422,22 @@ fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
     let rebuilt = frame.paint_with_damage();
     assert!(
         !rebuilt.scene.encoding().is_empty(),
-        "the rebuilt workspace root has to reach the screen before the clip run"
+        "the rebuilt workspace root reaches the screen"
     );
-    let following = frame.paint_with_damage();
-    assert!(
-        following.scene.encoding().is_empty() && following.workspace_hold,
-        "the rest of the switch stays on the content clip"
-    );
-    // Hot-unplugging to a single scanout changes presenter capability while
-    // the same transition is in flight. Its next frame must be complete.
-    frame.set_workspace_clip_supported(false);
-    let single = frame.paint_with_damage();
-    assert!(!single.workspace_hold && single.workspace_clip.is_none());
-    assert!(
-        !single.scene.encoding().is_empty(),
-        "single-output presenter needs actual scene pixels"
-    );
-    frame.set_workspace_clip_supported(true);
-    let multiple = frame.paint_with_damage();
-    assert!(
-        multiple.workspace_hold && multiple.scene.encoding().is_empty(),
-        "restored multi-output replay capability keeps its clip optimisation"
-    );
+    // The rest of the switch's frame run draws the same desktop. A presenter
+    // keeps every pixel it already shows, on one display or several.
+    for index in 0..3 {
+        let following = frame.paint_with_damage();
+        assert!(
+            !following.scene.encoding().is_empty(),
+            "switch frame {index} carries the desktop on every presenter"
+        );
+        assert_eq!(
+            following.damage_regions.as_deref(),
+            Some(&[][..]),
+            "switch frame {index} repaints nothing the rebuilt frame drew"
+        );
+    }
 }
 
 fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
@@ -1649,6 +1642,68 @@ fn a_peer_pointer_move_repaints_under_one_percent_of_a_4k_output_in_every_theme(
     ] {
         let (mut frame, _clock) = settled_builder_in(theme);
         assert_peer_move_is_sparse(&mut frame, &format!("peer pointer move, {name}"));
+    }
+}
+
+/// The overview fading in over two displays side by side: after the chord's
+/// own frame every frame is sparse and repaints one display, and the pixels
+/// a presenter keeps from those repairs are a dense render's, in every theme.
+/// This is what the multi-display presenter shows for the fade, with no
+/// overview-specific path of its own.
+#[test]
+fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
+    use crate::shell::output_scene::OutputGeometry;
+
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high contrast", Theme::high_contrast()),
+    ] {
+        let (mut frame, _clock) = settled_builder_in(theme);
+        frame.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 2160.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 2160.0).with_id(1),
+        ]);
+        frame.relayout();
+        // The fade itself is under test, not the reduced-motion snap.
+        frame.theme.reduce_motion = false;
+        let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
+        frame.with_chrome(|chrome| {
+            chrome.overlays.overview = true;
+            chrome.bump();
+        });
+        frame.host_mut().latch_overview_transition();
+        // Produce the fade first: rendering 4K oracles between samples
+        // would outlast it.
+        for _ in 0..3 {
+            frames.push(frame.paint_with_damage());
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        frames.push(frame.paint_with_damage());
+        let mut retained = bridge();
+        let mut dense = bridge();
+        let mut repainted = false;
+        for (index, painted) in frames.iter().enumerate() {
+            let label = format!("overview fade, {name}, frame {index}");
+            assert!(!painted.scene.encoding().is_empty(), "{label}: no desktop");
+            // Two settled frames, then the chord's own frame, which may
+            // change chrome beyond the overview once.
+            if index > 2 {
+                let damage = painted
+                    .damage_regions
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{label}: must be sparse, not both displays"));
+                let first = damage.iter().all(|rect| rect.x + rect.width <= 1920);
+                let second = damage.iter().all(|rect| rect.x >= 1920);
+                assert!(first || second, "{label}: {damage:?} spans both displays");
+                repainted |= !damage.is_empty();
+            }
+            paint_retained_and_compare(&mut retained, &mut dense, painted, &label);
+        }
+        assert!(
+            repainted,
+            "overview fade, {name}: the fade repaints its display"
+        );
     }
 }
 

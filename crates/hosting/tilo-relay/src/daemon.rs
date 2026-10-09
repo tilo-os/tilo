@@ -139,7 +139,7 @@ impl GovernedAccessWriter {
             self.state_root.clone(),
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -723,8 +723,7 @@ impl Relay {
                 let mut runtime = runtime.lock().await;
                 runtime.membership_ceiling = Some(HashSet::new());
                 runtime.governed_user_roots.clear();
-                runtime.governed_access = true;
-                runtime.admit_authenticated = false;
+                runtime.admission = crate::room_access::AdmissionMode::Governed;
             }
         }
         let metrics = Arc::new(Metrics::default());
@@ -738,8 +737,7 @@ impl Relay {
         handshake_trust.refresh(&workspaces).await;
         let live_trust_policy = handshake_trust.live_policy.clone();
         let handler = RelayProtocol {
-            v2: false,
-            signed_actions: false,
+            protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -776,6 +774,7 @@ impl Relay {
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
             }),
+            agents: handler.agents.clone(),
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
@@ -796,8 +795,11 @@ impl Relay {
                 cert: identity.device_cert.clone(),
                 signing_key: identity.device_signing_key.clone(),
             },
-            revocations.clone(),
-            live_trust_policy.clone(),
+            crate::compute_session::ComputeTrust {
+                revocations: revocations.clone(),
+                trust_policy: live_trust_policy.clone(),
+                agents: handler.agents.clone(),
+            },
             Arc::new(crate::environment_host::TracingMetering),
         );
         let certification = crate::certification::CertificationProtocol::new(
@@ -852,17 +854,23 @@ impl Relay {
         };
         let mut router = Router::builder(endpoint.clone())
             .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::COMPACT_STATE,
+                    ..handler.clone()
+                },
+            )
+            .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
                 RelayProtocol {
-                    v2: true,
-                    signed_actions: true,
+                    protocol: crate::peer::SessionProtocol::SIGNED_ACTIONS,
                     ..handler.clone()
                 },
             )
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
-                    v2: true,
+                    protocol: crate::peer::SessionProtocol::V2,
                     ..handler.clone()
                 },
             )
@@ -1147,7 +1155,7 @@ impl Relay {
             state_root,
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -1448,6 +1456,7 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
         ALPN,
         tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
         tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -1533,8 +1542,13 @@ fn open_bound_workspace(
         rt.store.bind_shell_authority(authority.clone())?;
     }
     rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
-    rt.admit_authenticated =
-        matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
+    rt.admission = rt.admission.rebind(
+        if matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) {
+            crate::room_access::AdmissionMode::SameOwner
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        },
+    );
     rt.admitted_users = binding
         .admitted_users
         .iter()
@@ -2118,9 +2132,8 @@ fn validate_native_interactive_workspace_identity(
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
-    pub(crate) v2: bool,
-    /// Sessions on `ALPN_SIGNED_ACTIONS_V1`, which forward device-signed actions.
-    pub(crate) signed_actions: bool,
+    /// What sessions on this ALPN negotiated.
+    pub(crate) protocol: crate::peer::SessionProtocol,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -2144,6 +2157,17 @@ impl RelayProtocol {
             cert: &self.own_cert,
             key: &self.own_sk,
             revocations: &self.revocations,
+        }
+    }
+
+    /// This relay's certificate and agent trust.
+    #[cfg(feature = "web")]
+    pub(crate) fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_pk,
+            agents: &self.agents,
         }
     }
 
@@ -2182,6 +2206,18 @@ struct DiscoveryProtocol {
     compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
+    agents: crate::peer::AgentRegistry,
+}
+
+impl DiscoveryProtocol {
+    fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.own_user_pk,
+            agents: &self.agents,
+        }
+    }
 }
 
 /// What this relay's workers run for environments, across its workspaces.
@@ -2435,9 +2471,13 @@ impl ProtocolHandler for DiscoveryProtocol {
         let permitted = match workspace {
             Some(workspace) => {
                 let workspace = workspace.lock().await;
-                workspace.admit_authenticated
-                    || workspace.admitted_users.contains(&peer.user_public_key)
-                    || workspace.membership.contains(&peer.device_public_key)
+                crate::room_access::decide(
+                    &workspace,
+                    &self.trust(),
+                    &peer,
+                    crate::room_access::RoomOperation::ContentDiscovery,
+                )
+                .admitted()
             }
             None => false,
         };
@@ -2563,8 +2603,7 @@ async fn handle_conn(
         recv,
         send,
         ctx.peer_context(),
-        ctx.v2,
-        ctx.signed_actions,
+        ctx.protocol,
     ))
     .await;
     if let Err(e) = peer_result {
@@ -3970,6 +4009,7 @@ mod tests {
             ALPN,
             tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,

@@ -68,6 +68,7 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` macos | the linux lane's commands with `--target macos`, on macOS with Xcode |
 | `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
+| `ci-render-counters.yml` counters | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
 | `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../DEVELOPMENT.md#performance-results) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,

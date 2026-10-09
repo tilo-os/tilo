@@ -165,7 +165,12 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffAccepted { .. }
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
-            | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
+            | PersonalFabricAction::BluetoothHandoffCancel { .. }
+            // A media handoff's local file travels on the transfer lane.
+            | PersonalFabricAction::NearbyTransferOffer {
+                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                ..
+            } => ContinuityCapability::Media,
             PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::SetDisplayPlacementChecked { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -210,8 +215,21 @@ impl ContinuityPolicySnapshot {
         })
     }
 
+    /// Whether `action` may be processed now. Transfer continuations carry
+    /// no kind, so they pass while either transfer switch is on; the transfer
+    /// state machine then enforces the switch of the transfer's own kind.
     #[must_use]
     pub const fn permits_action(self, action: &PersonalFabricAction) -> bool {
+        if matches!(
+            action,
+            PersonalFabricAction::NearbyTransferReady { .. }
+                | PersonalFabricAction::NearbyTransferCancel { .. }
+                | PersonalFabricAction::NearbyTransferRestart { .. }
+                | PersonalFabricAction::NearbyTransferResult { .. }
+        ) {
+            return self.permits(ContinuityCapability::FileTransfer)
+                || self.permits(ContinuityCapability::Media);
+        }
         match Self::capability_for_action(action) {
             Some(capability) => self.permits(capability),
             None => true,
@@ -494,5 +512,50 @@ mod tests {
         assert!(!display_only.permits_action(&clock_report));
         assert!(display_only.permits_action(&health_probe));
         assert!(display_only.permits_action(&health_report));
+    }
+
+    #[test]
+    fn the_transfer_lane_answers_to_the_switch_of_each_transfer_kind() {
+        use crate::shell::nearby_transfer::TransferKind;
+
+        let offer = |kind| PersonalFabricAction::NearbyTransferOffer {
+            transfer_id: [1; 16],
+            name: "film.mkv".into(),
+            kind,
+            total_bytes: 4,
+            content_hash: [2; 32],
+        };
+        let media_offer = offer(TransferKind::MediaHandoff);
+        let file_offer = offer(TransferKind::File);
+        let ready = PersonalFabricAction::NearbyTransferReady {
+            request_id: [3; 16],
+            transfer_id: [1; 16],
+            committed_offset: 0,
+            prefix_hash: [4; 32],
+        };
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&media_offer),
+            Some(ContinuityCapability::Media)
+        );
+        assert_eq!(
+            ContinuityPolicySnapshot::capability_for_action(&file_offer),
+            Some(ContinuityCapability::FileTransfer)
+        );
+
+        let media_only = policy(true, false);
+        assert!(media_only.permits_action(&media_offer));
+        assert!(!media_only.permits_action(&file_offer));
+        assert!(media_only.permits_action(&ready));
+
+        let file_only = ContinuityPolicySnapshot::from_document(&document(&json!({
+            "continuity": {"enabled": true, "file_transfer": true}
+        })));
+        assert!(!file_only.permits_action(&media_offer));
+        assert!(file_only.permits_action(&file_offer));
+        assert!(file_only.permits_action(&ready));
+
+        let neither = policy(false, true);
+        assert!(!neither.permits_action(&media_offer));
+        assert!(!neither.permits_action(&ready));
     }
 }

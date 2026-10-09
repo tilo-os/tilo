@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::Dispatch;
 use automerge::ROOT;
 use winit::keyboard::ModifiersState;
 
@@ -20,24 +21,18 @@ fn dispatch_key(
     modifiers: ModifiersState,
 ) -> bool {
     let event = crate::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
-    let mut handled = false;
-    editor.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        },
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::from(modifiers),
-            state: crate::widget::Edits::lend(doc),
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
-    );
+    let handled = Dispatch::new()
+        .modifiers(modifiers)
+        .doc(doc)
+        .send(
+            editor,
+            &WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            },
+        )
+        .handled;
     editor.sync(doc, &ROOT);
     handled
 }

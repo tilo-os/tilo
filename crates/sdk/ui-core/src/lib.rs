@@ -281,6 +281,11 @@ pub mod view;
 pub mod virtual_viewport;
 #[cfg(feature = "native")]
 pub use native::warmup;
+/// Private completion receipts shared by native and browser text editors.
+/// These types grant no access to an embedded browser or its engine.
+pub mod text_input {
+    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+}
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

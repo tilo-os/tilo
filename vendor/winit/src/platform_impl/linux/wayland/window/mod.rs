@@ -89,6 +89,13 @@ pub struct Window {
 }
 
 impl Window {
+    pub fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        self.window_state.lock().unwrap().private_text_input(snapshot)
+    }
+    pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        self.window_state.lock().unwrap().acknowledge_private_text_input(serial, outcome);
+    }
+
     pub(crate) fn new(
         event_loop_window_target: &ActiveEventLoop,
         attributes: WindowAttributes,
@@ -659,6 +666,10 @@ impl Window {
     #[inline]
     pub fn set_ime_purpose(&self, purpose: ImePurpose) {
         self.window_state.lock().unwrap().set_ime_purpose(purpose);
+    }
+
+    pub fn set_ime_multiline(&self, multiline: bool) {
+        self.window_state.lock().unwrap().set_ime_multiline(multiline);
     }
 
     #[inline]

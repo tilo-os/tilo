@@ -3463,20 +3463,10 @@ mod tests {
             let mut taffy = TaffyTree::new();
             let mut node_map = std::collections::HashMap::new();
             let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-            let mut handled = true;
-            host.handle_event(
-                &WindowEvent::Focused(true),
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            crate::testing::Dispatch::new()
+                .handled(true)
+                .layout(&taffy, node)
+                .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
     }
@@ -5081,23 +5071,12 @@ mod tests {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),
             };
-            let mut doc = AutoCommit::new();
+            let mut sender = crate::testing::Dispatch::new()
+                .scale_factor(scale)
+                .layout(&tree, node);
             let mut send = |event: &WindowEvent| {
                 calls.set(0);
-                let mut handled = false;
-                host.handle_event(
-                    event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: scale,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut None,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let handled = sender.send(&mut host, event).handled;
                 (handled, calls.get())
             };
             let wheel = WindowEvent::MouseWheel {

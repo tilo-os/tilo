@@ -738,13 +738,19 @@ impl Widget for CodeEditor {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Terminal)
+        if self.read_only || !self.inner.is_focused() {
+            return None;
+        }
+        // Source text uses the shared input contract; no bytes go to a process.
+        self.inner.ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.ime_purpose().is_some() && self.inner.ime_multiline()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        if self.read_only {
-            return None;
-        }
+        self.ime_purpose()?;
         self.inner.ime_edit_fingerprint(key)
     }
 
@@ -1204,8 +1210,9 @@ mod tests {
         highlighter_colours_segments_from_the_theme();
     }
 
+    use crate::testing::Dispatch;
     use automerge::AutoCommit;
-    use taffy::{Style, TaffyTree};
+    use taffy::TaffyTree;
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::event::{ElementState, Modifiers, WindowEvent};
@@ -1228,24 +1235,7 @@ mod tests {
     use crate::synthetic_input::named_key;
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
-        ed.handle_event(
-            ev,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        Dispatch::new().doc(doc).modifiers(m).send(ed, ev).handled
     }
 
     fn draw_once(ed: &mut CodeEditor, theme: &Theme) {
@@ -1612,6 +1602,41 @@ mod tests {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    use crate::testing::dispatch;
+    #[test]
+    fn dictation_target_is_editable_source_and_refuses_read_only_or_blurred_input() {
+        let mut editor = CodeEditor::local();
+        editor.set_text("replace me");
+        editor.set_focused(true);
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        assert_eq!(
+            Widget::ime_purpose(&editor),
+            Some(winit::window::ImePurpose::Normal)
+        );
+        let key = [19; 32];
+        let stamp = Widget::ime_edit_fingerprint(&editor, &key).unwrap();
+        editor.select_all();
+        assert_ne!(Widget::ime_edit_fingerprint(&editor, &key), Some(stamp));
+        dispatch(
+            &mut editor,
+            &WindowEvent::Ime(winit::event::Ime::Commit("日本語 café".into())),
+        );
+        assert_eq!(editor.value(), "日本語 café");
+        editor.set_read_only(true);
+        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
+        dispatch(
+            &mut editor,
+            &WindowEvent::Ime(winit::event::Ime::Commit("refused".into())),
+        );
+        assert_eq!(editor.value(), "日本語 café");
+        editor.set_read_only(false);
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_some());
+        editor.set_focused(false);
+        assert!(Widget::ime_purpose(&editor).is_none());
+        assert!(Widget::ime_edit_fingerprint(&editor, &key).is_none());
+    }
+
     use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};
 
@@ -1623,26 +1648,6 @@ mod document_tests {
         ))
     }
 
-    fn send(editor: &mut CodeEditor, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        editor.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-
     #[test]
     fn a_read_only_editor_selects_but_never_edits() {
         let mut editor = CodeEditor::local()
@@ -1652,15 +1657,15 @@ mod document_tests {
         editor.set_text("{\n  \"ok\": true\n}\n");
         editor.set_focused(true);
         editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-        send(
+        dispatch(
             &mut editor,
             &key_event(Key::Character("x".into()), Some("x")),
         );
-        send(
+        dispatch(
             &mut editor,
             &key_event(Key::Named(NamedKey::Backspace), None),
         );
-        send(&mut editor, &key_event(Key::Named(NamedKey::Enter), None));
+        dispatch(&mut editor, &key_event(Key::Named(NamedKey::Enter), None));
         assert_eq!(editor.value(), "{\n  \"ok\": true\n}\n", "nothing edits it");
         editor.select_all();
         assert!(editor.selection().is_some(), "it still selects");

@@ -875,6 +875,10 @@ pub struct RoomActivityPane {
     pub(super) replay_unavailable: usize,
     replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
+    /// What [`Self::source`] has read of the room's change log, kept across
+    /// refreshes: a refresh reads only the changes appended since the last
+    /// one ([`HistorySource::entries_since`]).
+    pub(super) history_log: ui::history_source::HistoryLog,
     /// Each room change's reading, kept across refreshes; see
     /// [`describe_room_changes`].
     room_changes: HashMap<ChangeHash, RoomChange>,
@@ -1154,6 +1158,7 @@ impl RoomActivityPane {
             replay_unavailable: 0,
             replay_presentation_note: None,
             replay_frames: Vec::new(),
+            history_log: ui::history_source::HistoryLog::default(),
             room_changes: HashMap::new(),
             replay_checkpoints: HashMap::new(),
             replay_index: 0,
@@ -2438,9 +2443,15 @@ impl RoomActivityPane {
             }
         }
 
-        let mut entries = self.source.entries(tree.document_mut());
-        let mut tags =
-            describe_room_changes(tree.document_mut(), &mut entries, &mut self.room_changes);
+        let mut entries = self
+            .source
+            .entries_since(tree.document_mut(), &mut self.history_log);
+        let mut tags = describe_room_changes(
+            tree.document_mut(),
+            &self.history_log,
+            &mut entries,
+            &mut self.room_changes,
+        );
         // A receipt is committed by the room host, but its authenticated
         // `actor` is the person (or agent) who performed the semantic action.
         // Attribute the projected CRDT row to that actor rather than to the
@@ -10034,48 +10045,25 @@ thread_local! {
 /// else keeps [`HistorySource`]'s generic one. Returns, per entry, the
 /// workspace the change belongs to — `None` for several or none. `known`
 /// keeps each change's reading across refreshes; only new changes are
-/// diffed.
+/// diffed. Each entry's hash and dependencies come from `log`, the history
+/// log `entries` were read through, so the room's changes are not listed
+/// again.
 fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
+    log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
     known: &mut HashMap<ChangeHash, RoomChange>,
 ) -> Vec<Option<u64>> {
     let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
-    if entries.is_empty() {
-        return tags;
-    }
-    // Indexed so a long-lived room avoids a linear scan per change:
-    // `deps -> [hash]` isolates exactly that change.
-    let mut by_id: std::collections::HashMap<HistoryEntryId, usize> =
-        std::collections::HashMap::with_capacity(entries.len());
-    for (i, e) in entries.iter().enumerate() {
-        by_id.insert(e.id, i);
-    }
-    let changes: Vec<(HistoryEntryId, Vec<ChangeHash>, ChangeHash)> = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| {
-            (
-                ui::history_source::entry_id_from_hash(&c.hash().to_string()),
-                c.deps().to_vec(),
-                c.hash(),
-            )
-        })
-        .collect();
-
-    for (id, deps, hash) in changes {
-        let Some(&i) = by_id.get(&id) else {
+    for (entry, tag) in entries.iter_mut().zip(&mut tags) {
+        let Some((hash, deps)) = log.change(&entry.id) else {
             continue;
         };
+        // `deps -> [hash]` isolates exactly that change.
         let change = known
             .entry(hash)
-            .or_insert_with(|| RoomChange::read(doc, &deps, hash));
-        if let Some(tag) = tags.get_mut(i) {
-            *tag = change.workspace;
-        }
-        let Some(entry) = entries.get_mut(i) else {
-            continue;
-        };
+            .or_insert_with(|| RoomChange::read(doc, deps, hash));
+        *tag = change.workspace;
         if let Some((summary, op_class)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;

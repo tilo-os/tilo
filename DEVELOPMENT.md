@@ -233,11 +233,21 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`); `accept` takes this run's values as
+`kpis` selects groups (`fs`, `footprint`, `agent`, `latency`, `render`); `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
 the gate. A 1.25 factor passes as pending in the first run of a series and fails
 in the second. Synthetic records never enter a real baseline.
+
+The installed desktop's groups, `boot`, `idle`, `memory`, `app` and `render`, come from
+**Dev / VM acceptance** (`vm-acceptance.yml`) instead: its nightly run already boots the
+newest published dev disk in a KVM guest and opens a session on it, so its `perf` job
+compares that run's records (`scripts/vm-acceptance/run.py --records`) with the store
+and publishes them, under the same rules, rather than Perf / scheduled booting a second
+VM. They name `renderer=lavapipe`, `virtualization=kvm` and the runner class
+`runner-disk-100g`: software-rendered guest numbers, compared only with each other and
+never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performance
+records") lists the KPIs.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,

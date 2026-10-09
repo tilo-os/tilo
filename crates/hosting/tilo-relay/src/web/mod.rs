@@ -399,10 +399,12 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
                 .is_revoked(&device);
             let writable = match authority {
                 Some(authority) => match authority.rooms() {
-                    Some(rooms) => matches!(
-                        rooms.legacy_writer_role(authority.room(), device).await,
-                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
-                    ),
+                    Some(rooms) => rooms
+                        .legacy_writer_role(authority.room(), device)
+                        .await
+                        .is_some_and(|role| {
+                            crate::room_access::role_grants(role, collab_types::caps::Verb::Write)
+                        }),
                     None => false,
                 },
                 None => true,
@@ -441,14 +443,7 @@ async fn legacy_input(
         surface,
         events,
     } = request;
-    if !live::admitted(
-        &web.sessions,
-        member.device_public_key,
-        member.user_public_key,
-        workspace_id,
-    )
-    .await
-    {
+    if !live::admitted(&web.sessions, member, workspace_id).await {
         return Err(refused());
     }
     let publisher_user = web
@@ -471,12 +466,12 @@ async fn legacy_input(
         None => None,
     };
     let may = match governed {
-        Some((rooms, room)) => matches!(
-            rooms
-                .legacy_writer_role(&room, member.device_public_key)
-                .await,
-            Some(collab_types::role::Role::Owner | collab_types::role::Role::Editor)
-        ),
+        Some((rooms, room)) => rooms
+            .legacy_writer_role(&room, member.device_public_key)
+            .await
+            .is_some_and(|role| {
+                crate::room_access::role_grants(role, collab_types::caps::Verb::Write)
+            }),
         None => member.user_public_key == publisher_user,
     };
     if !may {
@@ -932,14 +927,7 @@ async fn route(
             let workspace_id: u64 = decode(&bytes)?;
             let token = session.token();
             web.grants
-                .issue(
-                    sessions,
-                    token,
-                    session.peer.device_public_key,
-                    session.peer.user_public_key,
-                    workspace_id,
-                    None,
-                )
+                .issue(sessions, token, &session.peer, workspace_id, None)
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
@@ -955,8 +943,7 @@ async fn route(
                 .issue(
                     sessions,
                     token,
-                    session.peer.device_public_key,
-                    session.peer.user_public_key,
+                    &session.peer,
                     request.workspace_id,
                     Some(&request.agent_id),
                 )

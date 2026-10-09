@@ -361,7 +361,8 @@ fn load_history_map<T: serde::de::DeserializeOwned>(key: &str) -> HashMap<u64, T
 /// maps, and the compositor leaves one inside a frame: an atomic replacement
 /// syncs the file and its directory, which held a workspace switch's first
 /// frame for 2.1 s on a busy disk. The writer keeps the newest map per key
-/// and writes them in one replacement.
+/// and writes them in one replacement once saves pause
+/// ([`HISTORY_SAVE_QUIET`]).
 fn save_history_map<T: serde::Serialize>(key: &'static str, values: &HashMap<u64, T>) {
     if let Some(path) = history_path() {
         queue_history_save(path, key, history_map_value(values));
@@ -435,36 +436,70 @@ fn settle_history_writes() {
     }
 }
 
-/// The writer thread: take every request waiting, keep the newest map per
-/// file and key, and write each file once.
+/// How long the history writer waits for another save before writing: a
+/// burst of workspace switches becomes one synced write after it. A sync
+/// forces a journal commit that every other write on the filesystem waits
+/// for, the compositor thread's own included, so one per switch kept landing
+/// inside a later switch's frames.
+const HISTORY_SAVE_QUIET: Duration = Duration::from_secs(2);
+
+/// The longest a save waits for the burst it is part of to end.
+const HISTORY_SAVE_LATEST: Duration = Duration::from_secs(10);
+
+/// The writer thread: gather saves until they pause (or a caller settles),
+/// keep the newest map per file and key, and write each file once.
 fn write_history_requests(received: &mpsc::Receiver<HistoryWrite>) {
-    type FileMaps = Vec<(&'static str, serde_json::Value)>;
     while let Ok(first) = received.recv() {
-        let mut files: Vec<(std::path::PathBuf, FileMaps)> = Vec::new();
-        let mut settled = Vec::new();
-        for request in std::iter::once(first).chain(received.try_iter()) {
-            match request {
-                HistoryWrite::Save { path, key, values } => {
-                    let index = files
-                        .iter()
-                        .position(|(known, _)| *known == path)
-                        .unwrap_or_else(|| {
-                            files.push((path, Vec::new()));
-                            files.len().saturating_sub(1)
-                        });
-                    if let Some((_, maps)) = files.get_mut(index) {
-                        maps.retain(|(known, _)| *known != key);
-                        maps.push((key, values));
-                    }
-                }
-                HistoryWrite::Settle(done) => settled.push(done),
+        let mut batch = HistoryBatch::default();
+        let started = Instant::now();
+        batch.take(first);
+        while batch.settled.is_empty() {
+            let waited = started.elapsed();
+            let Some(left) = HISTORY_SAVE_LATEST.checked_sub(waited) else {
+                break;
+            };
+            match received.recv_timeout(HISTORY_SAVE_QUIET.min(left)) {
+                Ok(request) => batch.take(request),
+                Err(_) => break,
             }
         }
-        for (path, maps) in files {
+        for request in received.try_iter() {
+            batch.take(request);
+        }
+        for (path, maps) in batch.files {
             write_history_now(&path, maps);
         }
-        for done in settled {
+        for done in batch.settled {
             let _ = done.send(());
+        }
+    }
+}
+
+/// The saves and settle requests one write of the history files answers.
+#[derive(Default)]
+struct HistoryBatch {
+    files: Vec<(std::path::PathBuf, Vec<(&'static str, serde_json::Value)>)>,
+    settled: Vec<mpsc::SyncSender<()>>,
+}
+
+impl HistoryBatch {
+    fn take(&mut self, request: HistoryWrite) {
+        match request {
+            HistoryWrite::Save { path, key, values } => {
+                let index = self
+                    .files
+                    .iter()
+                    .position(|(known, _)| *known == path)
+                    .unwrap_or_else(|| {
+                        self.files.push((path, Vec::new()));
+                        self.files.len().saturating_sub(1)
+                    });
+                if let Some((_, maps)) = self.files.get_mut(index) {
+                    maps.retain(|(known, _)| *known != key);
+                    maps.push((key, values));
+                }
+            }
+            HistoryWrite::Settle(done) => self.settled.push(done),
         }
     }
 }

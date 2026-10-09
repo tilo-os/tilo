@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
+mod private_text_input;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -95,6 +96,7 @@ struct AppHandler {
     /// text-input protocol until its live composition commits, while its
     /// keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
+    private_input: private_text_input::Bridge,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -427,6 +429,7 @@ mod floating_source_focus_tests {
     fn native_ime_boundary_preserves_ordinary_intent_and_android_shared_contract() {
         let shared = ImeWindowState {
             purpose: winit::window::ImePurpose::Normal,
+            multiline: true,
             x: 140,
             y: 454,
             width: 1,
@@ -436,6 +439,7 @@ mod floating_source_focus_tests {
         assert_eq!((native.x, native.y), (140, 454));
         assert_eq!((native.width, native.height), (shared.width, shared.height));
         assert_eq!(native.purpose, shared.purpose);
+        assert_eq!(native.multiline, shared.multiline);
         assert_eq!(native.shared(), shared);
         let outside = NativeImeWindowState::from_rect(
             shared.purpose,
@@ -457,6 +461,7 @@ mod floating_source_focus_tests {
             for (x, y) in [(124, 290), (482, 695)] {
                 let primary = ImeWindowState {
                     purpose: winit::window::ImePurpose::Normal,
+                    multiline: true,
                     x,
                     y,
                     width: 2,
@@ -472,6 +477,7 @@ mod floating_source_focus_tests {
                 );
                 assert_eq!((child.width, child.height), (primary.width, primary.height));
                 assert_eq!(child.purpose, primary.purpose);
+                assert_eq!(child.multiline, primary.multiline);
             }
         }
     }
@@ -491,6 +497,7 @@ mod floating_source_focus_tests {
         let returned = primary_ime_state_for_held_child(
             Some(ImeWindowState {
                 purpose: winit::window::ImePurpose::Normal,
+                multiline: false,
                 x: 100,
                 y: 500,
                 width: 2,
@@ -819,6 +826,7 @@ fn dispatch_native_surface_accessibility(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NativeImeWindowState {
     purpose: winit::window::ImePurpose,
+    multiline: bool,
     x: i32,
     y: i32,
     width: u32,
@@ -845,6 +853,7 @@ impl NativeImeWindowState {
         };
         Self {
             purpose,
+            multiline: shared.multiline,
             x: signed(rect.x0),
             y: signed(rect.y0),
             width: shared.width,
@@ -854,25 +863,29 @@ impl NativeImeWindowState {
 
     #[cfg(any(target_os = "android", test))]
     fn shared(self) -> ImeWindowState {
-        ImeWindowState::from_rect(
+        let mut shared = ImeWindowState::from_rect(
             self.purpose,
             KurboRect::from_origin_size(
                 (f64::from(self.x), f64::from(self.y)),
                 (f64::from(self.width), f64::from(self.height)),
             ),
-        )
+        );
+        shared.multiline = self.multiline;
+        shared
     }
 }
 
 impl From<ImeWindowState> for NativeImeWindowState {
     fn from(shared: ImeWindowState) -> Self {
-        Self::from_rect(
+        let mut native = Self::from_rect(
             shared.purpose,
             KurboRect::from_origin_size(
                 (f64::from(shared.x), f64::from(shared.y)),
                 (f64::from(shared.width), f64::from(shared.height)),
             ),
-        )
+        );
+        native.multiline = shared.multiline;
+        native
     }
 }
 
@@ -886,7 +899,7 @@ fn apply_native_ime(
     }
     match next {
         Some(intent) => {
-            window.set_ime_purpose(intent.purpose);
+            apply_native_ime_content(window, intent);
             window.set_ime_allowed(true);
             window.set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(intent.x, intent.y),
@@ -907,6 +920,11 @@ fn resize_native_floating_window(window: &Window, rect: KurboRect) {
     window.set_min_inner_size(Some(size));
     window.set_max_inner_size(Some(size));
     let _ = window.request_inner_size(size);
+}
+
+fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
+    tilo_presentation::text_input::set_multiline(window, intent.multiline);
+    window.set_ime_purpose(intent.purpose);
 }
 
 fn secondary_ime_state(
@@ -960,7 +978,9 @@ fn primary_ime_state_for_held_child(
         f64::from(primary.y.saturating_add(primary.height)),
     ) + primary_origin
         - child_origin;
-    Some(NativeImeWindowState::from_rect(primary.purpose, rect))
+    let mut intent = NativeImeWindowState::from_rect(primary.purpose, rect);
+    intent.multiline = primary.multiline;
+    Some(intent)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1724,6 +1744,11 @@ impl AppHandler {
 
     fn sync_ime(&mut self, window: &Window) {
         let _entry = self.app.enter_wake_scope();
+        self.private_input.service(
+            &self.app,
+            window,
+            !self.floating_windows.iter().any(|surface| surface.focused),
+        );
         // Return keeps the real composer on its exact suspended child until
         // the input method finishes. The primary redraw has moved the editor's
         // caret, so update that still-active protocol without waiting for
@@ -1769,7 +1794,12 @@ impl AppHandler {
         } else if self.floating_windows.iter().any(|surface| surface.focused) {
             None
         } else {
-            self.app.ime_window_state().map(NativeImeWindowState::from)
+            self.app
+                .ime_window_state()
+                .filter(|_| {
+                    !self.app.focused_ime_requires_deferred_ack() || self.private_input.admitted()
+                })
+                .map(NativeImeWindowState::from)
         };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
@@ -1807,7 +1837,7 @@ impl AppHandler {
             // must already carry the right content type. Cursor geometry
             // follows enable because winit intentionally ignores cursor
             // updates while IME is disabled.
-            window.set_ime_purpose(intent.purpose);
+            apply_native_ime_content(window, intent);
             window.set_ime_allowed(true);
             window.set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(intent.x, intent.y),
@@ -3622,6 +3652,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
         #[cfg(target_os = "android")]
         if let WindowEvent::Touch(touch) = &event
             && touch.phase == winit::event::TouchPhase::Started
@@ -3808,6 +3849,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // primary window's intent, so an already-received handoff cannot emit
         // a disable for the intermediate attached-widget projection.
         self.sync_ime(&window);
+        if self.private_input.pending() {
+            request_primary_redraw();
+        }
         self.sync_native_floating_geometry();
         if self.recover_stalled_floating_windows() {
             request_primary_redraw();
@@ -4061,7 +4105,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
         };
-        match crate::render_thread::retry::next_wake(
+        let deadline = crate::render_thread::retry::next_wake(
             crate::time::now(),
             primary_blocked_until,
             any_render_available,
@@ -4069,7 +4113,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             scheduled_deadline,
             retry_at,
             animation_deadline,
-        ) {
+        );
+        // A native field lease can retire and become ready during an idle sync.
+        // Republish its admission even when no model/layout change needs paint;
+        // otherwise a canceled recording's successor waits on a stale stamp.
+        if scheduled_due {
+            self.sync_ime(&window);
+        }
+        let deadline = deadline
+            .into_iter()
+            .chain(
+                self.private_input
+                    .busy()
+                    .then(|| crate::time::now() + Duration::from_millis(50)),
+            )
+            .min();
+        match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -4665,6 +4724,7 @@ impl App {
             primary_preedit_clear_pending: false,
             floating_ime_continuation: None,
             floating_ime_return_continuation: None,
+            private_input: private_text_input::Bridge::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]

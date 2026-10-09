@@ -3,7 +3,9 @@ import importlib.util
 import io
 from pathlib import Path
 import struct
+import tempfile
 import unittest
+from unittest import mock
 import wave
 
 
@@ -20,6 +22,17 @@ score = load("summarize_speech_benchmark")
 
 
 class SpeechBenchmarkTest(unittest.TestCase):
+    def test_selected_baseline_does_not_stage_other_model_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "public"
+            with mock.patch("sys.argv", ["prepare", str(destination), "--model", "base", "--model", "base"]), \
+                    mock.patch.object(prepare, "stage_language", return_value=[]), \
+                    mock.patch.object(prepare, "stage_model", return_value={"file": "base.bin"}) as stage:
+                prepare.main()
+            stage.assert_called_once_with(destination, "base", None)
+            import json
+            self.assertEqual(set(json.loads((destination / "manifest.json").read_text())["models"]), {"base"})
+
     def test_insecure_transport_is_rejected_before_request(self):
         with self.assertRaises(ValueError):
             prepare.get("http://example.invalid")

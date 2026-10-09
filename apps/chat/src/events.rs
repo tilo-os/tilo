@@ -2895,7 +2895,7 @@ mod tests {
         feed(
             &mut edited,
             &mut edited_doc,
-            &key_named(NamedKey::Backspace),
+            &named_key(NamedKey::Backspace),
         );
         assert_eq!(edited.composer_main.value(), "Same visible text");
         settle_agent_submissions(&mut edited);
@@ -2909,13 +2909,13 @@ mod tests {
         feed_mods(
             &mut formatted,
             &mut formatted_doc,
-            &key_char("a"),
+            &char_key("a"),
             mods(true, false),
         );
         feed_mods(
             &mut formatted,
             &mut formatted_doc,
-            &key_char("b"),
+            &char_key("b"),
             mods(true, false),
         );
         assert_eq!(formatted.composer_main.value(), "Same visible text");
@@ -2949,7 +2949,7 @@ mod tests {
             Hit::Agent("scribe".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
-        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
         type_str(&mut app, &mut doc, "Formatted draft");
         app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
 
@@ -3165,7 +3165,7 @@ mod tests {
             |(_, hit)| matches!(hit, Hit::AgentTaskCenter(Some(task)) if task == "task-current"),
         );
         app.keyboard_target = current_task_index;
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         assert!(matches!(
             app.host_intent.take(),
             Some(ui::widget::AppHostIntent::ShowWorkspaceTasks {
@@ -4089,7 +4089,7 @@ mod tests {
             app.hover_tooltip_target(handle).map(|(_, label)| label),
             Some(crate::i18n::t("chat-agent-drag")),
         );
-        feed(&mut app, &mut doc, &cursor(handle.x, handle.y));
+        feed(&mut app, &mut doc, &cursor_moved(handle.x, handle.y));
         feed(
             &mut app,
             &mut doc,
@@ -4101,7 +4101,7 @@ mod tests {
             Some(winit::window::CursorIcon::Grabbing),
         );
         let outside = Point::new(app.rect.x1 + 40.0, handle.y + 18.0);
-        feed(&mut app, &mut doc, &cursor(outside.x, outside.y));
+        feed(&mut app, &mut doc, &cursor_moved(outside.x, outside.y));
         assert!(app.direct_agent.is_none(), "the primary source is cleared");
         let channel = ChatDoc::agent_conversation_channel_id("ws_home", "scribe");
         let surface = app
@@ -4222,7 +4222,7 @@ mod tests {
             .position(|(_, hit, ..)| matches!(hit, Hit::AgentDragHandle))
             .expect("the grip is in the keyboard ring");
         app.focus_keyboard_target(grip_index, &Hit::AgentDragHandle);
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         assert!(
             app.direct_agent.is_none(),
             "Enter leaves the attached route"
@@ -4583,14 +4583,14 @@ mod tests {
             app.desktop_floating_bounds(),
         );
         for event in [
-            cursor(handle.x, handle.y),
+            cursor_moved(handle.x, handle.y),
             mouse(ElementState::Pressed, MouseButton::Left),
         ] {
             feed_root_mods(&mut app, &mut doc, &event, Modifiers::default());
         }
         assert!(ui::Widget::wants_pointer_capture(&app));
         for event in [
-            cursor(handle.x - 96.0, handle.y + 44.0),
+            cursor_moved(handle.x - 96.0, handle.y + 44.0),
             mouse(ElementState::Released, MouseButton::Left),
         ] {
             feed_root_mods(&mut app, &mut doc, &event, Modifiers::default());
@@ -4706,7 +4706,7 @@ mod tests {
             Some(parent_float_target),
             "focusing the child does not contaminate the parent keyboard ring"
         );
-        feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
+        feed_root_mods(app, doc, &named_key(NamedKey::Enter), Modifiers::default());
         assert!(
             app.agent_surfaces
                 .values()
@@ -4797,7 +4797,7 @@ mod tests {
         assert!(!encoded.contains("東京"));
         assert!(!encoded.contains("Original draft"));
 
-        feed_root_mods(app, doc, &key_named(NamedKey::Enter), Modifiers::default());
+        feed_root_mods(app, doc, &named_key(NamedKey::Enter), Modifiers::default());
         assert_eq!(app.agent_submission_acceptances.get(), accepted + 1);
         assert!(
             app.agent_submissions
@@ -4953,7 +4953,7 @@ mod tests {
             Some(id),
             true,
         );
-        feed_root_mods(app, doc, &key_char("!"), Modifiers::default());
+        feed_root_mods(app, doc, &char_key("!"), Modifiers::default());
         assert_eq!(
             app.agent_surfaces[channel].view.composer_main.value(),
             "東京!"
@@ -5041,9 +5041,9 @@ mod tests {
         );
         for ch in text.chars() {
             let event = if ch == ' ' {
-                key_named(NamedKey::Space)
+                named_key(NamedKey::Space)
             } else {
-                key_char(&ch.to_string())
+                char_key(&ch.to_string())
             };
             feed_root_mods(app, doc, &event, Modifiers::default());
         }
@@ -5320,7 +5320,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         type_str(&mut app, &mut doc, "Original draft");
-        feed_root_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+        feed_root_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
         feed_root_mods(
             &mut app,
             &mut doc,

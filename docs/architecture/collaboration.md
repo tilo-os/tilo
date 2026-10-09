@@ -88,7 +88,17 @@ routing hints, so a collision is rejected rather than selecting an arbitrary
 room.
 
 Only a locally governing administrator can mint an invite or change membership
-and capabilities. Ordinary role controls expose Viewer, Commenter, and Editor;
+and capabilities. Whether this device may invite, and through which authority,
+is one decision (`shell::invite_policy::may_issue_invitation`) that the invite
+composer, the palette's `peer.invite` rows and the issuer all ask: `Invite` on
+the `peer.invite.named` action under the workspace's capability policy, then
+the room's governor — this person's relay (the admitted governor is the
+identity this room selects, which may be a workspace-specific identity rather
+than the device's default person), this device sharing a room it governs on
+its home relay, or, for a member who holds a delegated `Invite` grant in a
+room someone else governs, a refusal that sends them to the owner rather than
+a composer or palette row the issuer would reject. Ordinary role controls
+expose Viewer, Commenter, and Editor;
 Owner is structural governance authority and is never created or transferred
 by cycling a role chip. What a role may change depends on the path the change
 takes:
@@ -125,6 +135,32 @@ Live session handles in cursor, app-presence, remote-input, stream, and
 scrollback messages are bound to the authenticated transport endpoint before
 dispatch. A member therefore cannot impersonate another member merely by
 copying that member's numeric session handle.
+
+### Liveness without chatter
+
+A converged desktop that nobody is using sends no application message. The
+transport keeps liveness: a gossip neighbour is a member while its link is up,
+iroh sends a QUIC keep-alive after 5 s without traffic, and the collaboration
+endpoint ends a connection that hears nothing for 15 s, which takes the link
+down. A peer whose link went down is dropped 5 s later unless it returns, so a
+peer that leaves cleanly is gone within 5 s and one that vanishes (power,
+network) within 20 s (`DEPARTURE_GRACE`, `PEER_TIMEOUT` in `actor.rs`).
+
+Everything else is said when it changes or when someone new can hear it. A
+device announces its identity and codecs when a link comes up and again only
+when they change; a new revocation is read from disk on the 5 s upkeep tick
+and announced at once, as before. Room changes are pushed when they land, and
+a repair pull follows 2 s after activity settles; a peer that sees a request
+naming changes it lacks asks back, and an idle desktop pulls once every 5
+minutes and whenever a peer joins. A resting pointer is not restated: it is
+said again only for a peer that joins. An idle workspace-host session pings
+its host after 15 s of silence and is redialled after 25 s.
+
+Older builds evict a peer silent for 15 s and beat every 5 s with a wall-clock
+`Heartbeat`. A current build that hears such a beat on a topic beats back on
+it (with a numbered, not timed, heartbeat, plus its identity and codecs) for
+as long as the older build is there, so mixed rooms interoperate at the old
+cadence and rooms of current builds only are silent.
 
 ## Room admission
 
@@ -261,6 +297,16 @@ This gives three deployments without three protocols:
 - Private actions: the v2 envelope (`tilo_delivery_protocol::transport_v2`)
   on `tilo-relay/3`, and on `tilo-relay/4`, where each action is signed by the
   device that sends it (below).
+- Compact state: `tilo-relay/5` (`ALPN_COMPACT_STATE_V1`) is `tilo-relay/4`
+  whose co-edit deltas travel as `EnvelopeV2::UnsignedDelta`. A co-edit
+  publisher leaves the outer `Envelope::Delta::signature` all zero, because the
+  session and the payload's own signed op authenticate it, so the field is
+  dropped on the wire: 66 bytes less per keystroke frame and per recipient. Each
+  session's reader restores the same `Envelope::Delta`, so the host stores and
+  routes one value whatever the wire was. A client dials `tilo-relay/5` first and
+  falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
+  `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
+  know.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

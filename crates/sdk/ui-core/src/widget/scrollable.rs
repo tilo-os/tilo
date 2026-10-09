@@ -2018,6 +2018,7 @@ impl crate::widget::controls::ActionControls for Scrollable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
     use automerge::AutoCommit;
 
@@ -2036,29 +2037,6 @@ mod tests {
             state,
             button: MouseButton::Left,
         }
-    }
-
-    fn dispatch(s: &mut Scrollable, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     struct EventSpy {
@@ -2324,20 +2302,7 @@ mod tests {
             .get_rect()
             .center();
         assert!(scroll.content_viewport_rect().contains(at));
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let modifiers = winit::event::Modifiers::default();
-        let mut ctx = crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &tree,
-        };
+        let mut sender = Dispatch::new().layout(&tree, node);
         for event in [
             cursor_moved(at.x, at.y),
             WindowEvent::CursorLeft {
@@ -2347,8 +2312,7 @@ mod tests {
             mouse(ElementState::Pressed),
             mouse(ElementState::Released),
         ] {
-            *ctx.handled = false;
-            scroll.handle_event(&event, &mut ctx);
+            sender.send(&mut scroll, &event);
         }
         assert_eq!(opened.get(), Some(true), "the real disclosure must open");
         assert!(scroll.child.as_ref().unwrap().children().len() > 1);
@@ -2405,7 +2369,8 @@ mod tests {
             let field = scroll.child.as_ref().unwrap().children()[0]
                 .get_rect()
                 .center();
-            dispatch_measured(&mut scroll, &tree, node, &cursor_moved(field.x, field.y));
+            let mut measured = Dispatch::new().layout(&tree, node);
+            measured.send(&mut scroll, &cursor_moved(field.x, field.y));
             scroll.set_offset_y(scroll.max_offset_y());
             scroll.apply_layout(&tree, node, Point::ZERO);
             assert!(
@@ -2417,52 +2382,27 @@ mod tests {
                 .center();
             assert!(scroll.content_viewport_rect().contains(at));
             assert!(
-                !dispatch_measured(&mut scroll, &tree, node, &cursor_moved(at.x, at.y)),
+                !measured
+                    .send(&mut scroll, &cursor_moved(at.x, at.y))
+                    .handled,
                 "hover transitions do not consume motion intended for a sibling"
             );
-            assert!(dispatch_measured(
-                &mut scroll,
-                &tree,
-                node,
-                &mouse(ElementState::Pressed)
-            ));
-            assert!(dispatch_measured(
-                &mut scroll,
-                &tree,
-                node,
-                &mouse(ElementState::Released)
-            ));
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Pressed))
+                    .handled
+            );
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Released))
+                    .handled
+            );
             assert_eq!(
                 opened.get(),
                 Some(true),
                 "the real scrolled disclosure opens at scale {scale}"
             );
         }
-    }
-
-    fn dispatch_measured(
-        s: &mut Scrollable,
-        tree: &TaffyTree<()>,
-        node: NodeId,
-        event: &WindowEvent,
-    ) -> bool {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2513,24 +2453,13 @@ mod tests {
                 .unwrap();
             scroll.apply_layout(&taffy, node, Point::ZERO);
 
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let mut sender = Dispatch::new().layout(&taffy, node);
             let mut focus_target = None;
             for event in [cursor_moved(40.0, 90.0), mouse(ElementState::Pressed)] {
-                let mut handled = false;
-                scroll.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                focus_target = sender
+                    .send(&mut scroll, &event)
+                    .focus_target
+                    .or(focus_target);
             }
             assert_eq!(
                 pointer_events.get(),
@@ -2548,20 +2477,10 @@ mod tests {
             );
 
             for event in [cursor_moved(40.0, 70.0), mouse(ElementState::Pressed)] {
-                let mut handled = false;
-                scroll.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: crate::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
+                focus_target = sender
+                    .send(&mut scroll, &event)
+                    .focus_target
+                    .or(focus_target);
             }
             assert_eq!(
                 pointer_events.get(),
@@ -3009,7 +2928,13 @@ mod tests {
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0), // a plain vertical wheel
                 phase: winit::event::TouchPhase::Moved,
             };
-            assert!(dispatch_mods(&mut s, &wheel, shift), "shift+wheel handled");
+            assert!(
+                Dispatch::new()
+                    .modifiers(shift)
+                    .send(&mut s, &wheel)
+                    .handled,
+                "shift+wheel handled"
+            );
             assert!(
                 s.offset_x() > 0.0,
                 "shift+wheel scrolls X, got x={}",
@@ -3495,33 +3420,6 @@ mod tests {
     }
 
     use crate::synthetic_input::named_key;
-
-    fn dispatch_mods(
-        s: &mut Scrollable,
-        event: &WindowEvent,
-        mods: winit::event::Modifiers,
-    ) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
-    }
 
     #[test]
     fn overlay_bar_fades_with_activity_and_damages_its_last_frame() {

@@ -103,6 +103,7 @@ pub struct WindowState {
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
     presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
+    private_text_input: Option<super::super::types::tilo_text_input::PrivateTextField>,
 
     /// The current cursor grabbing mode.
     cursor_grab_mode: GrabState,
@@ -112,6 +113,7 @@ pub struct WindowState {
 
     /// The current IME purpose.
     ime_purpose: ImePurpose,
+    ime_multiline: bool,
 
     /// The text inputs observed on the window.
     text_inputs: Vec<ZwpTextInputV3>,
@@ -164,6 +166,14 @@ pub struct WindowState {
 }
 
 impl WindowState {
+    pub fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        let Some(field) = &self.private_text_input else { return false; };
+        field.update(snapshot);
+        true
+    }
+    pub fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        if let Some(field) = &self.private_text_input { field.acknowledge(serial, outcome); }
+    }
     /// Create new window state.
     pub fn new(
         connection: Connection,
@@ -189,6 +199,7 @@ impl WindowState {
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
             presentation: winit_state.presentation.clone(),
+            private_text_input: winit_state.private_text_input.as_ref().map(|manager| manager.field(window.wl_surface(), queue_handle)),
             connection,
             csd_fails: false,
             cursor_grab_mode: GrabState::new(),
@@ -202,6 +213,7 @@ impl WindowState {
             has_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
+            ime_multiline: false,
             last_configure: None,
             max_inner_size: None,
             min_inner_size: MIN_WINDOW_SIZE,
@@ -1072,7 +1084,7 @@ impl WindowState {
             applied = true;
             if allowed {
                 text_input.enable();
-                text_input.set_content_type_by_purpose(self.ime_purpose);
+                text_input.set_content_type_by_purpose(self.ime_purpose, self.ime_multiline);
             } else {
                 text_input.disable();
             }
@@ -1100,7 +1112,7 @@ impl WindowState {
         self.ime_purpose = purpose;
 
         for text_input in &self.text_inputs {
-            text_input.set_content_type_by_purpose(purpose);
+            text_input.set_content_type_by_purpose(purpose, self.ime_multiline);
             text_input.commit();
         }
     }
@@ -1108,6 +1120,21 @@ impl WindowState {
     /// Get the IME purpose.
     pub fn ime_purpose(&self) -> ImePurpose {
         self.ime_purpose
+    }
+
+    pub fn set_ime_multiline(&mut self, multiline: bool) {
+        if self.ime_multiline == multiline {
+            return;
+        }
+        self.ime_multiline = multiline;
+        for text_input in &self.text_inputs {
+            text_input.set_content_type_by_purpose(self.ime_purpose, multiline);
+            text_input.commit();
+        }
+    }
+
+    pub fn ime_multiline(&self) -> bool {
+        self.ime_multiline
     }
 
     /// Set the scale factor for the given window.

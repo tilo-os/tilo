@@ -5103,32 +5103,6 @@ async fn spawn_presence_stream(
     }
 }
 
-static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-fn next_certified_document_seq(now: crate::time::SystemTime) -> u64 {
-    use std::sync::atomic::Ordering;
-
-    let wall = now
-        .duration_since(crate::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-        });
-    let mut observed = LAST_CERTIFIED_DOCUMENT_SEQ.load(Ordering::Relaxed);
-    loop {
-        let candidate = wall.max(observed.saturating_add(1));
-        match LAST_CERTIFIED_DOCUMENT_SEQ.compare_exchange_weak(
-            observed,
-            candidate,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return candidate,
-            Err(actual) => observed = actual,
-        }
-    }
-}
-
 /// Keep the accepted request and its queue byte reservation on the worker
 /// stack while hydration catches up. No later barrier or command can overtake
 /// it. Hydration runs independently on this same LocalSet.
@@ -5356,7 +5330,7 @@ async fn try_send_frame(
     let author = collab_types::Ed25519PublicKey::from_bytes(author);
     let attestation =
         collab_types::document_attestation_id(&route.spec.app_id, &workspace_id, record_id);
-    let seq = next_certified_document_seq(now);
+    let seq = collab_types::next_unordered_document_sequence(now);
     let mut op = match encryption_metadata {
         Some(metadata) => SignedOp::new_unsigned_with_encryption(
             payload,

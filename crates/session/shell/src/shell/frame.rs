@@ -160,17 +160,6 @@ pub struct FramePaint {
     pub revision: u64,
     pub previous_revision: Option<u64>,
     pub damage_regions: Option<Vec<FineDamageRect>>,
-    /// Set while the overview is fading. The multi-output presenter composites
-    /// this panel over the previous desktop instead of readback of both outputs.
-    pub(crate) overview_patch: Option<crate::shell::overlay_host::OverviewFastPatch>,
-    /// Active workspace, so a switch back can replay pixels already rendered
-    /// instead of uploading both outputs again.
-    pub(crate) workspace_id: Option<u64>,
-    /// The workspace-switch frame run. Intermediate frames must not upload.
-    pub(crate) workspace_hold: bool,
-    /// Content column of the first display while that run is in flight.
-    /// The close stays inside it instead of flushing every scanout.
-    pub(crate) workspace_clip: Option<FineDamageRect>,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -181,6 +170,12 @@ pub struct FramePaint {
     pub backdrop: Option<Arc<BackdropFrame>>,
     /// Optional separable canvases; the screen-space scene remains authoritative.
     pub cache: Option<FrameCache>,
+    /// The client image drawn on top of everything on its output, pixel for
+    /// pixel, which a display covering exactly that image may scan out
+    /// instead of rendering `scene`. Read it through
+    /// [`FramePaint::scanout_candidate`]: anything drawn into `scene` after
+    /// the frame builder found it voids it.
+    pub scanout: Option<crate::shell::scanout_candidate::ScanoutCandidate>,
 }
 
 /// A strip drawn in canvas coordinates. The presenter shows the workspace
@@ -263,19 +258,16 @@ impl FramePaint {
             revision: _,
             previous_revision: _,
             damage_regions: _,
-            overview_patch,
-            workspace_id: _,
-            workspace_hold: _,
-            workspace_clip: _,
             hdr_layers: _,
             backdrop,
             cache,
+            // Its image is drawn by `scene`, pinned above. A presenter that
+            // scans it out holds the client frame itself, until the flip
+            // that replaces it retires.
+            scanout: _,
         } = self;
         let mut pins = crate::shell::gpu_frames::FramePins::default();
         pins.add_scene(scene);
-        if let Some(patch) = overview_patch {
-            pins.add_scene(&patch.panel_scene);
-        }
         if let Some(backdrop) = backdrop {
             for region in &backdrop.regions {
                 pins.add_scene(&region.below);
@@ -306,14 +298,19 @@ impl FramePaint {
             revision: 0,
             previous_revision: None,
             damage_regions: None,
-            overview_patch: None,
-            workspace_id: None,
-            workspace_hold: false,
-            workspace_clip: None,
             hdr_layers: Vec::new(),
             backdrop: None,
             cache: None,
+            scanout: None,
         }
+    }
+
+    /// [`Self::scanout`], while `scene` is still the scene it was found on
+    /// top of.
+    pub fn scanout_candidate(&self) -> Option<&crate::shell::scanout_candidate::ScanoutCandidate> {
+        self.scanout
+            .as_ref()
+            .filter(|candidate| candidate.still_on_top_of(&self.scene))
     }
 
     /// The same frame, with its floating surfaces drawn over `backdrop`.
@@ -344,7 +341,6 @@ impl FramePaint {
         self.revision = 0;
         self.damage_regions = None;
         self.previous_revision = None;
-        self.overview_patch = None;
         self.cache = None;
         // The appended commands are in the scene only; a presenter drawing
         // the layers would miss them.
@@ -616,6 +612,11 @@ pub struct FrameBuilder {
     /// ([`Self::shots_theme_override`]), so the settings file is not
     /// watched. Read once when watching starts, not on every paint.
     shots_theme_pinned: bool,
+    /// The session's settings document, followed off the compositor
+    /// thread: paint reads its snapshot, never the file. The compositor
+    /// hands over its own ([`Self::follow_settings`]); a builder that watches
+    /// the configured theme without one starts its own at its first look.
+    live_settings: Option<settings_store::live::LiveSettings>,
     /// Every workspace's temperature and the person's colour: what the
     /// chrome wears for the active workspace, and what each app window is
     /// sent for the workspace it is in.
@@ -700,7 +701,6 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
-    workspace_clip_supported: bool,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
@@ -955,6 +955,7 @@ impl FrameBuilder {
             theme: presentation.theme,
             watch_configured_theme: false,
             shots_theme_pinned: false,
+            live_settings: None,
             windows: super::window_appearance::WindowAppearances::new(
                 ui::tokens::PresenceHue::Blue,
             ),
@@ -998,7 +999,6 @@ impl FrameBuilder {
             last_produced_sections: None,
             next_scene_revision: 1,
             retained_layer_width: None,
-            workspace_clip_supported: false,
             painted_hdr_layers: Vec::new(),
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
@@ -1737,7 +1737,7 @@ impl FrameBuilder {
     /// which can't touch the chrome, so this bumps the revision whenever the
     /// room epoch (or a pending peer-window decision) has moved. Cheap on a
     /// quiet frame — three counters read under one acquisition of the tree's
-    /// read lock, plus the queued-retry and hydration checks; no tab walk.
+    /// read lock, plus the queued-card and hydration checks; no tab walk.
     fn pump_room_contents(&mut self) -> bool {
         // Peer windows are examined on rounds after an arrival too, not just
         // the arrival itself: `peer_windows::examine` starts at most one
@@ -1757,6 +1757,7 @@ impl FrameBuilder {
         let epoch = revisions.room_epoch;
         let owed = pending
             || crate::shell::peer_windows::retry_requested()
+            || crate::shell::peer_windows::install_requested()
             || crate::shell::record_hydration::any_waiting();
         let decided = if owed {
             let chrome = self.chrome.borrow();
@@ -2034,53 +2035,6 @@ impl FrameBuilder {
         scene
     }
 
-    /// Enable clip-only transition frames only for a presenter which retains and
-    /// replays workspace pixels. Refresh this capability after output changes.
-    pub fn set_workspace_clip_supported(&mut self, supported: bool) {
-        self.workspace_clip_supported = supported;
-    }
-
-    /// A transition frame is the clip, not a new encoding of both displays.
-    /// `None` when the desktop itself has to be drawn.
-    fn paint_content_clip(&mut self) -> Option<FramePaint> {
-        // Reduced motion is a settled frame, not a clip run. The retained
-        // oracle has to see the new workspace's commands.
-        if !self.workspace_clip_supported
-            || self.theme.reduce_motion
-            || !self.host.presents_on_content_clip()
-        {
-            return None;
-        }
-        self.host
-            .prepare_content_clip(&mut self.text_renderer, &self.theme);
-        let revision = self.next_scene_revision;
-        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
-        let previous_revision = self
-            .last_produced_sections
-            .as_ref()
-            .map(|last| last.revision);
-        let overview_patch = self.host.take_overview_fast_patch();
-        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
-        let workspace_clip = self
-            .workspace_clip_supported
-            .then(|| self.host.workspace_switch_clip())
-            .flatten();
-        Some(FramePaint {
-            scene: Scene::new(),
-            revision,
-            previous_revision,
-            damage_regions: None,
-            overview_patch,
-            workspace_id,
-            workspace_hold,
-            workspace_clip,
-            hdr_layers: Vec::new(),
-            backdrop: None,
-            cache: None,
-        })
-    }
-
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
     /// independent for capture and pixel-oracle use.
@@ -2094,10 +2048,6 @@ impl FrameBuilder {
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
-        if let Some(frame) = self.paint_content_clip() {
-            return frame;
-        }
-        self.host.dense_scene_covers_content_rebuild();
         let global_filter = self.global_filter();
         let layered = self.retained_layer_width.is_some();
         // A presenter that composites layers cannot composite HDR layers, and
@@ -2133,15 +2083,21 @@ impl FrameBuilder {
                 );
             }
         }
+        let mut fullscreen_on_top = None;
         if let Some((_, surface)) = &mut self.fullscreen_overlay
             && surface.is_mapped()
         {
+            let draws_before = sections.above_quick_settings.encoding().draw_tags.len();
             surface.draw(
                 &mut sections.above_quick_settings,
                 Affine::IDENTITY,
                 &mut self.text_renderer,
                 &self.theme,
                 &self.presence,
+            );
+            fullscreen_on_top = crate::shell::scanout_candidate::DrawnOnTop::last_in(
+                &sections.above_quick_settings,
+                draws_before,
             );
         }
         for (_, surface) in &mut self.transient_overlays {
@@ -2260,6 +2216,11 @@ impl FrameBuilder {
         scene.append(&sections.topbar, None);
         scene.append(&sections.quick_settings, None);
         scene.append(&sections.above_quick_settings, None);
+        // A popup, the on-screen keyboard or anything else drawn above the
+        // fullscreen client in its section leaves it not on top.
+        let fullscreen_on_top =
+            fullscreen_on_top.filter(|drawn| drawn.still_last_in(&sections.above_quick_settings));
+        let draws_below_filters = scene.encoding().draw_tags.len();
         if self.watch_configured_theme && self.night_light {
             let (w, h) = self.viewport;
             let bounds = Rect::new(0.0, 0.0, w, h);
@@ -2282,7 +2243,12 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
+        // Night light, a colour filter and the magnifier change every pixel
+        // of the output; the magnifier does it without drawing anything more.
+        let fullscreen_on_top = fullscreen_on_top
+            .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
         let scene = self.to_scene(scene);
+        let scanout = fullscreen_on_top.and_then(|drawn| self.scanout_candidate(drawn, &scene));
 
         self.last_produced_sections = Some(ProducedSections {
             foreign_images,
@@ -2300,26 +2266,43 @@ impl FrameBuilder {
             tint,
             revision,
         });
-        let overview_patch = self.host.take_overview_fast_patch();
-        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
-        let workspace_hold = self.workspace_clip_supported && self.host.workspace_switch_holding();
-        let workspace_clip = self
-            .workspace_clip_supported
-            .then(|| self.host.workspace_switch_clip())
-            .flatten();
         FramePaint {
             scene,
             revision,
             previous_revision,
             damage_regions,
-            overview_patch,
-            workspace_id,
-            workspace_hold,
-            workspace_clip,
             hdr_layers,
             backdrop,
             cache,
+            scanout,
         }
+    }
+
+    /// The candidate for direct scanout when `drawn`, the fullscreen client
+    /// on top of the logical desktop, keeps one buffer pixel per pixel once
+    /// `scene` magnifies the desktop for its displays. Each display draws its
+    /// own copy inside a clip of its scene rectangle; those rectangles must
+    /// not overlap, or another display's copy could be drawn over it.
+    fn scanout_candidate(
+        &self,
+        drawn: crate::shell::scanout_candidate::DrawnOnTop,
+        scene: &Scene,
+    ) -> Option<crate::shell::scanout_candidate::ScanoutCandidate> {
+        let placed = match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let centre = drawn.bounds().center();
+                let output = outputs.iter().find(|output| output.contains(centre))?;
+                let overlapped = outputs.iter().any(|other| {
+                    other.id != output.id && other.scene.intersect(output.scene).area() > 0.0
+                });
+                if overlapped {
+                    return None;
+                }
+                drawn.placed(output.to_scene())
+            }
+            _ => drawn,
+        };
+        crate::shell::scanout_candidate::ScanoutCandidate::new(placed, scene)
     }
 
     /// A floating surface shows a blur of what is below it, which can change
@@ -2968,7 +2951,15 @@ impl FrameBuilder {
         if !self.windows.due(active.as_deref(), now) {
             return;
         }
-        let settings = serde_json::Value::Object(settings_store::load());
+        // The snapshot is the whole document, already parsed: paint does no
+        // I/O. Only the section the overrides live in is copied.
+        let snapshot = self
+            .live_settings
+            .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+            .snapshot();
+        let settings = serde_json::json!({
+            "appearance": snapshot.document.get("appearance"),
+        });
         let mut temperature_of = |id: &str| {
             ui::theme::workspace_temperature_override(&settings, id)
                 .or_else(|| super::desktop_backdrop::native_workspace_hue(id))
@@ -3022,6 +3013,12 @@ impl FrameBuilder {
     #[must_use]
     pub fn configured_app_theme(&self) -> &Theme {
         &self.configured_theme
+    }
+
+    /// Read settings in paint from `settings`, the session's one followed
+    /// document, rather than from the file.
+    pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
+        self.live_settings = Some(settings);
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -3384,9 +3381,11 @@ impl FrameBuilder {
             self.peer_windows_quiet_at != Some(TreeRevisions::read(&chrome, &tree))
                 && crate::shell::peer_windows::any_pending(&tree)
         };
-        (owed || crate::shell::peer_windows::retry_requested())
-            .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
-            .flatten()
+        (owed
+            || crate::shell::peer_windows::retry_requested()
+            || crate::shell::peer_windows::install_requested())
+        .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
+        .flatten()
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn
@@ -4299,6 +4298,86 @@ impl FrameBuilder {
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
+    pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
+        if self.host.palette_visible() {
+            return false;
+        }
+        let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
+            return false;
+        };
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        unsafe { &**widget }.ime_requires_deferred_ack()
+    }
+
+    pub(crate) fn start_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // the callback only starts a private transaction without structural mutation.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.start_deferred_text(),
+            )
+            .ok()
+            .flatten()
+        }
+    }
+
+    /// Admit the original focused owner through the same bound map as native
+    /// dispatch. Only deferred fields consume this path; ordinary fields keep IME.
+    pub(crate) fn commit_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        text: &str,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // no structural mutation occurs while this cache-only callback runs.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.commit_deferred_text(text),
+            )
+            .ok()
+            .flatten()
+        }
+    }
+
     pub(crate) fn focused_ime_edit_stamp(
         &self,
         focus: Option<NodeId>,
@@ -5159,6 +5238,118 @@ mod tests {
         );
     }
 
+    fn pressed_install_on_a_quiet_desktop(
+        activate: impl FnOnce(&mut crate::shell::app_notice_card::AppNoticeCard),
+    ) {
+        use crate::shell::peer_windows::work_counts;
+        use crate::shell::state::{
+            CapOverride, Effect, Principal, Scope, Subject, TileContent, Verb,
+        };
+        use tilo_desktop_model::MissingApp;
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        assert!(!crate::shell::peer_windows::any_pending(
+            &frame.chrome().tree()
+        ));
+        let tab = arrive_peer_window(&frame);
+        {
+            let chrome = frame.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            let workspace = tree.desktop.workspaces.last_mut().unwrap();
+            workspace.owner = Some("quinten".into());
+            // The production install path must refuse before reaching the
+            // catalogue: this disposable fixture can never install an app.
+            let _ = workspace.grant_capability(CapOverride {
+                effect: Effect::Restrict,
+                ..CapOverride::grant(
+                    Subject::Principal(Principal::Person("quinten".into())),
+                    Scope::App("so.tilo.word-processor".into()),
+                    Verb::Read,
+                )
+            });
+            let TileContent::PeerWindow { note, missing, .. } =
+                &mut workspace.strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("the fixture must contain the actual peer window");
+            };
+            crate::shell::peer_windows::NOT_INSTALLED.clone_into(note);
+            *missing = Some(MissingApp::Installable {
+                display_name: "Word Processor".into(),
+            });
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        for _ in 0..3 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+        }
+        assert!(!crate::shell::peer_windows::any_pending(
+            &frame.chrome().tree()
+        ));
+        assert_eq!(frame.peer_windows_poll(), None);
+        let quiet = work_counts();
+        let mut card = crate::shell::app_notice_card::AppNoticeCard::install(
+            tab,
+            "Word Processor",
+            "Word Processor",
+        );
+        activate(&mut card);
+        let wake = frame.peer_windows_poll();
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            work_counts().1,
+            quiet.1.saturating_add(1),
+            "the card press owes exactly one examination in the next pump"
+        );
+        assert!(wake.is_some(), "an install press must wake an idle desktop");
+        {
+            let chrome = frame.chrome.borrow();
+            let tree = chrome.tree();
+            let TileContent::PeerWindow { note, missing, .. } =
+                &tree.desktop.workspaces.last().unwrap().strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("a refused install must keep the peer window");
+            };
+            assert!(note.contains("does not permit"), "existing refusal: {note}");
+            assert_eq!(*missing, None);
+        }
+        assert_eq!(frame.peer_windows_poll(), None, "the request was drained");
+        // Allow the refusal's chrome revision to settle, then prove both
+        // examinations and tab walks stop on subsequent quiet rounds.
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let settled = work_counts();
+        assert_eq!(settled.1, quiet.1.saturating_add(1));
+        for _ in 0..5 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            assert_eq!(frame.peer_windows_poll(), None);
+        }
+        assert_eq!(
+            work_counts(),
+            settled,
+            "quiet rounds do no peer-window work"
+        );
+    }
+
+    #[test]
+    fn pump_room_contents_runs_a_pressed_install_without_other_pending_work() {
+        pressed_install_on_a_quiet_desktop(
+            crate::shell::app_notice_card::AppNoticeCard::press_for_test,
+        );
+    }
+
+    #[test]
+    fn pump_room_contents_runs_a_semantic_install_without_other_pending_work() {
+        pressed_install_on_a_quiet_desktop(|card| {
+            let target = card.test_id().unwrap().to_owned();
+            let mut state = AutoCommit::new();
+            assert!(card.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut state),
+                &automerge::ROOT,
+            ));
+        });
+    }
+
     #[test]
     fn frame_pump_settles_a_launchpad_request_once() {
         let mut frame = FrameBuilder::new((1280, 800));
@@ -5775,6 +5966,82 @@ mod tests {
             "an SDR frame has none"
         );
         crate::shell::foreign::store().forget(SURFACE);
+    }
+
+    #[test]
+    fn a_fullscreen_client_alone_on_top_is_a_scanout_candidate_until_anything_covers_it() {
+        const FULLSCREEN: u64 = 9_900_705;
+        const POPUP: u64 = 9_900_706;
+        const SIZE: (u32, u32) = (1600, 900);
+        let _env_lock = tilo_test_env::lock();
+        let store = crate::shell::foreign::store();
+        let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
+        store.publish_rgba(FULLSCREEN, &pixels, SIZE.0, SIZE.1);
+        store.publish_rgba(POPUP, &[0, 0, 0, 255], 1, 1);
+        let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+        let mut fb = FrameBuilder::new(SIZE);
+        assert!(
+            fb.paint_with_damage().scanout.is_none(),
+            "a desktop without a fullscreen client has none"
+        );
+        fb.set_fullscreen_surface(Some((FULLSCREEN, "Fullscreen".to_owned(), output)));
+
+        // Phase `alone_on_top`.
+        let mut frame = fb.paint_with_damage();
+        let candidate = frame
+            .scanout_candidate()
+            .expect("the fullscreen client alone on top is a candidate");
+        assert_eq!(candidate.origin, (0, 0));
+        assert_eq!(candidate.size, SIZE);
+        assert!(candidate.covers((0, 0), SIZE));
+
+        // Phase `drawn_over_after_the_frame_builder`: a drag or a presentation
+        // surface appended to the finished scene voids it on that frame.
+        frame.scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(255, 0, 0),
+            None,
+            &Rect::new(0.0, 0.0, 8.0, 8.0),
+        );
+        assert!(frame.scanout_candidate().is_none());
+
+        // Phase `a_popup_over_it`.
+        fb.set_transient_surfaces(&[(POPUP, Rect::new(10.0, 10.0, 40.0, 40.0))]);
+        assert!(fb.paint_with_damage().scanout.is_none(), "a popup above");
+        fb.set_transient_surfaces(&[]);
+        assert!(fb.paint_with_damage().scanout.is_some(), "the popup closed");
+
+        // Phase `the_keyboard_over_it`.
+        fb.set_osk_surface(Some(POPUP), None, None, true);
+        assert!(fb.paint_with_damage().scanout.is_none(), "the keyboard up");
+        fb.set_osk_surface(Some(POPUP), None, None, false);
+        assert!(
+            fb.paint_with_damage().scanout.is_some(),
+            "the keyboard down"
+        );
+
+        // Phase `night_light`: a tint over every pixel of the output.
+        fb.shots_theme_pinned = true;
+        fb.watch_configured_theme = true;
+        fb.night_light = true;
+        fb.night_light_temperature = 3_000;
+        assert!(fb.paint_with_damage().scanout.is_none(), "night light on");
+        fb.night_light = false;
+        fb.watch_configured_theme = false;
+        assert!(fb.paint_with_damage().scanout.is_some(), "night light off");
+
+        // Phase `a_buffer_that_does_not_fill_the_output`: letterboxed, it
+        // is pixel exact but covers only part of the display.
+        store.publish_rgba(FULLSCREEN, &pixels[..pixels.len() / 2], SIZE.0, SIZE.1 / 2);
+        let frame = fb.paint_with_damage();
+        let candidate = frame.scanout_candidate().expect("still pixel exact");
+        assert!(!candidate.covers((0, 0), SIZE));
+
+        fb.set_fullscreen_surface(None);
+        assert!(fb.paint_with_damage().scanout.is_none(), "fullscreen left");
+        store.forget(FULLSCREEN);
+        store.forget(POPUP);
     }
 
     fn key_press(key: Key) -> WindowEvent {
@@ -7598,35 +7865,24 @@ mod tests {
         super_f_on_a_tilo_group_covers_the_wheel();
     }
 
-    fn both_directions_hold_the_scanout() {
+    fn both_directions_carry_the_desktop() {
         let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_workspace_clip_supported(true);
         let _ = fb.paint_settled();
-        let mut switched = false;
-        fb.with_chrome(|st| {
-            switched = st.switch_workspace(1);
-        });
-        assert!(switched, "the demo tree has a second workspace");
-        fb.host_mut().start_workspace_switch_frames();
-        let forward = fb.paint_with_damage();
-        assert!(
-            forward.workspace_hold,
-            "switching away holds the scanouts instead of uploading both"
-        );
-        let held = fb.paint_with_damage();
-        assert!(held.workspace_hold);
-        assert_eq!(held.workspace_id, forward.workspace_id);
-        fb.with_chrome(|st| {
-            switched = st.switch_workspace(-1);
-        });
-        assert!(switched, "switching back moves to the previous workspace");
-        fb.host_mut().start_workspace_switch_frames();
-        let back = fb.paint_with_damage();
-        assert!(
-            back.workspace_hold,
-            "switching back holds the scanouts instead of uploading both"
-        );
-        assert_ne!(back.workspace_id, forward.workspace_id);
+        for step in [1, -1] {
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(step);
+            });
+            assert!(switched, "the demo tree switches by {step}");
+            fb.host_mut().start_workspace_switch_frames();
+            for _ in 0..2 {
+                let frame = fb.paint_with_damage();
+                assert!(
+                    !frame.scene.encoding().is_empty(),
+                    "switching by {step} draws the workspace, not an empty clip"
+                );
+            }
+        }
     }
 
     #[test]
@@ -7717,186 +7973,126 @@ mod tests {
         workspace_switch_requests_frames_before_draw();
         compositor_paint_run_is_not_host_demand();
         latch_asks_the_compositor_for_eight_paints();
-        both_directions_hold_the_scanout();
+        both_directions_carry_the_desktop();
     }
 
     #[test]
-    fn workspace_switch_close_paints_intermediate_frames_on_the_clip() {
+    fn overview_fade_damages_only_its_display_on_two_heads() {
         use crate::shell::output_scene::OutputGeometry;
 
+        /// Every frame of a fade carries the desktop and a sparse proof, and
+        /// after the chord's own frame repaints only the first display.
+        fn fade(fb: &mut FrameBuilder, open: bool) {
+            let direction = if open { "open" } else { "close" };
+            fb.with_chrome(|st| {
+                st.overlays.overview = open;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            let mut repainted = false;
+            for index in 0..8 {
+                // The fade samples the wall clock in whole milliseconds.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let frame = fb.paint_with_damage();
+                assert!(
+                    !frame.scene.encoding().is_empty(),
+                    "{direction} frame {index} draws the desktop, not an empty clip"
+                );
+                if index == 0 {
+                    // The chord may change chrome beyond the overview (the
+                    // top bar's button) once.
+                    continue;
+                }
+                let damage = frame.damage_regions.unwrap_or_else(|| {
+                    panic!("{direction} frame {index} is sparse, not both displays")
+                });
+                for rect in &damage {
+                    let right = rect.x.saturating_add(rect.width);
+                    assert!(
+                        right <= 1920,
+                        "{direction} frame {index} stays on the first display ({rect:?})"
+                    );
+                }
+                repainted |= !damage.is_empty();
+            }
+            assert!(repainted, "the {direction} fade repaints its display");
+        }
+
         let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
         ]);
         let _ = fb.paint_settled();
+        let _ = fb.paint_with_damage();
+        fade(&mut fb, true);
+        fade(&mut fb, false);
+    }
+
+    #[test]
+    fn single_head_transition_frames_carry_the_desktop() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let _ = fb.paint_with_damage();
+        fb.with_chrome(|st| {
+            st.overlays.overview = true;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        for index in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let frame = fb.paint_with_damage();
+            assert!(
+                !frame.scene.encoding().is_empty(),
+                "overview frame {index} on one display draws the desktop"
+            );
+        }
         let mut switched = false;
         fb.with_chrome(|st| {
             switched = st.switch_workspace(1);
         });
         assert!(switched, "the demo tree has a second workspace");
         fb.host_mut().start_workspace_switch_frames();
-        let open = fb.paint_with_damage();
-        assert!(open.workspace_hold);
-        for _ in 0..8 {
-            let frame = fb.paint_with_damage();
-            assert!(
-                frame.workspace_hold,
-                "the open keeps a run of frames without idling"
-            );
-        }
-        fb.with_chrome(|st| {
-            switched = st.switch_workspace(-1);
-        });
-        assert!(switched, "switching back moves to the previous workspace");
-        fb.host_mut().start_workspace_switch_frames();
         for index in 0..8 {
             let frame = fb.paint_with_damage();
             assert!(
-                frame.workspace_hold,
-                "close frame {index} is still in the frame run"
-            );
-            let clip = frame
-                .workspace_clip
-                .expect("the close paints on the workspace clip");
-            let right = clip.x.saturating_add(clip.width);
-            assert!(
-                right <= 1920,
-                "close frame {index} stays on the first display (clip ends at {right})"
-            );
-            assert!(
-                clip.width < 1920,
-                "close frame {index} is the content column ({} px), not a scanout",
-                clip.width
+                !frame.scene.encoding().is_empty(),
+                "switch frame {index} on one display draws the desktop"
             );
         }
     }
 
     #[test]
-    fn overview_open_and_workspace_switch_paint_a_content_clip() {
+    fn workspace_switch_frames_carry_the_desktop_and_settle_sparse() {
         use crate::shell::output_scene::OutputGeometry;
-
-        fn clip_scene(frame: &FramePaint) {
-            assert_eq!(
-                frame.scene.encoding().n_paths,
-                0,
-                "a transition frame does not encode both outputs"
-            );
-        }
-
-        fn overview_open_is_a_clip() {
-            let mut fb = FrameBuilder::new((3200, 1080));
-            fb.set_workspace_clip_supported(true);
-            fb.set_output_geometry(vec![
-                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-            ]);
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| {
-                st.overlays.overview = true;
-                st.bump();
-            });
-            fb.host_mut().latch_overview_transition();
-            for index in 0..8 {
-                let frame = fb.paint_with_damage();
-                clip_scene(&frame);
-                let patch = frame
-                    .overview_patch
-                    .unwrap_or_else(|| panic!("open frame {index} paints the overview clip"));
-                let right = patch.panel.x.saturating_add(patch.panel.width);
-                assert!(
-                    right <= 1920,
-                    "open frame {index} stays on the first display (clip ends at {right})"
-                );
-            }
-        }
-
-        fn workspace_open_is_a_clip() {
-            let mut fb = FrameBuilder::new((3200, 1080));
-            fb.set_workspace_clip_supported(true);
-            fb.set_output_geometry(vec![
-                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-            ]);
-            let _ = fb.paint_settled();
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(1);
-            });
-            assert!(switched, "the demo tree has a second workspace");
-            fb.host_mut().start_workspace_switch_frames();
-            for index in 0..8 {
-                let frame = fb.paint_with_damage();
-                clip_scene(&frame);
-                assert!(
-                    frame.workspace_hold,
-                    "open frame {index} stays in the frame run"
-                );
-                let clip = frame
-                    .workspace_clip
-                    .unwrap_or_else(|| panic!("open frame {index} paints the workspace clip"));
-                let right = clip.x.saturating_add(clip.width);
-                assert!(
-                    right <= 1920,
-                    "open frame {index} stays on the first display (clip ends at {right})"
-                );
-            }
-        }
-
-        overview_open_is_a_clip();
-        workspace_open_is_a_clip();
-    }
-
-    #[test]
-    fn overview_close_paints_intermediate_frames_on_the_clip() {
-        use crate::shell::output_scene::OutputGeometry;
-        use crate::shell::render::paint::VelloDrmBridge;
 
         let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_workspace_clip_supported(true);
         fb.set_output_geometry(vec![
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
         ]);
         let _ = fb.paint_settled();
-        fb.with_chrome(|st| {
-            st.overlays.overview = true;
-            st.bump();
-        });
-        fb.host_mut().latch_overview_transition();
-        for _ in 0..4 {
-            let _ = fb.paint_with_damage();
-        }
-        fb.with_chrome(|st| {
-            st.overlays.overview = false;
-            st.bump();
-        });
-        fb.host_mut().latch_overview_transition();
-        for index in 0..8 {
-            let frame = fb.paint_with_damage();
-            let patch = frame.overview_patch.unwrap_or_else(|| {
-                panic!("close frame {index} paints the overview clip");
+        let _ = fb.paint_with_damage();
+        for step in [1, -1] {
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(step);
             });
-            let right = patch.panel.x.saturating_add(patch.panel.width);
-            assert!(
-                right <= 1920,
-                "close frame {index} stays on the first display (clip ends at {right})"
-            );
-            assert!(
-                patch.panel.width < 1920,
-                "close frame {index} is the panel ({} px), not a scanout",
-                patch.panel.width
-            );
-            assert!(
-                VelloDrmBridge::overview_clip_fits_fast_target(
-                    patch.panel.width,
-                    patch.panel.height
-                ),
-                "close frame {index} clip {}x{} must not force a combined readback",
-                patch.panel.width,
-                patch.panel.height
-            );
+            assert!(switched, "the demo tree switches by {step}");
+            fb.host_mut().start_workspace_switch_frames();
+            for index in 0..8 {
+                let frame = fb.paint_with_damage();
+                assert!(
+                    !frame.scene.encoding().is_empty(),
+                    "switch {step} frame {index} draws the workspace it shows"
+                );
+                if index > 0 {
+                    assert!(
+                        frame.damage_regions.is_some(),
+                        "switch {step} frame {index} repaints only what changed, not both displays"
+                    );
+                }
+            }
         }
     }
 
@@ -8844,6 +9040,63 @@ mod tests {
         assert!(
             (light_y - dark_y).abs() > 0.08,
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn workspace_temperature_is_read_from_the_followed_settings_not_the_file() {
+        let config = tempfile::tempdir().expect("isolated settings store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SESSION_SETTINGS");
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        let active = frame
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id.0.to_string())
+            .expect("an active workspace");
+        let temperatures = |hue: f64| {
+            let mut temperatures = serde_json::Map::new();
+            temperatures.insert(active.clone(), serde_json::json!(hue));
+            let mut appearance = serde_json::Map::new();
+            appearance.insert(
+                "workspace_temperatures".into(),
+                serde_json::Value::Object(temperatures),
+            );
+            appearance
+        };
+        // The file on disk says one hue; the session's followed document
+        // says another. Paint must take the followed one: reading the file
+        // in paint is what this replaced.
+        settings_store::update_section("appearance", temperatures(200.0))
+            .expect("write the settings file");
+        let mut followed = serde_json::Map::new();
+        followed.insert(
+            "appearance".into(),
+            serde_json::Value::Object(temperatures(40.0)),
+        );
+        let source = settings_store::HostDocument::new(followed, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "read-only fixture settings",
+            ))
+        });
+        frame.follow_settings(settings_store::live::LiveSettings::start_from(
+            std::sync::Arc::new(source),
+            || {},
+        ));
+        frame.watch_configured_theme = true;
+        frame.refresh_workspace_temperature();
+        assert_eq!(
+            frame.windows.active().workspace_hue,
+            Some(40.0),
+            "the hue comes from the followed settings snapshot"
         );
     }
 }

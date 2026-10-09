@@ -721,6 +721,7 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
@@ -765,6 +766,7 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
         .expect("chrome stand-in");
     let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
@@ -829,16 +831,219 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
 
 #[test]
 fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
-    use shell::compositor::shell_text_input::{FieldRequest, ShellTextInput};
-    let mut h = Harness::new();
-    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
-    let field = FieldRequest {
+    assert_dictation_native_commit(&["rough".into()], "東京 👋");
+}
+
+/// Recorded, literal public-engine results, replayed through production editing.
+/// These fixtures prove insertion/undo, not a new acoustic measurement.
+#[derive(serde::Deserialize)]
+pub(super) struct PublicAotTranscript {
+    pub case: String,
+    pub raw_final: String,
+    all_drafts: Vec<PublicAotDraft>,
+}
+#[derive(serde::Deserialize)]
+struct PublicAotDraft {
+    text: String,
+}
+impl PublicAotTranscript {
+    pub fn drafts(&self) -> Vec<String> {
+        self.all_drafts
+            .iter()
+            .map(|draft| draft.text.clone())
+            .collect()
+    }
+}
+pub(super) fn public_aot_transcripts() -> Vec<PublicAotTranscript> {
+    #[derive(serde::Deserialize)]
+    struct Ledger {
+        qualification_only: bool,
+        production_activation: bool,
+        results: Vec<PublicAotTranscript>,
+    }
+    let ledger: Ledger = serde_json::from_str(include_str!(
+        "../../../../docs/architecture/dictation-whistle-aot-review.json"
+    ))
+    .expect("source-pinned public AOT qualification ledger");
+    assert!(ledger.qualification_only && !ledger.production_activation);
+    assert_eq!(
+        ledger
+            .results
+            .iter()
+            .map(|row| row.case.as_str())
+            .collect::<Vec<_>>(),
+        ["en_us-0", "de_de-0", "fr_fr-0", "es_419-0"]
+    );
+    for row in &ledger.results {
+        assert!(!row.raw_final.is_empty() && !row.all_drafts.is_empty());
+    }
+    ledger.results
+}
+
+pub(super) fn public_image_transcripts() -> Vec<PublicAotTranscript> {
+    let rows = image_transcripts(
+        include_str!("../../../../docs/architecture/dictation-whistle-aot-image.json"),
+        1,
+    );
+    assert_eq!(
+        rows.iter().map(|row| row.case.as_str()).collect::<Vec<_>>(),
+        ["de_de-0", "en_us-0", "es_419-0", "fr_fr-0"]
+    );
+    rows
+}
+
+pub(super) fn public_long_image_transcripts() -> Vec<PublicAotTranscript> {
+    let rows = image_transcripts(
+        include_str!("../../../../docs/architecture/dictation-whistle-aot-image-120s.json"),
+        11,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].case, "fr_fr-0");
+    rows
+}
+
+fn image_transcripts(source: &str, repetitions: usize) -> Vec<PublicAotTranscript> {
+    #[derive(serde::Deserialize)]
+    struct Ledger {
+        qualification_only: bool,
+        production_activation: bool,
+        production_source_handler: bool,
+        results: Vec<ResultRow>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ResultRow {
+        case: String,
+        mode: String,
+        exit: i32,
+        repeat_audio: usize,
+        submitted_seconds: f64,
+        replies: Vec<Reply>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Reply {
+        kind: String,
+        text: Option<String>,
+    }
+    let ledger: Ledger = serde_json::from_str(source)
+        .expect("actual production-handler public qualification ledger");
+    assert!(ledger.qualification_only && !ledger.production_activation);
+    assert!(ledger.production_source_handler);
+    let mut rows = Vec::new();
+    for result in ledger.results {
+        if result.mode != "complete" || result.exit != 0 || result.repeat_audio != repetitions {
+            continue;
+        }
+        assert!(result.submitted_seconds <= 120.0);
+        if repetitions == 11 {
+            assert_eq!(result.submitted_seconds, 120.0);
+        }
+        let mut drafts = Vec::new();
+        let mut finals = Vec::new();
+        for reply in result.replies {
+            if reply.kind == "draft" {
+                drafts.push(PublicAotDraft {
+                    text: reply.text.expect("literal recorded draft"),
+                });
+            } else if reply.kind == "done" {
+                finals.push(reply.text.expect("literal recorded final"));
+            }
+        }
+        assert_eq!(finals.len(), 1, "one observed production final per case");
+        assert!(!drafts.is_empty());
+        rows.push(PublicAotTranscript {
+            case: result.case,
+            raw_final: finals.remove(0),
+            all_drafts: drafts,
+        });
+    }
+    rows.sort_by(|a, b| a.case.cmp(&b.case));
+    rows
+}
+
+#[test]
+fn public_image_transcripts_reach_native_notes_with_selection_undo_and_redo() {
+    for row in public_image_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_full_session_reaches_native_notes_with_owned_undo() {
+    for row in public_long_image_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_aot_transcripts_reach_native_notes_with_selection_undo_and_redo() {
+    for row in public_aot_transcripts() {
+        assert_dictation_native_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+fn assert_dictation_native_commit(drafts: &[String], final_text: &str) {
+    let field = shell::compositor::shell_text_input::FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
         height: 24,
     };
+    let committed = receive_native_dictation(drafts, final_text, field);
+    assert_native_field_selection_and_undo(&committed);
+}
+
+#[test]
+fn native_document_paragraphs_have_one_owned_undo_and_redo() {
+    for paragraph in ["First café.\n\nSecond 👋", "\n\n", "First café.\n"] {
+        assert_native_field_selection_and_undo(paragraph);
+    }
+}
+
+#[test]
+fn native_multiline_intent_reaches_dictation_through_the_existing_bridge() {
+    use ui::Widget;
+    struct ParagraphField(ui::widget::TextInput);
+    impl ui::widget::Decorator for ParagraphField {
+        type Inner = ui::widget::TextInput;
+        fn inner(&self) -> &Self::Inner {
+            &self.0
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.0
+        }
+    }
+    let mut input = ui::widget::TextInput::local().multiline(true);
+    input.set_focus(true);
+    let mut decorated = ParagraphField(ui::widget::TextInput::local().multiline(true));
+    Widget::set_focus(&mut decorated, true);
+    let mut editor = ui::widget::CodeEditor::local();
+    editor.set_focused(true);
+    editor.set_rect(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 200.0));
+    let paragraph = "Premier paragraphe.\n\nDeuxième paragraphe 👋";
+    for widget in [
+        &input as &dyn Widget,
+        &decorated as &dyn Widget,
+        &editor as &dyn Widget,
+    ] {
+        let field = ui::ime::ImeWindowState::from_widget(widget).unwrap();
+        assert!(field.multiline);
+        assert_eq!(
+            receive_native_dictation(&["Provisional\nparagraph".into()], paragraph, field),
+            paragraph
+        );
+    }
+}
+
+fn receive_native_dictation(
+    drafts: &[String],
+    final_text: &str,
+    field: shell::compositor::shell_text_input::FieldRequest,
+) -> String {
+    use shell::compositor::shell_text_input::ShellTextInput;
+    let mut h = Harness::new();
+    let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
     let deadline = tilo_test_env::hang_deadline();
     while !proxy.holds_focus(&h.state) {
         assert!(
@@ -866,21 +1071,24 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
             break;
         }
     }
+    for draft in drafts {
+        h.state
+            .update_dictation(id, draft.clone(), std::time::Instant::now())
+            .unwrap();
+        h.pump();
+        assert!(
+            !proxy
+                .sync(&mut h.state, Some(field))
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
+                )),
+            "a provisional engine hypothesis must never edit the field"
+        );
+    }
     h.state
-        .update_dictation(id, "rough".into(), std::time::Instant::now())
-        .unwrap();
-    h.pump();
-    assert!(
-        !proxy
-            .sync(&mut h.state, Some(field))
-            .iter()
-            .any(|event| matches!(
-                event,
-                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
-            ))
-    );
-    h.state
-        .update_dictation(id, "東京 👋".into(), std::time::Instant::now())
+        .update_dictation(id, final_text.into(), std::time::Instant::now())
         .unwrap();
     h.state
         .finish_dictation(id, std::time::Instant::now())
@@ -898,8 +1106,7 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
             }
         }
     }
-    assert_eq!(commits, ["東京 👋"]);
-    assert_native_field_selection_and_undo(commits.first().unwrap());
+    assert_eq!(commits, [final_text]);
     assert!(
         h.state
             .check_dictation(id, std::time::Instant::now())
@@ -910,6 +1117,7 @@ fn dictation_reaches_native_chrome_as_one_corrected_ime_commit() {
     assert!(!proxy.holds_focus(&h.state));
     drop(proxy);
     drop(h);
+    commits.into_iter().next().unwrap()
 }
 
 /// Use the event produced by the actual Wayland bridge, then Notes' owned
@@ -961,9 +1169,26 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
         .records
         .read_history(&fixture.checkout.id, |_, history| history.revision())
         .unwrap();
+    let paragraph_commit = if transcript.contains('\n') {
+        let field = fixture
+            .driver
+            .ime_window()
+            .expect("actual Notes editing field");
+        assert!(
+            field.multiline,
+            "the original Notes field declares paragraph intent"
+        );
+        let committed =
+            receive_native_dictation(&["provisional paragraph".into()], transcript, field);
+        assert_eq!(committed, transcript);
+        Some(committed)
+    } else {
+        None
+    };
+    let transcript = paragraph_commit.as_deref().unwrap_or(transcript);
     fixture.driver.commit_text(transcript);
     let expected = format!("before {transcript} after ");
-    fixture.assert_body(page, &expected);
+    fixture.assert_text(page, &expected);
     fixture.driver.set_modifiers(&["ctrl".into()]);
     fixture.driver.key("z");
     fixture.driver.set_modifiers(&[]);
@@ -973,7 +1198,7 @@ fn assert_native_field_selection_and_undo(transcript: &str) {
         .set_modifiers(&["ctrl".into(), "shift".into()]);
     fixture.driver.key("z");
     fixture.driver.set_modifiers(&[]);
-    fixture.assert_body(page, &expected);
+    fixture.assert_text(page, &expected);
     assert!(
         fixture
             .records
@@ -1059,6 +1284,24 @@ impl NativeNotes {
             _temp: temp,
         }
     }
+    fn assert_text(&self, page: notes::PageId, expected: &str) {
+        if !expected.contains('\n') {
+            self.assert_body(page, expected);
+            return;
+        }
+        self.records
+            .read(&self.checkout.id, |doc| {
+                notes::notebook::validate(doc).unwrap();
+                let blocks = notes::doc::NotesDoc::page_block_snapshots(doc, page);
+                let actual = blocks
+                    .iter()
+                    .map(|(_, body)| body.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected.split('\n').collect::<Vec<_>>());
+            })
+            .unwrap();
+    }
+
     fn assert_body(&self, page: notes::PageId, expected: &str) {
         self.records
             .read(&self.checkout.id, |doc| {
@@ -1071,6 +1314,33 @@ impl NativeNotes {
     }
 }
 
+fn prepare_native_field_dictation(
+    h: &mut Harness,
+    proxy: &mut shell::compositor::shell_text_input::ShellTextInput,
+    field: shell::compositor::shell_text_input::FieldRequest,
+    identity: Option<shell::compositor::shell_text_input::NativeFieldId>,
+    deadline: std::time::Instant,
+) -> shell::compositor::dictation::SessionId {
+    let id = h
+        .state
+        .prepare_dictation(std::time::Instant::now())
+        .unwrap();
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "native field did not activate"
+        );
+        h.pump();
+        proxy.sync_for_field(&mut h.state, Some(field), identity);
+        if h.state
+            .advance_dictation_preparation(id, std::time::Instant::now())
+            .unwrap()
+        {
+            return id;
+        }
+    }
+}
+
 #[test]
 fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() {
     use shell::compositor::shell_text_input::{FieldRequest, NativeFieldId, ShellTextInput};
@@ -1078,6 +1348,7 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
     let mut proxy = ShellTextInput::connect(&mut h.state).expect("native chrome bridge");
     let field = FieldRequest {
         purpose: winit::window::ImePurpose::Normal,
+        multiline: false,
         x: 420,
         y: 100,
         width: 1,
@@ -1094,24 +1365,7 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
         proxy.sync_for_field(&mut h.state, Some(field), first);
         h.pump();
     }
-    let stale = h
-        .state
-        .prepare_dictation(std::time::Instant::now())
-        .unwrap();
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "field did not activate"
-        );
-        h.pump();
-        proxy.sync_for_field(&mut h.state, Some(field), first);
-        if h.state
-            .advance_dictation_preparation(stale, std::time::Instant::now())
-            .unwrap()
-        {
-            break;
-        }
-    }
+    let stale = prepare_native_field_dictation(&mut h, &mut proxy, field, first, deadline);
     h.state
         .update_dictation(stale, "must not move".into(), std::time::Instant::now())
         .unwrap();
@@ -1132,25 +1386,8 @@ fn dictation_cancels_when_native_field_identity_changes_at_identical_geometry() 
         event,
         winit::event::WindowEvent::Ime(winit::event::Ime::Commit(_))
     )));
-    let next = h
-        .state
-        .prepare_dictation(std::time::Instant::now())
-        .unwrap();
+    let next = prepare_native_field_dictation(&mut h, &mut proxy, field, second, deadline);
     assert_ne!(next, stale);
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "successor did not activate"
-        );
-        h.pump();
-        proxy.sync_for_field(&mut h.state, Some(field), second);
-        if h.state
-            .advance_dictation_preparation(next, std::time::Instant::now())
-            .unwrap()
-        {
-            break;
-        }
-    }
     h.state
         .update_dictation(next, "successor".into(), std::time::Instant::now())
         .unwrap();

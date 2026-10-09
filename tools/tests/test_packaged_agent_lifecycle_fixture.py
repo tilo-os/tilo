@@ -1782,6 +1782,40 @@ class PresentedEditorTargetTests(unittest.TestCase):
             calls.assert_called_once_with("socket", {"op": "snapshot", "path": str(
                 output / "physical-selection-refused.png")})
 
+    def test_metadata_shim_removes_compiler_wrappers_only_for_locked_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = pathlib.Path(directory)
+            cargo = profile / "pinned-cargo"
+            cargo.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "print(json.dumps({'args': sys.argv[1:], 'environment': "
+                "{key: os.environ.get(key) for key in "
+                "('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'METADATA_TEST_UNRELATED')}}))\n")
+            cargo.chmod(0o700)
+            env = {"CARGO": str(cargo), "PATH": PROOF.os.environ["PATH"],
+                   "RUSTC_WRAPPER": "original-build-wrapper",
+                   "RUSTC_WORKSPACE_WRAPPER": "original-workspace-wrapper",
+                   "METADATA_TEST_UNRELATED": "preserved"}
+            original = dict(env)
+            PROOF.require_locked_cargo_metadata(env, profile)
+            shim = env["CARGO"]
+            self.assertEqual(env, {**original, "CARGO": str(profile / "locked-cargo-metadata")})
+            for arguments in (("metadata", "--format-version", "1"),
+                              ("build", "--locked"), ("--version",)):
+                observed = json.loads(PROOF.subprocess.check_output(
+                    [sys.executable, shim, *arguments], env=env, text=True))
+                metadata = arguments[0] == "metadata"
+                self.assertEqual(observed["args"],
+                                 ["metadata", "--locked", "--format-version", "1"]
+                                 if metadata else list(arguments))
+                self.assertEqual(observed["environment"], {
+                    "RUSTC_WRAPPER": None if metadata else original["RUSTC_WRAPPER"],
+                    "RUSTC_WORKSPACE_WRAPPER": None if metadata else original["RUSTC_WORKSPACE_WRAPPER"],
+                    "METADATA_TEST_UNRELATED": "preserved",
+                })
+                self.assertEqual(env, {**original, "CARGO": shim})
+
     def test_lifecycle_budget_uses_real_fenced_owner_actions_and_closed_proof(self):
         original = {"task": {"id": "task:PRIVATE", "status": "queued", "route": "model",
                              "instruction": "PRIVATE-CANARY"},

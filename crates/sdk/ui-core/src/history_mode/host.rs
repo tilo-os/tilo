@@ -15,7 +15,7 @@ use crate::{
 use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
@@ -986,17 +986,40 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
-    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        let mut pending: Vec<_> = [
+    fn owned_layout_roots(&self) -> [Option<NodeId>; 5] {
+        [
             self.toolbar_node,
             self.timeline_node,
             self.canvas_node,
             self.unavailable_node,
             self.review_node,
         ]
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+        if !self.captures_input() && !self.has_saved_focus() {
+            return;
+        }
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if owned.contains(&node) {
+                continue;
+            }
+            // Ownership is exempted per surface, before combining denials.
+            // An already denied parent may still have descendants exempted by
+            // another surface, so its children must always be visited here.
+            denied.insert(node);
+            pending.extend(tree.children(node).unwrap_or_default());
+        }
+    }
+    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {
                 return true;

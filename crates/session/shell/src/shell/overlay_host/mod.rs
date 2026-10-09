@@ -956,12 +956,6 @@ pub struct ShellOverlayHost {
     /// How many times the panel recording was built. Tests use this to prove
     /// a transition does not rebuild it per frame.
     overview_panel_cache_fills: u32,
-    /// Bumped when a transition latches, so the presenter can keep the
-    /// pre-transition desktop pixels for the whole fade.
-    overview_generation: u64,
-    /// Set while the overview is fading. The multi-output presenter uploads
-    /// only this panel instead of both full scanouts.
-    overview_fast_patch: Option<OverviewFastPatch>,
     /// Overview panel density for the current theme, refreshed each
     /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
     /// helpers hit-testing calls (no theme in hand) read the same numbers
@@ -981,9 +975,6 @@ pub struct ShellOverlayHost {
     workspace_switch_until: Option<Instant>,
     /// Times each switch from its chord to its first and resting frames.
     workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
-    /// The workspace root was just rebuilt and has not been encoded yet.
-    /// A clip would replay the previous workspace, so that one frame is dense.
-    content_rebuild_owes_scene: bool,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -3156,8 +3147,6 @@ impl ShellOverlayHost {
             overview_press: None,
             overview_panel_cache: None,
             overview_panel_cache_fills: 0,
-            overview_generation: 0,
-            overview_fast_patch: None,
             overview_metrics: OverviewMetrics::default(),
             overview_layout_theme: Theme::default(),
             overview_layout_viewport: Rect::ZERO,
@@ -3167,7 +3156,6 @@ impl ShellOverlayHost {
             workspace_switch: ui::Transition::closed(),
             workspace_switch_until: None,
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
-            content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
@@ -4157,7 +4145,6 @@ impl ShellOverlayHost {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
-            self.overview_generation = self.overview_generation.wrapping_add(1);
             self.request_compositor_transition_paints();
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
@@ -4212,21 +4199,6 @@ impl ShellOverlayHost {
             || self.workspace_switch.is_animating(now)
     }
 
-    /// Content column of the first display. The close paints its frame run
-    /// here; the rect stops at the next display so the other scanout is not
-    /// part of the upload.
-    pub(crate) fn workspace_switch_clip(&self) -> Option<vello::FineDamageRect> {
-        if !self.workspace_switch_holding() {
-            return None;
-        }
-        let primary = self.outputs.first()?;
-        let clearance = workspace_rail_clearance_for_viewport(primary.height.max(1.0));
-        let next_left = self.outputs.get(1).map(|output| output.scene.x0);
-        let x0 = primary.scene.x0 + clearance;
-        let x1 = next_left.unwrap_or(primary.scene.x1).min(primary.scene.x1);
-        scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
-    }
-
     /// Keyboard overview navigation lands in the requested state before the
     /// next input or animation-demand sample. Pointer transitions still use
     /// `latch_overview_transition`; this reuses the reduced-motion settle path
@@ -4260,19 +4232,6 @@ impl ShellOverlayHost {
         &mut self.workspace_switch_latency
     }
 
-    /// Whether this frame is one display's content clip. The combined
-    /// desktop is what makes a two-output fade a readback of both scanouts.
-    pub(crate) fn presents_on_content_clip(&self) -> bool {
-        !self.content_rebuild_owes_scene
-            && (self.transition_started.is_some() || self.workspace_switch_holding())
-    }
-
-    /// The dense frame just encoded the rebuilt workspace. Later paints in
-    /// this switch may stay on the clip.
-    pub(crate) fn dense_scene_covers_content_rebuild(&mut self) {
-        self.content_rebuild_owes_scene = false;
-    }
-
     /// Whether a transition still owes a present. The clock may have been
     /// deferred; this is the signal that keeps the frame run alive.
     pub(crate) fn transition_present_pending(&self) -> bool {
@@ -4292,26 +4251,6 @@ impl ShellOverlayHost {
             *until = until.checked_add(by).unwrap_or(*until);
         }
         self.workspace_switch.defer(by);
-    }
-
-    /// Tick the overlay and store its clip. The desktop underneath is the
-    /// frame already presented; drawing it again encodes both outputs.
-    pub(crate) fn prepare_content_clip(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
-        let overview_open = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.borrow().overlays.overview);
-        if self.transition_started.is_none() && !overview_open {
-            return;
-        }
-        let mut scratch = Scene::new();
-        self.draw_overview_overlay(
-            &mut scratch,
-            Affine::IDENTITY,
-            text_renderer,
-            theme,
-            overview_open,
-        );
     }
 
     fn request_compositor_transition_paints(&self) {
@@ -5033,7 +4972,6 @@ impl ShellOverlayHost {
         };
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
-            self.content_rebuild_owes_scene = true;
             self.start_workspace_switch_frames();
         }
         swapped
@@ -7236,8 +7174,10 @@ impl ShellOverlayHost {
         }
         if self.layers.dictation.is_consent() {
             let outputs = self.layer_outputs();
-            let surface =
-                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            let surface = self
+                .layers
+                .dictation
+                .surface_rect(self.layer_geometry(&outputs));
             targets.push((
                 crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
                 crate::shell::trusted_ui::seal_band(
@@ -10863,7 +10803,6 @@ impl ShellOverlayHost {
     pub fn set_pixel_aligned_strip_pan(&mut self, enabled: bool) {
         if self.pixel_aligned_strip_pan != enabled {
             self.pixel_aligned_strip_pan = enabled;
-            self.content_rebuild_owes_scene = true;
         }
     }
 
@@ -12400,37 +12339,21 @@ impl ShellOverlayHost {
     }
 
     /// May the local user invite into the room they're looking at? Asked
-    /// through the same policy the palette's `peer.invite` row is filtered
-    /// on, not re-decided here — a second opinion is a second security
-    /// boundary. Fail-closed at every missing piece (no chrome, no
-    /// workspace, peer-sync off).
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st feeds peer_sync_enabled, then tree(), then local_user_id right through to \
-                  the final can_see() call built from workspace/actor, both borrowed from tree; \
-                  nothing to drop earlier without cloning the tree data out for no real gain"
-    )]
+    /// through the one invitation policy the issuer and the palette's
+    /// `peer.invite` rows answer to, not re-decided here — a second opinion
+    /// is a second security boundary. Offered only when submitting it can
+    /// produce an invitation: a member who may invite into a room another
+    /// person governs is not shown a composer the issuer would refuse.
+    /// Fail-closed at every missing piece (no chrome, no workspace,
+    /// peer-sync off).
     fn may_invite_here(&self) -> bool {
-        use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
-        use crate::shell::search::visibility::CapabilityVisibility;
-
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
         let st = chrome.borrow();
-        if !st.peer_sync_enabled {
-            return false;
-        }
-        let tree = st.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return false;
-        };
-        let actor_id = st.local_user_for_room(&workspace.room);
-        let actor = workspace.actor_for_person(&actor_id);
-        CapabilityVisibility::new(workspace, actor).can_see(
-            &ResourceRef::new("actions", "peer.invite.named"),
-            &crate::shell::search::ResourceKind::Action,
-        )
+        st.peer_sync_enabled
+            && crate::shell::invite_policy::active_invite_route(&st)
+                .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here)
     }
 
     /// Lays the room-activity sheet out (by hand, not taffy, like the
@@ -14887,9 +14810,9 @@ impl ShellOverlayHost {
 
     pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
         let outputs = self.layer_outputs();
-        self.layers.dictation.is_open()
-            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
-                .contains(Point::new(point.0, point.1))
+        self.layers
+            .dictation
+            .contains(self.layer_geometry(&outputs), Point::new(point.0, point.1))
     }
 
     pub(crate) fn dictation_input_available(&self) -> bool {
@@ -14902,6 +14825,42 @@ impl ShellOverlayHost {
 
     pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
         &mut self.layers.dictation
+    }
+
+    /// Public fixture for the existing offscreen shots driver. No session,
+    /// microphone, model, permission, or field is created by this showcase.
+    /// # Errors
+    /// Requires the debug environment gate and a known fixture phase.
+    #[cfg(debug_assertions)]
+    pub fn seed_dictation_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
+        use crate::compositor::dictation::DictationStatus;
+        if std::env::var_os("TILO_UI_DEBUG").is_none() {
+            return Err("dictation shots require TILO_UI_DEBUG and a debug build");
+        }
+        match phase {
+            "dictation-consent" => self.layers.dictation.consent(),
+            "dictation-listening" | "dictation-finishing" => {
+                self.layers
+                    .dictation
+                    .status(if phase == "dictation-listening" {
+                        DictationStatus::Listening
+                    } else {
+                        DictationStatus::Finishing
+                    });
+                self.layers.dictation.preview(Some(
+                    "A public offscreen example: ideas can arrive through speech, a keyboard, or another assistive input. 日本語 · العربية · Français",
+                ));
+            }
+            "dictation-model-required" => {
+                self.layers.dictation.status(DictationStatus::Unavailable(
+                    crate::compositor::dictation::runtime::RuntimeError::Worker(
+                        agent_provider_config::speech::SpeechError::ModelUnavailable,
+                    ),
+                ));
+            }
+            _ => return Err("unknown dictation shots phase"),
+        }
+        Ok(())
     }
 
     /// Run every window operation the action door queued on the chrome
@@ -19205,6 +19164,21 @@ impl ShellOverlayHost {
                 }
                 true
             }
+            LayerIntent::DictationSetup => {
+                if !self.layers.dictation.is_model_setup() {
+                    return false;
+                }
+                self.layers
+                    .dictation
+                    .status(crate::compositor::dictation::DictationStatus::Idle);
+                self.layers.dictation.request_cancel();
+                if let Some(chrome) = self.chrome.clone() {
+                    self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+                    true
+                } else {
+                    false
+                }
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -22258,6 +22232,14 @@ impl Widget for ShellOverlayHost {
         self.onboarding.is_none() && self.palette_visible && child_index == 1
     }
 
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.layers
+            .dictation
+            .preview_target()
+            .map(|rect| vec![("dictation.live-preview".into(), rect)])
+            .unwrap_or_default()
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding, &self.capture_studio];
@@ -22843,59 +22825,6 @@ struct OverviewPanelCache {
     key: OverviewPanelCacheKey,
 }
 
-/// What the multi-output presenter needs to fade the overview without
-/// uploading both full scanouts. The panel scene is in the clip's local
-/// pixels, origin at the clip's top-left.
-pub(crate) struct OverviewFastPatch {
-    pub generation: u64,
-    pub panel: vello::FineDamageRect,
-    pub scrim: [u8; 4],
-    pub panel_scene: Scene,
-    pub panel_size: (u32, u32),
-    /// False on the frame that finishes a close: present the stashed desktop
-    /// inside `panel` and do not render the panel again.
-    pub draw_panel: bool,
-}
-
-fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
-    if rect.width() < 1.0 || rect.height() < 1.0 {
-        return None;
-    }
-    let x0 = rect.x0.max(0.0);
-    let y0 = rect.y0.max(0.0);
-    let x1 = rect.x1.max(x0);
-    let y1 = rect.y1.max(y0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the clip is clamped to non-negative scene pixels and rounded outward first"
-    )]
-    let (x, y, width, height) = (
-        x0.floor() as u32,
-        y0.floor() as u32,
-        (x1.ceil() - x0.floor()).max(1.0) as u32,
-        (y1.ceil() - y0.floor()).max(1.0) as u32,
-    );
-    Some(vello::FineDamageRect {
-        x,
-        y,
-        width,
-        height,
-    })
-}
-
-fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
-    let strength = (theme.tokens.colors.surfaces.scrim_strength * openness).clamp(0.0, 1.0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "strength is clamped to 0..=1 before scaling into a byte"
-    )]
-    let alpha = (strength * 255.0).round() as u8;
-    let color = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    [color.r, color.g, color.b, alpha]
-}
-
 impl ShellOverlayHost {
     /// Base desktop layer: window content, remote-peer presence, the
     /// sidebar wheel, the permission prompt bar, the toast stack and the
@@ -23264,62 +23193,6 @@ impl ShellOverlayHost {
         scene.pop_layer();
     }
 
-    fn store_overview_fast_patch(
-        &mut self,
-        theme: &Theme,
-        alpha: f32,
-        clip: Rect,
-        panel_xform: Affine,
-    ) {
-        let Some(panel) = scene_damage_rect(clip) else {
-            self.overview_fast_patch = None;
-            return;
-        };
-        let mut panel_scene = Scene::new();
-        let shift = Affine::translate((-clip.x0, -clip.y0));
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine multiplication is a panic-free float matrix product"
-        )]
-        let local = shift * panel_xform;
-        if alpha > 0.0
-            && let Some(cache) = &self.overview_panel_cache
-        {
-            if alpha < 0.999 {
-                let outset = Self::overview_shadow_outset(theme);
-                let local_clip = self.overview_panel_rect().inflate(outset, outset);
-                panel_scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    alpha,
-                    local,
-                    &local_clip,
-                );
-                panel_scene.append(&cache.scene, Some(local));
-                panel_scene.pop_layer();
-            } else {
-                panel_scene.append(&cache.scene, Some(local));
-            }
-        }
-        self.overview_fast_patch = Some(OverviewFastPatch {
-            generation: self.overview_generation,
-            panel,
-            scrim: scrim_rgba(theme, alpha),
-            panel_scene,
-            panel_size: (panel.width, panel.height),
-            draw_panel: alpha > 0.0,
-        });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn overview_fast_patch(&self) -> Option<&OverviewFastPatch> {
-        self.overview_fast_patch.as_ref()
-    }
-
-    pub(crate) fn take_overview_fast_patch(&mut self) -> Option<OverviewFastPatch> {
-        self.overview_fast_patch.take()
-    }
-
     #[cfg(test)]
     pub(crate) fn overview_panel_cache_fills(&self) -> u32 {
         self.overview_panel_cache_fills
@@ -23366,14 +23239,17 @@ impl ShellOverlayHost {
         } else if overview_alpha <= 0.0 {
             self.add_workspace_rect = self.add_workspace_hit_rect();
         }
-        if overview_alpha > 0.0 {
-            draw_modal_scrim_at(
-                scene,
-                transform,
-                self.overview_output_rect(),
-                overview_alpha,
-                theme,
-            );
+        // One keyed part, drawn even while it paints nothing, so a fade
+        // damages only the display the overview dims: a part that appears
+        // or disappears changes the section's structure, which is a dense
+        // frame of every display.
+        let key = ui::scene_parts::PartKey::new("shell.overview", ());
+        ui::scene_parts::part_drawn(scene, key, |scene| {
+            if overview_alpha <= 0.0 {
+                return Vec::new();
+            }
+            let output = self.overview_output_rect();
+            draw_modal_scrim_at(scene, transform, output, overview_alpha, theme);
             let panel_xform = if (overview_scale - 1.0).abs() > f64::EPSILON
                 || overview_dy.abs() > f64::EPSILON
             {
@@ -23395,7 +23271,6 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            let clip = self.overview_stable_clip(theme);
             self.paint_cached_overview_panel(
                 scene,
                 transform,
@@ -23404,24 +23279,17 @@ impl ShellOverlayHost {
                 theme,
                 overview_alpha,
             );
-            self.store_overview_fast_patch(theme, overview_alpha, clip, panel_xform);
-        } else if self.transition_started.is_some()
-            || self
-                .overview_fast_patch
-                .as_ref()
-                .is_some_and(|patch| patch.draw_panel)
-        {
-            // Progress is integer milliseconds, so the open's first sample is
-            // still alpha 0. That frame used to clear the patch and GPU-read
-            // both outputs; the close never did, because it starts at alpha 1.
-            // Keep the panel clip for the whole fade, including that sample
-            // and the frame that finishes a close. The next settled frame
-            // clears the patch.
-            let clip = self.overview_stable_clip(theme);
-            self.store_overview_fast_patch(theme, 0.0, clip, Affine::IDENTITY);
-        } else {
-            self.overview_fast_patch = None;
-        }
+            // The scrim covers the display. A fading panel is clipped to the
+            // stable clip, inside it; an opaque one is drawn unclipped, so
+            // its shadow and rise may reach past the display.
+            let panel = if overview_alpha < 0.999 {
+                self.overview_stable_clip(theme)
+            } else {
+                let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
+                self.overview_panel_rect().inflate(outset, outset)
+            };
+            vec![transform.transform_rect_bbox(output.union(panel))]
+        });
     }
 
     /// The workspace-settings modal: fly-in from the anchor button, the

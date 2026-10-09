@@ -471,7 +471,7 @@ async fn sign_complete_native_document(
         collab_types::document_attestation_id(&route.spec.app_id, &workspace, record),
         collab_types::OpClass::Splice,
         now,
-        super::next_certified_document_seq(now),
+        collab_types::next_unordered_document_sequence(now),
     );
     let unsigned = postcard::to_stdvec(&op)
         .map_err(|_| refused("native Message unsigned document will not encode"))?;

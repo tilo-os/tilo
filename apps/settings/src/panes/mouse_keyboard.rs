@@ -15,7 +15,6 @@ mod keyboard_editor;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use ui::widget::TaffyTreeExt;
 
 use settings_store::hardware::{
     EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, PadDial,
@@ -2762,19 +2761,10 @@ impl Widget for MouseKeyboardPane {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
         // `child` was just created in this same tree, so this call is not
         // reachable to fail; if it (impossibly) did, wrap it in itself
         // rather than panic this panic=abort process.
-        taffy.widget_node(style, &[child], node_map, self)
+        crate::panes::pane_node(taffy, child, node_map, self)
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

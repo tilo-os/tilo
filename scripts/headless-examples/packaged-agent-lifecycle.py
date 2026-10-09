@@ -3938,6 +3938,8 @@ def require_locked_cargo_metadata(env, profile):
         "args = sys.argv[1:]\n"
         "if args and args[0] == 'metadata':\n"
         "    args.insert(1, '--locked')\n"
+        "    os.environ.pop('RUSTC_WRAPPER', None)\n"
+        "    os.environ.pop('RUSTC_WORKSPACE_WRAPPER', None)\n"
         "os.execv(real, [real, *args])\n"
     )
     shim.chmod(0o700)

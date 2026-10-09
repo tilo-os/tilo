@@ -1274,7 +1274,11 @@ pub trait Widget {
     /// across the retained tree and refuses to publish an action whose type has
     /// no handler, preventing a catalogue entry that can only fail at runtime.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[]
+        if crate::undo::has_deferred_local_history(self) {
+            &[crate::undo::EDIT_OPERATION]
+        } else {
+            &[]
+        }
     }
 
     fn resource_operation_handlers(&self) -> HashSet<String> {
@@ -1640,6 +1644,44 @@ pub trait Widget {
         true
     }
 
+    /// This field needs a host that consumes deferred receipts. Ordinary native
+    /// Wayland windows must not advertise it until they have that delivery path.
+    fn ime_requires_deferred_ack(&self) -> bool {
+        let caret = self.ime_cursor_rect();
+        let mut required = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == caret && child.ime_purpose().is_some() {
+                required |= child.ime_requires_deferred_ack();
+            }
+        });
+        required
+    }
+
+    /// Begin one bounded deferred session after explicit host consent, preserving
+    /// the existing original-field fingerprint. This grants no microphone access.
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.start_deferred_text();
+            }
+        }
+        None
+    }
+
+    /// A private asynchronous final. None leaves ordinary synchronous IME dispatch
+    /// to the host. A receipt binds this original field and must be acknowledged
+    /// before the host releases its private recovery transcript.
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        let caret = self.ime_cursor_rect()?;
+        for child in self.children_mut() {
+            if child.ime_cursor_rect() == Some(caret) && child.ime_purpose().is_some() {
+                return child.commit_deferred_text(text);
+            }
+        }
+        None
+    }
+
     /// The focused widget wants platform text input (Wayland
     /// `text-input-v3`, native IMEs elsewhere). `None` is intentionally the
     /// default: enabling an IME for buttons, canvas tools or games makes the
@@ -1653,6 +1695,26 @@ pub trait Widget {
     /// toolkit boundary.
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         None
+    }
+
+    /// Whether the original focused editor accepts line feeds as text. This is
+    /// field policy, never inferred from a multiline accessibility presentation.
+    /// Wrappers inherit only one unambiguous child at their active IME caret.
+    fn ime_multiline(&self) -> bool {
+        let Some(caret) = self.ime_cursor_rect() else {
+            return false;
+        };
+        let mut matching = 0_usize;
+        let mut multiline = false;
+        self.for_each_child(&mut |child| {
+            if child.ime_cursor_rect() == Some(caret)
+                && child.ime_purpose() == Some(winit::window::ImePurpose::Normal)
+            {
+                matching = matching.saturating_add(1);
+                multiline = child.ime_multiline();
+            }
+        });
+        matching == 1 && multiline
     }
 
     /// Opaque local invalidation of deferred input, including selection edits
@@ -1949,6 +2011,9 @@ pub trait Widget {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::undo::start_local_history(self, op)? {
+            return Ok(Some(started));
+        }
         start_in_children(self, op, doc, path)
     }
 
@@ -1973,6 +2038,11 @@ pub trait Widget {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(update) =
+            crate::undo::poll_local_history(self, invocation, cancellation_requested)
+        {
+            return Some(update);
+        }
         for child in self.children_mut() {
             if let Some(update) =
                 child.poll_resource_operation(invocation, cancellation_requested, doc, path)
