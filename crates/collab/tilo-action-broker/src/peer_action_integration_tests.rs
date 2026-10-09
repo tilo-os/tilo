@@ -794,7 +794,7 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         let by_other = signed_by(&directed(room, 53, invoke(&unsigned)), 53, now_ns());
         let mut wire = postcard::to_allocvec(&EnvelopeV2::SignedDirected(by_other)).unwrap();
         let at = wire.windows(32).position(|w| w == device(53, false).1.device_public_key).unwrap();
-        wire.get_mut(at..at + 32).unwrap().copy_from_slice(&device(52, false).1.device_public_key);
+        wire.get_mut(at..at.saturating_add(32)).unwrap().copy_from_slice(&device(52, false).1.device_public_key);
         let EnvelopeV2::SignedDirected(claimed) = tilo_delivery_protocol::transport_v2::decode(&wire).unwrap() else { panic!("signed frame expected") };
         let claimed_id = claimed.action().request_id;
         current.write(EnvelopeV2::SignedDirected(claimed)).await;
@@ -811,7 +811,7 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         assert_eq!(current.answer(effect.request_id).await, rejected("action_replayed"));
         // So is a frame signed outside the freshness window, either way.
         let window = i64::try_from(tilo_delivery_protocol::peer_actions::ACTION_SIGNATURE_TOLERANCE_NS).unwrap();
-        for skew in [-2 * window, 2 * window] {
+        for skew in [window.saturating_mul(-2), window.saturating_mul(2)] {
             let mut late = request.clone();
             late.invocation = tilo_actions::InvocationId::new();
             let stale = directed(room, 52, invoke(&late));
