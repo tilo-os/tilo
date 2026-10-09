@@ -7962,6 +7962,7 @@ impl ShellOverlayHost {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         );
         self.pending_launchpad_actions

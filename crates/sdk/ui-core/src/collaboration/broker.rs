@@ -6062,6 +6062,31 @@ async fn dispatch_sdk_request(
                 }
             }
         }
+        CollabRequest::RemoteAction { message } if message.waits() => {
+            // The host holds this answer until the invocation moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the call still goes out in the order it was
+            // asked (a cancel right after its invoke stays after it).
+            let channel = route.channel.clone();
+            let mut round_trip =
+                Box::pin(async move { remote_action_round_trip(&channel, message).await });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            match first {
+                std::task::Poll::Ready(answer) => {
+                    let _ = inbound_tx.send_durable(CollabEvent::RemoteAction { message: answer });
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let answer = round_trip.await;
+                        let _ = inbound.send_durable(CollabEvent::RemoteAction { message: answer });
+                    });
+                }
+            }
+        }
         CollabRequest::RemoteAction { message } => {
             let answer = remote_action_round_trip(&route.channel, message).await;
             let _ = inbound_tx.send_durable(CollabEvent::RemoteAction { message: answer });

@@ -289,6 +289,7 @@ impl Browser {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }))
         .encode()
         .unwrap();

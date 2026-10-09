@@ -252,6 +252,16 @@ pub(super) fn serve_after_consent(
         let reply = match state.record_app_action_grant(&consent, answer) {
             None => refuse(&message, ActionHostError::NotPermitted),
             Some(grant) => {
+                // Answered at admission, as before waits existed: a grant
+                // given for this call is spent once the call is decided,
+                // never held open while the action runs.
+                let message = match message {
+                    RemoteActionMessage::Invoke(mut request) => {
+                        request.wait_ms = None;
+                        RemoteActionMessage::Invoke(request)
+                    }
+                    other => other,
+                };
                 let answered = match serve(&host, &caller, message) {
                     Some(answer) => answer.await,
                     None => None,
