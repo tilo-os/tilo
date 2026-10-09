@@ -4724,6 +4724,116 @@ mod tests {
         );
     }
 
+    fn pressed_install_on_a_quiet_desktop(
+        activate: impl FnOnce(&mut crate::shell::app_notice_card::AppNoticeCard),
+    ) {
+        use crate::shell::peer_windows::work_counts;
+        use crate::shell::state::{
+            CapOverride, Effect, Principal, Scope, Subject, TileContent, Verb,
+        };
+        use tilo_desktop_model::MissingApp;
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
+        assert!(!crate::shell::peer_windows::any_pending(
+            &frame.chrome().tree()
+        ));
+        let tab = arrive_peer_window(&frame);
+        {
+            let chrome = frame.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            let workspace = tree.desktop.workspaces.last_mut().unwrap();
+            workspace.owner = Some("quinten".into());
+            // The production install path must refuse before reaching the
+            // catalogue: this disposable fixture can never install an app.
+            let _ = workspace.grant_capability(CapOverride {
+                effect: Effect::Restrict,
+                ..CapOverride::grant(
+                    Subject::Principal(Principal::Person("quinten".into())),
+                    Scope::App("so.tilo.word-processor".into()),
+                    Verb::Read,
+                )
+            });
+            let TileContent::PeerWindow { note, missing, .. } =
+                &mut workspace.strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("the fixture must contain the actual peer window");
+            };
+            crate::shell::peer_windows::NOT_INSTALLED.clone_into(note);
+            *missing = Some(MissingApp::Installable {
+                display_name: "Word Processor".into(),
+            });
+            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+        }
+        for _ in 0..3 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+        }
+        assert!(!crate::shell::peer_windows::any_pending(
+            &frame.chrome().tree()
+        ));
+        assert_eq!(frame.peer_windows_poll(), None);
+        let quiet = work_counts();
+        let mut card = crate::shell::app_notice_card::AppNoticeCard::install(
+            tab,
+            "Word Processor",
+            "Word Processor",
+        );
+        activate(&mut card);
+        let wake = frame.peer_windows_poll();
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            work_counts().1,
+            quiet.1.saturating_add(1),
+            "the card press owes exactly one examination in the next pump"
+        );
+        assert!(wake.is_some(), "an install press must wake an idle desktop");
+        {
+            let chrome = frame.chrome.borrow();
+            let tree = chrome.tree();
+            let TileContent::PeerWindow { note, missing, .. } =
+                &tree.desktop.workspaces.last().unwrap().strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("a refused install must keep the peer window");
+            };
+            assert!(note.contains("does not permit"), "existing refusal: {note}");
+            assert_eq!(*missing, None);
+        }
+        assert_eq!(frame.peer_windows_poll(), None, "the request was drained");
+        // Allow the refusal's chrome revision to settle, then prove both
+        // examinations and tab walks stop on subsequent quiet rounds.
+        frame.pump_apps(&mut doc, &automerge::ROOT);
+        let settled = work_counts();
+        assert_eq!(settled.1, quiet.1.saturating_add(1));
+        for _ in 0..5 {
+            frame.pump_apps(&mut doc, &automerge::ROOT);
+            assert_eq!(frame.peer_windows_poll(), None);
+        }
+        assert_eq!(
+            work_counts(),
+            settled,
+            "quiet rounds do no peer-window work"
+        );
+    }
+
+    #[test]
+    fn pump_room_contents_runs_a_pressed_install_without_other_pending_work() {
+        pressed_install_on_a_quiet_desktop(|card| card.press_for_test());
+    }
+
+    #[test]
+    fn pump_room_contents_runs_a_semantic_install_without_other_pending_work() {
+        pressed_install_on_a_quiet_desktop(|card| {
+            let target = card.test_id().unwrap().to_owned();
+            let mut state = AutoCommit::new();
+            assert!(card.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut state),
+                &automerge::ROOT,
+            ));
+        });
+    }
+
     #[test]
     fn frame_pump_settles_a_launchpad_request_once() {
         let mut frame = FrameBuilder::new((1280, 800));
