@@ -1178,7 +1178,20 @@ fn enforce_bundle_policy(
             }
         })
     } else {
-        runtime_bundle::verify_bundle_with(path, &verify_opts)
+        // A per-user bundle is writable by the user's unconfined processes,
+        // so every byte must be proven, not assumed: files sealed with
+        // fs-verity at install by their publisher-signed digest are proven
+        // by the kernel without being read, the rest are hashed in full.
+        runtime_bundle::verify_bundle_verity_with(path, &verify_opts).map(|(manifest, check)| {
+            tracing::debug!(
+                bundle = %path.display(),
+                by_verity = check.by_verity,
+                hashed = check.hashed,
+                hashed_bytes = check.hashed_bytes,
+                "per-user runtime verified"
+            );
+            manifest
+        })
     };
     match verified {
         Ok(manifest) => {
@@ -1273,7 +1286,8 @@ fn system_bundle_tree_is_root_owned(
     false
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod system_bundle_tree_policy_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -1287,10 +1301,12 @@ mod system_bundle_tree_policy_tests {
                 path: path.to_string(),
                 hash: "00".repeat(32),
                 size: 1,
+                verity: None,
             }],
             produced_at: 0,
             publisher_hex: None,
             signature_hex: None,
+            verity_signature_hex: None,
         }
     }
 
@@ -1349,6 +1365,133 @@ mod system_bundle_tree_policy_tests {
                 .uid(),
             0
         );
+    }
+}
+
+/// A per-user runtime is writable by the user's unconfined processes, so a
+/// launch must prove every byte (TIL-594): sealed files by their signed
+/// fs-verity digest without reading them, every other file by its hash.
+#[cfg(test)]
+#[cfg(unix)]
+mod per_user_runtime_verification_tests {
+    use super::*;
+    use std::path::Path;
+
+    const DYLIB: &str = "lib/libruntime_dylib.so";
+
+    /// A signed per-user runtime under `parent` whose toolkit dylib is
+    /// `dylib_size` bytes, and launch options that pin its publisher.
+    fn per_user_runtime(
+        parent: &Path,
+        dylib_size: usize,
+    ) -> (tempfile::TempDir, PathBuf, RunOptions) {
+        let work = tempfile::tempdir_in(parent).unwrap();
+        let host = work.path().join("host");
+        let loader = runtime_bundle::host_minimal_paths_for(std::env::consts::ARCH).unwrap()[0]
+            .trim_start_matches('/');
+        std::fs::create_dir_all(host.join(loader).parent().unwrap()).unwrap();
+        std::fs::write(host.join(loader), b"loader").unwrap();
+        let dylib = work.path().join("libruntime_dylib.so");
+        let bytes: Vec<u8> = (0..=250u8).cycle().take(dylib_size).collect();
+        std::fs::write(&dylib, bytes).unwrap();
+        let identity = runtime_bundle::Identity::generate();
+        let identity_path = work.path().join("identity.json");
+        std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+        let bundle = work.path().join("tilo-runtime/2026.10");
+        runtime_bundle::build_bundle_with(
+            &bundle,
+            "2026.10",
+            &runtime_bundle::BuildOptions {
+                from: Some(&host),
+                arch: Some(std::env::consts::ARCH),
+                identity: Some(&identity_path),
+                extra_libs: &[dylib],
+            },
+        )
+        .unwrap();
+        let opts = RunOptions {
+            require_runtime_publisher: Some(identity.public_key_hex()),
+            ..Default::default()
+        };
+        (work, bundle, opts)
+    }
+
+    /// Replace `path` with its bytes but one, as anyone who can write the
+    /// per-user runtime directory can, sealed file or not.
+    fn replace_with_one_byte_changed(path: &Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes[0] ^= 1;
+        std::fs::remove_file(path).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_modified_byte_in_an_unsealed_per_user_runtime_is_refused() {
+        let (_work, bundle, opts) = per_user_runtime(&std::env::temp_dir(), 3 * 4096);
+        enforce_bundle_policy(&bundle, &opts, false).unwrap();
+        replace_with_one_byte_changed(&bundle.join(DYLIB));
+        assert!(matches!(
+            enforce_bundle_policy(&bundle, &opts, false),
+            Err(RunError::RuntimeBundleSignature { .. })
+        ));
+    }
+
+    /// Bytes the calling thread has read: the other tests in this binary run
+    /// on other threads.
+    #[cfg(target_os = "linux")]
+    fn thread_bytes_read() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// A temporary directory on a filesystem with fs-verity:
+    /// `TILO_FSVERITY_DIR`, else the system temporary directory.
+    fn verity_dir() -> Result<tempfile::TempDir, String> {
+        let base = std::env::var_os("TILO_FSVERITY_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(std::env::temp_dir, PathBuf::from);
+        let dir = tempfile::tempdir_in(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, b"probe").map_err(|e| e.to_string())?;
+        runtime_bundle::verity::enable(&probe).map_err(|e| format!("{}: {e}", base.display()))?;
+        Ok(dir)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn per_user_runtime_launch_does_not_hash_payload() {
+        let dir = tilo_test_env::require_capability!(
+            FsVerity,
+            verity_dir(),
+            "no fs-verity filesystem to install a runtime on"
+        );
+        let (_work, bundle, opts) = per_user_runtime(dir.path(), 64 << 20);
+        let manifest =
+            runtime_bundle::verify_bundle_with(&bundle, &runtime_bundle::VerifyOptions::default())
+                .unwrap();
+        runtime_bundle::enable_bundle_verity(&bundle, &manifest).unwrap();
+
+        // phase: the_launch_reads_none_of_the_payload
+        let before = thread_bytes_read();
+        let started = std::time::Instant::now();
+        enforce_bundle_policy(&bundle, &opts, false).unwrap();
+        let elapsed = started.elapsed();
+        let read = thread_bytes_read().saturating_sub(before);
+        eprintln!("per-user 64 MiB runtime verified in {elapsed:?}, {read} bytes read");
+        assert!(read < 1 << 20, "the launch read {read} bytes");
+
+        // phase: a_replaced_file_is_refused_before_the_sandbox_is_built
+        replace_with_one_byte_changed(&bundle.join(DYLIB));
+        assert!(matches!(
+            enforce_bundle_policy(&bundle, &opts, false),
+            Err(RunError::RuntimeBundleSignature { .. })
+        ));
     }
 }
 
@@ -1440,6 +1583,7 @@ pub fn run(
     } else {
         read_manifest(manifest_path)?
     };
+    tilo_startup_metrics::handoff_mark("package-verified");
     run_with_context(&manifest, payload_root, opts, None, None)
 }
 
@@ -1726,6 +1870,20 @@ fn splice_cli_setenv(
         argv.push(entry);
     }
     Ok(())
+}
+
+/// Hand this launch's phase marks to the app
+/// ([`tilo_startup_metrics::LAUNCHER_MARKS_ENV`]), so its startup file also
+/// covers the launcher. Only when the shell asked for startup metrics; the
+/// value is the launcher's own fixed mark names and wall-clock times. The
+/// last mark is taken here, after every check and before the sandbox spawns.
+fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
+    tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
+    splice_cli_setenv(
+        argv,
+        tilo_startup_metrics::handoff_env_value()
+            .map(|marks| (tilo_startup_metrics::LAUNCHER_MARKS_ENV.to_string(), marks)),
+    )
 }
 
 /// Expose the upstream NT synchronization device only to GUI packages marked
@@ -2895,12 +3053,14 @@ pub(crate) fn run_with_context(
     // Host preflight precedes connected service custody.
     // Seccomp baseline → tmpfile → fd.
     let seccomp_fds = stage_seccomp(manifest)?;
+    tilo_startup_metrics::handoff_mark("seccomp-staged");
 
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
     // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
     // waited on so Drop can SIGTERM the proxies.
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
+    tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
 
     // Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
@@ -2912,10 +3072,12 @@ pub(crate) fn run_with_context(
     } else {
         resolve_runtime(manifest, opts)?
     };
+    tilo_startup_metrics::handoff_mark("runtime-verified");
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
+    tilo_startup_metrics::handoff_mark("loader-preflight-done");
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
@@ -2931,6 +3093,7 @@ pub(crate) fn run_with_context(
     } else {
         resolve_launch_dirs(manifest, opts)?
     };
+    tilo_startup_metrics::handoff_mark("app-dirs-ready");
 
     // The user's capability decision. Empty unless the compositor wrote a
     // file — an app launched without one is confined to its manifest alone.
@@ -2990,6 +3153,7 @@ pub(crate) fn run_with_context(
         resolved
     };
     let binds = to_service_binds(&resolved);
+    tilo_startup_metrics::handoff_mark("services-resolved");
 
     // Resolve the selected record on the host, migrate legacy storage, then
     // mint one app-scoped broker connection. The path is only a presence
@@ -3000,6 +3164,7 @@ pub(crate) fn run_with_context(
         } else {
             resolve_identity_broker(&capabilities, opts)?
         };
+    tilo_startup_metrics::handoff_mark("identity-ready");
     let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
     let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     if identity_broker_app.is_some() {
@@ -3010,6 +3175,7 @@ pub(crate) fn run_with_context(
     // mode shares the host network with no allowlist to enforce, so neither
     // needs a gate. Guard bound here (not in the `if let`) so it outlives the child.
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
+    tilo_startup_metrics::handoff_mark("egress-ready");
 
     // Pick the entrypoint bin per launch mode and build the initial argv.
     let (mut argv, extra_setenv, cli_passthrough) = build_initial_argv(
@@ -3059,6 +3225,7 @@ pub(crate) fn run_with_context(
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    splice_startup_marks(&mut argv)?;
     splice_sandbox_shim(
         &mut argv,
         opts,

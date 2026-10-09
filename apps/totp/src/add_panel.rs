@@ -407,20 +407,16 @@ impl Widget for AddForm {
         // The form has a node of its own over the scroller's, so that the
         // window's focus order pairs each widget with its node.
         let child = self.tree.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: taffy::style_helpers::percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                ..Style::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: taffy::Size {
+                width: taffy::style_helpers::percent(1.0_f32),
+                height: taffy::Dimension::auto(),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Style::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

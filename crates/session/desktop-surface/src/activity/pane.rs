@@ -831,6 +831,16 @@ pub struct RoomActivityPane {
     pub(super) replay_unavailable: usize,
     replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
+    /// What [`Self::source`] has read of the room's change log, kept across
+    /// refreshes: a refresh reads only the changes appended since the last
+    /// one ([`HistorySource::entries_since`]).
+    pub(super) history_log: ui::history_source::HistoryLog,
+    /// Each room change's reading, kept across refreshes; see
+    /// [`describe_room_changes`].
+    room_changes: HashMap<ChangeHash, RoomChange>,
+    /// Each replayed entry's desktop, kept across rebuilds; see
+    /// [`Self::rebuild_replay_frames`].
+    pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
     pub(super) replay_index: usize,
     pub(super) replay_playing: bool,
     replay_last_advance: Instant,
@@ -1025,6 +1035,9 @@ impl RoomActivityPane {
             replay_unavailable: 0,
             replay_presentation_note: None,
             replay_frames: Vec::new(),
+            history_log: ui::history_source::HistoryLog::default(),
+            room_changes: HashMap::new(),
+            replay_checkpoints: HashMap::new(),
             replay_index: 0,
             replay_playing: false,
             replay_last_advance: Instant::now(),
@@ -2124,6 +2137,7 @@ impl RoomActivityPane {
         self.named.clear();
         self.timeline.set_named_ranges(Vec::new());
         self.replay_frames.clear();
+        self.replay_checkpoints.clear();
         self.replay_playing = false;
         self.tasks.clear();
         self.task_source = None;
@@ -2227,8 +2241,15 @@ impl RoomActivityPane {
             }
         }
 
-        let mut entries = self.source.entries(tree.document_mut());
-        let mut tags = describe_room_changes(tree.document_mut(), &mut entries);
+        let mut entries = self
+            .source
+            .entries_since(tree.document_mut(), &mut self.history_log);
+        let mut tags = describe_room_changes(
+            tree.document_mut(),
+            &self.history_log,
+            &mut entries,
+            &mut self.room_changes,
+        );
         // A receipt is committed by the room host, but its authenticated
         // `actor` is the person (or agent) who performed the semantic action.
         // Attribute the projected CRDT row to that actor rather than to the
@@ -2438,6 +2459,11 @@ impl RoomActivityPane {
 
     /// Hand the timeline the rows [`Self::scope`] selects and re-derive
     /// everything that depends on which rows are in play.
+    /// Every entry of the room's derived history, in any workspace.
+    pub(super) fn derived_entry_ids(&self) -> impl Iterator<Item = HistoryEntryId> + '_ {
+        self.derived.iter().map(|(entry, _)| entry.id)
+    }
+
     fn apply_scope(&mut self, tree: &impl ActivityTree) {
         let active = tree.active.raw();
         self.last_active = Some(active);
@@ -8543,53 +8569,70 @@ fn draw_more_row(
 // Room vocabulary
 // =====================================================================
 
+/// What one room change did, read from its patches once: a change's
+/// patches are fixed by its hash, and diffing every change of the room on
+/// every refresh made a workspace switch's first frame O(history).
+#[derive(Default)]
+pub(super) struct RoomChange {
+    /// The workspace the change belongs to; `None` for several or none.
+    workspace: Option<u64>,
+    counts: PatchCounts,
+    bookkeeping: bool,
+}
+
+impl RoomChange {
+    fn read(doc: &mut automerge::AutoCommit, deps: &[ChangeHash], hash: ChangeHash) -> Self {
+        #[cfg(test)]
+        ROOM_CHANGE_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
+        let patches = doc.diff(deps, &[hash]);
+        let mut counts = PatchCounts::default();
+        for patch in &patches {
+            counts.record(patch);
+        }
+        Self {
+            workspace: workspace_touched(doc, &patches, hash),
+            counts,
+            bookkeeping: is_room_bookkeeping(&patches),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many room changes this thread diffed, for the tests that pin
+    /// that a refresh reads only new changes.
+    pub(super) static ROOM_CHANGE_READS: Cell<usize> = const { Cell::new(0) };
+}
+
 /// Rewrite each row's summary in the room's own words where nameable,
 /// else keeps [`HistorySource`]'s generic one. Returns, per entry, the
-/// workspace the change belongs to — `None` for several or none.
+/// workspace the change belongs to — `None` for several or none. `known`
+/// keeps each change's reading across refreshes; only new changes are
+/// diffed. Each entry's hash and dependencies come from `log`, the history
+/// log `entries` were read through, so the room's changes are not listed
+/// again.
 fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
+    log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
+    known: &mut HashMap<ChangeHash, RoomChange>,
 ) -> Vec<Option<u64>> {
     let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
-    if entries.is_empty() {
-        return tags;
-    }
-    // Indexed so a long-lived room avoids a linear scan per change:
-    // `deps -> [hash]` isolates exactly that change.
-    let mut by_id: std::collections::HashMap<HistoryEntryId, usize> =
-        std::collections::HashMap::with_capacity(entries.len());
-    for (i, e) in entries.iter().enumerate() {
-        by_id.insert(e.id, i);
-    }
-    let changes: Vec<(HistoryEntryId, Vec<ChangeHash>, ChangeHash)> = doc
-        .get_changes(&[])
-        .into_iter()
-        .map(|c| {
-            (
-                ui::history_source::entry_id_from_hash(&c.hash().to_string()),
-                c.deps().to_vec(),
-                c.hash(),
-            )
-        })
-        .collect();
-
-    for (id, deps, hash) in changes {
-        let Some(&i) = by_id.get(&id) else {
+    for (entry, tag) in entries.iter_mut().zip(&mut tags) {
+        let Some((hash, deps)) = log.change(&entry.id) else {
             continue;
         };
-        let patches = doc.diff(&deps, &[hash]);
-        if let Some(tag) = tags.get_mut(i) {
-            *tag = workspace_touched(doc, &patches, hash);
-        }
-        let Some(entry) = entries.get_mut(i) else {
-            continue;
-        };
-        if let Some((summary, op_class)) = describe_patches(&patches) {
+        // `deps -> [hash]` isolates exactly that change.
+        let change = known
+            .entry(hash)
+            .or_insert_with(|| RoomChange::read(doc, deps, hash));
+        *tag = change.workspace;
+        if let Some((summary, op_class)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
             entry.op_class = op_class;
-            if !room_event_belongs_in_feed(&patches) {
+            if !change.counts.feed_kind().belongs_in_feed() {
                 let mut context = entry.context.take().unwrap_or_default();
                 if !context
                     .facets
@@ -8602,7 +8645,7 @@ fn describe_room_changes(
                 }
                 entry.context = Some(context);
             }
-        } else if is_room_bookkeeping(&patches) {
+        } else if change.bookkeeping {
             entry.context = Some(
                 entry
                     .context
@@ -8707,11 +8750,12 @@ fn workspace_touched(
     found
 }
 
-/// Running counts [`describe_patches`] accumulates one patch at a time,
-/// then turns into a single room-event description. Split out from
-/// [`describe_patches`] purely to keep each step under the line-count
-/// guard — the accumulation and the priority cascade are still one
-/// pipeline, just two named steps of it.
+/// Running counts of one change's patches, turned into a single room event
+/// ([`PatchCounts::describe`]) and its place in the feed
+/// ([`PatchCounts::feed_kind`]). Content, membership and permission changes
+/// stay in the feed; setup (the workspace's own first writes), a plain open
+/// and window layout do not — they are durable, but they are not "what
+/// people did".
 #[derive(Default)]
 struct PatchCounts {
     grants: Vec<String>,
@@ -8918,27 +8962,6 @@ impl PatchCounts {
         }
         None
     }
-}
-
-/// Map a change's patches onto a room event, or `None` when nothing in it is
-/// recognised.
-fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
-    let mut counts = PatchCounts::default();
-    for p in patches {
-        counts.record(p);
-    }
-    counts.describe()
-}
-
-/// Content, membership and permission changes stay in the feed. Setup
-/// (the workspace's own first writes), a plain open, and window layout
-/// do not — they are durable, but they are not "what people did".
-fn room_event_belongs_in_feed(patches: &[automerge::Patch]) -> bool {
-    let mut counts = PatchCounts::default();
-    for p in patches {
-        counts.record(p);
-    }
-    counts.feed_kind().belongs_in_feed()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

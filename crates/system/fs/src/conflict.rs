@@ -7,7 +7,7 @@
 //!
 //! Copy names derive purely from name + losing hash, so peers converge on them.
 
-use collab_types::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
+use fs_protocol::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
 use crate::namespace::{ContentAuthority, Namespace, ROOT_ID};
@@ -49,6 +49,8 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
 
 /// Detect conflict copies that don't yet exist — deterministic across peers, idempotent once present.
 pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
+    #[cfg(test)]
+    ns.note_conflict_scan();
     let mut out = Vec::new();
 
     // (1) concurrent edits of a live file.
@@ -248,21 +250,21 @@ mod tests {
             let snap = a.save();
             let mut b = Namespace::from_bytes("B", &snap).unwrap();
             let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
-            let revision_a = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            let revision_a = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([10; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([10; 32])),
                 byte_len: 10,
-                metadata_hash: collab_types::ContentHash([11; 32]),
+                metadata_hash: fs_protocol::ContentHash([11; 32]),
             };
-            let revision_b = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            let revision_b = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([20; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([20; 32])),
                 byte_len: 20,
-                metadata_hash: collab_types::ContentHash([21; 32]),
+                metadata_hash: fs_protocol::ContentHash([21; 32]),
             };
             assert!(a.set_content_revision(ino, &revision_a, 5));
             assert!(b.set_content_revision(bino, &revision_b, 5));

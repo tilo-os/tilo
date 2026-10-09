@@ -130,6 +130,28 @@ class TiloVm:
             self.run("shot", "-o", str(path), timeout=90)
         return path
 
+    def snapshot_once(self, path: Path) -> Path:
+        """One `tilo-vm shot`, no retry: for a caller that expects it to be refused."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.run("shot", "-o", str(path), timeout=90)
+        return path
+
+    # -- the slot's session ---------------------------------------------------
+
+    def restart_session(self, timeout: float = 60) -> None:
+        """Restart the slot's session on its current generation and wait until its control
+        socket answers again: a fresh compositor, unlocked, with no windows open."""
+        self.run("slot", "restart", self.slot, timeout=300, slot=False)
+
+        def answering():
+            try:
+                return self.state()
+            except VmError:
+                return None
+
+        if wait_until(answering, timeout, interval=1.0) is None:
+            raise VmError(f"the restarted session's control socket did not answer within {timeout:.0f}s")
+
     def exec(self, script: str, timeout: float = 120, check: bool = True) -> str:
         """Run a POSIX sh script as the slot's user, in its session's view."""
         return self.run("slot", "exec", "--", "sh", "-c", script,

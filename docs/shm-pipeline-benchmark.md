@@ -104,3 +104,18 @@ The branch also incorporates main's existing browser font-publication fix
 `6b30d9bb4a` and subsequent qualification fixes through `88a53d1979`, rather
 than duplicating those changes. No benchmark timings were refreshed by these
 integration merges.
+
+## Frame ownership since TIL-586
+
+The timings above predate shared frame ownership; they are not refreshed here.
+Stored frames are now `Arc<Vec<u8>>`: `publish_rgba` copies the caller's slice
+before taking the entries mutex and swaps the `Arc` under it, `snapshot`
+clones the `Arc` under the mutex and copies after releasing it, and the tile's
+`frame_image` draws a whole, uncropped CPU frame from the stored allocation
+without a copy. The production SHM route copies only a commit's buffer damage
+out of the client pool while the worker's base frame is the previous SHM
+buffer, converts only that damage, and writes it into the frame the current
+one replaced when nothing draws that any more. The example's
+`shm-capture-copy-conversion` rows measure that pool copy plus conversion for
+a whole 4K commit and a 64×32 damage on one; the SIGBUS guard, queueing and
+Vello's whole-image atlas upload remain unmeasured.

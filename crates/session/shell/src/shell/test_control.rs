@@ -200,6 +200,17 @@ pub enum Command {
         include_programmatic: bool,
         #[serde(flatten)]
         page: ListingRequest,
+        /// Hold the answer until the listing is `complete` — no index build
+        /// or app directory page that would change it still owed — for at
+        /// most this many milliseconds (capped at 30 s). The answer says
+        /// whether it `settled`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+        /// With `wait_ms`: a listing with this `revision` was already seen,
+        /// so only a different one settles the wait — "answer when this
+        /// changes", e.g. when an app just opened publishes its actions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_revision: Option<String>,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -221,7 +232,13 @@ pub enum Command {
         wait_ms: Option<u64>,
     },
     /// Read the latest broker lifecycle state for an invocation receipt id.
-    ActionsStatus { invocation_id: u64 },
+    ActionsStatus {
+        invocation_id: u64,
+        /// Hold the answer until the invocation settles, as
+        /// `actions_invoke`'s `wait_ms` does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+    },
     /// Request cooperative cancellation for an invocation receipt id.
     ActionsCancel { invocation_id: u64 },
     /// Seat the request's [`Agent`] without injecting input: its strip takes
@@ -1060,10 +1077,12 @@ pub fn dispatch_command<S: ControlState>(
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
+        // Whether a listing waits is the transport's: it holds the reply.
         Command::ActionsEnumerate {
             query,
             include_programmatic,
             page,
+            ..
         } => (
             match state.enumerate_actions_with_programmatic(query, *include_programmatic, page) {
                 Ok(answer) => Response::Answer(answer),
@@ -1085,7 +1104,7 @@ pub fn dispatch_command<S: ControlState>(
             Some(device) => plan_enrolled_device_action(device, provider, id, args),
             None => actions_invoke(state, provider, id, args),
         },
-        Command::ActionsStatus { invocation_id } => invocation_control(
+        Command::ActionsStatus { invocation_id, .. } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_status_id(*invocation_id),
         ),
         Command::ActionsCancel { invocation_id } => invocation_control(
@@ -3192,6 +3211,8 @@ mod tests {
             query: String::new(),
             include_programmatic: false,
             page,
+            wait_ms: None,
+            after_revision: None,
         }
     }
 
@@ -3352,6 +3373,8 @@ mod tests {
                         include_programmatic: false,
                         query: String::new(),
                         page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &ActionState,
                 );
@@ -3436,7 +3459,10 @@ mod tests {
             {
                 for (command, expected) in [
                     (
-                        Command::ActionsStatus { invocation_id: 37 },
+                        Command::ActionsStatus {
+                            invocation_id: 37,
+                            wait_ms: None,
+                        },
                         crate::shell::search::providers::live_app_actions::job_status_id(37),
                     ),
                     (
@@ -3486,6 +3512,8 @@ mod tests {
                         include_programmatic: false,
                         query: String::new(),
                         page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &state,
                 );
@@ -3507,6 +3535,8 @@ mod tests {
                         include_programmatic: false,
                         query: "settings".to_string(),
                         page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -3518,6 +3548,8 @@ mod tests {
                         include_programmatic: false,
                         query: String::new(),
                         page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -3540,6 +3572,46 @@ mod tests {
                     panic!("expected ActionsInvoke");
                 };
                 assert_eq!(wait_ms, Some(5000));
+
+                // A listing and a job read wait the same way; without the
+                // fields they answer at once, and serialise as before.
+                let waited_listing = parse_command(
+                    r#"{"op":"actions_enumerate","query":"read","wait_ms":2000,"after_revision":"r1"}"#,
+                )
+                .expect("actions_enumerate should parse with a wait");
+                assert_eq!(
+                    waited_listing,
+                    Command::ActionsEnumerate {
+                        include_programmatic: false,
+                        query: "read".to_string(),
+                        page: ListingRequest::default(),
+                        wait_ms: Some(2000),
+                        after_revision: Some("r1".to_string()),
+                    }
+                );
+                assert_eq!(
+                    serde_json::to_value(&bare).expect("serialise"),
+                    serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+                );
+                let status = parse_command(r#"{"op":"actions_status","invocation_id":4}"#)
+                    .expect("actions_status should parse");
+                assert_eq!(
+                    status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: None
+                    }
+                );
+                let waited_status =
+                    parse_command(r#"{"op":"actions_status","invocation_id":4,"wait_ms":10}"#)
+                        .expect("actions_status should parse with a wait");
+                assert_eq!(
+                    waited_status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: Some(10)
+                    }
+                );
 
                 let with_args = parse_command(
                     r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,
@@ -3679,8 +3751,8 @@ mod tests {
 }
 
 use std::io::BufRead;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, PhysicalKey};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::Key;
 pub const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
 /// Read up to one `\n`-terminated line from `reader`, capped at
 /// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
@@ -3774,32 +3846,23 @@ impl BoundedLineBuffer {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
+/// Build a `WindowEvent::KeyboardInput` for `key`; `text` is set for
+/// `Character` keys so text-input branches see the same glyph real hardware
+/// would send.
 pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key.clone(),
+        if let Key::Character(s) = key {
+            Some(s.clone())
+        } else {
+            None
+        },
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    ))
 }
 #[cfg(test)]
 mod framing_tests {

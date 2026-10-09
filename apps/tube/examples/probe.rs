@@ -32,11 +32,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -1429,7 +1425,7 @@ fn run_bench_scroll(
             // Real scroll: a wheel notch routed through the widget tree, exactly
             // as the live event loop delivers it.
             let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                 phase: TouchPhase::Moved,
             };

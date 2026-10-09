@@ -79,8 +79,8 @@ impl Request {
         if !self.source.alive() {
             return Err("checkpoint refresh session ended during owner turn".into());
         }
-        if !self.source.cert(&self.source.peer) {
-            return Err("checkpoint refresh certificate changed during owner turn".into());
+        if !self.source.admits(&workspace, &self.source.peer) {
+            return Err("checkpoint refresh authorization changed during owner turn".into());
         }
         workspace.request_checkpoint(&self.source.peer.device_public_key);
         Ok(result)

@@ -19,6 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
         return Ok(());
     }
+    if env::var_os("CARGO_FEATURE_WHISPER").is_none() {
+        return Ok(());
+    }
     let root = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").ok_or("Cargo manifest directory is missing")?,
     );

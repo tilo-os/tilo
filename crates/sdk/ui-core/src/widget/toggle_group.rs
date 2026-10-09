@@ -2513,6 +2513,7 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::testing::dispatch;
     use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::cell::RefCell;
@@ -2586,8 +2587,7 @@ mod tests {
         let group = SegmentedTouchGroup::new(42, &rects, 0);
         let mut recognizer = SegmentedTouch::default();
         let event = |id, phase, x, y| winit::event::Touch {
-            // SAFETY: device identity is opaque and not consulted by the recognizer.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(x, y),
             force: None,
@@ -2652,71 +2652,20 @@ mod tests {
         g
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn key_press(key: NamedKey) -> WindowEvent {
-        // SAFETY: the non-public `KeyEventExtra` field accepts its all-zero
-        // representation; every public field used by routing is set below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.state = ElementState::Pressed;
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
-    }
+    use crate::synthetic_input::named_key;
 
     fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
             id: 7,
         })
-    }
-    fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
-        let _ = dispatch_handled(g, event);
-    }
-
-    fn dispatch_handled(g: &mut ToggleGroup, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        g.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -2786,7 +2735,7 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         g.set_focus(true);
         assert!(!g.focus_visible(), "a click shows no focus ring");
-        dispatch(&mut g, &key_press(NamedKey::ArrowLeft));
+        dispatch(&mut g, &named_key(NamedKey::ArrowLeft));
         assert!(g.focus_visible(), "the keys bring the ring back");
         g.set_focus(false);
         g.set_focus(true);
@@ -3038,9 +2987,9 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         assert_eq!(g.selected(), 0, "a click on it chooses nothing");
         g.set_focus(true);
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowRight)));
         assert_eq!(g.selected(), 2, "the arrow steps over it");
-        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowLeft)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowLeft)));
         assert_eq!(g.selected(), 0);
         let node = g.accessibility().expect("a group node");
         assert!(
@@ -3097,26 +3046,17 @@ mod tests {
             .on_change(move |index| captured.borrow_mut().push(index));
             group.set_focus(true);
 
-            assert!(dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 1);
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::End)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::End)));
             assert_eq!(group.selected(), 2);
-            assert!(dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 0, "arrow navigation wraps");
-            assert!(dispatch_handled(&mut group, &key_press(NamedKey::Enter)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
             assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
             group.set_focus(false);
-            assert!(!dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight)
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(
                 group.selected(),
                 0,
@@ -3147,9 +3087,9 @@ mod tests {
             assert_eq!(group.selected(), 2);
 
             group.set_focus(true);
-            dispatch(&mut group, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut group, &named_key(NamedKey::ArrowRight));
             assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
-            dispatch(&mut group, &key_press(NamedKey::End));
+            dispatch(&mut group, &named_key(NamedKey::End));
             assert_eq!(group.selected(), 2);
         }
 
@@ -3169,15 +3109,12 @@ mod tests {
             assert!(!Widget::is_enabled(&group));
 
             dispatch(&mut group, &cursor_moved(150.0, 22.0));
-            assert!(!dispatch_handled(&mut group, &mouse_press()));
-            assert!(!dispatch_handled(
+            assert!(!dispatch(&mut group, &mouse_press()));
+            assert!(!dispatch(
                 &mut group,
                 &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
             ));
-            assert!(!dispatch_handled(
-                &mut group,
-                &key_press(NamedKey::ArrowRight),
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
             assert_eq!(group.selected(), 0);
         }
     }
@@ -3412,7 +3349,7 @@ mod tests {
             let node = g.accessibility().expect("semantics");
             assert_eq!(node.value, None);
             g.set_focus(true);
-            dispatch(&mut g, &key_press(NamedKey::ArrowRight));
+            dispatch(&mut g, &named_key(NamedKey::ArrowRight));
             assert_eq!(g.selection(), Some(0), "the first arrow chooses the first");
             g.set_selection(None);
             assert_eq!(g.selected(), NONE_CHOSEN);

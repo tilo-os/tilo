@@ -2866,7 +2866,7 @@ mod tests {
     }
 
     fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
-        let event = crate::shell::test_support::typed_key_event(key);
+        let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
         crate::shell::test_support::with_scratch_event_ctx(|ctx| {
             controller.edit_secret(&event, ctx)
         })

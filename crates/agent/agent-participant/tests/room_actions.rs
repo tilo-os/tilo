@@ -42,6 +42,9 @@ mod resource_support;
 pub mod mounted_resource;
 
 tilo_automerge_isolate::test_worker!();
+// Room actions hold each record in a confined app worker: this binary,
+// started again.
+tilo_agent_participant::app_worker!();
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -727,6 +730,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 
@@ -1015,9 +1019,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
                 "{queued_receipt:?}"
             );
-            browser.send(RemoteActionMessage::Observe {
-                invocation: queued.invocation,
-            });
+            browser.send(RemoteActionMessage::observe(queued.invocation));
             let observed = browser
                 .answer("observe", |answer| match answer {
                     RemoteActionMessage::Update { invocation, state }

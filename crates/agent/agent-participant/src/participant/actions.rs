@@ -72,7 +72,7 @@ impl AgentParticipant {
             RemoteActionMessage::Invoke(request) => {
                 RemoteActionMessage::Receipt(self.invoke_remote(request))
             }
-            RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
                 invocation,
                 state: None,
             },
@@ -212,7 +212,7 @@ impl AgentParticipant {
             .iter()
             .find(|(earlier, _)| earlier.invocation == request.invocation)
         {
-            return if *earlier == request {
+            return if earlier.same_invocation(&request) {
                 receipt.clone()
             } else {
                 rejected(&request, ActionHostError::InvocationConflict)

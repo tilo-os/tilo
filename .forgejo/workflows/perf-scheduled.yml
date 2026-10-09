@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       kpis:
-        description: "Comma-separated KPI groups to run (fs, footprint); empty runs all."
+        description: "Comma-separated KPI groups to run (fs, footprint, agent, latency, render, wakeups); empty runs all."
         required: false
         default: ""
       accept:
@@ -54,6 +54,10 @@ jobs:
       groups: ${{ steps.select.outputs.groups }}
       fs: ${{ steps.select.outputs.fs }}
       footprint: ${{ steps.select.outputs.footprint }}
+      agent: ${{ steps.select.outputs.agent }}
+      latency: ${{ steps.select.outputs.latency }}
+      render: ${{ steps.select.outputs.render }}
+      wakeups: ${{ steps.select.outputs.wakeups }}
     steps:
       - name: Select KPI groups
         id: select
@@ -61,7 +65,7 @@ jobs:
           KPIS: ${{ github.event.inputs.kpis }}
         run: |
           set -euo pipefail
-          known=(fs footprint)
+          known=(fs footprint agent latency render wakeups)
           IFS=, read -r -a selected <<< "${KPIS:-$(IFS=,; echo "${known[*]}")}"
           for group in "${selected[@]}"; do
             [[ " ${known[*]} " == *" $group "* ]] || { echo "::error::unknown KPI group '$group' (known: ${known[*]})"; exit 1; }
@@ -132,6 +136,69 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Agent round trip (scripts/perf/agent_rtt.py): actions list, state dump,
+  # a no-op invoke accepted and completed, throughput under eight clients and
+  # the no-op through the MCP server, against one headless compositor on the
+  # shared `runner` class. The compositor is built once here: release
+  # optimisation, thin LTO as release-apps.yml builds, and `dev-overrides`,
+  # the dev image's feature that serves the control socket in a release
+  # build. Authorization and the capability gate stay on.
+  agent:
+    needs: [plan, builder]
+    if: needs.plan.outputs.agent == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      # The headless backend renders with Mesa's CPU Vulkan driver, as the
+      # nightly headless tests do.
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the compositor
+        run: >-
+          bash scripts/ci-run.sh "agent round trip compositor build" --
+          cargo build --locked --release -p shell --bin shell --features dev-overrides
+
+      - name: Measure and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          # A fresh HOME, XDG tree and runtime directory, no session bus:
+          # the compositor and everything it leaves behind are this run's.
+          bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
+            --spawn target/release/shell --samples 1000 --warmup 100 \
+            --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
+            --env-json perf/env.json --out perf/agent.jsonl --log perf/compositor.log
+          cat perf/agent.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-agent
+          path: perf/
+          if-no-files-found: warn
+
   # App package size: the newest signed tapp of every app in the public
   # registry index, per architecture. A runner-independent byte count.
   footprint:
@@ -153,12 +220,21 @@ jobs:
           set -euo pipefail
           mkdir -p perf
           curl --fail --silent --show-error --retry 3 --retry-all-errors --proto '=https' \
-            --output perf/entries.json https://apps.tilo.so/entries
+            --output "$RUNNER_TEMP/entries.json" https://apps.tilo.so/entries
           python3 tools/perf/record.py env --profile release --renderer none \
             --virtualization none --runner none --hardware "apps.tilo.so registry index" > perf/env.json
-          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json perf/entries.json > perf/footprint.jsonl
-          rm perf/entries.json
+          python3 tools/perf/adapters.py tapp-sizes --env-json perf/env.json "$RUNNER_TEMP/entries.json" \
+            > perf/footprint.jsonl
           cat perf/footprint.jsonl
+
+      # The enforced app-size gate (DEVELOPMENT.md, "App package size"): every
+      # published app within its budget, and the apps' median, p90 and max
+      # within the fleet ceilings of tools/perf/tapp-size-budget/. The records
+      # above are uploaded either way; compare fails the run on this job.
+      - name: Published apps within their budgets and the fleet ceilings
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py fleet "$RUNNER_TEMP/entries.json"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
@@ -167,8 +243,189 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
+  # Compositor-side input and workspace-switch latency (TIL-587): a headless
+  # compositor driven through its control socket, rendering with lavapipe on
+  # the shared `runner` class, through scripts/perf/latency_bench.py. The
+  # compositor is ci-legacy-apps.yml's debug build with the same Cargo
+  # environment, so the compiler cache that lane fills serves it. Input to
+  # photon on real hardware is the weekly, report-only
+  # scripts/perf/device_latency_bench.py (docs/benchmarks/reference-hardware.md).
+  latency:
+    needs: [plan, builder]
+    if: needs.plan.outputs.latency == 'true'
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the compositor
+        run: >-
+          bash scripts/ci-run.sh "cargo build (latency bench)" --
+          cargo build --locked -p shell --bin shell
+
+      - name: Time pointer input and workspace switches
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile dev --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          python3 scripts/perf/latency_bench.py --shell-bin target/debug/shell \
+            --out perf/run --env-json perf/env.json --records perf/latency.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-latency
+          path: perf/
+          if-no-files-found: warn
+
+  # Render frame time at native 4K (TIL-582): the toolkit's dashboard harness
+  # (`ui-perf dashboard_perf_bench`, 1,000 events) and the shell's
+  # `redraw_bench` (1,000 clicks through FrameBuilder, the DRM bridge's render,
+  # readback and XRGB swizzle), both release builds made once here, through
+  # scripts/perf/render_bench.py: retained-frame pixel parity first, then the
+  # timed runs, then the toolkit's runner-independent counters (the per-change
+  # gate, ci-render-counters.yml). The runner has no GPU; lavapipe times the
+  # CPU's rasterisation, so these records are compared only with each other
+  # and never quoted as 4K/144 Hz. Hardware frame time is the reference
+  # machines' weekly run (docs/benchmarks/reference-hardware.md).
+  render:
+    needs: [plan, builder]
+    if: needs.plan.outputs.render == 'true'
+    runs-on: runner
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      # The agent job's and ci-render-counters.yml's Cargo environment
+      # (release optimisation, thin LTO as release-apps.yml builds), so the
+      # release builds share one compiler cache.
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the render benchmarks
+        run: |
+          set -euo pipefail
+          bash scripts/ci-run.sh "ui-perf release build" -- \
+            cargo build --locked --release -p ui-examples --example ui-perf
+          bash scripts/ci-run.sh "redraw_bench release build" -- \
+            cargo build --locked --release -p shell --example redraw_bench
+
+      - name: Verify, time and record
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json
+          python3 scripts/perf/render_bench.py timing target/release/examples/ui-perf \
+            target/release/examples/redraw_bench --env-json perf/env.json --out perf \
+            --records perf/render.jsonl
+          cat perf/render.jsonl
+
+      - name: Check the render counters
+        run: python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf --out perf/counters
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-render
+          path: perf/
+          if-no-files-found: warn
+
+  # Idle wakeups (TIL-614): the shell integration gate
+  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
+  # a 10 s window whenever shell changes, here three times with a 60 s window
+  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
+  # Cargo environment, so the compiler cache its test shards fill serves it.
+  wakeups:
+    needs: [plan, builder]
+    if: needs.plan.outputs.wakeups == 'true'
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-D warnings"
+      TILO_IDLE_WAKEUP_WINDOW_SECS: "60"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the shell integration tests
+        run: >-
+          bash scripts/ci-run.sh "idle wakeup gate build" --
+          cargo test --locked -p shell --test it --no-run
+
+      - name: Count an idle desktop's wakeups three times and record them
+        run: |
+          set -uo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          mkdir -p perf
+          status=0
+          for run in 1 2 3; do
+            bash tools/test-env.sh cargo test --locked -p shell --test it \
+              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
+              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
+          done
+          python3 tools/perf/record.py env --profile dev --renderer lavapipe \
+            --virtualization kvm --runner runner > perf/env.json || status=1
+          python3 tools/perf/adapters.py idle-wakeups --env-json perf/env.json perf/idle-*.log \
+            > perf/wakeups.jsonl || status=1
+          cat perf/wakeups.jsonl
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-wakeups
+          path: perf/
+          if-no-files-found: warn
+
   compare:
-    needs: [plan, fs, footprint]
+    needs: [plan, fs, footprint, agent, latency, render, wakeups]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -195,13 +452,17 @@ jobs:
           FACTOR: ${{ github.event.inputs.synthetic_factor }}
           FS_RESULT: ${{ needs.fs.result }}
           FOOTPRINT_RESULT: ${{ needs.footprint.result }}
+          AGENT_RESULT: ${{ needs.agent.result }}
+          LATENCY_RESULT: ${{ needs.latency.result }}
+          RENDER_RESULT: ${{ needs.render.result }}
+          WAKEUPS_RESULT: ${{ needs.wakeups.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -uo pipefail
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;

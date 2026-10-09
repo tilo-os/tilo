@@ -62,11 +62,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -75,6 +71,7 @@
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;
+pub mod editor;
 pub mod fleet;
 pub mod guard;
 pub mod guest;

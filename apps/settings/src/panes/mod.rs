@@ -46,6 +46,27 @@ pub mod users;
 /// Why this process cannot tell which programs the device has installed,
 /// when it cannot: no directory on `PATH` is visible to it. A lookup would
 /// then report every program as missing, which says nothing about the device.
+/// A pane's own node: a full-width column around its composed `child`,
+/// registered for `pane`.
+pub(crate) fn pane_node(
+    taffy: &mut ui::taffy::TaffyTree<()>,
+    child: ui::taffy::NodeId,
+    node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    pane: &mut (dyn ui::widget::Widget + 'static),
+) -> ui::taffy::NodeId {
+    use ui::widget::TaffyTreeExt as _;
+    let style = ui::taffy::Style {
+        display: ui::taffy::Display::Flex,
+        flex_direction: ui::taffy::FlexDirection::Column,
+        size: ui::taffy::Size {
+            width: ui::taffy::Dimension::percent(1.0),
+            height: ui::taffy::Dimension::auto(),
+        },
+        ..Default::default()
+    };
+    taffy.widget_node(style, &[child], node_map, pane)
+}
+
 pub(crate) fn installed_programs_unreadable() -> Option<String> {
     programs_unreadable_on(std::env::var_os("PATH").as_deref())
 }

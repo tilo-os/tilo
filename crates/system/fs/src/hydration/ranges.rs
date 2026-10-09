@@ -719,17 +719,7 @@ mod tests {
         assert_eq!(c, vec![0..100]);
     }
 
-    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
-        let mut x = seed | 1;
-        (0..len)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x.to_le_bytes()[0]
-            })
-            .collect()
-    }
+    use crate::test_bytes::pseudo;
 
     /// A peer serving `data` as one file version, and an empty client.
     async fn pair(

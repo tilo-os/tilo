@@ -36,6 +36,7 @@
 use std::collections::HashMap;
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -1288,30 +1289,20 @@ impl Widget for MainPanel {
         // surfacing a theoretical error here would mean threading a `Result`
         // through the whole toolkit for a branch that can't be taken (see
         // `ui::widget::TaffyTreeExt`).
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on a freshly-built child cannot fail"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    overflow: taffy::Point {
-                        x: taffy::Overflow::Hidden,
-                        y: taffy::Overflow::Hidden,
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..Default::default()
-                },
-                &children,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::auto(),
+                height: Dimension::auto(),
+            },
+            overflow: taffy::Point {
+                x: taffy::Overflow::Hidden,
+                y: taffy::Overflow::Hidden,
+            },
+            flex_grow: 1.0,
+            flex_basis: Dimension::length(0.0),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     // `layout` only errors for a `NodeId` from a different tree, which never

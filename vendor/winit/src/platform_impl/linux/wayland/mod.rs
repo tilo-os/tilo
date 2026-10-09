@@ -19,6 +19,7 @@ mod output;
 mod seat;
 mod state;
 mod types;
+pub use types::tilo_text_input::protocol as private_text_input_protocol;
 mod window;
 
 #[derive(Debug)]

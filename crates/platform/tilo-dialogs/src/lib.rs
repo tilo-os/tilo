@@ -2,10 +2,7 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
         clippy::string_slice,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -338,7 +335,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(test)]
+#[cfg(any(unix, windows))]
 mod bounded_contents_tests {
     use super::*;
     use crate::portal::ContentsOutcome;

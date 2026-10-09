@@ -566,7 +566,8 @@ mod desktop_catalog_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod document_lifecycle_tests {
     use super::*;
     use crate::compositor::macos::{Options, prepare};

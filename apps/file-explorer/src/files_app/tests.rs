@@ -978,15 +978,14 @@ mod command_path_tests {
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, ModifiersState};
 
         let mut widget = FileExplorerWidget::new();
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(winit::keyboard::SmolStr::new("l"));
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Character(winit::keyboard::SmolStr::new("l")),
+            None,
+            winit::event::ElementState::Pressed,
+        );
 
         assert!(widget.handle_app_key(
             &event,
@@ -999,15 +998,14 @@ mod command_path_tests {
     }
 
     fn shortcut_reference_is_a_keyboard_and_command_reachable_view() {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, NamedKey};
         let mut widget = FileExplorerWidget::new();
 
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::F1);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::F1),
+            None,
+            winit::event::ElementState::Pressed,
+        );
         assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
         let panel = widget
             .collab_panel
@@ -1742,8 +1740,9 @@ mod command_path_tests {
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
         files.navigate(root.path().to_path_buf());
         let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register(&mut registry);
+        let registry = ui::tilo_actions::ActionRegistry::with(
+            <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
+        );
         // The surface host answers the effect vocabulary beside the window's
         // own operations.
         let mut handlers = Widget::resource_operation_handlers(&files);
@@ -3421,7 +3420,7 @@ mod command_path_tests {
         w.entries = vec![entry];
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
-        let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -3461,10 +3460,10 @@ mod command_path_tests {
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let person_bytes = root_key.verifying_key().to_bytes();
-        let person = collab_types::Ed25519PublicKey::from_bytes(person_bytes);
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(person_bytes);
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
-            collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
+            fs_protocol::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
         let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
@@ -3507,7 +3506,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Never,
                             link_uses: None,
                             recipient_devices: vec![device],
@@ -3523,7 +3522,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Month,
                             link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                             recipient_devices: Vec::new(),
@@ -3597,7 +3596,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
-        let person = collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
+        let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
         let mut widget = FileExplorerWidget::new();
 
         std::fs::write(
@@ -3756,13 +3755,13 @@ mod command_path_tests {
             stream.read_exact(&mut request).unwrap();
             seen_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let response = collab_types::ShareControlResponseV1 {
-                protocol_version: collab_types::SHARE_CONTROL_VERSION,
-                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+            let response = fs_protocol::ShareControlResponseV1 {
+                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
+                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
                     uri: "tilo-file://bounded".into(),
                 },
             };
-            let response = collab_types::canonical_bytes(&response).unwrap();
+            let response = fs_protocol::canonical::canonical_bytes(&response).unwrap();
             stream
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .unwrap();
@@ -3789,7 +3788,7 @@ mod command_path_tests {
         assert!(widget.apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: collab_types::FilePermission::Edit,
+                permission: fs_protocol::FilePermission::Edit,
                 expiry: crate::sharing::ShareExpiryChoice::Month,
                 link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
@@ -3813,11 +3812,11 @@ mod command_path_tests {
 
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
             &[arg("person", "Ada")],
         );
         let delivered = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
             &[arg("person", "Ada")],
         );
         assert!(pending.contains("pending"));
@@ -3863,7 +3862,7 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
-        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
                 .context_menu_spec(&[])
@@ -3932,13 +3931,13 @@ mod command_path_tests {
         widget.entries = vec![entry];
         widget.selection.select_only(0);
         let menu = widget.context_menu_spec(&[]);
-        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
                     version_id: current_id,
                 })
         }));
@@ -3946,7 +3945,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id: other_id,
                 })
         }));
@@ -3954,7 +3953,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
                     version_id: other_id,
                 })
         }));
@@ -3970,7 +3969,7 @@ mod command_path_tests {
 
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -3985,8 +3984,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4009,8 +4008,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: false,
                 explanation: "Both revisions changed the same text region.".into(),
@@ -4030,7 +4029,7 @@ mod command_path_tests {
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -4046,8 +4045,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             stale_conflict,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id: stale_conflict,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4279,33 +4278,23 @@ mod responsive_body_tests {
         }
 
         fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
-            let mut handled = false;
-            let mut focus = None;
-            self.w.handle_event(
-                ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
+            ui::testing::Dispatch::new()
+                .doc(&mut self.state.doc)
+                .path(&self.state.root)
+                .layout(&self.taffy, self.node)
+                .send(&mut self.w, ev);
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
             self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(x, y),
             });
         }
 
         fn right_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Right,
             });
@@ -4313,7 +4302,7 @@ mod responsive_body_tests {
 
         fn left_release(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Released,
                 button: winit::event::MouseButton::Left,
             });
@@ -4321,7 +4310,7 @@ mod responsive_body_tests {
 
         fn left_press(&mut self) {
             self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left,
             });
@@ -4377,34 +4366,26 @@ mod responsive_body_tests {
         }
 
         fn press_named(&mut self, key: winit::keyboard::NamedKey) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(key);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Named(key),
+                None,
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });
         }
 
         fn type_char(&mut self, s: &str) {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s)),
+                Some(winit::keyboard::SmolStr::new(s)),
+                winit::event::ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(winit::keyboard::SmolStr::new(s));
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event: ev,
                 is_synthetic: false,
             });

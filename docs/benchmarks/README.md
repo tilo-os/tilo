@@ -15,8 +15,14 @@ against the rolling baseline:
 python3 tools/perf/store.py fetch https://code.tilo.so
 ```
 
+`fetch` leaves out the records of a gate test (`meta.synthetic_series`), whose
+values are multiplied on purpose; `--synthetic` prints them too.
+
 [Performance results](../../DEVELOPMENT.md#performance-results) in
 DEVELOPMENT.md explains the record format and the regression rule, and how to
 add a benchmark. If you add an investigation here, keep its raw output in
 the JSON file. Once its benchmark is in the lane, cite the lane's records
 instead of copying their numbers.
+
+`reference-hardware.md` is not an investigation: it names the machines and the
+two lanes behind the latency KPIs, and how to run the weekly hardware one.

@@ -2605,18 +2605,14 @@ impl Widget for ListRow {
         }
         trailing.band = Some(band);
         trailing.node = Some(child);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Row,
-                flex_wrap: taffy::FlexWrap::Wrap,
-                align_items: Some(taffy::AlignItems::Center),
-                ..row_style
-            },
-            &[band, child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Row,
+            flex_wrap: taffy::FlexWrap::Wrap,
+            align_items: Some(taffy::AlignItems::Center),
+            ..row_style
+        };
+        taffy.widget_node(style, &[band, child], node_map, self)
     }
 
     fn adjust_layout_with_measure(

@@ -462,3 +462,98 @@ default, so identity re-use with a fresh key each pack changes the ID).
 
 Next: [`sandbox.md`](./sandbox.md) explains what each `[sandbox.*]` block
 enables at launch.
+
+## Packaging against a verified native SDK
+
+For a thin app in an SDK checkout, select the SDK bundle using the publisher
+and payload root from its independently authenticated build/delivery receipt:
+
+```sh
+tilo-app package --sdk-bundle /path/to/verified/sdk \
+  --sdk-publisher <expected-public-key> --sdk-root <expected-payload-root>
+```
+
+Use `tilo-app new --id <your-app-id>` inside that checkout to create the app.
+Keep the new workspace package's lockfile entry alongside its Cargo manifest;
+packaging uses `--locked` and does not resolve a replacement dependency graph.
+The native SDK path resolves all checkout app features with the existing thin
+compiler wrapper, while building only the selected app's binary targets.
+
+The tool verifies the complete signed SDK payload, checks the actual Cargo
+toolkit artifact and compiler standard library against it, and inspects the
+staged executable's architecture, dependency closure and versioned dynamic
+imports without executing the app. It writes the verified SDK's native
+content fingerprint into the signed package. The selected publisher/root
+must come from the receipt; reading them out of an untrusted bundle does not
+authenticate that bundle.
+
+An incompatible graph is refused with a paired SDK build/update requirement.
+Changing the authored runtime tag cannot make a different compiled SDK match.
+Standalone and static builds retain their existing behavior; this native SDK
+selection currently requires a checkout workspace app. Packaging does not
+install the SDK or grant publisher trust.
+
+The real authored-app qualification is opt-in because it compiles the native
+SDK, builds a canonical signed bundle from its actual closure, packages a
+new app, and then executes its shared headless semantic assertions:
+
+```sh
+cargo test --locked -p tilo-app-cli --features native-sdk-qualification \
+  --test native-sdk generated_app_packages_only_with_its_actual_signed_native_sdk -- --exact
+```
+
+### Reusing the SDK compiler interface
+
+An app can use the SDK's already compiled Rust units instead of recompiling the
+checkout graph. This requires a separately signed **developer compiler bundle**,
+not just the installed runtime directory. The compiler bundle binds the exact
+runtime root and publisher, toolkit bytes, architecture, native compiler host and
+full `rustc --version --verbose` identity. It contains the actual unit metadata
+and proc-macro artifacts from that SDK build, with a closed signed inventory.
+It is a developer download; it is not added to the end-user runtime layer.
+
+The SDK producer exports it once, after sealing the runtime. The normal full
+apps+runtime assembler supports an optional separate output directory:
+
+```bash
+python3 os/dev/assemble-app-runtime.py --repo "$PWD" --target-dir "$PWD/target" \
+  --profile thin-app --dest target/sdk-component \
+  --compiler-interface-out target/sdk-developer-bundles
+```
+
+The assembler captures the actual Cargo artifact messages from the complete SDK
+build. `tilo-app sdk capture` makes metadata-only rlibs retaining their exact
+`lib.rmeta` members, and copies the actual proc-macro libraries. `tilo-app sdk
+export` verifies the selected sealed runtime and signs the compiler inventory
+with its publisher. The runtime root is computed first, so there is no circular
+binding. Existing runtime bundles without a compiler interface remain usable
+for running apps, but cannot satisfy this authoring path.
+
+After independently obtaining the runtime and compiler roots and publisher,
+create a normal app and package it with both selections:
+
+```bash
+tilo-app new hello --id com.example.hello --title Hello --directory apps/hello
+tilo-app package apps/hello \
+  --sdk-bundle /path/to/runtime --sdk-publisher <expected-public-key> \
+  --sdk-root <expected-runtime-root> \
+  --sdk-compiler-bundle /path/to/developer-bundle \
+  --sdk-compiler-root <expected-compiler-root> \
+  --identity /private/publisher.json --output hello.tapp
+```
+
+Only the authored app's units compile. The compiler wrapper refuses dependency
+rebuilds, and normal packaging still verifies the binary's actual runtime/std
+linkage, imported symbols, native closure and ISA before signing. Shared resource
+declarations come from the signed SDK inventory; authored declarations come
+from the compiled source snapshot. Neither signing nor declaration inspection
+executes the app.
+
+Currently this interface supports native Linux authoring in a canonical checkout
+with the exact producer compiler, the `thin-app` profile, and dependencies already
+provided by the SDK (`tilo-app`, `runtime-dylib`, and `workspace-hack`). Cross-host
+compilation, application build scripts and additional dependencies refuse
+explicitly. A changed SDK, compiler or compiled dependency feature set requires
+a corresponding verified compiler interface; a runtime label cannot substitute
+for it. Developer artifacts are much larger than the approximately 1–2 MB app
+package and can be cached independently of end-user runtime delivery.

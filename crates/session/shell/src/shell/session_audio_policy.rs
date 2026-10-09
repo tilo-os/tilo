@@ -938,7 +938,7 @@ mod tests {
     #[test]
     fn an_idle_worker_thread_stays_asleep() {
         const COMM: &str = "tilo-audio-idle";
-        let ((events, worker), tid) = crate::idle_thread_probe::spawned_thread(COMM, || {
+        let ((events, worker), tid) = tilo_test_env::idle::spawned_thread(COMM, || {
             let (events, rx) = mpsc::channel();
             let worker = std::thread::Builder::new()
                 .name(COMM.into())
@@ -951,7 +951,7 @@ mod tests {
             events.send(PolicyEvent::GraphChanged).unwrap();
             (events, worker)
         });
-        crate::idle_thread_probe::assert_stays_asleep(&tid, "audio policy worker");
+        tilo_test_env::idle::assert_stays_asleep(&tid, "audio policy worker");
         events.send(PolicyEvent::Stop).unwrap();
         let env = worker.join().unwrap();
         assert_eq!(env.enumerations, 1);

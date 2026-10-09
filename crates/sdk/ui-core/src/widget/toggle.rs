@@ -705,6 +705,7 @@ impl crate::widget::controls::ActionControls for Toggle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 
@@ -1037,8 +1038,6 @@ mod tests {
 
         // Case `disabled_toggle_does_not_toggle`.
         {
-            use winit::event::DeviceId;
-
             let mut t = Toggle::new("id", "on").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -1055,46 +1054,27 @@ mod tests {
             .unwrap();
             t.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-            let mut handled = false;
-
-            t.handle_event(
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut t,
                 &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            t.handle_event(
+            let pressed = sender.send(
+                &mut t,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
 
             assert!(focus.is_none(), "disabled toggle must not request focus");
             assert!(!handled, "disabled toggle must not swallow input");
@@ -1162,7 +1142,6 @@ mod tests {
     /// its neighbour must still reach the neighbour.
     #[test]
     fn a_hover_change_leaves_the_move_for_the_next_control() {
-        use winit::event::DeviceId;
         let mut t = Toggle::new("id", "on");
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1170,29 +1149,18 @@ mod tests {
         tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
             .unwrap();
         t.apply_layout(&tree, node, Point::ZERO);
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut focus = None;
+        let device = winit::event::DeviceId::dummy();
+        let mut sender = Dispatch::new().layout(&tree, node);
         for position in [(10.0, 10.0), (500.0, 10.0)] {
-            let mut handled = false;
-            t.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: device,
-                    position: position.into(),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
+            let handled = sender
+                .send(
+                    &mut t,
+                    &WindowEvent::CursorMoved {
+                        device_id: device,
+                        position: position.into(),
+                    },
+                )
+                .handled;
             assert!(!handled, "a move to {position:?} is not consumed");
         }
         assert!(!t.is_hovered);

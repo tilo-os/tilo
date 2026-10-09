@@ -56,10 +56,7 @@ mod tests {
         widget::{Column, Scrollable, Text, TextInput, Widget},
     };
     use std::{cell::Cell, rc::Rc};
-    use winit::{
-        dpi::PhysicalPosition,
-        event::{DeviceId, ElementState, MouseScrollDelta, TouchPhase},
-    };
+    use winit::event::{DeviceId, ElementState, MouseScrollDelta, TouchPhase};
 
     fn driver(root: Box<dyn Widget>) -> Driver {
         Driver::new_with_controlled_inputs(
@@ -72,12 +69,7 @@ mod tests {
         )
     }
 
-    fn cursor(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
     fn wheel() -> WindowEvent {
         WindowEvent::MouseWheel {
@@ -104,14 +96,14 @@ mod tests {
             assert!(dispatch(
                 true,
                 EventOrigin::Injected,
-                cursor(100.0, 100.0),
+                cursor_moved(100.0, 100.0),
                 |event| driver.send(&event)
             ));
             // Both origins deliberately have the same DeviceId.
             assert!(!dispatch(
                 true,
                 EventOrigin::Platform,
-                cursor(500.0, 500.0),
+                cursor_moved(500.0, 500.0),
                 |event| driver.send(&event)
             ));
             assert!(dispatch(true, EventOrigin::Injected, wheel(), |event| {
@@ -127,7 +119,7 @@ mod tests {
             assert!(dispatch(
                 false,
                 EventOrigin::Platform,
-                cursor(500.0, 500.0),
+                cursor_moved(500.0, 500.0),
                 |event| driver.send(&event)
             ));
             dispatch(false, EventOrigin::Injected, wheel(), |event| {
@@ -141,7 +133,7 @@ mod tests {
             let mut driver = driver(Box::new(TextInput::from_state(&text).with_id("query")));
             driver.click_named("query").unwrap();
             let key = || {
-                crate::synthetic_input::key_event(
+                crate::synthetic_input::key_input(
                     &winit::keyboard::Key::Character("x".into()),
                     ElementState::Pressed,
                 )

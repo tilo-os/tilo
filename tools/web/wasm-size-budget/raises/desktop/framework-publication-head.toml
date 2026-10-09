@@ -1,0 +1,4 @@
+bytes = 1048576
+measured = 97576255
+run = 86706
+reason = "Framework publication binds row edits in one walk and refreshes control bindings from the resource head only (#3887, TIL-629). Both paths are generic over each app's resource type, so the code is instantiated once per framework app. App SDK run 86706 measured the merged release desktop module at 97576255 bytes, 58687 above the existing budget, which had 5452 bytes of headroom left. This receipt records the ratchet's standard 1% headroom rounded to 64 KiB."

@@ -14,6 +14,11 @@ name: Dev / VM acceptance
 # by default the shell plus the apps the ref changed. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
 #
+# The run also measures the installed desktop's performance KPIs (boot to the
+# greeter, idle CPU, wakeups and RAM, memory per app, warm app opens, frame CPU)
+# and writes them as records; the perf job compares them with the store and, for
+# the nightly run on main, publishes them (DEVELOPMENT.md "Performance results").
+#
 # Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
 # guest boots already use. They have no GPU, so `gl: auto` runs without virgl
 # and the report records the software renderer.
@@ -64,6 +69,8 @@ jobs:
     needs: builder
     runs-on: runner-disk-100g
     timeout-minutes: 180
+    outputs:
+      only: ${{ steps.plan.outputs.only }}
     # The CI builder: the dev image's Fedora with the workspace's build
     # dependencies and the runner's sccache, so swapped components link
     # against the libraries the VM has.
@@ -365,7 +372,8 @@ jobs:
         run: |
           set -euo pipefail
           args=(--disk "$DISK" --commit "$COMMIT" --outputs "$OUTPUTS" --out "$WORK/report"
-                --tilo-vm /usr/local/bin/tilo-vm)
+                --tilo-vm /usr/local/bin/tilo-vm
+                --records "$WORK/report/records.jsonl" --runner runner-disk-100g)
           [[ $BRIDGE != true ]] || args+=(--bootstrap-tilo-vm /usr/local/bin/tilo-vm-base --bootstrap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $SWAP ]] || args+=(--swap "$SWAP" --swap-from "$WORK/src" --swap-ref "$REF")
           [[ -z $ONLY ]] || args+=(--only "$ONLY")
@@ -407,4 +415,98 @@ jobs:
         with:
           name: vm-acceptance-${{ steps.plan.outputs.target }}
           path: /var/tmp/vm-acceptance/report
+          if-no-files-found: warn
+
+      # The run's performance records (run.py --records) for the perf job below.
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-vm
+          path: /var/tmp/vm-acceptance/report/records.jsonl
+          if-no-files-found: warn
+
+  # The installed desktop's KPIs (boot, idle, memory, app, render) as performance
+  # records, compared with the store's rolling baseline and tools/perf/kpi-budgets.toml
+  # the way Perf / scheduled compares its groups (DEVELOPMENT.md, "Performance
+  # results"). They come from this workflow's VM run rather than a second one there.
+  # Its verdict is this job's, apart from the acceptance checks'. Only the nightly run
+  # on main, and a dispatch of every check on main, write to the store; the rest
+  # compare read-only.
+  perf:
+    needs: acceptance
+    if: ${{ always() && needs.acceptance.result != 'cancelled' && needs.acceptance.result != 'skipped' }}
+    runs-on: runner-quality
+    timeout-minutes: 15
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/perf
+            tools/upload_immutable_packages.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: perf-vm
+          path: results
+
+      - name: Compare with the store and publish
+        env:
+          EVENT: ${{ github.event_name }}
+          ONLY: ${{ needs.acceptance.outputs.only }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_SWAP: ${{ github.event.inputs.swap }}
+          INPUT_GL: ${{ github.event.inputs.gl }}
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -uo pipefail
+          owner=${GITHUB_REPOSITORY%%/*}
+          if [[ ! -s results/records.jsonl ]]; then
+            if [[ -n ${ONLY:-} ]]; then
+              echo "::notice::the selected checks ($ONLY) recorded no performance KPI"
+              exit 0
+            fi
+            echo "::error::the acceptance run wrote no performance records (it aborted, or measured nothing)"
+            exit 1
+          fi
+          # A run of every check owes every group; a subset is compared for what it measured.
+          groups=""
+          [[ -n ${ONLY:-} ]] || groups=boot,idle,memory,app,render
+          publish=false
+          if [[ $GITHUB_REF == refs/heads/main && -z ${ONLY:-} ]]; then
+            case $EVENT in
+              schedule) publish=true ;;
+              workflow_dispatch)
+                [[ ${INPUT_REF:-main} == main && ${INPUT_SWAP:-default} == default && ${INPUT_GL:-auto} == auto ]] \
+                  && publish=true ;;
+            esac
+          fi
+          status=0
+          python3 tools/perf/compare.py --results results/records.jsonl --store "$GITHUB_SERVER_URL" \
+            --owner "$owner" --groups "$groups" --publish-dir publish \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vm" --summary summary.md || status=1
+          if [[ $publish == true ]]; then
+            manifest=$(mktemp)
+            for file in publish/*/*.jsonl; do
+              month=$(basename "$(dirname "$file")")
+              printf '%s\t%s\n' "$file" \
+                "$GITHUB_SERVER_URL/api/packages/$owner/generic/tilo-perf-results/$month/$(basename "$file")"
+            done > "$manifest"
+            bash tools/upload_immutable_packages.sh "$manifest" || status=1
+          else
+            echo "Not the nightly run of every check on main: compared only, nothing written to the store."
+          fi
+          [[ -f summary.md ]] && cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-vm-summary
+          path: |
+            summary.md
+            publish/
           if-no-files-found: warn

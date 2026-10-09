@@ -261,7 +261,14 @@ needle naming several actions ("open paragraph style heading") still finds
 optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
 against the directory as it is now (an invoke passes no revision on, and the
 app resolves it in the same turn the broker admits it, so nothing reads the
-revision first); named, a target that changed since is refused.
+revision first); named, a target that changed since is refused. Either way the
+admission is bound to a revision, the named one or the one the app resolved
+at, and the journal records it: a host that runs the action later refuses it
+once the app's directory moved on before it ran. An action whose contract asks
+for confirmation needs the revision it is confirmed at, so for one of those
+the bridge reads the current revision once and invokes at it; an exact-phrase
+contract is answered with the phrase read at that revision, and the retry
+names it.
 `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal update and
 answers with it, woken by the broker when the invocation changes rather than
 on a timer; an invocation still running then says so in `pending` and is

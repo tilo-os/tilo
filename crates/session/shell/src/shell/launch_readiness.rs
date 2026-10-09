@@ -154,7 +154,8 @@ pub(super) fn command_token(command: &super::launcher::LaunchCommand) -> Option<
         .find_map(|(name, value)| (name == TOKEN_ENV).then(|| value.parse().ok()).flatten())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};

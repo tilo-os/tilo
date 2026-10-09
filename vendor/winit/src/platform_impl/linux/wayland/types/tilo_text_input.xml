@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="tilo_text_input_v1">
+  <copyright>Copyright 2026 Tilo contributors. SPDX-License-Identifier: Apache-2.0</copyright>
+  <interface name="tilo_text_input_manager_v1" version="1">
+    <description summary="private acknowledgement beside standard text-input">
+      An opt-in field owned by the requesting client's wl_surface. Text still
+      travels through zwp_text_input_v3; this protocol carries only opaque
+      original-field stamps, admission metadata and insertion outcomes. It
+      grants no input-method ownership, microphone access or cross-origin access.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="get_field">
+      <arg name="id" type="new_id" interface="tilo_text_input_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+  <interface name="tilo_text_input_v1" version="1">
+    <enum name="error">
+      <entry name="invalid_field" value="1" summary="invalid or duplicate surface field"/>
+      <entry name="invalid_snapshot" value="2" summary="snapshot must be empty or exactly 32 bytes"/>
+    </enum>
+    <enum name="kind">
+      <entry name="prepare" value="0" summary="enable the original field for the existing input method"/>
+      <entry name="start" value="1" summary="validate the original field after explicit consent"/>
+      <entry name="final" value="2" summary="the next standard IME commit belongs to this original request"/>
+      <entry name="cancel" value="3" summary="retire only the request with this original serial"/>
+    </enum>
+    <enum name="outcome">
+      <entry name="accepted" value="0" summary="the original operation completed"/>
+      <entry name="rejected" value="1" summary="the operation is known not to have edited"/>
+      <entry name="unknown" value="2" summary="delivery cannot be confirmed; never retry automatically"/>
+    </enum>
+    <request name="destroy" type="destructor"/>
+    <request name="update">
+      <description summary="publish only an ephemeral field equality stamp">
+        An empty snapshot disables private admission. A 32-byte snapshot is
+        keyed, ephemeral equality metadata for the focused eligible subfield,
+        never its contents or a persistent text hash. Changes retire original
+        admissions. A field must remain bound to this same surface throughout.
+      </description>
+      <arg name="snapshot" type="array"/>
+    </request>
+    <request name="acknowledge">
+      <description summary="complete exactly one original operation">
+        Serial must identify an outstanding event on this object. Late,
+        duplicate or retired replies cannot complete another request. A final
+        is acknowledged after the actual asynchronous renderer result, not
+        when standard text-input delivery is received. There is no text here.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="outcome" type="uint" enum="outcome"/>
+    </request>
+    <event name="operation">
+      <arg name="serial" type="uint"/>
+      <arg name="kind" type="uint" enum="kind"/>
+      <arg name="snapshot" type="array"/>
+    </event>
+  </interface>
+</protocol>

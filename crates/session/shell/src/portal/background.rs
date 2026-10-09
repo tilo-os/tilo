@@ -577,22 +577,25 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
         .executor()
         .spawn(
             async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
+                // Woken by the launcher registry, not a timer: an idle session
+                // with no launches or exits never runs this task.
+                let mut changes = crate::shell::launcher::subscribe_running_changes();
                 loop {
-                    interval.tick().await;
-                    if !backend.sync_running_apps() {
-                        continue;
+                    if backend.sync_running_apps() {
+                        let Ok(context) = zbus::object_server::SignalEmitter::new(
+                            &task_connection,
+                            super::OBJECT_PATH,
+                        ) else {
+                            break;
+                        };
+                        if BackgroundBackend::running_applications_changed(&context)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
-                    let Ok(context) = zbus::object_server::SignalEmitter::new(
-                        &task_connection,
-                        super::OBJECT_PATH,
-                    ) else {
-                        break;
-                    };
-                    if BackgroundBackend::running_applications_changed(&context)
-                        .await
-                        .is_err()
-                    {
+                    if changes.changed().await.is_err() {
                         break;
                     }
                 }

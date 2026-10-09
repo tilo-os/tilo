@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.4-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.9-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -393,6 +393,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
+        bash-devel readline-devel \
         libxkbcommon-devel wayland-devel \
         libseat-devel libinput-devel systemd-devel libdrm-devel \
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
@@ -513,6 +514,8 @@ FROM builder-base AS builder
 # instruction here commits a layer of this multi-gigabyte stage, and rootless
 # podman commits one by walking the whole tree, minutes apiece.
 COPY --from=builder-sources /build/ /build/
+# The cooperative editor stays an OS-owned asset, outside app/runtime grants.
+RUN python3 crates/runtime/ush/native/build.py --out /out/ush-editor/bash-editor.so
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
@@ -2466,6 +2469,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-windows-vm-network.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service \
     os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.path \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-lease.path \
     /usr/lib/systemd/system/
 COPY \
     docs/windows-vm.md \
@@ -2473,7 +2478,7 @@ COPY \
     /usr/share/doc/tilo/
 RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-provision /usr/libexec/tilo-windows-owner \
               /usr/libexec/tilo-windows-recovery-console \
-    && systemctl enable tilo-windows-vm-egress-reaper.timer
+    && systemctl enable tilo-windows-vm-egress-reaper.path tilo-windows-vm-egress-lease.path
 
 # ---------------------------------------------------------------------------
 # Enable services
