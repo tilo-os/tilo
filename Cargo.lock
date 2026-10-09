@@ -332,6 +332,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -8685,6 +8686,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tilo-sandbox-core",
+ "wasmi",
  "wire-frame",
  "workspace-hack",
  "zeroize",
@@ -13146,6 +13148,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "getrandom 0.4.3",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -14415,6 +14418,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "wayland-client",
+ "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
@@ -15685,6 +15689,7 @@ dependencies = [
  "tilo-content",
  "tilo-environment",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -17572,6 +17577,7 @@ name = "tilo-process"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "runtime-portal",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-platform-caps",
@@ -18623,6 +18629,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wayland-backend",
  "wayland-client",
+ "wayland-scanner",
  "wayland-protocols",
  "wayland-protocols-plasma",
  "web-sys",
@@ -19942,6 +19949,7 @@ dependencies = [
  "durable-store",
  "ed25519-dalek 3.0.0",
  "env-tools",
+ "getrandom 0.4.3",
  "hex",
  "landlock",
  "legacy-vm",

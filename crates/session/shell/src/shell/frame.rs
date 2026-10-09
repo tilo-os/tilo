@@ -3843,6 +3843,86 @@ impl FrameBuilder {
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
     }
 
+    pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
+        if self.host.palette_visible() {
+            return false;
+        }
+        let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
+            return false;
+        };
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        unsafe { &**widget }.ime_requires_deferred_ack()
+    }
+
+    pub(crate) fn start_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // the callback only starts a private transaction without structural mutation.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.start_deferred_text(),
+            )
+            .ok()
+            .flatten()
+        }
+    }
+
+    /// Admit the original focused owner through the same bound map as native
+    /// dispatch. Only deferred fields consume this path; ordinary fields keep IME.
+    pub(crate) fn commit_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        text: &str,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // no structural mutation occurs while this cache-only callback runs.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.commit_deferred_text(text),
+            )
+            .ok()
+            .flatten()
+        }
+    }
+
     pub(crate) fn focused_ime_edit_stamp(
         &self,
         focus: Option<NodeId>,

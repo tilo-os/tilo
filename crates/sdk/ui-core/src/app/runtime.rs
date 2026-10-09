@@ -144,6 +144,7 @@ pub(super) struct ActionRuntime {
     pub(super) resource_generation: Cell<u64>,
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
+    pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
@@ -213,6 +214,7 @@ impl ActionRuntime {
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
+            local_history_status: None,
             last_published_actions: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,

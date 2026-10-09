@@ -1215,6 +1215,9 @@ impl EditorView {
     }
 
     fn handle_ime(&mut self, ime: &Ime, handled: &mut bool) {
+        if !self.is_focused && !matches!(ime, Ime::Disabled) {
+            return;
+        }
         match ime {
             Ime::Preedit(text, _) if text.is_empty() => self.composition.clear_preedit(),
             Ime::Preedit(text, cursor) => self.composition.set_preedit(text, *cursor),
@@ -2861,8 +2864,24 @@ impl Widget for EditorView {
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.is_bound()
-            .then_some(winit::window::ImePurpose::Terminal)
+        // This is an action-owned source buffer, not input to a live process.
+        (self.is_focused && self.is_bound()).then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        if self.composition.has_preedit() || self.pending_text_edit.is_some() {
+            return None;
+        }
+        let object = self.text_obj.as_ref()?;
+        let mut stamp = ui::ime::edit_fingerprint(&self.cached_text, 0, 0, key);
+        stamp = ui::ime::scoped_fingerprint(object.to_string().as_bytes(), stamp, key);
+        // Include every selection, even when the primary caret stays put.
+        for caret in &self.carets {
+            let scope = format!("{}:{}:{:?}", caret.line, caret.col, caret.anchor);
+            stamp = ui::ime::scoped_fingerprint(scope.as_bytes(), stamp, key);
+        }
+        Some(stamp)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -3319,6 +3338,45 @@ mod tests {
     }
 
     #[test]
+    fn dictation_target_tracks_code_selection_content_and_pending_edits() {
+        use automerge::transaction::Transactable;
+        let (mut view, mut doc) = bound_editor("same source");
+        view.set_focus(true);
+        assert_eq!(view.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        let key = [17; 32];
+        let stamp = view.ime_edit_fingerprint(&key).expect("editable code");
+        let caret = view.ime_cursor_rect();
+        view.carets[0].anchor = Some((0, 4));
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(stamp));
+        let selected = view.ime_edit_fingerprint(&key).unwrap();
+        let object = view.text_obj.clone().unwrap();
+        doc.splice_text(&object, 0, 11, "same change").unwrap();
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(selected));
+        let original = view.ime_edit_fingerprint(&key).unwrap();
+        let carets = view.carets.clone();
+        let other = EditorDoc::ensure_buffer(&mut doc, 1, "same change");
+        view.bind(other, Language::Rust);
+        view.sync(&doc, &automerge::ROOT);
+        view.carets = carets;
+        assert_eq!(view.ime_cursor_rect(), caret);
+        assert_ne!(view.ime_edit_fingerprint(&key), Some(original));
+        ime(&mut view, &mut doc, Ime::Preedit("draft".into(), None));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        ime(&mut view, &mut doc, Ime::Disabled);
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        ime(&mut view, &mut doc, Ime::Commit("日本語 café".into()));
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+        assert!(view.take_text_edit().is_some());
+        assert!(view.ime_edit_fingerprint(&key).is_some());
+        view.set_focus(false);
+        assert!(view.ime_purpose().is_none());
+        assert!(view.ime_edit_fingerprint(&key).is_none());
+    }
+
+    #[test]
     fn typing_requests_action_owned_edits_and_keeps_the_caret_in_chars() {
         // Each phase builds a fresh bound editor.
         insert_text_requests_an_action_owned_edit();
@@ -3482,6 +3540,9 @@ mod tests {
     }
 
     fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
+        // Positive composition cases model delivery to the active field.
+        // The app-level journey separately verifies refusal after focus loss.
+        ev.set_focus(true);
         let m = Modifiers::default();
         let mut handled = false;
         let mut focus = None;

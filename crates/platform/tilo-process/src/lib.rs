@@ -8,6 +8,8 @@
 //! This crate is the platform layer's home for process capabilities; child
 //! processes, process groups and PTYs (today's `bounded-command`) move here.
 
+#[cfg(feature = "native-editor")]
+pub mod editor;
 pub use tilo_platform_caps::Availability;
 pub mod rendezvous;
 

@@ -6312,8 +6312,10 @@ impl ShellOverlayHost {
         }
         if self.layers.dictation.is_consent() {
             let outputs = self.layer_outputs();
-            let surface =
-                dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs));
+            let surface = self
+                .layers
+                .dictation
+                .surface_rect(self.layer_geometry(&outputs));
             targets.push((
                 crate::shell::trusted_ui::DICTATION_PROMPT_TARGET,
                 crate::shell::trusted_ui::seal_band(
@@ -13076,9 +13078,9 @@ impl ShellOverlayHost {
 
     pub(crate) fn dictation_pointer_at(&self, point: (f64, f64)) -> bool {
         let outputs = self.layer_outputs();
-        self.layers.dictation.is_open()
-            && dictation_layer::DictationSurface::surface_rect(self.layer_geometry(&outputs))
-                .contains(Point::new(point.0, point.1))
+        self.layers
+            .dictation
+            .contains(self.layer_geometry(&outputs), Point::new(point.0, point.1))
     }
 
     pub(crate) fn dictation_input_available(&self) -> bool {
@@ -13091,6 +13093,42 @@ impl ShellOverlayHost {
 
     pub(crate) fn dictation_surface_mut(&mut self) -> &mut dictation_layer::DictationSurface {
         &mut self.layers.dictation
+    }
+
+    /// Public fixture for the existing offscreen shots driver. No session,
+    /// microphone, model, permission, or field is created by this showcase.
+    /// # Errors
+    /// Requires the debug environment gate and a known fixture phase.
+    #[cfg(debug_assertions)]
+    pub fn seed_dictation_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
+        use crate::compositor::dictation::DictationStatus;
+        if std::env::var_os("TILO_UI_DEBUG").is_none() {
+            return Err("dictation shots require TILO_UI_DEBUG and a debug build");
+        }
+        match phase {
+            "dictation-consent" => self.layers.dictation.consent(),
+            "dictation-listening" | "dictation-finishing" => {
+                self.layers
+                    .dictation
+                    .status(if phase == "dictation-listening" {
+                        DictationStatus::Listening
+                    } else {
+                        DictationStatus::Finishing
+                    });
+                self.layers.dictation.preview(Some(
+                    "A public offscreen example: ideas can arrive through speech, a keyboard, or another assistive input. 日本語 · العربية · Français",
+                ));
+            }
+            "dictation-model-required" => {
+                self.layers.dictation.status(DictationStatus::Unavailable(
+                    crate::compositor::dictation::runtime::RuntimeError::Worker(
+                        agent_provider_config::speech::SpeechError::ModelUnavailable,
+                    ),
+                ));
+            }
+            _ => return Err("unknown dictation shots phase"),
+        }
+        Ok(())
     }
 
     /// Run every window operation the action door queued on the chrome
@@ -17322,6 +17360,21 @@ impl ShellOverlayHost {
                 }
                 true
             }
+            LayerIntent::DictationSetup => {
+                if !self.layers.dictation.is_model_setup() {
+                    return false;
+                }
+                self.layers
+                    .dictation
+                    .status(crate::compositor::dictation::DictationStatus::Idle);
+                self.layers.dictation.request_cancel();
+                if let Some(chrome) = self.chrome.clone() {
+                    self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+                    true
+                } else {
+                    false
+                }
+            }
             LayerIntent::Repaint => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
@@ -20141,6 +20194,14 @@ impl Widget for ShellOverlayHost {
     /// (the [`Self::children`] entry after the content) is not exported again.
     fn accessibility_represents_child(&self, child_index: usize) -> bool {
         self.onboarding.is_none() && self.palette_visible && child_index == 1
+    }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.layers
+            .dictation
+            .preview_target()
+            .map(|rect| vec![("dictation.live-preview".into(), rect)])
+            .unwrap_or_default()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

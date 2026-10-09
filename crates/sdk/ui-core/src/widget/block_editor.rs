@@ -8874,6 +8874,22 @@ impl Widget for BlockEditor {
         Some(winit::window::ImePurpose::Normal)
     }
 
+    fn ime_multiline(&self) -> bool {
+        self.is_focused
+            && !self.read_only
+            && !self.find_visible
+            && !self.link_popover.is_visible()
+            && !self.slash_menu.is_visible()
+            && self.visual_formula_focus.is_none()
+            && self.ime_cursor_rect().is_some()
+            && self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| {
+                    block.kind.is_editable() && !matches!(block.kind, BlockKind::Table { .. })
+                })
+    }
+
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
     #[expect(
@@ -11732,6 +11748,43 @@ impl BlockEditor {
         // Code indentation owns whole selected lines before generic replacement.
         if self.handle_code_keyboard(event, ctx) {
             return;
+        }
+
+        // Paragraph commits belong to the document transaction, even when
+        // the original selection is entirely inside one single-line child.
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
+            && self.ime_multiline()
+            && text.contains('\n')
+            && text.chars().all(|c| c == '\n' || !c.is_control())
+        {
+            if let Some(index) = self.focused
+                && let Some(block) = self.blocks.get_mut(index)
+            {
+                let (start, end) = block
+                    .line
+                    .selection_range()
+                    .unwrap_or_else(|| (block.line.cursor_pos(), block.line.cursor_pos()));
+                block.line.handle_event(
+                    &WindowEvent::Ime(winit::event::Ime::Preedit(String::new(), None)),
+                    ctx,
+                );
+                if self.document_selection.is_none() {
+                    self.document_selection = Some(DocumentSelection {
+                        anchor: DocumentPosition {
+                            block: index,
+                            byte: start,
+                        },
+                        cursor: DocumentPosition {
+                            block: index,
+                            byte: end,
+                        },
+                    });
+                }
+            }
+            if self.replace_document_selection(text) {
+                *ctx.handled = true;
+                return;
+            }
         }
 
         // A cross-block selection belongs to the document, not any one child
