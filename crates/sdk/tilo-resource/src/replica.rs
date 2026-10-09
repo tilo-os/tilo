@@ -31,6 +31,9 @@ pub struct Replica<R: Resource> {
     registry: ActionRegistry,
     log: Vec<ActionEnvelope>,
     author: Option<String>,
+    /// Who invokes from this replica when it acts as its own device
+    /// ([`Self::as_invoker`]).
+    invoker: Option<String>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -71,6 +74,7 @@ impl<R: Resource> Replica<R> {
             registry,
             log: Vec::new(),
             author: None,
+            invoker: None,
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
@@ -96,6 +100,17 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn as_author(mut self, author: &str) -> Self {
         self.author = Some(author.to_owned());
+        self
+    }
+
+    /// Attribute later actions to `author` invoking from this replica, as
+    /// the host does for a person at one of their devices: what a verb reads
+    /// as [`ActionCx::author`](crate::ActionCx::author), while the changes
+    /// stay this replica's own, so the same person on two replicas makes
+    /// changes that merge.
+    #[must_use]
+    pub fn as_invoker(mut self, author: &str) -> Self {
+        self.invoker = Some(author.to_owned());
         self
     }
 
@@ -167,10 +182,14 @@ impl<R: Resource> Replica<R> {
         );
         // An author is also the invoker a verb reads (`ActionCx::author`), as
         // the host pins the signed-in person.
-        let ambient = self.author.as_ref().map(|author| {
-            tilo_actions::ActionContext::default()
-                .with_invoker(tilo_actions::ActionInvoker::actor(author.clone()))
-        });
+        let ambient = self
+            .author
+            .as_ref()
+            .or(self.invoker.as_ref())
+            .map(|author| {
+                tilo_actions::ActionContext::default()
+                    .with_invoker(tilo_actions::ActionInvoker::actor(author.clone()))
+            });
         let mut transport = LocalTransport::new();
         let (doc, registry) = (&mut self.doc, &self.registry);
         let dispatched = resource::with_origin_clock(self.now_ms, || {

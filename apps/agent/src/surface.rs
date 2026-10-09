@@ -1283,7 +1283,14 @@ mod tests {
             assert_eq!(empty_app.len(), empty.len(), "and nothing else may change");
 
             let mut doc = doc;
-            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
+            chat::demo::apply_as(
+                &mut doc,
+                "tester",
+                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+                    name: "Test".into(),
+                }),
+            )
+            .unwrap();
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
@@ -1323,7 +1330,14 @@ mod tests {
             );
 
             let mut doc = doc;
-            let _ = chat::doc::ChatDoc::create_workspace(&mut doc, "Test");
+            chat::demo::apply_as(
+                &mut doc,
+                "tester",
+                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+                    name: "Test".into(),
+                }),
+            )
+            .unwrap();
             doc.commit();
             let held: Vec<(&'static AppContract, &AutoCommit)> = vec![(chat, &doc)];
             assert!(
@@ -1572,7 +1586,7 @@ mod tests {
 
         fn seeded() -> AutoCommit {
             let mut doc = AutoCommit::new();
-            chat::doc::ChatDoc::seed_if_empty(&mut doc);
+            chat::demo::seed(&mut doc).unwrap();
             doc
         }
 
@@ -1584,7 +1598,7 @@ mod tests {
             seed: seeded(),
             registry: registry(),
             resources: |doc| tree(contract(), doc),
-            palette: ["New channel", "Rename channel"],
+            palette: ["New channel", "Delete channel"],
         }
     }
 

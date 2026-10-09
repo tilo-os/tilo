@@ -9,10 +9,7 @@
 )]
 use crate::typed_peer;
 use automerge::AutoCommit;
-use chat::{
-    doc::{ChatDoc, NewMessage},
-    model::{AgentRoute, AgentStepOutcome, AgentWorkState},
-};
+use chat::model::{AgentRoute, AgentStepOutcome, AgentWorkState};
 use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_automerge::ApplyIncoming as _;
@@ -171,35 +168,38 @@ fn scenario_outcome(
     let mut owner = peer(&socket, WP);
     let mut owner_online = true;
     let mut chat = AutoCommit::new();
-    ChatDoc::seed_starter(&mut chat, "human-author", "Human", "HU");
+    chat::demo::start(&mut chat, "human-author", "Human", "HU").unwrap();
     let mut request = |number: usize| {
-        ChatDoc::push_message_with_id(
+        chat::demo::insert_message(
             &mut chat,
-            "c_general",
             &format!("request-{number}"),
-            NewMessage {
-                author: "human-author".into(),
+            &chat::record::Message {
+                channel: ui::tilo_resource::Id::from_raw("c_general"),
+                author: ui::tilo_resource::Atom("human-author".into()),
                 ts: i64::try_from(number).unwrap(),
                 text: text.into(),
-                reference: wait_for_owner.then(|| {
+                reference: ui::tilo_resource::Json(wait_for_owner.then(|| {
                     tilo_reference::ResourceRef::whole(
                         "tilo.rich-text",
                         "tilo.rich-text",
                         "Owner document",
                     )
-                }),
-                mentions: mention
-                    .map(|user| chat::mention::Mention {
-                        user: user.into(),
-                        start: 0,
-                        len: 7,
-                        is_agent: true,
-                    })
-                    .into_iter()
-                    .collect(),
-                ..Default::default()
+                })),
+                mentions: ui::tilo_resource::Json(
+                    mention
+                        .map(|user| chat::mention::Mention {
+                            user: user.into(),
+                            start: 0,
+                            len: 7,
+                            is_agent: true,
+                        })
+                        .into_iter()
+                        .collect(),
+                ),
+                ..chat::record::Message::default()
             },
         )
+        .unwrap();
     };
     for number in 1..=requests.max(1) {
         request(number);
@@ -326,7 +326,7 @@ fn scenario_outcome(
                     typed_peer::document_mutation(&event)
             {
                 chat.load_incoming(&data).unwrap();
-                for m in ChatDoc::list_messages(&chat, "c_general") {
+                for m in chat::projection::read(&chat).message_rows("c_general") {
                     if let Some(w) = m.work {
                         observed.push(w);
                     }
@@ -365,13 +365,13 @@ fn scenario_outcome(
                     typed_peer::document_mutation(&event)
             {
                 chat.load_incoming(&data).unwrap();
-                for message in ChatDoc::list_messages(&chat, "c_general") {
+                for message in chat::projection::read(&chat).message_rows("c_general") {
                     if let Some(work) = message.work {
                         observed.push(work);
                     }
                 }
             }
-            let messages = ChatDoc::list_messages(&chat, "c_general");
+            let messages = chat::projection::read(&chat).message_rows("c_general");
             durable_reply = (1..=expected_requests).all(|number| {
                 let parent = format!("request-{number}");
                 let mut replies = messages.iter().filter(|message| {
@@ -420,7 +420,7 @@ fn scenario_outcome(
             0
         }
     );
-    let messages = ChatDoc::list_messages(&chat, "c_general");
+    let messages = chat::projection::read(&chat).message_rows("c_general");
     for number in 1..=requests.max(1) {
         let parent = format!("request-{number}");
         assert_eq!(

@@ -30,15 +30,19 @@ pub(super) fn validate(resource: &Resource, payload: &[u8]) -> Result<(), Semant
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     if request.id.len() != 32
         || !request.id.bytes().all(|c| c.is_ascii_hexdigit())
-        || resource.kind != "chat.feedback"
-        || resource.id.as_str() != format!("chat.feedback:{}", request.id)
+        || resource.kind != "chat.workspace.feedback"
+        || resource.id.as_str()
+            != ui::tilo_resource::items::item_resource_id::<crate::resource::Chat>(
+                "feedback",
+                &ui::tilo_resource::Id::from_raw(request.id),
+            )
     {
         return Err(SemanticReadError::InvalidRequest);
     }
     Ok(())
 }
 
-pub(super) fn spec(id: &str) -> ActionSpec {
+pub(crate) fn spec(id: &str) -> ActionSpec {
     let id = id.to_owned();
     ActionSpec::typed_operation(
         "read-feedback-receipt",

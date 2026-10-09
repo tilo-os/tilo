@@ -25,20 +25,29 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     );
     let mut doc = source.read(Clone::clone).unwrap();
     assert!(
-        chat::doc::ChatDoc::list_workspaces(&doc)
+        chat::projection::read(&doc)
+            .workspace_rows()
             .iter()
             .any(|workspace| workspace.id == browser.room),
         "the production seed uses its host-selected room"
     );
-    chat::doc::ChatDoc::insert_category(&mut doc, "feedback-category", &browser.room, "Feedback");
-    chat::doc::ChatDoc::insert_channel(
+    chat::demo::insert_category(
         &mut doc,
-        "feedback",
-        &browser.room,
+        "fixture",
         "feedback-category",
+        &browser.room,
+        "Feedback",
+    )
+    .unwrap();
+    chat::demo::insert_channel(
+        &mut doc,
+        "fixture",
+        "feedback",
+        (&browser.room, "feedback-category"),
         "Feedback",
         chat::model::ChannelKind::Text,
-    );
+    )
+    .unwrap();
     let mutation = collab_types::DocumentMutation::Snapshot(doc.save());
     browser.peer.publish(route.clone(), &mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
@@ -115,7 +124,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut queued = participant(&mut browser, &route, &person);
     queued
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": submission})
                 .as_object()
                 .unwrap(),
@@ -129,7 +141,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     publish_participant(&mut browser, &route, &mutation);
     submit_local_participant(&mut browser, &route, &submission, &person);
     let read_address = ActionAddress::new(
-        format!("chat.feedback:{}", submission.id),
+        chat::projection::item_id("feedback", &submission.id),
         "read-feedback-receipt",
     );
     let output = retained_receipt(
@@ -181,7 +193,10 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let mut maintainer = participant(&mut browser, &route, &person);
     maintainer
         .invoke(
-            &ActionAddress::new(format!("chat.feedback:{}", submission.id), "triage"),
+            &ActionAddress::new(
+                chat::projection::item_id("feedback", &submission.id),
+                "triage",
+            ),
             serde_json::json!({"update":{"status":"resolved"}})
                 .as_object()
                 .unwrap(),
@@ -253,7 +268,7 @@ async fn assert_one_report(
             assert_eq!(&report.submission, submission);
             assert_eq!(report.author, person);
             assert_eq!(
-                replica.read(|doc| chat::doc::ChatDoc::list_messages(doc, "feedback").len()),
+                replica.read(|doc| chat::projection::read(doc).message_rows("feedback").len()),
                 Some(1)
             );
             return;
@@ -273,7 +288,10 @@ async fn assert_local_only_report_is_not_a_receipt(
     unsubmitted.id = "1123456789abcdef0123456789abcdef".into();
     local
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": unsubmitted})
                 .as_object()
                 .unwrap(),
@@ -291,7 +309,7 @@ async fn assert_local_only_report_is_not_a_receipt(
         .invoke(request(
             &submission.destination.provider,
             ActionAddress::new(
-                format!("chat.feedback:{}", unsubmitted.id),
+                chat::projection::item_id("feedback", &unsubmitted.id),
                 "read-feedback-receipt",
             ),
             InvokeArgument::None,
@@ -312,7 +330,10 @@ fn submit_local_participant(
     let mut replica = participant(browser, route, person);
     replica
         .invoke(
-            &ActionAddress::new("chat.channel:feedback", "submit-feedback"),
+            &ActionAddress::new(
+                chat::projection::item_id("channels", "feedback"),
+                "submit-feedback",
+            ),
             serde_json::json!({"submission": submission})
                 .as_object()
                 .unwrap(),
@@ -370,7 +391,7 @@ async fn resolved_status(browser: &mut Browser, submission: &Submission) -> serd
             .invoke(request(
                 &submission.destination.provider,
                 ActionAddress::new(
-                    format!("chat.feedback:{}", submission.id),
+                    chat::projection::item_id("feedback", &submission.id),
                     "read-feedback-status",
                 ),
                 InvokeArgument::None,

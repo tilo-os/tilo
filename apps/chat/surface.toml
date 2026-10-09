@@ -1,0 +1,1319 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "chat.workspace"
+label = "Chat"
+version = 1
+
+[[resources.fields]]
+owner = "chat"
+path = "workspaces"
+stored = "collection"
+title = "The workspaces, in the order the rail shows them"
+type = "Collection<Workspace>"
+
+[[resources.fields]]
+label = true
+owner = "workspace"
+path = "workspaces.*.name"
+stored = "value"
+title = "The workspace's name"
+type = "String"
+
+[[resources.fields]]
+owner = "workspace"
+path = "workspaces.*.glyph"
+stored = "value"
+title = "The monogram the rail shows"
+type = "String"
+
+[[resources.fields]]
+owner = "workspace"
+path = "workspaces.*.color"
+stored = "value"
+title = "Its colour in the rail"
+type = "u32"
+
+[[resources.fields]]
+owner = "chat"
+path = "categories"
+stored = "collection"
+title = "The channel categories of every workspace, in sidebar order"
+type = "Collection<Category>"
+
+[[resources.fields]]
+owner = "category"
+path = "categories.*.workspace"
+readonly = true
+stored = "value"
+title = "The workspace it belongs to"
+type = "Id"
+
+[[resources.fields]]
+label = true
+owner = "category"
+path = "categories.*.name"
+stored = "value"
+title = "The category's name"
+type = "String"
+
+[[resources.fields]]
+owner = "chat"
+path = "channels"
+stored = "collection"
+title = "The channels of every workspace, in sidebar order within their"
+type = "Collection<Channel>"
+
+[[resources.fields]]
+owner = "channel"
+path = "channels.*.workspace"
+readonly = true
+stored = "value"
+title = "The workspace it belongs to"
+type = "Id"
+
+[[resources.fields]]
+owner = "channel"
+path = "channels.*.category"
+stored = "value"
+title = "The category it is listed under; none for uncategorised"
+type = "Option<Id>"
+
+[[resources.fields]]
+label = true
+owner = "channel"
+path = "channels.*.name"
+stored = "value"
+title = "The channel's name"
+type = "String"
+
+[[resources.fields]]
+owner = "channel"
+path = "channels.*.topic"
+stored = "value"
+title = "What the channel is about"
+type = "String"
+
+[[resources.fields]]
+owner = "channel"
+path = "channels.*.kind"
+readonly = true
+stored = "value"
+title = "A text channel has a conversation; a voice channel has a call"
+type = "ChannelKind"
+
+[[resources.fields]]
+owner = "channel"
+path = "channels.*.archived"
+stored = "value"
+title = "Archived channels leave the sidebar and stay in the record"
+type = "bool"
+
+[[resources.fields]]
+owner = "chat"
+path = "messages"
+stored = "collection"
+title = "Every message of every channel, oldest first"
+type = "Collection<Message>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.channel"
+readonly = true
+stored = "value"
+title = "The channel it was posted in"
+type = "Id"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.author"
+readonly = true
+stored = "value"
+title = "Who wrote it: their participant id"
+type = "Atom"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.ts"
+readonly = true
+stored = "value"
+title = "When, in seconds since the epoch"
+type = "i64"
+
+[[resources.fields]]
+label = true
+owner = "message"
+path = "messages.*.text"
+readonly = true
+stored = "value"
+title = "Its plain text: what search, agents and notifications read"
+type = "String"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.body"
+readonly = true
+stored = "value"
+title = "Its paragraphs as written, with their formatting; empty for plain text"
+type = "Json<Vec<ClipBlock>>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.edited"
+readonly = true
+stored = "value"
+title = "Whether it was changed after it was posted"
+type = "bool"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.history"
+readonly = true
+stored = "value"
+title = "Its earlier texts, oldest first"
+type = "Json<Vec<Revision>>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.parent"
+readonly = true
+stored = "value"
+title = "The message it answers in a thread"
+type = "Option<Id>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.reactions"
+readonly = true
+stored = "value"
+title = "Who reacted with which emoji: one element per person and emoji, so"
+type = "ui::tilo_resource::Set<Reacted>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.mentions"
+readonly = true
+stored = "value"
+title = "Who the text refers to, resolved when it was written"
+type = "Json<Vec<crate::mention::Mention>>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.reference"
+readonly = true
+stored = "value"
+title = "The thing it is about, when it was written by sharing something"
+type = "Json<Option<tilo_reference::ResourceRef>>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.source_provider"
+readonly = true
+stored = "value"
+title = "The record the reference lives in, when the host resolved one"
+type = "Option<Atom>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.attachment"
+readonly = true
+stored = "value"
+title = "A file, an image or a video, by its content address"
+type = "Json<Option<crate::model::Attachment>>"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.pinned"
+stored = "value"
+title = "Pinned messages are listed for everyone"
+type = "bool"
+
+[[resources.fields]]
+owner = "message"
+path = "messages.*.work"
+readonly = true
+stored = "record"
+title = "An agent's record of what it is doing with the message this one"
+type = "Option<Work>"
+
+[[resources.fields]]
+owner = "work"
+path = "messages.*.work.state"
+stored = "value"
+title = "Where it is, and since when: one authored claim, never mixed with"
+type = "Json<Option<Transition>>"
+
+[[resources.fields]]
+owner = "work"
+path = "messages.*.work.reasoning"
+stored = "value"
+title = "How it decided, in the decider's words"
+type = "Json<Option<crate::model::AgentReasoning>>"
+
+[[resources.fields]]
+owner = "work"
+path = "messages.*.work.trace"
+stored = "keyed"
+title = "One row per operation it dispatched, rewritten when the app answers"
+type = "Keyed<Step>"
+
+[[resources.fields]]
+owner = "step"
+path = "messages.*.work.trace.*.id"
+stored = "value"
+title = "Id"
+type = "Atom"
+
+[[resources.fields]]
+owner = "step"
+path = "messages.*.work.trace.*.sequence"
+stored = "value"
+title = "Sequence"
+type = "u64"
+
+[[resources.fields]]
+owner = "step"
+path = "messages.*.work.trace.*.resource"
+stored = "value"
+title = "Resource"
+type = "Atom"
+
+[[resources.fields]]
+label = true
+owner = "step"
+path = "messages.*.work.trace.*.label"
+stored = "value"
+title = "Label"
+type = "String"
+
+[[resources.fields]]
+owner = "step"
+path = "messages.*.work.trace.*.outcome"
+stored = "value"
+title = "Outcome"
+type = "Json<Option<crate::model::AgentStepOutcome>>"
+
+[[resources.fields]]
+owner = "chat"
+path = "people"
+stored = "keyed"
+title = "The people and agents in the room, by their participant id"
+type = "Keyed<Person>"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.id"
+readonly = true
+stored = "value"
+title = "Their participant id: what messages, reactions and read marks name"
+type = "Atom"
+
+[[resources.fields]]
+label = true
+owner = "person"
+path = "people.*.name"
+stored = "value"
+title = "The name they show"
+type = "String"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.initials"
+stored = "value"
+title = "Their monogram"
+type = "String"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.color"
+stored = "value"
+title = "Their colour"
+type = "u32"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.status"
+stored = "value"
+title = "Whether they are around"
+type = "Presence"
+
+[[resources.fields]]
+owner = "person"
+path = "people.*.agent"
+readonly = true
+stored = "value"
+title = "An automated agent rather than a person"
+type = "bool"
+
+[[resources.fields]]
+owner = "chat"
+path = "agent_names"
+stored = "value"
+title = "The name every member shows for an agent task, as the person hosting"
+type = "BTreeMap<String, String>"
+
+[[resources.fields]]
+owner = "chat"
+path = "read"
+stored = "value"
+title = "Each person's read mark per channel: how many of its top-level"
+type = "BTreeMap<String, BTreeMap<String, i64>>"
+
+[[resources.fields]]
+owner = "chat"
+path = "drafts"
+stored = "value"
+title = "The composers' drafts, by channel or thread"
+type = "BTreeMap<String, RichText>"
+
+[[resources.fields]]
+owner = "chat"
+path = "feedback"
+stored = "collection"
+title = "Reviewed feedback filed in a channel, under its submission's id"
+type = "Collection<FeedbackReport>"
+
+[[resources.fields]]
+owner = "feedback-report"
+path = "feedback.*.submission"
+readonly = true
+stored = "value"
+title = "What was submitted, as the person reviewed it"
+type = "Json<Option<ui::feedback::Submission>>"
+
+[[resources.fields]]
+owner = "feedback-report"
+path = "feedback.*.author"
+readonly = true
+stored = "value"
+title = "Who filed it"
+type = "Atom"
+
+[[resources.fields]]
+owner = "feedback-report"
+path = "feedback.*.ts"
+readonly = true
+stored = "value"
+title = "When, in seconds since the epoch"
+type = "i64"
+
+[[resources.fields]]
+owner = "feedback-report"
+path = "feedback.*.triage"
+readonly = true
+stored = "collection"
+title = "What happened to it since"
+type = "Collection<Triage>"
+
+[[resources.fields]]
+owner = "triage"
+path = "feedback.*.triage.*.author"
+readonly = true
+stored = "value"
+title = "Author"
+type = "Atom"
+
+[[resources.fields]]
+owner = "triage"
+path = "feedback.*.triage.*.ts"
+readonly = true
+stored = "value"
+title = "Ts"
+type = "i64"
+
+[[resources.fields]]
+owner = "triage"
+path = "feedback.*.triage.*.update"
+readonly = true
+stored = "value"
+title = "Update"
+type = "Json<Option<crate::feedback::TriageUpdate>>"
+
+[[resources.verbs]]
+description = "Start the chat.  Its creator and their first workspace: the one the host names, or a starter workspace with `#general` and a voice lounge."
+id = "begin-chat"
+kind = "undoable"
+label = "Start the chat"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+
+[resources.verbs.params.schema]
+description = "The workspace the host admitted; none for a starter workspace"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "workspace_name"
+required = false
+
+[resources.verbs.params.schema]
+description = "The workspace's name"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "initials"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your initials"
+type = "string"
+
+[[resources.verbs.params]]
+name = "color"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your colour"
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Introduce yourself.  How you show in the room: your name, initials and colour, and that you are here."
+id = "introduce"
+kind = "undoable"
+label = "Introduce yourself"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "initials"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your initials"
+type = "string"
+
+[[resources.verbs.params]]
+name = "color"
+required = true
+
+[resources.verbs.params.schema]
+description = "Your colour"
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Name an agent.  The name every member shows for an agent task."
+id = "name-agent"
+kind = "undoable"
+label = "Name an agent"
+
+[[resources.verbs.params]]
+name = "participant"
+required = true
+
+[resources.verbs.params.schema]
+description = "Participant"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Name"
+type = "string"
+
+[[resources.verbs]]
+description = "Create a workspace.  With `#general` to talk in and `Lounge` to call in."
+id = "create-workspace"
+kind = "undoable"
+label = "Create a workspace"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Workspace name"
+type = "string"
+
+[[resources.verbs]]
+description = "New category."
+id = "create-category"
+kind = "undoable"
+label = "New category"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = true
+
+[resources.verbs.params.schema]
+description = "Workspace"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Category name"
+type = "string"
+
+[[resources.verbs]]
+description = "New channel."
+id = "create-channel"
+kind = "undoable"
+label = "New channel"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = true
+
+[resources.verbs.params.schema]
+description = "Workspace"
+type = "string"
+
+[[resources.verbs.params]]
+name = "name"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel name"
+type = "string"
+
+[[resources.verbs.params]]
+name = "category"
+required = false
+
+[resources.verbs.params.schema]
+description = "The category to list it under; none for uncategorised"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "kind"
+required = false
+
+[resources.verbs.params.schema]
+description = "text for a conversation, voice for a call; text when absent"
+
+[[resources.verbs.params.schema.oneOf]]
+type = "null"
+
+[[resources.verbs.params.schema.oneOf]]
+enum = [
+    "text",
+    "voice",
+]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete category.  Its channels stay, uncategorised."
+destructive = true
+id = "delete-category"
+kind = "undoable"
+label = "Delete category"
+
+[[resources.verbs.params]]
+name = "category"
+required = true
+
+[resources.verbs.params.schema]
+description = "Category"
+type = "string"
+
+[[resources.verbs]]
+description = "Move a channel.  One place up or down among the channels of its category."
+id = "move-channel"
+kind = "undoable"
+label = "Move a channel"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs.params]]
+name = "up"
+required = true
+
+[resources.verbs.params.schema]
+description = "Up"
+type = "boolean"
+
+[[resources.verbs]]
+description = "Delete channel.  With its messages and drafts."
+destructive = true
+id = "delete-channel"
+kind = "undoable"
+label = "Delete channel"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs]]
+description = "Start a draft.  The empty draft a composer writes in, made once: a thread's the first time someone answers in it."
+id = "start-draft"
+kind = "undoable"
+label = "Start a draft"
+
+[[resources.verbs.params]]
+name = "key"
+required = true
+
+[resources.verbs.params.schema]
+description = "The channel, or the channel and thread, it is written in"
+type = "string"
+
+[[resources.verbs]]
+description = "Post a message.  `@Name` of a member becomes a mention of them."
+id = "post"
+kind = "undoable"
+label = "Post a message"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "The message; @Name mentions a member"
+type = "string"
+
+[[resources.verbs.params]]
+name = "parent"
+required = false
+
+[resources.verbs.params.schema]
+description = "The message it answers in a thread"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "body"
+required = false
+
+[resources.verbs.params.schema]
+description = "Its paragraphs as written, with their formatting"
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+type = "string"
+
+[[resources.verbs.params]]
+name = "attachment"
+required = false
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "A file, image or video another action put in the store"
+required = [
+    "kind",
+    "name",
+    "blob",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.blob]
+description = "The content hash."
+type = "string"
+
+[resources.verbs.params.schema.properties.height]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.kind]
+description = "`image`, `video` or `file`."
+type = "string"
+
+[resources.verbs.params.schema.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.properties.size]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.width]
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Share live resource.  Post the address of something, with words about it; whoever opens it still needs their own access to it."
+id = "share-resource"
+kind = "undoable"
+label = "Share live resource"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs.params]]
+name = "reference"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The thing: its kind, id, label and part"
+required = [
+    "kind",
+    "id",
+    "label",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.id]
+description = "Its resource id."
+type = "string"
+
+[resources.verbs.params.schema.properties.kind]
+description = "The publishing app's kind tag (`word_processor.block`)."
+type = "string"
+
+[resources.verbs.params.schema.properties.label]
+description = "What the chip says."
+type = "string"
+
+[resources.verbs.params.schema.properties.span]
+additionalProperties = false
+description = "The part of it, when not the whole."
+required = [
+    "start",
+    "end",
+    "unit",
+]
+type = [
+    "object",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.span.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.span.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.span.properties.unit]
+description = "`Chars` or `Bytes`."
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = false
+
+[resources.verbs.params.schema]
+description = "Words accompanying it"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "source_provider"
+required = false
+
+[resources.verbs.params.schema]
+description = "The record it lives in; needed to open or copy a link to it"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Edit message.  Its earlier text is kept in its history."
+id = "edit-message"
+kind = "undoable"
+label = "Edit message"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+description = "Message"
+type = "string"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+
+[resources.verbs.params.schema]
+description = "Text"
+type = "string"
+
+[[resources.verbs.params]]
+name = "body"
+required = false
+
+[resources.verbs.params.schema]
+description = "Body"
+type = [
+    "array",
+    "null",
+]
+
+[resources.verbs.params.schema.items]
+additionalProperties = false
+description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
+required = [
+    "kind",
+    "text",
+    "marks",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.align]
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.attrs]
+description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
+type = "object"
+
+[resources.verbs.params.schema.items.properties.kind]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.level]
+type = [
+    "integer",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.marks]
+type = "array"
+
+[resources.verbs.params.schema.items.properties.marks.items]
+additionalProperties = false
+description = "One inline formatting span as seen from the read side."
+required = [
+    "start",
+    "end",
+    "name",
+    "value",
+]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.end]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.name]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.start]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value]
+description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Bool"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Bool]
+type = "boolean"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Int"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Int]
+type = "integer"
+
+[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
+additionalProperties = false
+required = ["Str"]
+type = "object"
+
+[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Str]
+type = "string"
+
+[resources.verbs.params.schema.items.properties.ordered]
+type = [
+    "boolean",
+    "null",
+]
+
+[resources.verbs.params.schema.items.properties.text]
+type = "string"
+
+[[resources.verbs]]
+description = "Delete message."
+destructive = true
+id = "delete-message"
+kind = "undoable"
+label = "Delete message"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+description = "Message"
+type = "string"
+
+[[resources.verbs]]
+description = "React.  Your reaction with an emoji."
+id = "react"
+kind = "undoable"
+label = "React"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+description = "Message"
+type = "string"
+
+[[resources.verbs.params]]
+name = "emoji"
+required = true
+
+[resources.verbs.params.schema]
+description = "Emoji"
+type = "string"
+
+[[resources.verbs]]
+description = "Take back a reaction."
+id = "unreact"
+kind = "undoable"
+label = "Take back a reaction"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+description = "Message"
+type = "string"
+
+[[resources.verbs.params]]
+name = "emoji"
+required = true
+
+[resources.verbs.params.schema]
+description = "Emoji"
+type = "string"
+
+[[resources.verbs]]
+description = "Mark as read.  Everything in the channel so far, for you."
+id = "mark-read"
+kind = "undoable"
+label = "Mark as read"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs.params]]
+name = "seen"
+required = false
+
+[resources.verbs.params.schema]
+description = "How many of its top-level messages you saw; all when absent"
+maximum = 4294967295
+minimum = 0
+type = [
+    "integer",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Record agent work.  An agent's account of what it is doing with the message that summoned it, kept on its reply to that message: the reply is made the first time, and `say` gives it its words once, while it has none."
+id = "record-work"
+kind = "undoable"
+label = "Record agent work"
+
+[[resources.verbs.params]]
+name = "message"
+required = true
+
+[resources.verbs.params.schema]
+description = "Message"
+type = "string"
+
+[[resources.verbs.params]]
+name = "work"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "Where the work is, what was done and why"
+required = ["state"]
+type = "object"
+
+[resources.verbs.params.schema.properties.about]
+description = "What it is about (`doing`)."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.app]
+description = "The app waited on (`waiting`)."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.did]
+description = "The operation in the app's words (`doing`, `done`)."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.route]
+description = "Which path decided: `model` or `floor`."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.state]
+description = "`taken`, `waiting`, `doing`, `done` or `refused`."
+type = "string"
+
+[resources.verbs.params.schema.properties.trace]
+description = "The operations dispatched so far, each by the id minted when it was."
+type = "array"
+
+[resources.verbs.params.schema.properties.trace.items]
+additionalProperties = false
+description = "One dispatched operation, as an agent reports it."
+required = [
+    "id",
+    "resource",
+    "label",
+    "outcome",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.trace.items.properties.id]
+type = "string"
+
+[resources.verbs.params.schema.properties.trace.items.properties.label]
+type = "string"
+
+[resources.verbs.params.schema.properties.trace.items.properties.outcome]
+description = "`asked`, `applied`, `no_change` or `refused`."
+type = "string"
+
+[resources.verbs.params.schema.properties.trace.items.properties.resource]
+type = "string"
+
+[resources.verbs.params.schema.properties.trace.items.properties.sequence]
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.trace.items.properties.why]
+description = "Why it was refused."
+type = [
+    "string",
+    "null",
+]
+
+[resources.verbs.params.schema.properties.why]
+description = "The decider's account of why."
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs.params]]
+name = "say"
+required = false
+
+[resources.verbs.params.schema]
+description = "The reply's words, when it has none yet"
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+description = "Submit feedback.  A reviewed report, posted in the channel and kept with its triage."
+id = "submit-feedback"
+kind = "undoable"
+label = "Submit feedback"
+
+[[resources.verbs.params]]
+name = "channel"
+required = true
+
+[resources.verbs.params.schema]
+description = "Channel"
+type = "string"
+
+[[resources.verbs.params]]
+name = "submission"
+required = true
+
+[resources.verbs.params.schema]
+description = "The reviewed submission"
+
+[[resources.verbs]]
+description = "Triage feedback.  Investigating, resolved, reopened, a duplicate of another report or tracked by a task."
+id = "triage"
+kind = "undoable"
+label = "Triage feedback"
+
+[[resources.verbs.params]]
+name = "report"
+required = true
+
+[resources.verbs.params.schema]
+description = "Report"
+type = "string"
+
+[[resources.verbs.params]]
+name = "update"
+required = true
+
+[resources.verbs.params.schema]
+description = "investigating, resolved, reopen, duplicate or task"

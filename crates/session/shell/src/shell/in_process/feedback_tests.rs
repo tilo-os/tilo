@@ -29,7 +29,7 @@ impl DestinationOwner {
                     &ui::bound_dispatch::BoundActionAddress {
                         instance_id: 7,
                         address: tilo_actions::ActionAddress::new(
-                            "chat.channel:feedback",
+                            chat::projection::item_id("channels", "feedback"),
                             "submit-feedback",
                         ),
                     },
@@ -96,25 +96,20 @@ fn destination_owner(apps: &mut InProcessApps) -> Rc<RefCell<DestinationOwner>> 
         .reserve_record(&checkout)
         .unwrap()
         .initialize(|doc| {
-            chat::doc::ChatDoc::seed_workspace(
+            let failed = |error: ui::tilo_actions::DoorError| error.to_string();
+            chat::demo::start_in(doc, AUTHOR, (ROOM, "Private fixture"), "Fixture", "F")
+                .map_err(failed)?;
+            chat::demo::insert_category(doc, AUTHOR, "feedback-category", ROOM, "Feedback")
+                .map_err(failed)?;
+            chat::demo::insert_channel(
                 doc,
-                ROOM,
-                "Private fixture",
                 AUTHOR,
-                "Fixture",
-                "F",
-                0,
-            )?;
-            chat::doc::ChatDoc::insert_category(doc, "feedback-category", ROOM, "Feedback");
-            chat::doc::ChatDoc::insert_channel(
-                doc,
                 "feedback",
-                ROOM,
-                "feedback-category",
+                (ROOM, "feedback-category"),
                 "Feedback",
                 chat::model::ChannelKind::Text,
-            );
-            Ok(())
+            )
+            .map_err(failed)
         })
         .unwrap();
     records.try_flush().unwrap();
@@ -303,7 +298,10 @@ fn assert_canonical_report(owner: &DestinationOwner, submission: &Submission) {
         .records
         .read(&RecordId::package_primary(), |doc| {
             assert_eq!(chat::feedback::reports(doc).unwrap().len(), 1);
-            assert_eq!(chat::doc::ChatDoc::list_messages(doc, "feedback").len(), 1);
+            assert_eq!(
+                chat::projection::read(doc).message_rows("feedback").len(),
+                1
+            );
             chat::feedback::report(doc, &submission.id)
                 .unwrap()
                 .unwrap()

@@ -141,7 +141,7 @@ fn valid_complete_archive_reconstructs_canonical_documents() {
         "so.tilo.word-processor".into(),
         "tab:0000000000000001".into(),
     )];
-    let c = tilo_doc::model::open(writer, &automerge::ROOT).unwrap();
+    let c = word_processor::model::open(writer).unwrap();
     assert_eq!(
         tilo_doc::model::materialize_region(writer, &c, tilo_doc::model::Region::Body)[0].text,
         "Recovery test"
@@ -307,17 +307,9 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
     let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
-    let channel = chat::doc::ChatDoc::list_channels(&chat).remove(0).id;
-    chat::doc::ChatDoc::push_message(
-        &mut chat,
-        &channel,
-        chat::doc::NewMessage {
-            author: "test-person".into(),
-            text: "Sent archive content".into(),
-            ..Default::default()
-        },
-    );
-    chat::doc::ChatDoc::set_draft(&mut chat, &channel, "Unsent shared draft");
+    let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
+    chat::demo::say(&mut chat, "test-person", &channel, "Sent archive content").unwrap();
+    chat::demo::set_draft(&mut chat, "test-person", &channel, "Unsent shared draft").unwrap();
     chat.commit();
     let before = chat.base_heads();
     let export = readable("so.tilo.chat", &chat).unwrap();

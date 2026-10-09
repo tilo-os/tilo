@@ -73,7 +73,7 @@ try {
   if (fixture.encryptedRestart) {
     const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
     assert.equal(read.state, 'completed');
-    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.replace('chat.message:', ''));
+    const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.split('/').pop());
     assert.ok(original, 'the exact original message must be readable');
     assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
     assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
@@ -149,7 +149,7 @@ try {
       message.text === 'Native fixture while browser disconnected').length, 0,
     'the disconnected browser must not already have received the new native post');
     const queued = await tab.evaluate(`mount.invokeAction(fixture.channel, 'post',
-      {value:'Browser fixture queued during disconnect'})`);
+      {text:'Browser fixture queued during disconnect'})`);
     assert.equal(queued.state, 'completed', 'the original local post must complete once');
     await tab.evaluate('mount.flush()');
     await tab.waitFor('peer.getSnapshot().outgoingPending > 0 && !peer.getSnapshot().health.transport.authenticated');

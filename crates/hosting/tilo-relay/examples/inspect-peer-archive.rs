@@ -214,11 +214,11 @@ fn canonical(room_id: &str, app: &str, record: &str, doc: &AutoCommit) -> Result
     owners.open(app, room_id)?.try_open_record(&checkout)?;
     if app == "so.tilo.chat" {
         ensure!(
-            chat::doc::ChatDoc::is_seeded(doc),
+            chat::projection::is_started(doc),
             "Chat canonical schema absent"
         );
     } else {
-        tilo_doc::model::open(doc, &automerge::ROOT)?;
+        word_processor::model::open(doc).map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
@@ -544,7 +544,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
 /// A readable projection accompanies, never replaces, the complete CRDT bytes.
 fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
     if app == "so.tilo.word-processor" {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT)?;
+        let containers = word_processor::model::open(doc).map_err(anyhow::Error::msg)?;
         let snapshot = tilo_doc::model::materialize(doc, &containers);
         let text = snapshot
             .blocks
@@ -556,9 +556,10 @@ fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
             json!({"app_id":app,"body_text":text,"rich_document":snapshot,"projection_note":"Body text is a convenience projection; rich_document and canonical bytes preserve structure."}),
         )
     } else if app == "so.tilo.chat" {
-        let channels=chat::doc::ChatDoc::list_channels(doc).into_iter().map(|channel| {
-            let messages=chat::doc::ChatDoc::list_messages(doc,&channel.id).into_iter().map(|message|json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})).collect::<Vec<_>>();
-            json!({"id":channel.id,"name":channel.name,"archived":channel.archived,"draft":chat::doc::ChatDoc::draft_text(doc,&channel.id),"messages":messages})
+        let record = chat::projection::read(doc);
+        let channels=record.channel_rows().into_iter().map(|channel| {
+            let messages=record.message_rows(&channel.id).into_iter().map(|message|json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})).collect::<Vec<_>>();
+            json!({"id":channel.id,"name":channel.name,"archived":channel.archived,"draft":chat::projection::draft_text(doc,&channel.id),"messages":messages})
         }).collect::<Vec<_>>();
         Ok(
             json!({"app_id":app,"channels":channels,"projection_note":"Canonical channel/message/draft API projection; full CRDT preserves other app fields and history. External attachment bytes are not in this archive export."}),

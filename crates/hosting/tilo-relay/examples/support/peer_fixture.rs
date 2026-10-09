@@ -38,8 +38,8 @@ pub fn fixture_seed(
         reserved
             .initialize(|doc| {
                 if checkout.id.is_package_primary() {
-                    chat::doc::ChatDoc::seed_starter(doc, "native", "Native workspace peer", "NW");
-                    Ok(())
+                    chat::demo::start(doc, "native", "Native workspace peer", "NW")
+                        .map_err(|error| error.to_string())
                 } else {
                     word_processor::initialize_empty_document(doc)
                 }

@@ -58,7 +58,7 @@ fn fixture_with_extra_calculators(
         store.create_record(&record).unwrap();
         store.with(&record.id, |doc| match i {
             0 => word_processor::initialize_empty_document(doc).unwrap(),
-            1 => chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU"),
+            1 => chat::demo::start(doc, "author", "Author", "AU").unwrap(),
             2 => notes::read::initialize(doc),
             _ => calculator::doc::initialize(doc).unwrap(),
         });
@@ -3887,21 +3887,21 @@ fn actual_desktop_hosts_checked_writer_chat_notes_calculator_and_preserves_write
     for (instance, resource, action, param, value) in [
         (
             (5 << 48) | 11,
-            "chat.channel:c_general",
+            chat::projection::item_id("channels", "c_general"),
             "post",
-            "value",
+            "text",
             "Desktop message",
         ),
         (
             (5 << 48) | 12,
-            "notes.notebook",
+            "notes.notebook".to_owned(),
             "new-note",
             "title",
             "Desktop page",
         ),
         (
             (5 << 48) | 13,
-            "calculator.workspace",
+            "calculator.workspace".to_owned(),
             "add-function",
             "value",
             "sin(x)",
@@ -4502,16 +4502,13 @@ fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
                 }
                 notes::read::validate(doc).unwrap();
             } else if record.app == "so.tilo.chat" {
-                chat::doc::ChatDoc::push_message(
+                chat::demo::apply_at(
                     doc,
-                    "c_general",
-                    chat::doc::NewMessage {
-                        author: "author".into(),
-                        ts: 1,
-                        text: "nebula-chat-body-only".into(),
-                        ..Default::default()
-                    },
-                );
+                    "author",
+                    1000,
+                    chat::demo::post("c_general", "nebula-chat-body-only", None),
+                )
+                .unwrap();
             }
         });
     }

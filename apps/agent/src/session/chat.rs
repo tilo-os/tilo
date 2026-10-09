@@ -12,28 +12,20 @@ use crate::apply::Editor;
 use crate::model::Route;
 use crate::plan::Instruction;
 use crate::surface::{self, AppContract};
-use ::chat::doc::ChatDoc;
 use ::chat::model::{
     AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
 };
 
 #[derive(Clone, Debug)]
 pub(super) struct ChatRun {
-    channel: String,
-    reply: String,
+    /// The message that summoned the agent: its work is recorded on the
+    /// agent's reply to it.
+    summons: String,
     pub(super) subject: Option<String>,
     work: AgentWork,
     pub(super) uncertain: bool,
     pub(super) target_artifact: Option<collab_types::ArtifactId>,
     pub(super) observed_mutation: bool,
-}
-
-fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
-    // This stable, length-delimited derivation mints a Chat message identifier.
-    // The returned UUID payload is never used as a document artifact or route grant.
-    let digest =
-        collab_types::document_artifact_id("tilo-agent-chat-reply-v1", agent_id, summons_id);
-    format!("agent-reply-{}", digest.0.simple())
 }
 
 impl Session {
@@ -108,8 +100,9 @@ impl Session {
                 && contract.namespace == "chat"
                 && let Some(peer) = self.peers.get("chat")
             {
-                for channel in ChatDoc::list_channels(peer.doc()) {
-                    for message in ChatDoc::list_messages(peer.doc(), &channel.id) {
+                let chat = ::chat::projection::read(peer.doc());
+                for channel in chat.channel_rows() {
+                    for message in chat.message_rows(&channel.id) {
                         self.chat_sources
                             .entry(message.id)
                             .or_insert_with(|| (from_user_id.clone(), envelope.author));
@@ -173,15 +166,18 @@ impl Session {
     }
 
     /// Write to the conversation through Chat's own door: the agent's
-    /// reply and the state of its work are Chat actions, permission-checked
+    /// reply and the state of its work are Chat's verbs, permission-checked
     /// and attributed to the agent like any participant's.
-    fn publish_chat(&mut self, action: &::chat::actions::ChatAction) -> Result<()> {
+    fn publish_chat(&mut self, invoke: &ui::tilo_resource::Invoke<::chat::Chat>) -> Result<()> {
+        let action = invoke
+            .build(ui::time::unix_now_i64().saturating_mul(1000))
+            .map_err(|error| anyhow::anyhow!("Chat refused the verb: {error}"))?;
         let editor = self
             .peers
             .get_mut("chat")
             .ok_or_else(|| anyhow::anyhow!("Chat state unavailable"))?;
         let route_app_id = editor.route_app_id().to_string();
-        if let Some(data) = editor.apply::<::chat::Chat>(std::slice::from_ref(action))? {
+        if let Some(data) = editor.apply::<::chat::Chat>(std::slice::from_ref(&action))? {
             self.link.send_to_route(
                 RouteSpec::app(route_app_id.as_str(), self.cfg.cluster),
                 &CollabRequest::document_incremental(data),
@@ -194,12 +190,12 @@ impl Session {
         let Some(run) = &self.chat_run else {
             return Ok(());
         };
-        self.publish_chat(&::chat::actions::set_agent_work_action(
-            &run.channel,
-            &run.reply,
-            run.work.clone(),
-            say,
-        ))
+        let invoke = ::chat::Chat::RECORD_WORK.with(::chat::record::chat::RecordWork {
+            message: ui::tilo_resource::Id::from_raw(run.summons.clone()),
+            work: run.work.to_update(),
+            say: say.map(str::to_owned),
+        });
+        self.publish_chat(&invoke)
     }
 
     pub(super) fn chat_dispatched(&mut self, resource: &str, label: &str) -> Result<()> {
@@ -307,9 +303,11 @@ impl Session {
         let Some(editor) = self.peers.get("chat") else {
             return Ok(false);
         };
-        let messages: Vec<_> = ChatDoc::list_channels(editor.doc())
+        let chat = ::chat::projection::read(editor.doc());
+        let messages: Vec<_> = chat
+            .channel_rows()
             .iter()
-            .flat_map(|channel| ChatDoc::list_messages(editor.doc(), &channel.id))
+            .flat_map(|channel| chat.message_rows(&channel.id))
             .collect();
         let handled = crate::listen::answered(&messages, &self.cfg.agent_id);
         let Some(summons) = crate::listen::next_summons(
@@ -322,25 +320,10 @@ impl Session {
         ) else {
             return Ok(false);
         };
-        let reply = crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message)
-            .map_or_else(
-                || chat_reply_id(&self.cfg.agent_id, &summons.message),
-                |record| record.id.clone(),
-            );
-        if crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message).is_none() {
-            self.publish_chat(&::chat::actions::send_message_action(
-                &summons.channel,
-                &reply,
-                ui::time::unix_now_i64(),
-                "",
-                Some(summons.message.clone()),
-                None,
-                vec![],
-            ))?;
-        }
+        // Recording the work makes the agent's reply to the summons the
+        // first time, and goes on writing into it after.
         self.chat_run = Some(ChatRun {
-            channel: summons.channel.clone(),
-            reply,
+            summons: summons.message.clone(),
             subject: summons.subject.resource().map(str::to_string),
             work: AgentWork::new(AgentWorkState::Taken, ui::time::unix_now_i64()),
             uncertain: false,
@@ -546,14 +529,16 @@ mod tests {
     }
 
     #[test]
-    fn reply_id_is_bounded_canonical_and_tuple_stable() {
+    fn the_reply_a_summons_gets_is_bounded_canonical_and_tuple_stable() {
         let agent_id = format!("Reader:/? #{}", "読り手🧪".repeat(80));
         let summons_id = "s".repeat(128);
-        let reply = chat_reply_id(&agent_id, &summons_id);
-
-        assert_eq!(reply, chat_reply_id(&agent_id, &summons_id));
-        assert_ne!(chat_reply_id("ab", "c"), chat_reply_id("a", "bc"));
-        assert_eq!(reply.len(), 44);
+        let id = |summons: &str, agent: &str| {
+            ::chat::record::reply_id(&ui::tilo_resource::Id::from_raw(summons), agent).to_string()
+        };
+        let reply = id(&summons_id, &agent_id);
+        assert_eq!(reply, id(&summons_id, &agent_id));
+        assert_ne!(id("ab", "c"), id("a", "bc"));
+        assert!(reply.len() <= 64);
         assert!(
             reply
                 .bytes()
@@ -561,14 +546,24 @@ mod tests {
         );
 
         let mut document = automerge::AutoCommit::new();
-        ChatDoc::seed_starter(&mut document, "human-author", "Human", "HU");
-        assert!(ChatDoc::accepts_message_action(
-            &document,
-            "c_general",
-            &reply,
-            "",
-            None,
-            None,
-        ));
+        ::chat::demo::start(&mut document, "human-author", "Human", "HU").unwrap();
+        let summons =
+            ::chat::demo::say(&mut document, "human-author", "c_general", "@Reader help").unwrap();
+        let work = AgentWork::new(AgentWorkState::Taken, 0);
+        ::chat::demo::apply_as(
+            &mut document,
+            &agent_id,
+            ::chat::Chat::RECORD_WORK.with(::chat::record::chat::RecordWork {
+                message: ui::tilo_resource::Id::from_raw(summons.clone()),
+                work: work.to_update(),
+                say: None,
+            }),
+        )
+        .unwrap();
+        let reply = ::chat::projection::read(&document)
+            .message_row(&id(&summons, &agent_id))
+            .expect("recording the work makes the reply");
+        assert_eq!(reply.author, agent_id);
+        assert_eq!(reply.parent.as_deref(), Some(summons.as_str()));
     }
 }

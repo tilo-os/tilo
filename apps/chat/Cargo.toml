@@ -66,6 +66,7 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

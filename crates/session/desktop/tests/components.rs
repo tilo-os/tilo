@@ -92,7 +92,7 @@ fn fixture() -> (
         store.with(&checkout.id, |doc| match i {
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => {
-                chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU");
+                chat::demo::start(doc, "author", "Author", "AU").unwrap();
             }
             _ => notes::read::initialize(doc),
         });
@@ -294,14 +294,14 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
     for (instance, resource, action, param, value) in [
         (
             11,
-            "chat.channel:c_general",
+            chat::projection::item_id("channels", "c_general"),
             "post",
-            "value",
+            "text",
             "Shared desktop message",
         ),
         (
             12,
-            "notes.notebook",
+            "notes.notebook".to_owned(),
             "new-note",
             "title",
             "Shared desktop page",

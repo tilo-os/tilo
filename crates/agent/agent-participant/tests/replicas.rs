@@ -24,9 +24,22 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     let app = "so.tilo.chat";
     let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
-    let workspace = chat::doc::ChatDoc::create_workspace(&mut doc, "Resource view fixture");
+    chat::demo::apply_as(
+        &mut doc,
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Resource view fixture".into(),
+        }),
+    )
+    .unwrap();
+    let workspace = chat::projection::read(&doc)
+        .workspace_rows()
+        .into_iter()
+        .find(|workspace| workspace.name == "Resource view fixture")
+        .unwrap()
+        .id;
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
-    let resource = format!("chat.workspace:{workspace}");
+    let resource = chat::projection::item_id("workspaces", &workspace);
     let before = body(&page);
     let viewer = PermissionContext::from_capabilities(
         Actor::person(Some(Role::Viewer), "ada").in_room(ROOM),
@@ -36,7 +49,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
         Actor::person(Some(Role::Denied), "ada").in_room(ROOM),
         Vec::new(),
     );
-    let views = page.resource_views(&resource, "chat.workspace", &viewer);
+    let views = page.resource_views(&resource, "chat.workspace.workspaces", &viewer);
     assert!(
         !views.is_empty(),
         "the actual Chat resource declares a viewer navigation door"
@@ -47,11 +60,11 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
             .all(|view| view.kind == tilo_actions::OperationKind::View)
     );
     assert!(
-        page.resource_views(&resource, "chat.workspace", &denied)
+        page.resource_views(&resource, "chat.workspace.workspaces", &denied)
             .is_empty()
     );
     assert!(
-        page.resource_views("missing", "chat.workspace", &viewer)
+        page.resource_views("missing", "chat.workspace.workspaces", &viewer)
             .is_empty()
     );
     assert!(

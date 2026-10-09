@@ -9,7 +9,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 
 /// Loaded per thread on first use; a host's manager is joined, never replaced.
 /// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
+pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[("en-US", include_str!("../locales/en-US.ftl"))],
     "chat-mention-agent-tag",

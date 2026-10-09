@@ -9,7 +9,7 @@ const OPERATION: &str = "chat.feedback.status";
 pub(crate) const READER: RegisteredSemanticReader =
     RegisteredSemanticReader::new(OPERATION, schema, super::receipt_read::validate, project);
 
-pub(super) fn spec(id: &str) -> ActionSpec {
+pub(crate) fn spec(id: &str) -> ActionSpec {
     let id = id.to_owned();
     ActionSpec::typed_operation(
         "read-feedback-status",

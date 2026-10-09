@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn shared_space_call_status_exposes_muted_join_and_leave_without_starting_capture() {
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let before = doc.save();
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.reload(&doc);
@@ -545,7 +545,7 @@ mod tests {
     fn semantic_status_reads_share_the_in_flight_automatic_refresh() {
         let now = ui::time::now();
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let before = doc.save();
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.reload(&doc);
@@ -622,7 +622,7 @@ mod tests {
     fn public_status_retains_a_safe_client_failure_after_cleanup_then_clears_on_rejoin() {
         let now = ui::time::now();
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.reload(&doc);
         app.answer_effect(crate::effects::ChatEffect::JoinCall {
@@ -725,7 +725,7 @@ mod tests {
         use ui::permissions::{Actor, PermissionContext, Role};
         use ui::widget::Collaborative;
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let before = doc.save();
         let mut pointer = crate::app::ChatApp::new_ephemeral();
         pointer.reload(&doc);
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn joining_panel_is_visible_without_claiming_live_capture_or_streams() {
         let mut doc = automerge::AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         let mut app = crate::app::ChatApp::new_ephemeral();
         app.reload(&doc);
         app.native_voice_command(

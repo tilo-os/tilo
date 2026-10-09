@@ -1,8 +1,8 @@
 //! The composers: the SDK rich-text editor, embedded where chat draws it.
 //!
 //! A channel or thread composer edits that surface's shared draft: rich text
-//! in the document, a child resource of the chat record whose every edit is
-//! a [`ChatAction::EditDraft`] through the chat's dispatcher, so
+//! in the document, the record's `drafts` field under the composer's key,
+//! every edit of it a field edit at that path through the chat's dispatcher, so
 //! collaborators see each keystroke and a typed word is one undo step. The
 //! message editor edits a local copy until it is saved. Enter sends and Shift+Enter breaks the line in both. What chat
 //! needs beyond the editor — the plain text, the caret as an offset into it
@@ -20,18 +20,20 @@ use ui::PresenceCtx;
 use ui::framework::Dispatcher;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::EditOp;
 use ui::widget::{BlockContent, BlockEditor, PresenceKeyFn, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::actions::ChatAction;
-use crate::doc::ChatDoc;
 use crate::resource::Chat;
 
-/// The published id of the draft stored under `key`.
+/// The id the dispatcher addresses the draft stored under `key` by.
 pub fn draft_id(key: &str) -> String {
-    format!("chat.draft:{key}")
+    format!(
+        "{}/drafts/{key}",
+        <Chat as ui::tilo_resource::Resource>::KIND
+    )
 }
 
 /// The draft a channel or thread composer edits: the rich-text child of the
@@ -55,14 +57,18 @@ impl DraftField {
 
     fn field(key: &str, dispatch: Option<&Dispatcher<Chat>>) -> RichTextField {
         let located = key.to_owned();
-        let locate = move |doc: &AutoCommit| ChatDoc::rich_draft(doc, &located);
+        let locate = move |doc: &AutoCommit| crate::projection::draft(doc, &located);
         match dispatch {
             Some(dispatch) => {
                 let key = key.to_owned();
+                // Each edit of the draft is a field edit at its path.
                 let child = dispatch.child::<RichText>(&draft_id(&key), move |edit| {
-                    ChatAction::EditDraft {
-                        key: key.clone(),
-                        edit,
+                    let edit = Chat::paths().drafts.key(key.clone()).edit(EditOp::Rich {
+                        rich: serde_json::to_value(&edit).unwrap_or_default(),
+                    });
+                    ui::tilo_resource::Stamped {
+                        operation: crate::record::ChatAction::FieldEdit(edit),
+                        now_ms: 0,
                     }
                 });
                 RichTextField::new(child, locate)

@@ -6,16 +6,27 @@
 //! workspace, a conversation, a message, a call), so the palette, an agent
 //! or a script reaches the same handler a click does. What an effect changes
 //! in the document — the message a shared file becomes — it changes through
-//! ordinary [`ChatAction`](crate::actions::ChatAction)s. Sharing a file and
+//! the record's verbs and field edits. Sharing a file and
 //! the call controls reach this device's files and voice service, so only
 //! the person at the device runs them.
 
-use ui::framework::{EffectAnswer, EffectStatus, Effected};
+use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
+use ui::tilo_actions::{ResourceViewRangeSpec, ResourceViewSpec};
 use ui::tilo_resource::{self, Effect};
 
 use crate::app::{ChatApp, Focus};
 use crate::model::ChannelKind;
+use crate::resource::Chat;
+
+/// How many of a conversation's latest messages its row offers effects on;
+/// any other message's row is resolved when it is addressed.
+pub const RECENT_MESSAGES: usize = 20;
+
+/// The id of the item resource the record publishes for `id` of `field`.
+fn item_row_id(field: &str, id: &str) -> String {
+    tilo_resource::items::item_resource_id::<Chat>(field, &tilo_resource::Id::from_raw(id))
+}
 
 /// Why `start-video-call` is unavailable and refused: calls carry
 /// microphone audio only.
@@ -123,12 +134,12 @@ pub enum ChatEffect {
     ///
     /// Joins the open workspace's voice channel, making one when the
     /// workspace has none, or reveals the call already running.
-    #[effect(row, idempotent, device_only)]
+    #[effect(idempotent, device_only)]
     StartCall,
     /// Start a video call
     ///
     /// Refused: calls carry microphone audio only.
-    #[effect(row, idempotent, device_only)]
+    #[effect(idempotent, device_only)]
     StartVideoCall,
     /// Select microphone
     #[effect(device_only)]
@@ -281,23 +292,27 @@ impl ChatApp {
             if !self.can_participate() {
                 return Err("A room writer must create a voice channel".into());
             }
-            let id = crate::events::new_channel_id();
-            let create = crate::actions::create_channel_action(
-                &self.active_ws,
-                "",
-                &id,
-                "Voice",
-                ChannelKind::Voice,
-            );
             let Some(doc) = doc else {
-                let dispatch = self.dispatch.as_ref().ok_or("Chat is open to view only")?;
-                dispatch.apply(&create);
+                if self.dispatch.is_none() {
+                    return Err("Chat is open to view only".into());
+                }
+                let id = crate::events::fresh_id("c");
+                let channel = crate::record::Channel {
+                    workspace: tilo_resource::Id::from_raw(self.active_ws.clone()),
+                    name: "Voice".into(),
+                    kind: ChannelKind::Voice,
+                    ..crate::record::Channel::default()
+                };
+                self.submit(crate::resource::Chat::paths().channels.insert_as(
+                    &tilo_resource::Id::from_raw(id.clone()),
+                    self.channels.len(),
+                    &channel,
+                ));
                 self.pending_call = Some(id);
                 return Ok(());
             };
-            self.apply_action(doc, &create);
-            self.reload(doc);
-            id
+            let workspace = self.active_ws.clone();
+            self.create_channel_now(doc, &workspace, "", "Voice", ChannelKind::Voice)
         };
         self.native_voice_command(
             &channel,
@@ -335,6 +350,13 @@ impl ChatApp {
             video_call_unavailable_reason(),
         );
         let mut unavailable = vec![video];
+        if self.workspaces.is_empty() {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::START_CALL,
+                "no_workspace",
+                crate::i18n::t("chat-call-no-workspace"),
+            ));
+        }
         if !self.external_services {
             unavailable.push(EffectStatus::unavailable(
                 ChatEffect::ATTACH_FILE,
@@ -524,4 +546,295 @@ impl ChatApp {
             "sourceProvider": message.source_provider,
         }))
     }
+}
+
+impl ChatApp {
+    /// The effects offered on what the window shows: each workspace,
+    /// category and channel (a voice channel with its call), the latest
+    /// messages of every conversation, the reviewed reports and the people.
+    /// They are rows merged into the item resources the record publishes.
+    pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
+        let workspaces = self
+            .workspaces
+            .iter()
+            .filter_map(|workspace| self.workspace_row(&workspace.id));
+        let categories = self
+            .categories
+            .iter()
+            .filter_map(|category| self.category_row(&category.id));
+        let channels = self
+            .channels
+            .iter()
+            .filter_map(|channel| self.channel_row(&channel.id));
+        let messages = self.channels.iter().flat_map(|channel| {
+            let messages: Vec<&crate::model::Message> = self
+                .search_messages
+                .iter()
+                .filter(|message| message.channel == channel.id)
+                .collect();
+            let recent = messages.len().saturating_sub(RECENT_MESSAGES);
+            messages
+                .into_iter()
+                .skip(recent)
+                .filter_map(|message| self.message_row(&message.id))
+                .collect::<Vec<_>>()
+        });
+        let people = self
+            .search_users
+            .iter()
+            .filter_map(|user| self.person_row(&user.id));
+        let reports = self
+            .reports
+            .iter()
+            .filter_map(|(report, _)| self.report_row(report));
+        workspaces
+            .chain(categories)
+            .chain(channels)
+            .chain(messages)
+            .chain(people)
+            .chain(reports)
+            .collect()
+    }
+
+    /// The row `id`, when [`Self::published_rows`] leaves it out.
+    pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
+        let (field, item) = tilo_resource::items::item_of_resource::<Chat>(id)?;
+        let item = item.as_str();
+        match field {
+            "workspaces" => self.workspace_row(item),
+            "categories" => self.category_row(item),
+            "channels" => self.channel_row(item),
+            "messages" => self.message_row(item),
+            "people" => self.person_row(item),
+            "feedback" => self.report_row(item),
+            _ => None,
+        }
+    }
+
+    fn workspace_row(&self, id: &str) -> Option<LiveRow> {
+        let workspace = self.workspaces.iter().find(|item| item.id == id)?;
+        Some(
+            LiveRow::new(
+                item_row_id("workspaces", id),
+                "chat.workspace.workspaces",
+                &workspace.name,
+            )
+            .effect(&ChatEffect::OpenWorkspace {
+                workspace: id.to_owned(),
+            })
+            .view(
+                ResourceViewSpec::new("workspace", "Workspace", ChatEffect::OPEN_WORKSPACE.id)
+                    .with_primary(true),
+            ),
+        )
+    }
+
+    fn category_row(&self, id: &str) -> Option<LiveRow> {
+        let category = self.categories.iter().find(|item| item.id == id)?;
+        let category_id = || id.to_owned();
+        Some(
+            LiveRow::new(
+                item_row_id("categories", id),
+                "chat.workspace.categories",
+                &category.name,
+            )
+            .effect(&ChatEffect::OpenCategory {
+                category: category_id(),
+            })
+            .effect(&ChatEffect::ToggleCategory {
+                category: category_id(),
+            }),
+        )
+    }
+
+    fn channel_row(&self, id: &str) -> Option<LiveRow> {
+        let channel = self.channels.iter().find(|item| item.id == id)?;
+        let channel_id = || id.to_owned();
+        let row = LiveRow::new(
+            item_row_id("channels", id),
+            "chat.workspace.channels",
+            &channel.name,
+        )
+        .effect(&ChatEffect::OpenChannel {
+            channel: channel_id(),
+        });
+        let row = if channel.kind == ChannelKind::Voice {
+            row
+        } else {
+            row.view(
+                ResourceViewSpec::new("conversation", "Conversation", ChatEffect::OPEN_CHANNEL.id)
+                    .with_primary(true),
+            )
+        };
+        Some(if channel.kind == ChannelKind::Voice {
+            row.row(
+                LiveRow::new(
+                    format!("{}/call", item_row_id("channels", id)),
+                    "chat.call",
+                    crate::i18n::t_args(
+                        "chat-call-title",
+                        &[("channel", channel.name.clone().into())],
+                    ),
+                )
+                .effect(&ChatEffect::OpenChannel {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::JoinCall {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::LeaveCall {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::Mute {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::Unmute {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::CallStatus {
+                    channel: channel_id(),
+                }),
+            )
+        } else {
+            row.operation(crate::semantic_read::action::spec(id))
+        })
+    }
+
+    fn message_row(&self, id: &str) -> Option<LiveRow> {
+        let message = self.search_messages.iter().find(|item| item.id == id)?;
+        let message_id = || id.to_owned();
+        let author = self.author_name(&message.author);
+        let agent = self.agent_authors.contains_key(&message.author)
+            || message
+                .author
+                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX);
+        let mut row = LiveRow::new(
+            item_row_id("messages", id),
+            "chat.workspace.messages",
+            self.message_label(message),
+        )
+        // Who wrote it, beside the message's own words.
+        .presentation(ui::tilo_actions::ResourcePresentation {
+            detail: Some(author.chars().take(80).collect()),
+            badge: agent.then(|| "agent".to_owned()),
+            preview: None,
+        })
+        .effect(&ChatEffect::RevealMessage {
+            message: message_id(),
+        })
+        .view(
+            ResourceViewSpec::new("message", "Message", ChatEffect::REVEAL_MESSAGE.id)
+                .with_primary(true)
+                .with_range(ResourceViewRangeSpec::new(
+                    ChatEffect::REVEAL_MESSAGE_RANGE.id,
+                )),
+        )
+        .operation(
+            ChatEffect::RevealMessageRange {
+                message: message_id(),
+                start: 0,
+                end: 0,
+                unit: "Chars".into(),
+            }
+            .bound_asking(&["start", "end", "unit"]),
+        )
+        .effect(&ChatEffect::ReadMessage {
+            message: message_id(),
+        });
+        if message.reference.is_some() && message.source_provider.is_some() {
+            row = row
+                .effect(&ChatEffect::CopyResourceLink {
+                    message: message_id(),
+                })
+                .effect(&ChatEffect::OpenResourceLink {
+                    message: message_id(),
+                });
+        }
+        Some(row)
+    }
+
+    fn person_row(&self, id: &str) -> Option<LiveRow> {
+        let user = self.search_users.iter().find(|item| item.id == id)?;
+        Some(
+            LiveRow::new(
+                item_row_id("people", id),
+                "chat.workspace.people",
+                crate::identity::shared_name_label(&user.id, &user.name),
+            )
+            .effect(&ChatEffect::OpenPerson {
+                user: id.to_owned(),
+            }),
+        )
+    }
+
+    fn report_row(&self, id: &str) -> Option<LiveRow> {
+        let (_, text) = self.reports.iter().find(|(report, _)| report == id)?;
+        Some(
+            LiveRow::new(item_row_id("feedback", id), "chat.workspace.feedback", text)
+                .effect(&ChatEffect::RevealMessage {
+                    message: crate::feedback::message_id(id),
+                })
+                .operation(crate::feedback::receipt_read::spec(id))
+                .operation(crate::feedback::status_read::spec(id)),
+        )
+    }
+
+    /// Who wrote a message, as the room names them.
+    fn author_name(&self, author: &str) -> String {
+        self.agent_authors
+            .get(author)
+            .cloned()
+            .unwrap_or_else(|| self.display_name(author))
+    }
+
+    /// What a message's row is called: who wrote it and how it begins.
+    fn message_label(&self, message: &crate::model::Message) -> String {
+        let author = self.author_name(&message.author);
+        let said = if message.text.is_empty() {
+            message
+                .attachment
+                .as_ref()
+                .map_or_else(String::new, |attachment| attachment.name().to_owned())
+        } else {
+            message.text.chars().take(80).collect()
+        };
+        format!("{author}: {said}")
+    }
+}
+
+impl ChatApp {
+    /// What runs when a search hit or an agent's `open` names an item of
+    /// the chat: it is shown on the next sync, once the record is read.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let opened = std::rc::Rc::clone(&self.opened);
+        move |anchor| opened.borrow_mut().push(anchor.to_owned())
+    }
+
+    /// Show the items asked for since the last sync.
+    pub(crate) fn open_requested(&mut self) {
+        let anchors = std::mem::take(&mut *self.opened.borrow_mut());
+        for anchor in anchors {
+            // An item gone since it was found shows nothing.
+            if let Some(effect) = opening(&anchor) {
+                let _ = self.answer_effect(effect);
+            }
+        }
+    }
+}
+
+/// The view effect that shows the item `anchor` names.
+fn opening(anchor: &str) -> Option<ChatEffect> {
+    let (field, item) = tilo_resource::items::item_of_resource::<Chat>(anchor)?;
+    let id = item.as_str().to_owned();
+    Some(match field {
+        "workspaces" => ChatEffect::OpenWorkspace { workspace: id },
+        "channels" => ChatEffect::OpenChannel { channel: id },
+        "categories" => ChatEffect::OpenCategory { category: id },
+        "messages" => ChatEffect::RevealMessage { message: id },
+        "people" => ChatEffect::OpenPerson { user: id },
+        "feedback" => ChatEffect::RevealMessage {
+            message: crate::feedback::message_id(&id),
+        },
+        _ => return None,
+    })
 }
