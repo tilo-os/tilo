@@ -188,6 +188,30 @@ fn require_offer_identity(
     Ok(())
 }
 
+/// The version a first open installs instead of `requested`: when
+/// `requested` names a runtime this device lacks, the newest offer of the
+/// same signed entry, no newer than `requested`, whose runtime is present.
+fn first_open_choice<'a>(
+    requested: &'a app_cli::CatalogueApp,
+    offers: &'a [app_cli::CatalogueApp],
+) -> &'a app_cli::CatalogueApp {
+    if requested
+        .runtime
+        .as_deref()
+        .is_none_or(app_cli::runtime_installed)
+    {
+        return requested;
+    }
+    let same_entry = offers.iter().filter(|offer| {
+        offer.package_id == requested.package_id
+            && offer
+                .publisher_pubkey_hex
+                .eq_ignore_ascii_case(&requested.publisher_pubkey_hex)
+    });
+    app_cli::prefer_installed_runtime(same_entry, &requested.version, app_cli::runtime_installed)
+        .unwrap_or(requested)
+}
+
 fn install_offer_from_catalogue(
     catalog: &Catalog,
     registry: &str,
@@ -214,12 +238,23 @@ fn install_offer_from_catalogue(
         .map_err(failed)?
         .iter()
         .any(|package| package.id == expected.app_id);
-    if installed {
+    let installed_root = if installed {
         app_cli::install::update_app_reporting(offer, &mut |_| {}).map_err(failed)?;
+        expected.package_root
     } else {
+        // A first open takes the newest signed version of this same entry
+        // that runs on a runtime the device already has, rather than
+        // downloading a whole runtime for a few-megabyte app. Updating moves
+        // it to the newest version later.
+        let offer = first_open_choice(offer, &offers);
         app_cli::install::install_app(offer).map_err(failed)?;
-    }
-    let package = find(catalog, expected.package_root)?;
+        format!("tapp:{}", offer.tapp_root_hash_hex)
+            .parse::<PackageId>()
+            .map_err(|_| {
+                Error::failed("the installed version has an invalid package root".into())
+            })?
+    };
+    let package = find(catalog, installed_root)?;
     package
         .package_id()
         .ok_or_else(|| Error::failed("installed app has no package identity".into()))
@@ -1339,6 +1374,50 @@ exit 1
         replacements.push(changed);
         for replacement in replacements {
             assert!(super::require_offer_identity(&replacement, &expected).is_err());
+        }
+
+        // Phase `a_first_open_takes_a_version_on_a_runtime_this_device_has`.
+        let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
+        let mut newest = offer_template(&expected);
+        newest.version = "1.2.4".into();
+        newest.runtime = Some(missing);
+        // The older build needs no runtime at all, so it runs here.
+        let mut runnable = offer_template(&expected);
+        runnable.version = "1.2.2".into();
+        let mut foreign = runnable.clone();
+        foreign.version = "1.2.3".into();
+        foreign.publisher_pubkey_hex = "0b".repeat(32);
+        let mut later = runnable.clone();
+        later.version = "1.2.5".into();
+        let offers = vec![later, newest.clone(), foreign, runnable.clone()];
+        assert_eq!(super::first_open_choice(&newest, &offers), &runnable);
+        // Nothing runnable: the requested version, runtime and all.
+        let only = vec![newest.clone()];
+        assert_eq!(super::first_open_choice(&newest, &only), &newest);
+        // A requested version that runs here is never replaced.
+        assert_eq!(super::first_open_choice(&runnable, &offers), &runnable);
+    }
+
+    fn offer_template(expected: &crate::install::InstallExpectation) -> app_cli::CatalogueApp {
+        app_cli::CatalogueApp {
+            package_id: expected.app_id.clone(),
+            display_name: "Notes".into(),
+            description: String::new(),
+            tagline: String::new(),
+            images: Vec::new(),
+            supported_languages: Vec::new(),
+            category: None,
+            version: expected.version.clone(),
+            registry: "Tilo main".into(),
+            download_url: "https://apps.tilo.so/notes.tapp".into(),
+            tapp_root_hash_hex: expected.package_root.to_hex(),
+            tapp_size_bytes: expected.size_bytes,
+            tapp_blake3_hex: "09".repeat(32),
+            architecture: std::env::consts::ARCH.into(),
+            isa: std::env::consts::ARCH.into(),
+            runtime: None,
+            publisher_pubkey_hex: hex::encode(expected.publisher),
+            trust: "verified".into(),
         }
     }
 
