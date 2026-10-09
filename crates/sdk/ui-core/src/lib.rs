@@ -325,7 +325,7 @@ pub use collection_transition::{
 };
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
-pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
+pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{

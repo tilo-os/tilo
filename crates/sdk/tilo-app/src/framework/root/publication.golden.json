@@ -207,7 +207,8 @@
                     "action": {
                       "type": "string",
                       "enum": [
-                        "grow"
+                        "grow",
+                        "double"
                       ]
                     },
                     "args": {

@@ -201,28 +201,6 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
-    /// Mutations whose arguments are bound from `state` at publish time
-    /// (clear-all that names the current rows): typed builders of
-    /// [`Action`](Self::Action), published beside
-    /// [`declarations`](Self::declarations) and checked, confirmed and undone
-    /// the same way. Prefer [`declarations`](Self::declarations) when the
-    /// action does not need the state. An action bound to where a person is
-    /// rather than to the document (the selection, the current folder) is
-    /// bound by the view or surface that knows it.
-    fn bound_declarations(_state: &Self::State) -> Vec<ActionDecl<Self>> {
-        Vec::new()
-    }
-
-    /// View and effect operations that depend on `state` (start or stop,
-    /// carrying the current on/off), published on the same resource as
-    /// [`declarations`](Self::declarations). Static ones stay on
-    /// [`local_operations`](Self::local_operations); a mutation bound from
-    /// the state is a [`bound_declarations`](Self::bound_declarations) entry,
-    /// never a hand-built document spec here.
-    fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
-        Vec::new()
-    }
-
     /// The JSON Schema of [`Action`](Self::Action)'s serde form, published as
     /// the schema of the generic [`APPLY`] operation's argument, so agents
     /// and scripts can read the edit vocabulary from the descriptor and
@@ -2062,21 +2040,6 @@ pub(crate) fn publish_parts<R: Resource>(
         } else {
             spec
         });
-    }
-    for decl in state.map(R::bound_declarations).unwrap_or_default() {
-        if resource
-            .actions
-            .iter()
-            .any(|existing| existing.id == decl.id)
-        {
-            continue;
-        }
-        resource = resource.with_action(declaration_spec(&decl));
-    }
-    for spec in state.map(R::bound_actions).unwrap_or_default() {
-        // Document actions and state-dependent views or effects. Static views
-        // and effects stay on `local_operations`.
-        resource = resource.with_action(spec);
     }
     for view in state.map(R::views).unwrap_or_default() {
         resource = resource.with_view(view);

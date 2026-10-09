@@ -519,48 +519,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
-    /// Route a serialized screen's text inputs over `path` through a verb
-    /// ([`UiValues::route`](ui_core::UiValues::route)): they show `read` of
-    /// the resource and each edit invokes `action` with the input's new
-    /// text. A field is routed by its path instead
-    /// ([`Self::route_graph_text`]).
-    pub fn route_graph_text_with(
-        &self,
-        values: &ui_core::UiValues,
-        path: &str,
-        read: impl Fn(&T) -> String + 'static,
-        action: impl Binds<R, String>,
-    ) {
-        let Some(binding) = self.binding(action) else {
-            return;
-        };
-        let shown = LocalState::new(String::new());
-        let sink = shown.clone();
-        let initial = self.follow(read, move |value| sink.set(value));
-        shown.set(initial);
-        values.route(path, shown, binding);
-    }
-
-    /// Route a serialized screen's checked controls through a verb: they
-    /// show `read` and each edit invokes its typed `action`. A field is
-    /// routed by its path instead ([`Self::route_graph_bool`]).
-    pub fn route_graph_bool_with(
-        &self,
-        values: &ui_core::UiValues,
-        path: &str,
-        read: impl Fn(&T) -> bool + 'static,
-        action: impl Binds<R, bool>,
-    ) {
-        let Some(binding) = self.binding(action) else {
-            return;
-        };
-        let shown = LocalState::new(false);
-        let sink = shown.clone();
-        let initial = self.follow(read, move |value| sink.set(value));
-        shown.set(initial);
-        values.route_bool(path, shown, binding);
-    }
-
     /// A checkbox showing `read` of the resource; toggling invokes `action`
     /// with the new value. A field of the record is bound by its path
     /// instead ([`Self::checkbox`]).

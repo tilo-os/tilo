@@ -33,12 +33,15 @@ const TOTAL: &str = "tally/total";
 )]
 enum TallyAction {
     Add { by: i64 },
+    Double,
 }
 
 impl Action for TallyAction {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        let Self::Add { by } = self;
-        let next = count(doc).saturating_add(*by);
+        let next = match self {
+            Self::Add { by } => count(doc).saturating_add(*by),
+            Self::Double => count(doc).saturating_mul(2),
+        };
         doc.put(ROOT, "count", next)?;
         Ok(())
     }
@@ -68,11 +71,10 @@ impl Resource for Tally {
         Ok(count(doc))
     }
 
-    fn bound_declarations(count: &i64) -> Vec<ActionDecl<Self>> {
-        let by = *count;
+    fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
-            ActionDecl::new("double", "Double the count", Vec::new(), move |_, _| {
-                Ok(TallyAction::Add { by })
+            ActionDecl::new("double", "Double the count", Vec::new(), |_, _| {
+                Ok(TallyAction::Double)
             })
             .describe("Add the count to itself."),
         ]
@@ -377,7 +379,7 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     assert_eq!(app.state(), 4);
 
     // Edits bound to where the user is are typed actions of the resource:
-    // the surface's selection, the view's step, the resource's own state.
+    // the surface's selection, the view's step; the resource's own wins.
     let root = find(&resources, Tally::KIND).unwrap().clone();
     for id in ["add-selected", "add-step", "double"] {
         let spec = root.actions.iter().find(|action| action.id == id).unwrap();

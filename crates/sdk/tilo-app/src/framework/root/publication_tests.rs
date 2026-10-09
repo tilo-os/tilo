@@ -90,11 +90,8 @@ impl Resource for Shelf {
                 },
             )
             .describe("Add items to the shelf."),
+            add("double", "Double the shelf", 2),
         ]
-    }
-
-    fn bound_declarations(count: &i64) -> Vec<ActionDecl<Self>> {
-        vec![add("double", "Double the shelf", *count)]
     }
 
     fn children(count: &i64) -> Vec<tilo_actions::Resource> {
