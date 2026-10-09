@@ -47,16 +47,74 @@ test('codec worker emits raw Opus with sample timestamps and bounds encoder admi
   for (let index = 0; index < 5; index++) {
     self.onmessage({data: {type: 'encode', samples: new Float32Array(960).buffer, timestamp: BigInt(index * 960), duration: 960}});
   }
+  // Each frame returns its capture credit once the encoder holds it (a DTX
+  // frame may never produce an output); the fifth is refused at admission.
   assert.deepEqual(posted, [
+    {type: 'capture-consumed'},
+    {type: 'capture-consumed'},
+    {type: 'capture-consumed'},
+    {type: 'capture-consumed'},
     {type: 'drop', stage: 'encoder-queue', count: 1},
     {type: 'capture-consumed'},
   ]);
   posted.length = 0;
-  AudioEncoder.instance.emit();
+  AudioEncoder.instance.emit(Uint8Array.of(4, 5, 6));
   assert.deepEqual(posted, [
-    {type: 'encoded', payload: Uint8Array.of(4, 5).buffer, timestamp: 0n, duration: 960},
-    {type: 'capture-consumed'},
+    {type: 'encoded', payload: Uint8Array.of(4, 5, 6).buffer, timestamp: 0n, duration: 960},
   ]);
+});
+
+test('codec worker sends nothing for Opus DTX frames and keeps capture timestamps exact around them', async t => {
+  // Chromium with usedtx: a frame that needs no transmission produces no
+  // output, and output timestamps count only emitted frames. libopus itself
+  // returns a packet of at most two bytes instead.
+  const previousSelf = globalThis.self;
+  const posted = [];
+  let clock = 0;
+  class AudioData { constructor(init) { Object.assign(this, init); } close() {} }
+  class EncodedAudioChunk {
+    constructor(init) { Object.assign(this, init); this.byteLength = init.data.byteLength; }
+    copyTo(target) { target.set(this.data); }
+  }
+  class AudioEncoder {
+    constructor(callbacks) { Object.assign(this, callbacks); this.encodeQueueSize = 0; this.emitted = 0; AudioEncoder.instance = this; }
+    configure(config) { this.config = config; }
+    encode(frame) { (this.pending ??= []).push(frame); }
+    close() {}
+    // Finish the oldest input a millisecond later: emit it, or not.
+    finish(bytes) {
+      this.pending.shift();
+      clock += 1;
+      if (!bytes) return;
+      this.output(new EncodedAudioChunk({type: 'key', timestamp: 20_000 * this.emitted++, duration: 20_000, data: bytes}));
+    }
+  }
+  class AudioDecoder { constructor() {} configure() {} close() {} }
+  globalThis.self = {AudioData, AudioEncoder, AudioDecoder, EncodedAudioChunk, performance: {now: () => clock},
+    postMessage(message) { posted.push(message); }, close() {}};
+  t.after(() => { globalThis.self = previousSelf; });
+  await import(`./voice-audio-worker.mjs?dtx=${Date.now()}`);
+  self.onmessage({data: {type: 'init', encoderConfig: {codec: 'opus', opus: {usedtx: true}}, decoderConfig: {codec: 'opus'}}});
+  posted.length = 0;
+  // 3 speech frames, 40 silent ones (one comfort-noise update after 20, the
+  // rest suppressed or 1-byte DTX packets), then 3 speech frames again.
+  const speech = Uint8Array.of(0x78, 1, 2, 3);
+  const update = Uint8Array.of(0x08, 9, 9);
+  const frames = [
+    ...Array(3).fill(speech),
+    ...Array.from({length: 40}, (_, index) => index === 20 ? update : index % 2 ? undefined : Uint8Array.of(0x08)),
+    ...Array(3).fill(speech),
+  ];
+  frames.forEach((bytes, index) => {
+    self.onmessage({data: {type: 'encode', samples: new Float32Array(960).buffer, timestamp: BigInt(index * 960), duration: 960}});
+    AudioEncoder.instance.finish(bytes);
+    clock += 19;
+  });
+  assert.equal(posted.filter(message => message.type === 'error').length, 0);
+  assert.equal(posted.filter(message => message.type === 'capture-consumed').length, frames.length, 'every frame returns its credit');
+  const encoded = posted.filter(message => message.type === 'encoded');
+  assert.deepEqual(encoded.map(message => message.timestamp), [0, 1, 2, 23, 43, 44, 45].map(frame => BigInt(frame * 960)));
+  assert.deepEqual(new Uint8Array(encoded[3].payload), update);
 });
 
 test('codec worker owns an independently bounded decoder for each remote publisher', async t => {
@@ -329,7 +387,7 @@ test('codec worker correlates Opus output across capture discontinuities like We
     encode(frame) {
       this.first ??= frame.timestamp;
       const timestamp = this.first + 20_000 * (this.count = (this.count ?? -1) + 1);
-      this.output(new EncodedAudioChunk({type: 'key', timestamp, duration: 20_000, data: Uint8Array.of(this.count)}));
+      this.output(new EncodedAudioChunk({type: 'key', timestamp, duration: 20_000, data: Uint8Array.of(0x78, this.count, 0)}));
     }
     close() {}
   }
@@ -456,6 +514,58 @@ test('worklet conceals a single missing frame with the previous frame instead of
     if (Math.abs(rendered[index]) < 1e-6) { run++; longest = Math.max(longest, run); } else run = 0;
   }
   assert.ok(longest < 96, `a lost frame must not leave a hard dropout (longest silent run ${longest} samples)`);
+});
+
+test('worklet keeps a DTX publisher\'s comfort noise between its 400 ms updates and a loud gap still fades', async t => {
+  const previousProcessor = globalThis.AudioWorkletProcessor;
+  const previousRegister = globalThis.registerProcessor;
+  let Processor;
+  class Port extends EventTarget {
+    sent = [];
+    postMessage(message) { this.sent.push(message); }
+    receive(data) { this.dispatchEvent(Object.assign(new Event('message'), {data})); }
+  }
+  globalThis.AudioWorkletProcessor = class { constructor() { this.port = new Port(); } };
+  globalThis.registerProcessor = (_name, implementation) => { Processor = implementation; };
+  t.after(() => { globalThis.AudioWorkletProcessor = previousProcessor; globalThis.registerProcessor = previousRegister; });
+  await import(`./voice-audio-worklet.mjs?cng=${Date.now()}`);
+  const render = frames => {
+    const processor = new Processor({processorOptions: {muted: true, jitter: {adaptive: true, initial: 1920, min: 960, max: 7680}}});
+    const outputs = [];
+    let quanta = 0;
+    const advanceTo = sample => {
+      while (quanta * 128 < sample) {
+        const block = new Float32Array(128);
+        processor.process([], [[block]]);
+        outputs.push(block);
+        quanta++;
+      }
+    };
+    for (const [frame, samples] of frames) {
+      advanceTo(frame * 960);
+      processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: samples.buffer, timestamp: BigInt(frame * 960), duration: 960, reservedSamples: 960});
+    }
+    advanceTo((frames.at(-1)[0] + 10) * 960);
+    const rendered = new Float32Array(outputs.length * 128);
+    outputs.forEach((block, index) => rendered.set(block, index * 128));
+    return rendered;
+  };
+  const rms = (samples, from, to) => Math.sqrt(samples.subarray(from, to).reduce((sum, value) => sum + value * value, 0) / (to - from));
+  // Low-level noise, as a comfort-noise update decodes to.
+  let seed = 7;
+  const noise = () => Float32Array.from({length: 960}, () => { seed = (seed * 1103515245 + 12345) % 2147483648; return 0.004 * (seed / 2147483648 - 0.5); });
+  const level = rms(noise(), 0, 960);
+  // Updates at frames 0, 20 and 40 only, as a silent DTX publisher sends.
+  const quiet = render([[0, noise()], [20, noise()], [40, noise()]]);
+  // Between updates the noise floor holds (no drop to digital silence).
+  for (const frame of [5, 10, 15, 25, 35]) {
+    const from = (frame + 2) * 960;
+    assert.ok(rms(quiet, from, from + 960) > level * 0.5, `comfort noise holds at frame ${frame}`);
+  }
+  // A loud frame followed by a gap still fades out within two frames.
+  const tone = Float32Array.from({length: 960}, (_, index) => 0.5 * Math.sin(2 * Math.PI * 700 * index / 48_000));
+  const loud = render([[0, tone], [1, tone], [30, tone]]);
+  assert.equal(rms(loud, 10 * 960, 20 * 960), 0, 'speech is concealed briefly, never looped');
 });
 
 test('worklet trims excess playout delay by dropping a quiet frame', async t => {
