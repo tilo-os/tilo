@@ -1472,7 +1472,9 @@ mod per_user_runtime_verification_tests {
             "no fs-verity filesystem to install a runtime on"
         );
         let (_work, bundle, opts) = per_user_runtime(dir.path(), 64 << 20);
-        let manifest = runtime_bundle::verify_bundle_with(&bundle, &Default::default()).unwrap();
+        let manifest =
+            runtime_bundle::verify_bundle_with(&bundle, &runtime_bundle::VerifyOptions::default())
+                .unwrap();
         runtime_bundle::enable_bundle_verity(&bundle, &manifest).unwrap();
 
         // phase: the_launch_reads_none_of_the_payload
