@@ -284,9 +284,9 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         tilo_browser_peer::transport::read_presence_anchors(&anchor, &head).unwrap();
     let last = agent
         .read(|doc| {
-            let state =
-                <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap();
-            let body = state.body();
+            let state = <word_processor::model::Document as ui::tilo_resource::Resource>::read(doc)
+                .unwrap();
+            let body = state.text().unwrap().body();
             body.id_at(body.len() - 1).unwrap().to_owned()
         })
         .unwrap();
@@ -296,7 +296,7 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     let written = ui::presence::PresenceKey::Resource {
         app: app.to_owned(),
         id: last,
-        kind: "tilo.rich-text".to_owned(),
+        kind: "word-processor.document".to_owned(),
     };
     assert!(
         key == written || Some(&key) == written.digest_form().as_ref(),

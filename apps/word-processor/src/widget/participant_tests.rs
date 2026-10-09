@@ -35,7 +35,7 @@ fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) 
 }
 
 fn body_ids(doc: &AutoCommit) -> Vec<String> {
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let containers = crate::model::open(doc).unwrap();
     tilo_doc::model::region_blocks_in_order(doc, &containers, Region::Body)
 }
 
@@ -81,19 +81,23 @@ fn two_participants_keep_independent_views_and_trees() {
     assert_eq!(wp.local_participant_view(), local_before);
     assert!(!wp.model().has_selection());
 
-    // Selection-scoped edits are bound only for the selecting participant;
-    // the other participant's and the window's are caret-only.
-    let bound = |participant: Option<&tilo_actions::ParticipantId>| -> Vec<&'static str> {
-        let _scope = participant.map(|participant| {
-            ui::invocation_scope::InvokerScope::enter(
-                ActionInvoker::actor("agent-actor").with_participant(participant.clone()),
-            )
-        });
-        wp.bound_edits().iter().map(|edit| edit.id).collect()
+    // Replacing the selection works only for the selecting participant; the
+    // other participant and the window have a caret only.
+    let replaces = |participant: Option<&tilo_actions::ParticipantId>| -> bool {
+        let view = match participant {
+            Some(participant) => wp
+                .participant_view_or_default(participant, &state.doc)
+                .unwrap(),
+            None => wp.local_edit_view(),
+        };
+        crate::effects::WordProcessorEffect::ReplaceSelection { text: "x".into() }
+            .edit(&view, &state.doc, wp.model().content_store())
+            .unwrap()
+            .is_ok()
     };
-    assert!(bound(Some(&agent)).contains(&"replace-selection"));
-    assert!(!bound(Some(&other)).contains(&"replace-selection"));
-    assert!(!bound(None).contains(&"replace-selection"));
+    assert!(replaces(Some(&agent)));
+    assert!(!replaces(Some(&other)));
+    assert!(!replaces(None));
 
     // Views are presentation state: the document bytes did not change.
     assert_eq!(state.doc.clone().save(), doc_before);
@@ -121,21 +125,14 @@ fn participant_edits_match_the_pure_projection_of_its_view() {
     let agent = pid("agent");
     let view = selecting(&ids[1], 1, 4);
     wp.set_participant_view(&agent, &view, &state.doc);
-    let expected: Vec<&str> =
-        crate::actions::bound::declarations(&crate::actions::live_presentation_resources(
-            &view.ctx(&state.doc).unwrap(),
-            &state.doc,
-            None,
-        ))
-        .iter()
-        .map(|decl| decl.id)
-        .collect();
-    let actual: Vec<&str> = {
-        let _viewer = ui::invocation_scope::ViewerScope::enter(agent.clone());
-        wp.bound_edits().iter().map(|decl| decl.id).collect()
-    };
-    assert_eq!(actual, expected);
-    assert!(actual.contains(&"replace-selection"));
+    let resolved = wp.participant_view_or_default(&agent, &state.doc).unwrap();
+    let effect = crate::effects::WordProcessorEffect::ReplaceSelection { text: "X".into() };
+    let expected = crate::actions::editing::replace_selection(&view, &state.doc, "X").unwrap();
+    let actual = effect
+        .edit(&resolved, &state.doc, wp.model().content_store())
+        .unwrap()
+        .unwrap();
+    assert_eq!(actual.0, expected.0);
 }
 
 #[test]
@@ -173,7 +170,7 @@ fn views_rebase_under_concurrent_edits() {
     // A remote peer inserts "Oh, " at the block start.
     let mut remote = state.doc.fork();
     {
-        let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
+        let containers = crate::model::open(&remote).unwrap();
         let mut id_gen = tilo_doc::model::seeded_id_gen(&remote, &containers);
         let mut dm = tilo_doc::DocMut {
             doc: &mut remote,
@@ -213,7 +210,7 @@ fn views_rebase_under_concurrent_edits() {
     // Deleting the text around a caret collapses it onto the next survivor.
     let mut remote = state.doc.fork();
     {
-        let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
+        let containers = crate::model::open(&remote).unwrap();
         let mut id_gen = tilo_doc::model::seeded_id_gen(&remote, &containers);
         let mut dm = tilo_doc::DocMut {
             doc: &mut remote,
@@ -232,7 +229,7 @@ fn views_rebase_under_concurrent_edits() {
     // The caret block disappears: park at the document end, no selection.
     wp.set_participant_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
     let mut remote = state.doc.fork();
-    let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
+    let containers = crate::model::open(&remote).unwrap();
     remote.delete(&containers.blocks, ids[1].as_str()).unwrap();
     state.doc.merge_incoming(&mut remote).unwrap();
     wp.sync(&state.doc, &state.root);
@@ -455,14 +452,9 @@ fn assert_keyboard_action_parity(
         let (envelopes, next) = step(&view, &agent_state.doc).expect("the primitive applies");
         press(&mut keyboard, &mut state, input);
         if let Some(last) = envelopes.last() {
-            let expected = tilo_actions::EncodedAction::encode(
-                crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                last,
-            )
-            .unwrap();
             assert_eq!(
                 keyboard.last_dispatched_for_test(),
-                Some(&expected),
+                Some(last),
                 "{case}: keystroke and published primitive build the same envelope"
             );
         }
@@ -688,19 +680,18 @@ fn view_operations_move_only_the_invokers_view() {
 }
 
 /// A delivered invocation by a participant builds its edit at that
-/// participant's own caret: the edits the document publishes during its
-/// resolution are bound to the invoker's view, never this window's.
+/// participant's own caret, never this window's.
 #[test]
 fn a_delivered_invocation_builds_at_the_invokers_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
     let agent = pid("agent-task:5");
     wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
     wp.sync(&state.doc, &state.root);
-    let (edits, tree) = {
+    let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
-        (wp.bound_edits(), ui::resources::resources(&wp, &state.doc))
+        ui::resources::resources(&wp, &state.doc)
     };
     assert_eq!(
         format!(
@@ -715,22 +706,26 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
                 .collect::<Vec<_>>()
         )
     );
+    let view = wp.participant_view_or_default(&agent, &state.doc).unwrap();
+    let store = wp.model().content_store().clone();
+    let edit = |effect: crate::effects::WordProcessorEffect| {
+        effect.edit(&view, &state.doc, &store).unwrap()
+    };
     assert!(
-        edits.iter().all(|edit| edit.id != "replace-selection"),
+        edit(crate::effects::WordProcessorEffect::ReplaceSelection { text: "X".into() }).is_err(),
         "a collapsed participant has no selection to replace"
     );
-    let typing = edits
-        .iter()
-        .find(|edit| edit.id == crate::actions::editing::op::TYPE_TEXT)
-        .expect("type-text is bound to the participant");
-    let args = tilo_actions::ActionArgs::bind(
-        &typing.params,
-        [("text".to_owned(), tilo_actions::ArgValue::Text("X".into()))],
-    )
-    .unwrap();
     assert_eq!(
-        (typing.build)(&args, 0).unwrap(),
-        crate::actions::splice_text_action(RegionKind::Body, &ids[1], 4, 4, "X")
+        edit(crate::effects::WordProcessorEffect::TypeText { text: "X".into() })
+            .unwrap()
+            .0,
+        [crate::actions::splice_text_action(
+            RegionKind::Body,
+            &ids[1],
+            4,
+            4,
+            "X"
+        )]
     );
 }
 
@@ -740,20 +735,17 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
 fn a_participantless_invocation_builds_at_the_windows_own_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph"]);
     wp.sync(&state.doc, &state.root);
-    let local: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
-    let edits = {
-        let _scope =
-            ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
-        wp.bound_edits()
-    };
-    assert_eq!(edits.iter().map(|edit| edit.id).collect::<Vec<_>>(), local);
-    let table = edits
-        .iter()
-        .find(|edit| edit.id == "insert-table")
-        .expect("insert-table at the window's caret");
+    let view = wp.local_edit_view();
+    let (table, _) = crate::effects::WordProcessorEffect::InsertTableHere {
+        rows: None,
+        columns: None,
+    }
+    .edit(&view, &state.doc, wp.model().content_store())
+    .unwrap()
+    .unwrap();
     assert!(matches!(
-        (table.build)(&tilo_actions::ActionArgs::none(), 0).unwrap(),
-        crate::actions::RichTextAction::InsertTable { ref after, .. } if *after == ids[0]
+        table.as_slice(),
+        [crate::actions::RichTextAction::InsertTable { after, .. }] if *after == ids[0]
     ));
 }
 
@@ -792,7 +784,7 @@ fn writer_view<O>(
 /// paragraph after it, right after the second of the opening's paragraphs
 /// `ids`; its bytes are referenced and described by the document.
 fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[u8]) {
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let containers = crate::model::open(doc).unwrap();
     let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
     assert_eq!(blocks.len(), 5);
     assert_eq!(blocks[0].id, ids[0]);
@@ -848,7 +840,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     let ids = app.read_document(body_ids);
     assert_eq!(ids.len(), 3);
     assert!(app.read_document(|doc| {
-        tilo_doc::model::open(doc, &automerge::ROOT)
+        crate::model::open(doc)
             .map(|containers| tilo_doc::model::materialize(doc, &containers).blocks)
             .unwrap()
             .iter()
@@ -905,7 +897,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         &mut app,
         &participants[1],
         "place-image",
-        serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
+        serde_json::json!({"content": hash}),
     );
     let doc = app.read_document(Clone::clone);
     assert_png_placed_after(&doc, &ids, &hash, &png);

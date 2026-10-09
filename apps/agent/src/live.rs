@@ -735,11 +735,6 @@ mod tests {
         ] {
             assert_eq!(incremental_text(&tags(&[bad])), None, "{bad}");
         }
-        assert_eq!(
-            INCREMENTAL_TEXT_TAG,
-            word_processor::actions::INCREMENTAL_TEXT_TAG,
-            "the agent reads the tag Writer declares"
-        );
     }
 
     #[test]

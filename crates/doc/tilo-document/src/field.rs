@@ -21,7 +21,33 @@ impl RichText {
         Self {
             state: None,
             initial: Some(markdown.into()),
+            pending: Vec::new(),
         }
+    }
+
+    /// Edit this value inside a verb: `op` applies under the field's object
+    /// when the verb writes the record back, after the edits made before it.
+    pub fn perform(&mut self, op: RichTextAction) {
+        self.pending.push(op);
+    }
+
+    /// Read the paragraphs `demand` names and drop the ones nobody asks for
+    /// any more ([`tilo_resource::Resource::load`] of the rich text).
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document no longer holds the text.
+    pub fn demand(&mut self, doc: &Doc, demand: &tilo_resource::Demand) -> Result<(), ModelError> {
+        match &mut self.state {
+            Some(state) => <Self as tilo_resource::Resource>::load(state, doc, demand),
+            None => Ok(()),
+        }
+    }
+
+    /// Where `obj` sits, when it belongs to a paragraph this value has read.
+    pub fn object_path(&self, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
+        self.state
+            .as_ref()
+            .and_then(|state| <Self as tilo_resource::Resource>::locate(state, obj))
     }
 
     /// What views read, once the value has been read from a document.
@@ -97,6 +123,7 @@ impl Model for RichText {
         Ok(Self {
             state: Some(Self::read_under(doc, id)?),
             initial: None,
+            pending: Vec::new(),
         })
     }
 
@@ -116,6 +143,9 @@ impl Model for RichText {
             .apply_under(doc, &obj)
             .map_err(refused)?;
         }
+        for op in &self.pending {
+            op.apply_under(doc, &obj).map_err(refused)?;
+        }
         Ok(())
     }
 
@@ -127,7 +157,9 @@ impl Model for RichText {
         delta: &Delta,
     ) -> Result<(), ModelError> {
         match &mut self.state {
-            Some(state) if self.initial.is_none() => Self::refresh_under(state, doc, delta),
+            Some(state) if self.initial.is_none() && self.pending.is_empty() => {
+                Self::refresh_under(state, doc, delta)
+            }
             _ => {
                 *self = Self::load(doc, value, id)?;
                 Ok(())
@@ -155,10 +187,12 @@ impl Model for RichText {
             },
             other => return Err(ModelError::unsupported(other)),
         };
-        let obj = slot.object(doc, ObjType::Map)?;
-        if tilo_doc::model::open(doc, &obj).is_err() {
-            Self::initialize_under(doc, &obj)?;
-        }
+        // The record's genesis writes the rich text; an edit never creates it.
+        let Some((Value::Object(ObjType::Map), obj)) = slot.current(doc)? else {
+            return Err(ModelError::Refused(
+                "there is no rich text here to edit".into(),
+            ));
+        };
         action.apply_under(doc, &obj).map_err(refused)
     }
 

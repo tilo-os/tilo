@@ -2826,8 +2826,9 @@ impl Session {
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
         let editor = self.editor.as_mut().context("no document yet")?;
-        let delta =
-            editor.apply::<word_processor::framework::Document>(std::slice::from_ref(action))?;
+        let delta = editor.apply::<word_processor::framework::Document>(&[
+            word_processor::model::action(action),
+        ])?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action

@@ -29,13 +29,9 @@ use tilo_actions::{Action, ActionError, Doc, ExecutionLocus};
 
 use crate::ClipBlock;
 
-/// Registry type id every *new* rich-text action is encoded under — the
-/// resource kind. The legacy word-processor id stays registered as an alias
-/// so history recorded before the rename still replays.
+/// Registry type id every rich-text action is encoded under: the resource
+/// kind.
 pub const RICH_TEXT_ACTION_TYPE: &str = "tilo.rich-text";
-
-/// Legacy registry type id. Kept registered so old envelopes decode.
-pub const RICH_TEXT_ACTION_TYPE_LEGACY: &str = "word-processor.action";
 
 /// Saturating integer conversions for offsets and counts.
 mod num {

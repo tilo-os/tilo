@@ -328,7 +328,7 @@ mod owner_commit_tests {
             .find_map(|request| match request {
                 CollabRequest::PublishActions { actions, .. } => actions
                     .iter()
-                    .find(|a| a.action == "insert-table")
+                    .find(|a| a.action == "append-paragraph")
                     .map(|a| a.resource.clone()),
                 _ => None,
             })
@@ -342,8 +342,8 @@ mod owner_commit_tests {
             id: 1,
             invocation,
             resource,
-            action: "insert-table".into(),
-            argument: None,
+            action: "append-paragraph".into(),
+            argument: Some("Added through the broker".into()),
             actor: "worker".into(),
             context: None,
         });
@@ -1148,7 +1148,7 @@ mod owner_commit_tests {
                         surface
                             .actions
                             .iter()
-                            .find(|action| action.action == "insert-table")
+                            .find(|action| action.action == "append-paragraph")
                             .cloned()
                             .map(|action| (surface, action))
                     })
@@ -1202,7 +1202,7 @@ mod owner_commit_tests {
                 surface.peer_id,
                 &action.resource,
                 &action.action,
-                None,
+                Some("Added through the broker"),
                 &principal,
             )
             .unwrap();
@@ -1219,10 +1219,14 @@ mod owner_commit_tests {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert!(matches!(
-            actions.status(job.id),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
+        assert!(
+            matches!(
+                actions.status(job.id),
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ),
+            "{:?}",
+            actions.status(job.id)
+        );
         assert_eq!(
             published.load(Ordering::SeqCst),
             0,

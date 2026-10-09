@@ -86,13 +86,15 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
 
         let note = " The bullet says 18:00.";
         editor
-            .apply::<Document>(&[RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: block.clone(),
-                at: "Doors at seven.".chars().count(),
-                del: 0,
-                ins: note.to_string(),
-            }])
+            .apply::<Document>(
+                &[word_processor::model::action(&RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: block.clone(),
+                    at: "Doors at seven.".chars().count(),
+                    del: 0,
+                    ins: note.to_string(),
+                })],
+            )
             .expect("the agent's edit applies");
 
         let saved = editor.full();
@@ -137,13 +139,15 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
             tilo_agent::apply::Editor::from_snapshot(&WORD_PROCESSOR, &bytes, AGENT, invited())
                 .expect("seed the replica");
         editor
-            .apply::<Document>(&[RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: block.clone(),
-                at: "Doors at seven.".chars().count(),
-                del: 0,
-                ins: " The bullet says 18:00.".to_string(),
-            }])
+            .apply::<Document>(
+                &[word_processor::model::action(&RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: block.clone(),
+                    at: "Doors at seven.".chars().count(),
+                    del: 0,
+                    ins: " The bullet says 18:00.".to_string(),
+                })],
+            )
             .expect("the agent's edit applies");
 
         let runs = runs_on(&editor.full(), &block);
@@ -172,13 +176,15 @@ fn the_agents_own_words_and_only_those_carry_its_name_in_the_document() {
                 .expect("seed the replica");
         // An edit that removes text authors nothing.
         editor
-            .apply::<Document>(&[RichTextAction::SpliceText {
-                region: RegionKind::Body,
-                block: block.clone(),
-                at: 0,
-                del: 6,
-                ins: String::new(),
-            }])
+            .apply::<Document>(
+                &[word_processor::model::action(&RichTextAction::SpliceText {
+                    region: RegionKind::Body,
+                    block: block.clone(),
+                    at: 0,
+                    del: 6,
+                    ins: String::new(),
+                })],
+            )
             .expect("the agent's deletion applies");
 
         assert!(

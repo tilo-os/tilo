@@ -27,7 +27,7 @@ pub const MAX_BLOCK_CHARS: usize = 160;
 
 /// The blocks `changes`, an edit's patches over `doc`, touched.
 pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
-    let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
+    let Ok(containers) = crate::model::open(doc) else {
         return "no document".to_owned();
     };
     let mut touched = BTreeSet::new();
@@ -112,12 +112,12 @@ mod tests {
 
     #[test]
     fn a_bolded_block_answers_bold() {
-        let mut source = tilo_doc::Document::new();
+        let mut source = crate::model::empty().unwrap();
         let line = source.insert_block(None, "paragraph");
         source.splice_text(&line, 0, 0, "Deadline: October 15");
         let mut doc = AutoCommit::load(&source.save()).unwrap();
         let before = doc.get_heads();
-        let mut edited = tilo_doc::Document::load(&doc.save()).unwrap();
+        let mut edited = crate::model::reopen(doc.clone()).unwrap();
         edited.add_mark(&line, 0, 20, "strong", true);
         doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
             .unwrap();
@@ -131,12 +131,12 @@ mod tests {
 
     #[test]
     fn a_long_block_answers_with_its_start() {
-        let mut source = tilo_doc::Document::new();
+        let mut source = crate::model::empty().unwrap();
         let short = source.insert_block(None, "paragraph");
         source.splice_text(&short, 0, 0, "short");
         let mut doc = AutoCommit::load(&source.save()).unwrap();
         let before = doc.get_heads();
-        let mut edited = tilo_doc::Document::load(&doc.save()).unwrap();
+        let mut edited = crate::model::reopen(doc.clone()).unwrap();
         let long = edited.insert_block(Some(&short), "paragraph");
         edited.splice_text(&long, 0, 0, &"a".repeat(MAX_BLOCK_CHARS + 40));
         doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())

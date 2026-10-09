@@ -1,6 +1,11 @@
 use super::*;
 fn resource() -> Resource {
-    Resource::new("word-processor.document", "tilo.rich-text", "Document").with_action(spec())
+    Resource::new(
+        "word-processor.document",
+        "word-processor.document",
+        "Document",
+    )
+    .with_action(spec())
 }
 
 #[test]
@@ -23,9 +28,12 @@ fn semantic_read_action_encodes_requested_capacity_and_closed_resource() {
         validate_request(&wrong, br#"{"pageSize":1,"cursor":null}"#).unwrap_err(),
         SemanticReadError::InvalidRequest
     );
-    let framework =
-        Resource::new("tilo.rich-text", "tilo.rich-text", "Document").with_action(spec());
-    validate_request(&framework, br#"{"pageSize":1,"cursor":null}"#).unwrap();
+    let mut other_kind = self::resource();
+    other_kind.kind = "tilo.rich-text".into();
+    assert_eq!(
+        validate_request(&other_kind, br#"{"pageSize":1,"cursor":null}"#).unwrap_err(),
+        SemanticReadError::InvalidRequest
+    );
 }
 
 #[test]
@@ -115,7 +123,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
 
 #[test]
 fn the_registered_projection_pages_body_text_at_the_given_heads() {
-    let mut source = tilo_doc::Document::new();
+    let mut source = crate::model::empty().unwrap();
     let first = source.insert_block(None, "heading");
     source.splice_text(&first, 0, 0, "Q3 Planning");
     let second = source.insert_block(Some(&first), "paragraph");
@@ -147,7 +155,7 @@ fn the_registered_projection_pages_body_text_at_the_given_heads() {
 
 #[test]
 fn read_text_shows_bold_italic_code_and_links_as_markdown() {
-    let mut source = tilo_doc::Document::new();
+    let mut source = crate::model::empty().unwrap();
     let memo = source.insert_block(None, "paragraph");
     source.splice_text(&memo, 0, 0, "Deadline: October 15, run make, see docs");
     source.add_mark(&memo, 0, 20, "strong", true);
@@ -181,7 +189,7 @@ fn read_text_defaults_to_one_markdown_page_of_up_to_64_blocks() {
     assert_eq!(decoded["pageSize"], 64);
     assert_eq!(decoded["format"], "markdown");
 
-    let mut source = tilo_doc::Document::new();
+    let mut source = crate::model::empty().unwrap();
     let heading = source.insert_block(None, "heading");
     source.splice_text(&heading, 0, 0, "Standup");
     source.as_mut().set_attr(&heading, "level", 2_i64);

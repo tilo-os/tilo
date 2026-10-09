@@ -921,7 +921,9 @@ impl WordProcessor {
             return false;
         };
         let context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer");
-        dispatch.apply_now_with(state, &action, context).is_ok()
+        dispatch
+            .apply_now_with(state, &crate::model::action(&action), context)
+            .is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -1229,21 +1231,6 @@ impl WordProcessor {
                 .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
         });
         ids
-    }
-
-    /// Delete a comment by id: remove its anchoring `comment` mark over the body
-    /// range it covers, then drop the comment entry from the `comments`
-    /// container. After this the comment no longer appears in the materialized
-    /// snapshot and its highlight band disappears. No-op for an unknown id or an
-    /// unbound document.
-    pub fn delete_comment(&mut self, state: &mut ui::widget::Edits<'_>, comment_id: &str) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::ResolveComment {
-            id: comment_id.to_string(),
-        };
-        let _ = self.apply_rich(state, action);
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
@@ -2013,7 +2000,9 @@ impl WordProcessor {
     /// seat the caret, writing nothing.
     pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             self.containers = Some(c);
@@ -2054,7 +2043,9 @@ impl WordProcessor {
         }
         if self.containers.is_none() {
             // The record's genesis made the document; a view never creates it.
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             // Seed past existing block ids so editing a loaded/imported document

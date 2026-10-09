@@ -41,6 +41,7 @@ pub mod effects;
 mod find_bar;
 pub mod framework;
 pub mod i18n;
+pub mod model;
 mod outline_pane;
 mod paint_context;
 mod review_overlay;
@@ -58,10 +59,9 @@ pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::{PersonalDictionary, WordProcessorWidget, WriterLayout};
 
-/// The kind of a Writer document record: the rich-text resource the native
-/// app, the workspace host and the browser all open. Records stamped with the
-/// former `document` read as this kind (see [`ui::RecordKind::new`]).
-pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
+/// The kind of a Writer document record, which the native app, the
+/// workspace host and the browser all open.
+pub const RECORD_KIND: &str = <model::Document as tilo_resource::Resource>::KIND;
 
 /// Initialize a new record as an empty Writer document: the document
 /// resource's genesis, for hosts that reserve a record outside the app.
@@ -315,10 +315,11 @@ pub fn save_document(
     format: WpFormat,
     content: &dyn tilo_content::ContentSource,
 ) -> std::io::Result<()> {
-    let containers = tilo_doc::model::open(doc, &automerge::ROOT)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    let invalid = |e: String| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let doc = crate::model::export_copy(doc).map_err(invalid)?;
+    let containers = crate::model::open(&doc).map_err(invalid)?;
     let dr = tilo_doc::DocRef {
-        doc,
+        doc: &doc,
         c: &containers,
     };
     let bytes = format
@@ -339,12 +340,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         initialize_empty_document(&mut doc).unwrap();
         let action = import_action(bytes, format, &tilo_content::ContentStore::memory()).unwrap();
-        tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        model::apply(&mut doc, &action).unwrap();
         doc
     }
 
     fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let containers = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &containers).blocks
     }
 

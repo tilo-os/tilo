@@ -6,6 +6,11 @@
 
 use ui::tilo_resource::{self, Effect};
 
+use crate::actions::editing::{
+    self, DeleteDirection, EditResult, EditingError, InlineMark, ParagraphStyle, PasteContent,
+};
+use crate::actions::participant::ParticipantView;
+
 /// The word processor's effect vocabulary. Block ids are the document's
 /// stable paragraph ids; offsets count characters.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -121,6 +126,150 @@ pub enum WordProcessorEffect {
         #[param("Text to find (empty clears Find)")]
         query: String,
     },
+    /// Type text.
+    ///
+    /// Types at your caret like the keyboard: it replaces your selection,
+    /// and your caret moves past it. Repeat to keep typing.
+    #[effect(view, participant, permission = "write")]
+    TypeText {
+        #[param(
+            "Text typed at the caret, replacing the selection (empty only erases a selection)"
+        )]
+        text: String,
+    },
+    /// New paragraph.
+    ///
+    /// Presses Enter at your caret: splits the paragraph (an empty list item
+    /// becomes a paragraph).
+    #[effect(view, participant, permission = "write")]
+    NewParagraph,
+    /// Erase text.
+    ///
+    /// Backspace or Delete at your caret, or erases your selection.
+    #[effect(view, participant, permission = "write")]
+    EraseText {
+        #[param(
+            "backward (Backspace, default) or forward (Delete)",
+            choices = ["backward", "forward"]
+        )]
+        direction: Option<String>,
+        #[param("Characters to erase (default 1, at most 256); a paragraph break counts as one")]
+        count: Option<usize>,
+    },
+    /// Toggle formatting.
+    ///
+    /// Flips bold, italic, underline or strike on your selection, off where
+    /// it covers all of it (super and sub also the caret paragraph).
+    #[effect(view, participant, permission = "write")]
+    ToggleMark {
+        #[param("The inline mark to toggle", choices = TOGGLED_MARKS)]
+        mark: String,
+    },
+    /// Set text format.
+    ///
+    /// Sets formatting on your selection whatever it has now: bold, italic,
+    /// underline or strike on or off, or font, size, colour or highlight.
+    #[effect(view, participant, permission = "write")]
+    SetFormat {
+        #[param("The inline mark", choices = FORMATS)]
+        name: String,
+        #[param("strong, em, underline, strike, super, sub: true sets it, false removes it")]
+        on: Option<bool>,
+        #[param("font: sans|serif|mono; size: points 6-200; color/highlight: #rrggbb")]
+        value: Option<String>,
+    },
+    /// Clear text format.
+    ///
+    /// Removes one inline format from your selection, or the caret paragraph.
+    #[effect(view, participant, permission = "write")]
+    ClearFormat {
+        #[param("The inline mark to remove", choices = FORMATS)]
+        name: String,
+    },
+    /// Set paragraph style.
+    ///
+    /// Makes your selected paragraphs (or the caret paragraph) a heading, a
+    /// list or a body paragraph.
+    #[effect(view, participant, permission = "write")]
+    SetParagraphStyle {
+        #[param("Paragraph kind", choices = ["paragraph", "heading", "list_item"])]
+        kind: String,
+        #[param("Heading level 1-6")]
+        level: Option<i64>,
+        #[param("Numbered (true) or bulleted (false) list")]
+        ordered: Option<bool>,
+    },
+    /// Apply style.
+    ///
+    /// Applies a named style (body, heading1-3, quote, list, or a custom
+    /// style) to your selected paragraphs, or the caret paragraph.
+    #[effect(view, participant, permission = "write")]
+    ApplyNamedStyle {
+        #[param("Named style id")]
+        style: String,
+    },
+    /// Paste.
+    ///
+    /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
+    /// replacing your selection.
+    #[effect(view, participant, permission = "write")]
+    Paste {
+        #[param("Plain text; each line becomes a paragraph")]
+        text: Option<String>,
+        #[param("Markdown pasted with its formatting")]
+        markdown: Option<String>,
+    },
+    /// Align paragraph.
+    #[effect(view, participant, permission = "write")]
+    Align {
+        #[param("How the caret paragraph lines up", choices = ["left", "center", "right", "justify"])]
+        align: String,
+    },
+    /// Insert table here.
+    ///
+    /// An empty table after the caret paragraph.
+    #[effect(view, participant, permission = "write")]
+    InsertTableHere {
+        #[param("Rows (default 2)")]
+        rows: Option<usize>,
+        #[param("Columns (default 2)")]
+        columns: Option<usize>,
+    },
+    /// Insert page break.
+    #[effect(view, participant, permission = "write")]
+    InsertPageBreak,
+    /// Add or change hyperlink.
+    ///
+    /// Links your selected text.
+    #[effect(view, participant, permission = "write")]
+    SetHyperlink {
+        #[param("A web address (https://…), a mail address (mailto:…) or a #bookmark")]
+        target: String,
+    },
+    /// Replace selection.
+    ///
+    /// Replaces your selection with the text (empty deletes it).
+    #[effect(view, participant, permission = "write")]
+    ReplaceSelection {
+        #[param("Text that replaces the current selection (empty deletes it)")]
+        text: String,
+    },
+    /// Comment on selection.
+    ///
+    /// Adds a comment about your selected text.
+    #[effect(view, participant, permission = "write")]
+    CommentSelection {
+        #[param("The comment")]
+        text: String,
+    },
+    /// Place image.
+    ///
+    /// Places an image another action produced at your caret.
+    #[effect(view, participant, permission = "write")]
+    PlaceImage {
+        #[param("The image's content hash")]
+        content: String,
+    },
     /// Go to.
     ///
     /// Selects one exact range: a search result, a table cell.
@@ -144,6 +293,22 @@ pub enum WordProcessorEffect {
         end: usize,
     },
 }
+
+/// The marks a toggle flips.
+const TOGGLED_MARKS: [&str; 6] = ["strong", "em", "underline", "strike", "super", "sub"];
+/// Every inline format by name: the toggled marks and the valued ones.
+const FORMATS: [&str; 10] = [
+    "strong",
+    "em",
+    "underline",
+    "strike",
+    "super",
+    "sub",
+    "font",
+    "size",
+    "color",
+    "highlight",
+];
 
 impl WordProcessorEffect {
     /// The view operation this effect is, for the effects that move a
@@ -205,6 +370,152 @@ impl WordProcessorEffect {
             }
             _ => return Ok(None),
         }))
+    }
+}
+
+impl WordProcessorEffect {
+    /// The edit this effect makes at `view`'s caret in `doc`, for the
+    /// effects that edit the document (`None` for the others). Images are
+    /// read from `content`. Built by the same primitives the keyboard uses;
+    /// a selection too large to replace in one step is refused.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per edit effect, each validating its own arguments"
+    )]
+    pub(crate) fn edit(
+        &self,
+        view: &ParticipantView,
+        doc: &automerge::AutoCommit,
+        content: &tilo_content::ContentStore,
+    ) -> Option<EditResult> {
+        let large = || {
+            if editing::large_selection(view, doc) {
+                Err(EditingError::Invalid(editing::LARGE_REFUSAL.into()))
+            } else {
+                Ok(())
+            }
+        };
+        let within_limits = |text: &str| {
+            if text.chars().count() > crate::actions::MAX_ACTION_TEXT_CHARS {
+                Err(EditingError::Invalid("text is too long".into()))
+            } else {
+                Ok(())
+            }
+        };
+        Some(match self {
+            Self::TypeText { text } => large().and_then(|()| within_limits(text)).and_then(|()| {
+                if text.is_empty() && view.selection(doc).is_none() {
+                    return Err(EditingError::Invalid(
+                        "text must be non-empty without a selection".into(),
+                    ));
+                }
+                editing::type_text(view, doc, text)
+            }),
+            Self::NewParagraph => {
+                if view.selection(doc).is_some() {
+                    Err(EditingError::Invalid(
+                        "collapse the selection first (type-text replaces it)".into(),
+                    ))
+                } else {
+                    editing::new_paragraph(view, doc)
+                }
+            }
+            Self::EraseText { direction, count } => large().and_then(|()| {
+                let direction = match direction.as_deref() {
+                    None | Some("backward") => DeleteDirection::Backward,
+                    Some("forward") => DeleteDirection::Forward,
+                    Some(_) => {
+                        return Err(EditingError::Invalid(
+                            "direction is backward or forward".into(),
+                        ));
+                    }
+                };
+                let count = count.unwrap_or(1);
+                if count == 0 || count > editing::MAX_ERASE_COUNT {
+                    return Err(EditingError::Invalid(format!(
+                        "count is 1 to {}",
+                        editing::MAX_ERASE_COUNT
+                    )));
+                }
+                editing::delete(view, doc, direction, count)
+            }),
+            Self::ToggleMark { mark } => match InlineMark::from_name(mark) {
+                Some(mark) => editing::toggle_mark(view, doc, mark).and_then(|outcome| {
+                    if outcome.0.is_empty() {
+                        Err(EditingError::NeedsSelection)
+                    } else {
+                        Ok(outcome)
+                    }
+                }),
+                None => Err(EditingError::Invalid("unknown mark".into())),
+            },
+            Self::SetFormat { name, on, value } => {
+                editing::set_format(view, doc, name, *on, value.as_deref())
+            }
+            Self::ClearFormat { name } => editing::clear_format(view, doc, name),
+            Self::SetParagraphStyle {
+                kind,
+                level,
+                ordered,
+            } => {
+                if !matches!(kind.as_str(), "paragraph" | "heading" | "list_item") {
+                    Err(EditingError::Invalid(
+                        "kind is paragraph, heading or list_item".into(),
+                    ))
+                } else if level.is_some_and(|level| !(1..=6).contains(&level)) {
+                    Err(EditingError::Invalid("level is 1-6".into()))
+                } else {
+                    editing::set_paragraph_style(
+                        view,
+                        doc,
+                        &ParagraphStyle {
+                            kind: kind.clone(),
+                            level: *level,
+                            ordered: *ordered,
+                        },
+                    )
+                }
+            }
+            Self::ApplyNamedStyle { style } => {
+                let safe = !style.is_empty()
+                    && style.len() <= 128
+                    && style
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+                if safe {
+                    editing::apply_named_style(view, doc, style)
+                } else {
+                    Err(EditingError::Invalid("style is a style id".into()))
+                }
+            }
+            Self::Paste { text, markdown } => large().and_then(|()| {
+                let pasted = match (text, markdown) {
+                    (Some(text), None) => PasteContent::Text(text.clone()),
+                    (None, Some(markdown)) => PasteContent::Markdown(markdown.clone()),
+                    _ => {
+                        return Err(EditingError::Invalid(
+                            "give exactly one of text or markdown".into(),
+                        ));
+                    }
+                };
+                let empty = matches!(&pasted, PasteContent::Text(t) | PasteContent::Markdown(t) if t.is_empty());
+                if empty && view.selection(doc).is_none() {
+                    return Err(EditingError::Invalid("nothing to paste".into()));
+                }
+                editing::paste(view, doc, &pasted)
+            }),
+            Self::Align { align } => editing::align(view, doc, align),
+            Self::InsertTableHere { rows, columns } => {
+                editing::insert_table_here(view, doc, rows.unwrap_or(2), columns.unwrap_or(2))
+            }
+            Self::InsertPageBreak => editing::insert_page_break(view, doc),
+            Self::SetHyperlink { target } => editing::set_hyperlink(view, doc, target),
+            Self::ReplaceSelection { text } => large()
+                .and_then(|()| within_limits(text))
+                .and_then(|()| editing::replace_selection(view, doc, text)),
+            Self::PlaceImage { content: hash } => editing::place_image(view, doc, content, hash),
+            _ => return None,
+        })
     }
 }
 

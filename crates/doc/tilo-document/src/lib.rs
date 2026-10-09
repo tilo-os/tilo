@@ -12,6 +12,7 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
+pub mod anchor;
 pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -29,7 +30,8 @@ use tilo_doc::schema::{
 };
 use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 
-pub use action::{RICH_TEXT_ACTION_TYPE, RICH_TEXT_ACTION_TYPE_LEGACY, RichTextAction};
+pub use action::{RICH_TEXT_ACTION_TYPE, RichTextAction};
+pub use anchor::TextAnchor;
 
 /// The styles every document has; they cannot be deleted.
 pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
@@ -67,6 +69,9 @@ pub struct RichText {
     state: Option<RichTextState>,
     /// Markdown a new value starts with, written when it is stored.
     initial: Option<String>,
+    /// Edits a verb made to this value, applied in order when the record
+    /// holding it is written back.
+    pending: Vec<RichTextAction>,
 }
 
 /// One entry of the heading outline.
@@ -699,12 +704,6 @@ impl Resource for RichText {
             (1.., 1.., true, true) => at.saturating_add(*del) == *before_at || at == before_at,
             _ => false,
         }
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
-        // Old history still carries the word-processor type id.
-        registry.register::<RichTextAction>(crate::action::RICH_TEXT_ACTION_TYPE_LEGACY);
     }
 
     /// Every edit, derived from [`RichTextAction`] itself, so agents read the

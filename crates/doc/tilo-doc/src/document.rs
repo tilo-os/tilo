@@ -131,7 +131,19 @@ impl Document {
     /// # Errors
     /// Returns [`DocError`] if `doc` does not carry a qdoc schema `open` recognises.
     pub fn from_automerge(doc: AutoCommit) -> Result<Self, DocError> {
-        let c = crate::model::open(&doc, &ROOT)?;
+        Self::from_automerge_under(doc, &ROOT)
+    }
+
+    /// [`Self::from_automerge`] for a document whose rich text is stored
+    /// under `root`, the map of a field of a larger record.
+    ///
+    /// # Errors
+    /// Returns [`DocError`] if `root` does not hold a qdoc schema `open` recognises.
+    pub fn from_automerge_under(
+        doc: AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Result<Self, DocError> {
+        let c = crate::model::open(&doc, root)?;
         let mut ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         ids.allow_commits();
         Ok(Self { doc, c, ids })

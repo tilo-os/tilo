@@ -1,7 +1,6 @@
 //! Native-only fixture producer. The normal app reservation initializes each
 //! canonical document once; peers only receive those resulting signed bytes.
 use ed25519_dalek::SigningKey;
-use tilo_actions::Action;
 use tilo_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer};
 use tilo_user_identity::DeviceCert;
 use ui::{
@@ -80,20 +79,22 @@ pub fn fixture_writer_insert(
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
-    let containers = tilo_doc::model::open(&doc, &automerge::ROOT).map_err(|e| e.to_string())?;
+    let containers = word_processor::model::open(&doc)?;
     let block = tilo_doc::model::blocks_in_order(&doc, &containers)
         .first()
         .cloned()
         .ok_or("Writer body empty")?;
     let before = doc.get_heads();
-    word_processor::actions::RichTextAction::SpliceText {
-        region: word_processor::actions::RegionKind::Body,
-        block,
-        at: 0,
-        del: 0,
-        ins: text.into(),
-    }
-    .apply(&mut doc)
+    word_processor::model::apply(
+        &mut doc,
+        &word_processor::actions::RichTextAction::SpliceText {
+            region: word_processor::actions::RegionKind::Body,
+            block,
+            at: 0,
+            del: 0,
+            ins: text.into(),
+        },
+    )
     .map_err(|e| e.to_string())?;
     doc.commit();
     peer.publish_incremental(app, record.as_str(), doc.save_after(&before), key, now)

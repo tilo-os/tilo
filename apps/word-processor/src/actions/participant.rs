@@ -95,7 +95,7 @@ impl ParticipantView {
     /// A collapsed caret at the end of the body's last block, or `None` for a
     /// document without body blocks. The default spawn position of an agent.
     pub fn at_document_end(doc: &AutoCommit) -> Option<Self> {
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let block = tilo_doc::model::region_blocks_in_order(
             doc,
             &containers,
@@ -153,7 +153,7 @@ impl ParticipantView {
             body.position(&pending.after)
                 .map(|index| at(&|i| body.id_at(i).map(str::to_owned), index))
         } else {
-            let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
+            let Ok(containers) = crate::model::open(doc) else {
                 return out;
             };
             let order =
@@ -180,7 +180,7 @@ impl ParticipantView {
         if self.pending.is_some() {
             return self.settle(doc).selection(doc);
         }
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let order =
             tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         self.ordered_selection(&order)
@@ -232,7 +232,7 @@ impl ParticipantView {
         if self.caret.block.is_empty() {
             return None;
         }
-        let containers = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+        let containers = crate::model::open(doc).ok()?;
         let order =
             tilo_doc::model::region_blocks_in_order(doc, &containers, self.region.to_region());
         if !order.contains(&self.caret.block) {
@@ -308,7 +308,7 @@ mod tests {
 
     fn doc_with(paragraphs: &[&str]) -> (AutoCommit, Vec<String>) {
         let mut doc = AutoCommit::new();
-        let containers = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+        let containers = crate::model::init(&mut doc).unwrap();
         let mut ids = tilo_doc::model::seeded_id_gen(&doc, &containers);
         let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
