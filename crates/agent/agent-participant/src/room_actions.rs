@@ -835,20 +835,18 @@ impl Worker {
     /// Records of the room an app of the catalogue opens: those on the
     /// shared desktop first, then the most recently changed.
     fn records(&self, state: &RoomState) -> Vec<DocumentRoute> {
-        let desktop: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = state
-            .records
-            .iter()
-            .map(|(route, changes)| {
-                (
-                    route.clone(),
-                    changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
-                )
-            })
-            .collect();
         let on_desktop = state
             .room
             .as_deref()
-            .map(|room| crate::participant::desktop_records(&desktop, room))
+            .and_then(|room| state.records.get(&crate::participant::desktop_route(room)))
+            .map(|changes| {
+                use tilo_automerge::ApplyIncoming as _;
+                let mut desktop = automerge::AutoCommit::new();
+                for (_, bytes) in changes {
+                    let _ = desktop.load_incoming(bytes);
+                }
+                crate::participant::desktop_records(&desktop)
+            })
             .unwrap_or_default();
         let mut routes: Vec<DocumentRoute> = state
             .records
