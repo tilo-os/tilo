@@ -149,7 +149,7 @@ fn legacy_subject_and_refine_calls_explain_the_job_door_without_editing() {
         .find(|action| action.id == "find-area")
         .unwrap();
     assert_eq!(
-        find.permission,
+        find.contract.permission,
         ui::tilo_actions::PermissionRequirement::Write
     );
     assert_eq!(
@@ -177,7 +177,7 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
     let after = app.state();
     assert_ne!(after.selection, before.selection);
     let history = app.versions();
-    assert_eq!(history.len(), versions + 1);
+    assert_eq!(history.len(), versions.saturating_add(1));
     assert_eq!(
         history
             .last()
