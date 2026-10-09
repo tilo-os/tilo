@@ -20,8 +20,9 @@ use tilo_clock::unix_now_ns;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::{Notify, watch};
 
-use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck2};
+use crate::auth::{AuthenticatedPeer, Hello, HelloAck2, PendingServer};
 use crate::daemon::WebContext;
+use crate::handshake::EndpointTrust;
 use crate::transport::Envelope;
 use crate::web::protocol::{
     Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
@@ -58,8 +59,7 @@ pub(crate) enum SessionError {
 }
 
 struct Handshake {
-    peer: AuthenticatedPeer,
-    server_nonce: [u8; 32],
+    pending: PendingServer,
     started: Instant,
 }
 
@@ -175,43 +175,19 @@ impl Sessions {
         }
     }
 
-    /// First handshake step: the relay's `accept_hello` and `HelloAck`.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
+    /// First handshake step: the relay's checked `Hello` and its `HelloAck`,
+    /// under the live policy as on the relay ALPN.
     pub(crate) fn hello(&self, hello: &Hello) -> Result<SessionChallenge, SessionError> {
-        let relay = &self.web.relay;
-        let revocations = relay
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let peer = {
-            let policy = relay
-                .trust_policy
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            auth::accept_hello(
-                hello,
-                &relay.own_user_pk,
-                &policy,
-                &revocations,
-                unix_now_ns(),
-            )
-        }
-        .map_err(|error| {
-            relay.metrics.inc_auth_rejected();
-            SessionError::Refused(error.to_string())
-        })?;
-        let server_nonce: [u8; 32] = rand::random();
+        let (pending, ack) = self
+            .web
+            .relay
+            .server_auth()
+            .begin(EndpointTrust::Live(&self.web.relay.trust_policy), hello)
+            .map_err(|error| {
+                self.web.relay.metrics.inc_auth_rejected();
+                SessionError::Refused(error.to_string())
+            })?;
         let handshake: [u8; 16] = rand::random();
-        let ack = auth::build_hello_ack(
-            relay.own_cert.clone(),
-            &relay.own_sk,
-            server_nonce,
-            &hello.client_nonce,
-        );
         let mut handshakes = lock(&self.handshakes);
         handshakes.retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
         if handshakes.len() >= MAX_HANDSHAKES {
@@ -220,8 +196,7 @@ impl Sessions {
         handshakes.insert(
             handshake,
             Handshake {
-                peer,
-                server_nonce,
+                pending,
                 started: Instant::now(),
             },
         );
@@ -240,11 +215,10 @@ impl Sessions {
             .remove(handshake)
             .filter(|pending| pending.started.elapsed() < HANDSHAKE_TTL)
             .ok_or_else(|| SessionError::Refused("unknown handshake".into()))?;
-        auth::verify_hello_ack2(ack2, &pending.peer.device_public_key, &pending.server_nonce)
-            .map_err(|error| {
-                self.web.relay.metrics.inc_auth_rejected();
-                SessionError::Refused(error.to_string())
-            })?;
+        let peer = pending.pending.finish(ack2).map_err(|error| {
+            self.web.relay.metrics.inc_auth_rejected();
+            SessionError::Refused(error.to_string())
+        })?;
         self.web.relay.metrics.inc_conns_authed();
         if lock(&self.live).len() >= MAX_SESSIONS {
             return Err(SessionError::Busy);
@@ -255,7 +229,7 @@ impl Sessions {
         let (browser_read, browser_write) = tokio::io::split(browser_side);
         let (end, mut ended) = watch::channel(false);
         let session = Arc::new(Session {
-            peer: pending.peer.clone(),
+            peer: peer.clone(),
             token,
             expires: Instant::now()
                 .checked_add(SESSION_TTL)
@@ -274,7 +248,6 @@ impl Sessions {
             ended: Arc::clone(&self.ended),
         });
         let context = self.web.relay.peer_context();
-        let peer = pending.peer;
         let pumped = session.clone();
         tokio::spawn(async move {
             let closed = async move {

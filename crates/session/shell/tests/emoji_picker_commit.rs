@@ -32,7 +32,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
@@ -46,6 +46,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::wayland::private_text_input_protocol::{
     tilo_text_input_manager_v1, tilo_text_input_v1,
 };
+
+use crate::support::wayland::{Globals as _, foreign_id};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -84,25 +86,7 @@ impl Dispatch<tilo_text_input_v1::TiloTextInputV1, ()> for Peer {
 }
 delegate_noop!(Peer: ignore tilo_text_input_manager_v1::TiloTextInputManagerV1);
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Peer);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Peer {
     fn event(
@@ -166,36 +150,6 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for Peer {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-        }
-    }
-}
-
 delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
 delegate_noop!(Peer: ignore wl_surface::WlSurface);
 delegate_noop!(Peer: ignore wl_seat::WlSeat);
@@ -215,15 +169,12 @@ impl Connected {
     where
         Peer: Dispatch<I, ()>,
     {
-        let (name, _, advertised) = self
+        let (name, version) = self
             .peer
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)
-            .unwrap_or_else(|| panic!("{interface} is not advertised"))
-            .clone();
+            .global(interface, version)
+            .unwrap_or_else(|| panic!("{interface} is not advertised"));
         let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version.min(advertised), &self.queue.handle(), ())
+        registry.bind(name, version, &self.queue.handle(), ())
     }
 }
 
@@ -513,26 +464,6 @@ impl Harness {
     fn peer(&self, field: &Field) -> &Peer {
         &self.clients[field.client].peer
     }
-}
-
-fn foreign_id(state: &State, app_id: &str) -> u64 {
-    state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign {
-                app_id: actual,
-                surface_id,
-            } if actual == app_id => Some(*surface_id),
-            _ => None,
-        })
-        .expect("foreign surface was adopted")
 }
 
 #[test]

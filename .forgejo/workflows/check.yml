@@ -709,7 +709,9 @@ jobs:
   wasm:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && (github.event_name != 'pull_request' || (needs.select.outputs.security_required == 'true' && needs.security.result == 'success') || (needs.select.outputs.security_required == 'false' && needs.security.result == 'skipped')) && needs.select.outputs.wasm_required == 'true' }}
     needs: [builder, select, security]
-    runs-on: runner
+    # wasm32 output is host-independent; main still qualifies it on x86.
+    # The portable label admits only qualified x86 general and ARM large slots.
+    runs-on: ${{ github.event_name == 'push' && 'runner' || 'runner-native-portable' }}
     timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '4'
@@ -726,6 +728,11 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      - name: Verify native wasm-check runner architecture
+        env:
+          EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}
+        run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build

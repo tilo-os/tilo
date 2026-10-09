@@ -13,7 +13,7 @@ use crate::shell::room_records::RoomRecords;
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     Workspace, WorkspaceId, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    WorkspaceTree,
+    WorkspaceTree, WorkspaceTreeHandle,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -23,6 +23,64 @@ use tilo_desktop::activity::{
 };
 pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
 use ui::record::{RecordId, RecordStore};
+
+/// History derivation owns its document cursor, not the live workspace lock.
+/// Only the admitted desktop, causal document and native task routing are
+/// copied; persistence and mutation authority remain on the original tree.
+#[derive(Clone)]
+struct ActivityObservation {
+    desktop: tilo_desktop_model::DesktopTree,
+    doc: automerge::AutoCommit,
+    native_rooms: BTreeSet<super::state::RoomId>,
+}
+
+impl ActivityObservation {
+    fn capture(handle: &WorkspaceTreeHandle) -> Self {
+        let mut tree = handle.write();
+        tree.commit_room_change();
+        Self {
+            desktop: tree.desktop.clone(),
+            doc: tree.doc.clone(),
+            native_rooms: tree
+                .desktop
+                .workspaces
+                .iter()
+                .filter(|workspace| tree.requires_native_owner(workspace.room))
+                .map(|workspace| workspace.room)
+                .collect(),
+        }
+    }
+}
+
+impl std::ops::Deref for ActivityObservation {
+    type Target = tilo_desktop_model::DesktopTree;
+    fn deref(&self) -> &Self::Target {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for ActivityObservation {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.desktop
+    }
+}
+
+impl ActivityTree for ActivityObservation {
+    fn document(&self) -> &automerge::AutoCommit {
+        &self.doc
+    }
+    fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+        &mut self.doc
+    }
+    fn resync_activity_cache(&mut self) -> Result<(), String> {
+        tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+        Ok(())
+    }
+    fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
+        self.room_of(workspace)
+            .is_some_and(|room| self.native_rooms.contains(&room))
+    }
+}
 
 /// How long a finished shortcut run waits, on the wall clock, for its changes
 /// to reach a document on this device before it is given up.
@@ -432,6 +490,23 @@ impl Default for RoomActivityPane {
     }
 }
 impl RoomActivityPane {
+    /// Derive history and load referenced records after releasing the shared
+    /// workspace lock. Admission and output may read the current tree while
+    /// expensive history reconstruction uses this coherent observation.
+    pub(crate) fn refresh_observed(
+        &mut self,
+        tree: &WorkspaceTreeHandle,
+        records: &RecordStore,
+        local: &dyn tilo_desktop::activity::PersistedRecordHistory,
+    ) -> u64 {
+        let mut observed = ActivityObservation::capture(tree);
+        let workspace = observed.active.raw();
+        self.observe_workspace(workspace);
+        self.refresh(&mut observed);
+        self.refresh_records_with_local(&mut observed, records, local);
+        workspace
+    }
+
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
         pane.set_host(Rc::new(NativeActivityHost::default()));
@@ -552,8 +627,84 @@ fn activity_launch_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc as _;
     use automerge::transaction::{CommitOptions, Transactable};
     use ui::record::{RecordId, RecordStore};
+
+    #[test]
+    fn history_refresh_releases_workspace_authority_before_loading_records() {
+        struct LocalHistory {
+            tree: WorkspaceTreeHandle,
+            record: RecordId,
+            document: automerge::AutoCommit,
+            loads: std::cell::Cell<usize>,
+        }
+        impl tilo_desktop::activity::PersistedRecordHistory for LocalHistory {
+            fn load_record(&self, id: &RecordId) -> Option<automerge::AutoCommit> {
+                assert_eq!(id, &self.record);
+                // The production refresh calls this after taking its coherent
+                // observation. Neither a writer nor an admission reader must
+                // wait for history I/O and reconstruction to finish.
+                let mut live = self.tree.try_write().expect("history holds no tree lock");
+                if self.loads.get() == 0 {
+                    live.doc
+                        .put(automerge::ROOT, "during-history", true)
+                        .unwrap();
+                    live.commit_room_change();
+                }
+                drop(live);
+                self.loads.set(self.loads.get() + 1);
+                Some(self.document.clone())
+            }
+        }
+
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.active_workspace().expect("workspace").room;
+        let record = RecordId::for_file("history-lock.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let handle = WorkspaceTreeHandle::new(tree);
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document
+            .put(automerge::ROOT, "draft", "History remains available")
+            .unwrap();
+        tilo_resource::history::commit_stamped_at(&mut document, 21);
+        let local = LocalHistory {
+            tree: handle.clone(),
+            record,
+            document,
+            loads: std::cell::Cell::new(0),
+        };
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        let records = RecordStore::in_memory();
+        pane.refresh_observed(&handle, &records, &local);
+        assert!(
+            local.loads.get() > 0,
+            "the production path loaded record history"
+        );
+        let heads = handle.read().doc.base_heads();
+        assert!(
+            handle
+                .read()
+                .doc
+                .get(automerge::ROOT, "during-history")
+                .unwrap()
+                .is_some()
+        );
+        assert!(!pane.entries().is_empty(), "history is still projected");
+        pane.refresh_observed(&handle, &records, &local);
+        drop(pane);
+        assert_eq!(
+            handle.read().doc.base_heads(),
+            heads,
+            "derived cursors never replace live state"
+        );
+    }
 
     /// Leaving a workspace rewrites the history file and nothing else: a
     /// write to `settings.json` would make every settings reader re-apply

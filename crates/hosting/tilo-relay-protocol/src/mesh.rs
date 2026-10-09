@@ -1,4 +1,4 @@
-//! Device-mesh policy and placement.
+//! Device-mesh policy.
 //!
 //! This module is an orchestration layer over the existing Tilo
 //! transports:
@@ -11,8 +11,10 @@
 //! - hosts continue to authenticate as ordinary certified devices.
 //!
 //! It therefore does not define another sync protocol.  It describes which
-//! existing replication streams a device requests and deterministically picks
-//! an eligible always-on peer for relay, application or future compute work.
+//! existing replication streams a device requests, which services a device
+//! offers, and the advertisement a compute worker is admitted against. Hosts
+//! are chosen by configuration (workspace bindings, home-peer registration);
+//! nothing here ranks candidate servers.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -405,251 +407,18 @@ pub enum PowerAvailability {
 }
 
 impl PowerAvailability {
-    fn normalized_percent(self) -> u8 {
-        match self {
-            Self::Unknown => 50,
-            Self::External => 100,
-            Self::Charging(percent) | Self::Battery(percent) => percent.min(100),
-        }
-    }
-
-    const fn is_critically_constrained(self) -> bool {
+    /// Whether the device is too low on battery to take discretionary work
+    /// such as app backends or compute jobs. This is the single battery rule
+    /// shared by every admission path.
+    #[must_use]
+    pub const fn is_critically_constrained(self) -> bool {
         matches!(self, Self::Battery(percent) if percent <= 15)
     }
-}
-
-/// Work that needs an always-on serving peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Workload {
-    /// CRDT anti-entropy and durable store-and-forward.
-    WorkspaceReplication,
-    /// Full file/content residency for a workspace.
-    ContentReplication,
-    /// Inbound collaboration or chat relay.
-    InboundRelay,
-    /// Relay an end-to-end remote-control session to `target`.
-    RemoteControl {
-        /// Device whose compositor owns consent and input authorization.
-        target: DeviceKey,
-    },
-    /// Serve an app backend.
-    App {
-        /// Stable package/application identifier.
-        app_id: String,
-    },
-    /// Future sandboxed distributed job for an app.
-    Compute {
-        /// App security domain that owns the sandboxed job.
-        app_id: String,
-    },
-}
-
-/// Stable input to the placement function.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlacementRequest {
-    /// Client receiving the service.
-    pub client: DeviceKey,
-    /// Workspace that scopes data and authorization.
-    pub workspace_id: u64,
-    /// Requested service.
-    pub workload: Workload,
-    /// Number of distinct servers desired. One is normal; replication may ask
-    /// for two or more.
-    pub replicas: usize,
-}
-
-/// Why a server was selected, exposed for status UI and diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Placement {
-    /// Selected devices, primary first.
-    pub servers: Vec<DeviceKey>,
-}
-
-/// Reachability choice for an existing end-to-end remote-control session.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RemoteControlRoute {
-    /// Client can reach the target without an intermediate Tilo server.
-    Direct {
-        /// Target device.
-        target: DeviceKey,
-    },
-    /// The encrypted session is tunnelled through an eligible server. The
-    /// target remains the endpoint that grants consent and reviews input.
-    Relayed {
-        /// Target device.
-        target: DeviceKey,
-        /// Intermediate always-on peer.
-        via: DeviceKey,
-    },
-    /// Neither a direct path nor an eligible live server is available.
-    Unavailable,
-}
-
-/// Prefer direct remote control, falling back to the same mesh placement used
-/// for other server workloads.
-pub fn route_remote_control(
-    client: DeviceKey,
-    target: DeviceKey,
-    workspace_id: u64,
-    direct_reachable: bool,
-    candidates: &[ServerAdvertisement],
-) -> RemoteControlRoute {
-    if client == target {
-        return RemoteControlRoute::Unavailable;
-    }
-    if direct_reachable {
-        return RemoteControlRoute::Direct { target };
-    }
-    let placement = place(
-        &PlacementRequest {
-            client,
-            workspace_id,
-            workload: Workload::RemoteControl { target },
-            replicas: 1,
-        },
-        candidates,
-    );
-    placement
-        .servers
-        .first()
-        .map_or(RemoteControlRoute::Unavailable, |via| {
-            RemoteControlRoute::Relayed { target, via: *via }
-        })
-}
-
-/// Pick eligible servers using deterministic weighted rendezvous hashing.
-///
-/// Rendezvous hashing keeps assignments stable as servers come and go and
-/// naturally distributes different clients/apps without a central scheduler.
-/// Operator priority, available capacity and latency provide bounded nudges;
-/// identity/workspace/service eligibility is a hard filter.
-pub fn place(request: &PlacementRequest, candidates: &[ServerAdvertisement]) -> Placement {
-    let mut ranked: Vec<(u128, DeviceKey)> = candidates
-        .iter()
-        .filter(|server| eligible(request, server))
-        .map(|server| (score(request, server), server.device))
-        .collect();
-    ranked.sort_unstable_by(|left, right| right.cmp(left));
-    ranked.dedup_by_key(|(_, device)| *device);
-    Placement {
-        servers: ranked
-            .into_iter()
-            .take(request.replicas)
-            .map(|(_, device)| device)
-            .collect(),
-    }
-}
-
-fn eligible(request: &PlacementRequest, server: &ServerAdvertisement) -> bool {
-    if !server.online
-        || !server.role.can_serve()
-        || server.assignment_capacity == 0
-        || server.active_assignments >= server.assignment_capacity
-        || !server.workspaces.contains(&request.workspace_id)
-        || server.device == request.client
-    {
-        return false;
-    }
-    if matches!(
-        &request.workload,
-        Workload::App { .. } | Workload::Compute { .. }
-    ) && (server.energy_saver || server.power.is_critically_constrained())
-    {
-        return false;
-    }
-    match &request.workload {
-        Workload::WorkspaceReplication => server.services.workspace_replication,
-        Workload::ContentReplication => server.services.full_content_replication,
-        Workload::InboundRelay => server.services.inbound_relay,
-        Workload::RemoteControl { target } => {
-            server.device != *target && server.services.remote_control_relay
-        }
-        Workload::App { app_id } => server.services.app_serving && server.apps.contains(app_id),
-        Workload::Compute { app_id } => server.services.compute && server.apps.contains(app_id),
-    }
-}
-
-fn score(request: &PlacementRequest, server: &ServerAdvertisement) -> u128 {
-    let mut bytes = Vec::with_capacity(96);
-    bytes.extend_from_slice(b"tilo-mesh-placement-v1\0");
-    bytes.extend_from_slice(&request.client);
-    bytes.extend_from_slice(&request.workspace_id.to_le_bytes());
-    bytes.extend_from_slice(&server.device);
-    match &request.workload {
-        Workload::WorkspaceReplication => bytes.extend_from_slice(b"workspace"),
-        Workload::ContentReplication => bytes.extend_from_slice(b"content"),
-        Workload::InboundRelay => bytes.extend_from_slice(b"relay"),
-        Workload::RemoteControl { target } => {
-            bytes.extend_from_slice(b"remote");
-            bytes.extend_from_slice(target);
-        }
-        Workload::App { app_id } => {
-            bytes.extend_from_slice(b"app");
-            bytes.extend_from_slice(app_id.as_bytes());
-        }
-        Workload::Compute { app_id } => {
-            bytes.extend_from_slice(b"compute");
-            bytes.extend_from_slice(app_id.as_bytes());
-        }
-    }
-    let digest = blake3::hash(&bytes);
-    let mut first = [0u8; 8];
-    first.copy_from_slice(&digest.as_bytes()[..8]);
-    let affinity = u128::from(u64::from_le_bytes(first));
-
-    let free = server
-        .assignment_capacity
-        .saturating_sub(server.active_assignments);
-    let capacity_ratio = u128::from(free)
-        .saturating_mul(10_000)
-        .checked_div(u128::from(server.assignment_capacity))
-        .unwrap_or_default();
-    let capacity_weight = capacity_ratio.saturating_mul(u128::from(u64::MAX) / 40_000);
-    let latency = u128::from(60_000u32.saturating_sub(server.latency_ms.min(60_000)));
-    let latency_weight = latency.saturating_mul(u128::from(u64::MAX) / 480_000);
-    let priority = i64::from(server.priority.clamp(-1_000, 1_000)).saturating_add(1_000);
-    let priority_weight = u128::try_from(priority)
-        .unwrap_or_default()
-        .saturating_mul(u128::from(u64::MAX) / 32_000);
-    let power_weight =
-        u128::from(server.power.normalized_percent()).saturating_mul(u128::from(u64::MAX) / 800);
-    let saver_penalty = if server.energy_saver {
-        u128::from(u64::MAX) / 8
-    } else {
-        0
-    };
-
-    // Rendezvous affinity remains the largest term, while health can move a
-    // materially saturated/high-latency server behind a healthy alternative.
-    affinity
-        .saturating_add(capacity_weight)
-        .saturating_add(latency_weight)
-        .saturating_add(priority_weight)
-        .saturating_add(power_weight)
-        .saturating_sub(saver_penalty)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn server(id: u8) -> ServerAdvertisement {
-        ServerAdvertisement {
-            device: [id; 32],
-            role: DeviceRole::AlwaysOnServer,
-            services: ServiceCapabilities::personal_server(),
-            workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::from(["so.tilo.word".to_string()]),
-            accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
-            priority: 0,
-            latency_ms: 10,
-            power: PowerAvailability::External,
-            energy_saver: false,
-            active_assignments: 0,
-            assignment_capacity: 100,
-            online: true,
-        }
-    }
 
     #[test]
     fn replication_intents_and_service_profiles_select_their_substrates() {
@@ -717,108 +486,5 @@ mod tests {
         let authorized = advertised.authorized_by(&host_without_global_read);
         assert!(authorized.workspace_replication);
         assert!(!authorized.full_content_replication);
-    }
-
-    #[test]
-    fn placement_picks_only_eligible_capable_and_power_appropriate_servers() {
-        type Case = (
-            &'static str,
-            PlacementRequest,
-            Vec<ServerAdvertisement>,
-            Vec<[u8; 32]>,
-        );
-        let request = |client: [u8; 32], workload: Workload, replicas| PlacementRequest {
-            client,
-            workspace_id: 7,
-            workload,
-            replicas,
-        };
-        let with = |id: u8, edit: &dyn Fn(&mut ServerAdvertisement)| {
-            let mut s = server(id);
-            edit(&mut s);
-            s
-        };
-
-        // Placement is stable and returns distinct replicas.
-        let replicate = request([99; 32], Workload::WorkspaceReplication, 2);
-        let candidates = vec![server(1), server(2), server(3)];
-        let first = place(&replicate, &candidates);
-        assert_eq!(first, place(&replicate, &candidates));
-        assert_eq!(first.servers.len(), 2);
-        assert_ne!(first.servers[0], first.servers[1]);
-
-        let word = || "so.tilo.word".to_string();
-        let remote = Workload::RemoteControl { target: [2; 32] };
-        let cases: Vec<Case> = vec![
-            (
-                "ineligible servers never receive work",
-                request([99; 32], Workload::ContentReplication, 4),
-                vec![
-                    with(1, &|s| s.online = false),
-                    with(2, &|s| s.role = DeviceRole::Interactive),
-                    with(3, &|s| s.services.full_content_replication = false),
-                    server(4),
-                ],
-                vec![[4; 32]],
-            ),
-            (
-                "app placement is app scoped",
-                request([99; 32], Workload::App { app_id: word() }, 1),
-                vec![
-                    with(1, &|s| {
-                        s.apps = BTreeSet::from(["so.tilo.sheet".to_string()]);
-                    }),
-                    server(2),
-                ],
-                vec![[2; 32]],
-            ),
-            (
-                "discretionary work avoids low power and energy saver devices",
-                request([99; 32], Workload::Compute { app_id: word() }, 3),
-                vec![
-                    with(1, &|s| s.power = PowerAvailability::Battery(9)),
-                    with(2, &|s| s.energy_saver = true),
-                    server(3),
-                ],
-                vec![[3; 32]],
-            ),
-            (
-                "essential relay work can still use a battery peer",
-                request([99; 32], Workload::InboundRelay, 1),
-                vec![with(4, &|s| {
-                    s.power = PowerAvailability::Battery(10);
-                    s.energy_saver = true;
-                })],
-                vec![[4; 32]],
-            ),
-            (
-                "remote control relay cannot be client or target",
-                request([1; 32], remote.clone(), 1),
-                vec![server(1), server(2)],
-                vec![],
-            ),
-            (
-                "remote control relay uses a third server",
-                request([1; 32], remote, 1),
-                vec![server(3)],
-                vec![[3; 32]],
-            ),
-        ];
-        for (name, req, candidates, want) in cases {
-            assert_eq!(place(&req, &candidates).servers, want, "case {name}");
-        }
-
-        // Remote control prefers a direct route, then falls back to the mesh.
-        assert_eq!(
-            route_remote_control([1; 32], [2; 32], 7, true, &[server(3)]),
-            RemoteControlRoute::Direct { target: [2; 32] }
-        );
-        assert_eq!(
-            route_remote_control([1; 32], [2; 32], 7, false, &[server(3)]),
-            RemoteControlRoute::Relayed {
-                target: [2; 32],
-                via: [3; 32]
-            }
-        );
     }
 }

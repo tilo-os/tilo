@@ -557,6 +557,29 @@ pub struct OpenAiModel {
     api_key: ApiKey,
     timeout: std::time::Duration,
     target: ApiTarget,
+    /// One HTTP client for every call, so later turns reuse its pooled
+    /// connection rather than resolving, connecting and handshaking again.
+    /// Built by the first call, on the thread [`Self::post`] runs it on:
+    /// `new` runs inside the agent's entered runtime, where a blocking client
+    /// may not be built. Held as `Any` because this crate reaches reqwest
+    /// only through `tilo_net`, so it cannot name the client's type; see
+    /// [`built_once`].
+    client: std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+/// What `slot` holds, built by `build` the first time. `T` is inferred from
+/// `build`, so a value whose type this crate cannot name can still be kept.
+fn built_once<T: Send + Sync + 'static, E: std::fmt::Display>(
+    slot: &std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>,
+    build: impl FnOnce() -> Result<T, E>,
+) -> Result<&T, String> {
+    if slot.get().is_none() {
+        let fresh = build().map_err(|error| format!("no HTTP client: {error}"))?;
+        let _ = slot.set(Box::new(fresh));
+    }
+    slot.get()
+        .and_then(|held| held.downcast_ref::<T>())
+        .ok_or_else(|| "no HTTP client".to_string())
 }
 
 impl OpenAiModel {
@@ -582,6 +605,7 @@ impl OpenAiModel {
             api_key,
             timeout,
             target,
+            client: std::sync::OnceLock::new(),
         }
     }
 
@@ -651,12 +675,12 @@ impl OpenAiModel {
             detail,
             retry_after: None,
         };
-        let client = tilo_net::http::blocking_client()
-            .timeout(budget)
-            .build()
-            .map_err(|error| rejected(format!("no HTTP client: {error}")))?;
+        // Each request carries its own budget, replacing the client's default.
+        let client = built_once(&self.client, || tilo_net::http::blocking_client().build())
+            .map_err(rejected)?;
         let mut request = client
             .post(&self.endpoint)
+            .timeout(budget)
             .header("content-type", "application/json")
             .body(body.to_string());
         if self.target.needs_idempotency_key() {
@@ -1078,6 +1102,102 @@ mod tests {
         assert_eq!(tools(&requests[0]), tools(&requests[1]));
         assert!(!tools(&requests[0]).contains("\"enum\""));
         assert_eq!(requests[0]["messages"][0], requests[1]["messages"][0]);
+    }
+
+    /// An endpoint that keeps each connection open and answers `answers` in
+    /// order across them, reporting how many requests each connection
+    /// carried (one count per accepted connection).
+    fn keep_alive_endpoint(
+        answers: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<usize>>>) {
+        use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let carried = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(
+            answers
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        ));
+        let counts = carried.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let connection = {
+                    let mut counts = counts.lock().unwrap();
+                    counts.push(0_usize);
+                    counts.len().saturating_sub(1)
+                };
+                let (answers, counts) = (answers.clone(), counts.clone());
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.unwrap());
+                    loop {
+                        let mut length = 0;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if let Some(value) =
+                                line.to_ascii_lowercase().strip_prefix("content-length:")
+                            {
+                                length = value.trim().parse().unwrap();
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                        }
+                        let mut body = vec![0; length];
+                        reader.read_exact(&mut body).unwrap();
+                        let mut served = counts.lock().unwrap();
+                        served[connection] = served[connection].saturating_add(1);
+                        drop(served);
+                        let answer = answers.lock().unwrap().pop_front().unwrap();
+                        reader.get_mut().write_all(answer.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        (url, carried)
+    }
+
+    /// Later turns of a task go over a connection an earlier turn opened:
+    /// the model keeps one client, not one per call (which would carry
+    /// exactly one request on every connection).
+    #[test]
+    fn later_turns_reuse_an_earlier_turns_connection() {
+        let offer = open_notes().offers[0].id();
+        let list = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "list_operations",
+                "arguments": "{\"application\":\"so.tilo.notes\"}"}}]}, "finish_reason": "tool_calls"}]});
+        let plan = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+            "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "plan",
+                "arguments": serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
+                    "why": "open", "then": null}).to_string()}}]}, "finish_reason": "tool_calls"}]});
+        let kept_open = |body: &serde_json::Value| {
+            let body = body.to_string();
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let (url, carried) =
+            keep_alive_endpoint(vec![kept_open(&list), kept_open(&list), kept_open(&plan)]);
+        let mut model = OpenAiModel::new(
+            &url,
+            "test-model",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        );
+        let answer = model
+            .choose("open notes", &open_notes(), MOST_STEPS)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        let carried = carried.lock().unwrap().clone();
+        assert_eq!(carried.iter().sum::<usize>(), 3, "{carried:?}");
+        // A connection opened speculatively may carry nothing; one turn's
+        // connection must have carried a later turn too.
+        assert!(carried.iter().any(|&requests| requests >= 2), "{carried:?}");
     }
 
     #[test]

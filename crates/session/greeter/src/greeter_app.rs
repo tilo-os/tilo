@@ -653,7 +653,7 @@ pub struct GreeterApp {
     direction: Direction,
     rect: Rect,
     /// The composed subtree, rebuilt each `build_layout`.
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// Slot holding the winit event-loop proxy, populated by `main.rs`'s
     /// `run_with_setup` once the loop starts. The submit handler reads it
     /// to spawn the background auth worker. Empty in tests / headless
@@ -802,7 +802,7 @@ impl GreeterApp {
             device: DeviceStatus::default(),
             direction: Direction::Column,
             rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             layout_text_scale: 1.0,
@@ -1699,7 +1699,7 @@ impl GreeterApp {
                 || widget.children().into_iter().any(walk)
         }
 
-        self.composed.as_deref().is_some_and(walk)
+        self.composed.element().is_some_and(walk)
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
@@ -2017,9 +2017,7 @@ impl Widget for GreeterApp {
         // Pull local-only passcode edits into the zeroized buffer before
         // taking a sign-in request raised by Enter or the sign-in action in
         // the same event cycle.
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
 
         // Each request is taken before it is acted on, so one activation
         // starts exactly one attempt.
@@ -2050,9 +2048,10 @@ impl Widget for GreeterApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
-        let mut composed = self.build_composition(theme);
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child` was just built in this one above.
@@ -2104,7 +2103,7 @@ impl Widget for GreeterApp {
         if before != after {
             self.dirty_structure = true;
         }
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()
         {
@@ -2124,7 +2123,7 @@ impl Widget for GreeterApp {
         // and a moving full-screen backdrop re-rasterized the whole display
         // behind every keystroke.
         ui::auth_backdrop::draw(scene, theme, self.rect, BACKDROP_PHASE_SECONDS);
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -2174,7 +2173,7 @@ impl Widget for GreeterApp {
         let escape_pressed = pressed(NamedKey::Escape);
 
         // Delegate to the composed tree.
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
@@ -2201,35 +2200,27 @@ impl Widget for GreeterApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if let Some(c) = &self.composed {
-            visitor(c.as_ref());
+        if let Some(c) = self.composed.element() {
+            visitor(c);
         }
     }
 
     fn needs_redraw(&self) -> bool {
-        self.composed.as_ref().is_some_and(|c| c.needs_redraw())
+        self.composed.element().is_some_and(Widget::needs_redraw)
     }
 
     /// The still backdrop never changes between rebuilds, so what the
     /// controls report is the whole change — never the whole screen.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if let Some(c) = &self.composed {
+        if let Some(c) = self.composed.element() {
             c.collect_damage(regions);
         }
     }
@@ -2237,10 +2228,7 @@ impl Widget for GreeterApp {
     fn take_structure_dirty(&mut self) -> bool {
         let mine = self.dirty_structure;
         self.dirty_structure = false;
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         mine || child
     }
 
@@ -2250,7 +2238,10 @@ impl Widget for GreeterApp {
     /// session rebuilds leave it `false` so focus + caret are preserved.
     fn take_focus_reset(&mut self) -> bool {
         let mine = std::mem::take(&mut self.focus_reset_pending);
-        let child = self.composed.as_mut().is_some_and(|c| c.take_focus_reset());
+        let child = self
+            .composed
+            .element_mut()
+            .is_some_and(Widget::take_focus_reset);
         mine || child
     }
 
@@ -2308,7 +2299,7 @@ impl Widget for GreeterApp {
 
     /// The controls' own deadlines, and the next minute for the clock.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let child = self.composed.as_ref().and_then(|c| c.next_wake_deadline());
+        let child = self.composed.element().and_then(Widget::next_wake_deadline);
         let clock = (!self.clock_pinned).then(|| next_minute(Instant::now()));
         match (child, clock) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -2318,8 +2309,8 @@ impl Widget for GreeterApp {
 
     fn wants_pointer_capture(&self) -> bool {
         self.composed
-            .as_ref()
-            .is_some_and(|c| c.wants_pointer_capture())
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
     }
 
     fn name(&self) -> &'static str {
@@ -2484,10 +2475,10 @@ mod tests {
     /// does, then let the greeter take what it reported.
     fn press(app: &mut GreeterApp, doc: &mut AutoCommit, id: &str) {
         app.sync(doc, &automerge::ROOT);
-        app.composed = Some(app.build_composition(&Theme::dark()));
+        app.composed.replace(app.build_composition(&Theme::dark()));
         let control = app
             .composed
-            .as_deref_mut()
+            .element_mut()
             .and_then(|composed| find_mut(composed, id))
             .unwrap_or_else(|| panic!("{id} is on the screen"));
         assert!(
@@ -3632,7 +3623,7 @@ mod tests {
             // paint; replacing it is a separate whole-renderer invalidation.
             paint(&mut app, &theme, &mut laid.text);
             Widget::mark_drawn(&mut app);
-            let card = app.composed.as_deref().expect("composed");
+            let card = app.composed.element().expect("composed");
             let row = find(card, "greeter.password")
                 .map(Widget::get_rect)
                 .expect("passcode field")
@@ -3718,7 +3709,7 @@ mod tests {
                 let theme = Theme::dark().with_text_scale(scale);
                 layout_at_with_theme(&mut app, viewport, &theme);
                 let screen = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
-                let card = app.composed.as_deref().expect("composed");
+                let card = app.composed.element().expect("composed");
                 for id in [
                     "greeter.password",
                     "greeter.password_reveal",
@@ -3800,7 +3791,7 @@ mod tests {
         ] {
             let mut app = GreeterApp::for_shot(scenario);
             layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
-            assert!(app.composed.is_some(), "{scenario:?} composes");
+            assert!(app.composed.element().is_some(), "{scenario:?} composes");
         }
     }
 
@@ -3808,7 +3799,7 @@ mod tests {
     fn the_time_is_the_hero_and_the_clock_wakes_once_a_minute() {
         let mut app = GreeterApp::for_shot(AuthScenario::Personal);
         layout_at_with_theme(&mut app, (1472.0, 920.0), &Theme::dark());
-        let card = app.composed.as_deref().expect("composed");
+        let card = app.composed.element().expect("composed");
         let clock = rect_for(card, "greeter.clock").expect("the time is shown");
         let name = rect_for(card, "greeter.welcome").expect("the person is named");
         let field = rect_for(card, "greeter.password").expect("the passcode field");
