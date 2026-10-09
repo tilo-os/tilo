@@ -826,6 +826,20 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
                 Ok(value) if value == json!({"native":"status"}) => {
                     Some(serde_json::to_value(status).map_err(io::Error::other)?)
                 }
+                Ok(value) if value.get("native") == Some(&json!("activate")) => {
+                    let answer = match value.get("app_id").and_then(Value::as_str) {
+                        Some(app) if !app.is_empty() && app.len() <= 4096 => {
+                            match runtime.block_on(server.activate_existing(app)) {
+                                Ok(Ok(Some(peer))) => json!({"activated": true, "peer_id": peer}),
+                                Ok(Ok(None)) => json!({"activated": false}),
+                                Ok(Err(reason)) => json!({"error": reason}),
+                                Err(reason) => json!({"error": reason.to_string()}),
+                            }
+                        }
+                        _ => json!({"error": "activation needs an application identity"}),
+                    };
+                    Some(answer)
+                }
                 Ok(value) if value.get("native") == Some(&json!("join")) => {
                     Some(answer_join(joiner, &value))
                 }
@@ -958,6 +972,16 @@ pub fn run_app(
     args: &[OsString],
 ) -> io::Result<()> {
     let status = ensure_running(profile)?;
+    // Only the argument-free default presentation is interchangeable here.
+    // App-specific arguments must run their own parser and are never discarded.
+    let launch_guard = if args.is_empty() && room.is_none_or(|room| room == status.room) {
+        match default_launch_guard(profile, app_id, Duration::from_secs(3))? {
+            Some(guard) => Some(guard),
+            None => return Ok(()),
+        }
+    } else {
+        None
+    };
     let owner = std::process::id().to_string();
     // Only the bootstrap exec for this exact process can request resumption.
     // A same-app ordinary child must run its own command handler first.
@@ -994,9 +1018,92 @@ pub fn run_app(
     if resume {
         command.env("TILO_RUNTIME_RESUME_LIVE", app_id);
     }
+    if let Some(guard) = &launch_guard {
+        use std::os::fd::AsRawFd;
+        let fd = guard.file().as_raw_fd();
+        command.env("TILO_RUNTIME_LAUNCH_GUARD_FD", fd.to_string());
+        // SAFETY: the guard stays owned until exec and only fcntl runs here.
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    } else {
+        command.env_remove("TILO_RUNTIME_LAUNCH_GUARD_FD");
+    }
     let error = command.exec();
     drop(connections);
     Err(error)
+}
+
+fn activate_existing(profile: &Path, app_id: &str) -> io::Result<bool> {
+    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let request = serde_json::to_vec(&json!({"native": "activate", "app_id": app_id}))
+        .map_err(io::Error::other)?;
+    stream.write_all(&request)?;
+    stream.write_all(b"\n")?;
+    let Frame::Line(bytes) = read_frame(&mut BufReader::new(stream))? else {
+        return Err(invalid(
+            "native activation endpoint returned no bounded reply",
+        ));
+    };
+    let reply: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    match reply.get("activated").and_then(Value::as_bool) {
+        Some(activated) => Ok(activated),
+        None => Err(io::Error::other(
+            reply
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("invalid native activation reply")
+                .to_owned(),
+        )),
+    }
+}
+
+/// Kernel-held admission survives exec and is released on owner exit. File
+/// contents and PID observations are diagnostics, never proof of a live owner.
+fn default_launch_guard(
+    profile: &Path,
+    app_id: &str,
+    grace: Duration,
+) -> io::Result<Option<advisory_lock::FileLock>> {
+    let directory = profile.join("launches");
+    unix::private_directory(&directory)?;
+    let path = directory.join(format!("{}.lock", blake3::hash(app_id.as_bytes()).to_hex()));
+    let deadline = Instant::now().checked_add(grace).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native launch startup grace is too large",
+        )
+    })?;
+    loop {
+        if activate_existing(profile, app_id)? {
+            return Ok(None);
+        }
+        match advisory_lock::FileLock::try_exclusive(unix::private_file(&path)?) {
+            Ok(guard) => {
+                guard.record_owner()?;
+                return Ok(Some(guard));
+            }
+            Err(advisory_lock::TryLockError::Error(error)) => return Err(error),
+            Err(advisory_lock::TryLockError::WouldBlock) => {}
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!(
+                    "existing {app_id} launch has not published its window within the startup grace; its owner was retained"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(test)]

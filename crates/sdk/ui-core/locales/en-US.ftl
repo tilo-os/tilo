@@ -595,3 +595,6 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+app-activate-window = Show this window
+app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
