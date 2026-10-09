@@ -15,6 +15,7 @@ use ui::icons::Icon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
+use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_desktop_model::{Collaborator, DesktopTree};
@@ -201,6 +202,9 @@ pub struct CollaboratorsOverlay {
     previous_people: Rect,
     next_people: Rect,
     keyboard_focus: Option<CollaboratorsHit>,
+    targets: ui::widget::PaintedTargets,
+    painted_actions: Vec<(String, CollaboratorsHit)>,
+    held_submit: [bool; 2],
     accessibility_rows: Vec<RosterRow>,
     accessibility_status: Option<String>,
     accessibility_own_activity: Option<String>,
@@ -244,6 +248,21 @@ impl CollaboratorsOverlay {
         model: &CollaboratorsModel<'_>,
         cursor: Option<Point>,
     ) {
+        // Focus names the person the user selected, not their changing
+        // position in the live roster.
+        let focus = match self.keyboard_focus {
+            Some(CollaboratorsHit::ToggleFollow(index)) => self
+                .accessibility_rows
+                .get(index)
+                .and_then(|selected| {
+                    model
+                        .rows
+                        .iter()
+                        .position(|row| row.id == selected.id && row.followable)
+                })
+                .map(CollaboratorsHit::ToggleFollow),
+            other => other,
+        };
         self.layout(
             model.host,
             model.rows.len(),
@@ -264,6 +283,8 @@ impl CollaboratorsOverlay {
                 *target = Rect::ZERO;
             }
         }
+        self.keyboard_focus = focus.filter(|hit| self.rect_for_hit(*hit).is_some());
+        self.register_targets(model.host);
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -440,7 +461,10 @@ impl CollaboratorsOverlay {
             cursor,
         );
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
-        if let Some(rect) = self.focused_rect() {
+        if let Some(rect) = self
+            .focused_rect()
+            .filter(|_| !matches!(self.keyboard_focus, Some(CollaboratorsHit::ToggleFollow(_))))
+        {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
@@ -452,7 +476,249 @@ impl CollaboratorsOverlay {
     }
 
     pub fn clear(&mut self) {
+        self.interrupt();
+        let mut targets = std::mem::take(&mut self.targets);
+        targets.begin_frame();
+        let held_submit = self.held_submit;
         *self = Self::default();
+        self.targets = targets;
+        self.held_submit = held_submit;
+    }
+
+    fn target_id(&self, hit: CollaboratorsHit) -> Option<String> {
+        match hit {
+            CollaboratorsHit::ToggleFollow(index) => {
+                self.follow_target(index).map(|id| format!("follow:{id}"))
+            }
+            other => Some(format!("{other:?}")),
+        }
+    }
+
+    fn interaction(&self, hit: CollaboratorsHit) -> ui::widget::Interaction {
+        self.target_id(hit)
+            .map_or_else(ui::widget::Interaction::default, |id| {
+                self.targets.interaction(&id)
+            })
+    }
+
+    fn register_targets(&mut self, host: Rect) {
+        let armed = self
+            .painted_actions
+            .iter()
+            .find(|(id, _)| self.targets.interaction(id).pressed)
+            .map(|(id, _)| id.clone());
+        self.targets.begin_frame();
+        self.painted_actions.clear();
+        // Non-action regions own the whole gesture too, so an outside click
+        // can dismiss without handing its release to the app behind People.
+        for (hit, rect) in [
+            (CollaboratorsHit::Dismiss, host),
+            (CollaboratorsHit::Absorb, self.panel),
+        ] {
+            if let Some(id) = self.target_id(hit) {
+                self.targets.target(&id, rect, "");
+                self.painted_actions.push((id, hit));
+            }
+        }
+        for hit in self.focus_order() {
+            if let (Some(id), Some(rect)) = (self.target_id(hit), self.rect_for_hit(hit)) {
+                self.targets.target(&id, rect, "");
+                self.painted_actions.push((id, hit));
+            }
+        }
+        if armed.is_some_and(|id| {
+            !self
+                .painted_actions
+                .iter()
+                .any(|(candidate, _)| *candidate == id)
+        }) {
+            self.targets.cancel_pointer_press();
+        }
+    }
+
+    pub fn interrupt(&mut self) {
+        self.targets.cancel_pointer_press();
+        self.targets.set_host_focus(false);
+        self.keyboard_focus = None;
+    }
+
+    pub fn wants_pointer_capture(&self) -> bool {
+        self.targets.wants_pointer_capture()
+    }
+
+    /// Release/repeat edges still belong to People after its action changes
+    /// the active surface. They must be consumed before ordinary modal routing.
+    pub fn consume_sequence_edge(&mut self, event: &WindowEvent, open: bool) -> bool {
+        if !open
+            || matches!(
+                event,
+                WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. }
+            )
+        {
+            self.interrupt();
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let index = match key.logical_key {
+            Key::Named(NamedKey::Enter) => 0,
+            Key::Named(NamedKey::Space) => 1,
+            _ => return false,
+        };
+        let Some(held) = self.held_submit.get_mut(index) else {
+            return false;
+        };
+        if *held && (key.repeat || key.state == ElementState::Released) {
+            if key.state == ElementState::Released {
+                *held = false;
+            }
+            return true;
+        }
+        false
+    }
+
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        open: bool,
+        cursor: Option<Point>,
+    ) -> Option<CollaboratorsHit> {
+        if !open {
+            self.interrupt();
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) {
+                self.targets = ui::widget::PaintedTargets::new();
+                return None;
+            }
+            if self.targets.wants_pointer_capture() {
+                self.targets.handle_event(event, ctx);
+                if matches!(
+                    event,
+                    WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                ) {
+                    *ctx.handled = true;
+                }
+            }
+            return None;
+        }
+        if matches!(event, WindowEvent::MouseInput { .. }) {
+            if let Some(point) = cursor {
+                let moved = WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(
+                        point.x * ctx.scale_factor,
+                        point.y * ctx.scale_factor,
+                    ),
+                };
+                self.targets.handle_event(&moved, ctx);
+            } else {
+                let owned = self.targets.wants_pointer_capture();
+                self.interrupt();
+                if matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Released,
+                        ..
+                    }
+                ) {
+                    self.targets.handle_event(event, ctx);
+                }
+                *ctx.handled = open || owned;
+                return None;
+            }
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            return self.handle_submit(event, key, ctx);
+        }
+        if !matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            return None;
+        }
+        self.targets.handle_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) {
+            *ctx.handled = true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+        {
+            self.keyboard_focus = self
+                .targets
+                .focused()
+                .and_then(|id| {
+                    self.painted_actions
+                        .iter()
+                        .find(|(candidate, _)| candidate == id)
+                        .map(|(_, hit)| *hit)
+                })
+                .filter(|hit| !matches!(hit, CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss));
+        }
+        self.take_activated_hit()
+    }
+
+    fn handle_submit(
+        &mut self,
+        event: &WindowEvent,
+        key: &winit::event::KeyEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> Option<CollaboratorsHit> {
+        if key.logical_key == Key::Named(NamedKey::Escape) && key.state == ElementState::Pressed {
+            self.interrupt();
+            *ctx.handled = true;
+            return Some(CollaboratorsHit::Dismiss);
+        }
+        let index = match key.logical_key {
+            Key::Named(NamedKey::Enter) => Some(0),
+            Key::Named(NamedKey::Space) => Some(1),
+            _ => None,
+        };
+        let index = index?;
+        *ctx.handled = true;
+        let held = self.held_submit.get_mut(index)?;
+        if key.state == ElementState::Released {
+            *held = false;
+            return None;
+        }
+        *held = true;
+        if key.repeat {
+            return None;
+        }
+        let focus = self.keyboard_focus.and_then(|hit| self.target_id(hit))?;
+        self.targets.set_host_focus(true);
+        self.targets.focus(&focus);
+        self.targets.handle_event(event, ctx);
+        self.take_activated_hit()
+    }
+
+    fn take_activated_hit(&mut self) -> Option<CollaboratorsHit> {
+        self.targets.take_activated().into_iter().find_map(|id| {
+            self.painted_actions
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, hit)| *hit)
+        })
     }
 
     pub fn panel_rect(&self) -> Rect {
@@ -474,6 +740,17 @@ impl CollaboratorsOverlay {
 
     pub fn contains(&self, point: Point) -> bool {
         self.panel.area() > 0.0 && self.panel.contains(point)
+    }
+
+    /// The stable person behind a painted Follow button. The host must
+    /// revalidate that person against its live roster before applying Follow.
+    pub fn follow_target(&self, index: usize) -> Option<&str> {
+        self.row_actions
+            .get(index)
+            .filter(|rect| rect.area() > 0.0)
+            .and_then(|_| self.accessibility_rows.get(index))
+            .filter(|row| row.followable)
+            .map(|row| row.id.as_str())
     }
 
     pub fn hit_test(&self, point: Point) -> CollaboratorsHit {
@@ -978,6 +1255,7 @@ impl CollaboratorsOverlay {
     }
 
     pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
+        self.targets.cancel_pointer_press();
         if forward {
             if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
                 self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
@@ -1021,16 +1299,18 @@ impl CollaboratorsOverlay {
             None,
             &theme.text(TextRole::Caption),
         );
-        for (rect, icon, name) in [
+        for (rect, icon, name, hit) in [
             (
                 self.previous_people,
                 Icon::ChevronLeft,
                 crate::i18n::t("people-panel-previous-page"),
+                CollaboratorsHit::PreviousPeople,
             ),
             (
                 self.next_people,
                 Icon::ChevronRight,
                 crate::i18n::t("people-panel-next-page"),
+                CollaboratorsHit::NextPeople,
             ),
         ] {
             if rect.area() <= 0.0 {
@@ -1044,6 +1324,7 @@ impl CollaboratorsOverlay {
                 &ButtonFace::new(rect, "")
                     .icon(icon)
                     .accessible_name(&name)
+                    .pressed(self.interaction(hit).pressed)
                     .hovered(cursor.is_some_and(|point| rect.contains(point))),
             );
         }
@@ -1626,6 +1907,16 @@ impl CollaboratorsOverlay {
             });
             let face = ButtonFace::new(action, &label)
                 .control_size(ui::widget::ControlSize::Large)
+                .pressed(
+                    self.targets
+                        .interaction(&format!("follow:{}", row.id))
+                        .pressed,
+                )
+                .focused(matches!(
+                    self.keyboard_focus,
+                    Some(CollaboratorsHit::ToggleFollow(index))
+                        if self.follow_target(index) == Some(row.id.as_str())
+                ))
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -1651,6 +1942,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.invite, &invite_label)
                     .role(ButtonRole::Primary)
+                    .pressed(self.interaction(CollaboratorsHit::Invite).pressed)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -1659,6 +1951,7 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.join, &join_label)
+                    .pressed(self.interaction(CollaboratorsHit::Join).pressed)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }
@@ -2238,5 +2531,151 @@ mod tests {
         clearing_drops_every_invisible_hit_target();
         own_status_and_privacy_modes_are_first_class_hit_targets();
         keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input();
+    }
+
+    fn roster_focus_rows() -> Vec<RosterRow> {
+        ["Ada", "Bob"]
+            .into_iter()
+            .map(|name| RosterRow {
+                id: name.to_ascii_lowercase(),
+                label: name.into(),
+                initial: name.chars().next().expect("fixture name"),
+                color: Color::from_rgb8(114, 139, 180),
+                is_agent: false,
+                role: None,
+                invited: false,
+                activity: None,
+                status: None,
+                followable: true,
+            })
+            .collect()
+    }
+
+    fn paint_roster_focus(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow]) {
+        paint_roster_focus_in(overlay, rows, Rect::new(0.0, 0.0, 800.0, 600.0));
+    }
+
+    fn paint_roster_focus_in(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], host: Rect) {
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &CollaboratorsModel {
+                host,
+                rows,
+                own_initial: 'Q',
+                own_color: Color::from_rgb8(170, 120, 130),
+                unavailable: None,
+                may_invite: false,
+                followed_id: None,
+                following_pairs: &[],
+                own_status: None,
+                own_activity: None,
+                own_status_automatic: false,
+                status_sharing: ui::StatusSharing::Automatic,
+                status_editing: false,
+                screen_exposure: None,
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_tracks_a_person_across_painted_reordering() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.swap(0, 1);
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(1)),
+            "Ada survives at the new index"
+        );
+        let snapshot = overlay.accessibility_snapshot();
+        let focused = snapshot
+            .children
+            .iter()
+            .find(|node| node.state.focused)
+            .expect("surviving Ada control retains focus");
+        assert_eq!(focused.name.as_deref(), Some("Follow Ada"));
+    }
+
+    #[test]
+    fn roster_follow_focus_does_not_jump_to_a_replacement_person() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.remove(0);
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Tab), false), None);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::EditStatus),
+            "navigation explicitly selects a new control"
+        );
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Escape), false),
+            Some(CollaboratorsHit::Dismiss)
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_clears_when_the_person_is_no_longer_followable() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        people.first_mut().expect("Ada").followable = false;
+        paint_roster_focus(&mut overlay, &people);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert!(
+            !overlay
+                .accessibility_snapshot()
+                .children
+                .iter()
+                .any(|node| node.state.focused)
+        );
+    }
+
+    #[test]
+    fn roster_follow_focus_survives_resize_and_clears_on_page_change() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let mut people = roster_focus_rows();
+        paint_roster_focus(&mut overlay, &people);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        let viewport = Rect::new(0.0, 0.0, 640.0, 480.0);
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(0))
+        );
+        let focus = overlay
+            .accessibility_rect_for_path(&[5])
+            .expect("Ada after resize");
+        assert!(
+            viewport.contains(focus.origin()) && viewport.contains(Point::new(focus.x1, focus.y1))
+        );
+        for name in ["Carol", "Dana"] {
+            let mut row = people.first().expect("fixture Ada").clone();
+            row.id = name.to_ascii_lowercase();
+            row.label = name.into();
+            people.push(row);
+        }
+        overlay.change_people_page(true, people.len());
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        overlay.change_people_page(false, people.len());
+        paint_roster_focus_in(&mut overlay, &people, viewport);
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Enter), false), None);
+        assert!(overlay.focus_accessibility_path(&[5]));
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::ToggleFollow(0))
+        );
     }
 }

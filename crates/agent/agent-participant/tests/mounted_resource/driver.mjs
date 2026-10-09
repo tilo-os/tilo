@@ -33,11 +33,19 @@ const fixture = JSON.parse((await lines.next()).value);
 if (fixture.encryptedRestart) assert.notEqual(process.getuid?.(), 0, 'cold encrypted resource requires an unprivileged sandboxed browser');
 process.env.CHROME ??= '/usr/bin/chromium-browser';
 let browser;
+let tab;
 const stages = [];
 const stage = name => {stages.push(name); process.stdout.write(JSON.stringify({stage: name}) + '\n');};
 const evidence = resolve(fixture.encryptedRestart ? 'target/mounted-resource-encrypted' : fixture.disconnectRetry ? 'target/mounted-resource-recovery' : 'target/mounted-resource');
 mkdirSync(evidence, {recursive:true});
 const deadline = setTimeout(async () => {
+  const pageStatus = await Promise.race([
+    tab?.evaluate('document.querySelector("#status")?.textContent ?? ""', {timeout:250})
+      .catch(() => 'status unavailable'),
+    new Promise(resolve => setTimeout(() => resolve('status observation unavailable'), 250)),
+  ]);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
+    lastStage:stages.at(-1) ?? null, pageStatus: String(pageStatus ?? '').slice(0, 500)}, null, 2) + '\n');
   console.error('Mounted resource journey exceeded its 130-second bound');
   await browser?.close();
   server.close();
@@ -49,7 +57,7 @@ try {
   browser = await launch({args: ['--ignore-certificate-errors', '--enable-features=Vulkan',
     '--use-vulkan=swiftshader', '--use-angle=swiftshader',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : [])]});
-  const tab = await browser.tab();
+  tab = await browser.tab();
   await tab.navigate(origin + '/fixture.html');
   await tab.waitFor('document.readyState === "complete"');
   await tab.send('Page.bringToFront');

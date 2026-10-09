@@ -16,14 +16,14 @@
 //! turns that into a choice (overwrite / reload / cancel) rather than deciding
 //! for the user.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use ui::time::SystemTime;
 
 /// Files larger than this are not opened as text buffers. The editor holds the
 /// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte
 /// blob is not a slow editor, it is an unusable one.
-pub const MAX_TEXT_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_TEXT_BYTES: u64 = 24 * 1024 * 1024;
 
 /// What we know about a file on disk at the moment we last agreed with it.
 ///
@@ -108,11 +108,8 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     if md.len() > MAX_TEXT_BYTES {
         return Err(LoadError::TooLarge(md.len()));
     }
-    let bytes = std::fs::read(path).map_err(LoadError::Io)?;
-    if !looks_like_text(&bytes) {
-        return Err(LoadError::NotText);
-    }
-    let text = String::from_utf8(bytes).map_err(|_| LoadError::NotText)?;
+    let file = std::fs::File::open(path).map_err(LoadError::Io)?;
+    let text = read_body(file)?;
     Ok(Loaded {
         text,
         stamp: Stamp {
@@ -120,6 +117,22 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
             len: md.len(),
         },
     })
+}
+
+/// Bound the actual read as well as stat: the file can grow between them.
+fn read_body(reader: impl Read) -> Result<String, LoadError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_TEXT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(LoadError::Io)?;
+    if bytes.len() as u64 > MAX_TEXT_BYTES {
+        return Err(LoadError::TooLarge(bytes.len() as u64));
+    }
+    if !looks_like_text(&bytes) {
+        return Err(LoadError::NotText);
+    }
+    String::from_utf8(bytes).map_err(|_| LoadError::NotText)
 }
 
 /// Write `text` to `path` atomically, refusing if the file moved on underneath.
@@ -331,6 +344,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn actual_read_refuses_a_file_that_grows_after_its_metadata_was_checked() {
+        let directory = tmpdir();
+        let path = directory.path().join("growing.rs");
+        std::fs::write(&path, "small source").unwrap();
+        let reader = std::fs::File::open(&path).unwrap();
+        assert!(reader.metadata().unwrap().len() < MAX_TEXT_BYTES);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_TEXT_BYTES + 1)
+            .unwrap();
+        assert!(
+            matches!(read_body(reader), Err(LoadError::TooLarge(size)) if size == MAX_TEXT_BYTES + 1)
+        );
+    }
+
     fn utf8_survives_a_save_load_round_trip() {
         let d = tmpdir();
         let p = d.path().join("é.rs");
@@ -351,7 +382,7 @@ mod tests {
     fn too_large_message_uses_si_units() {
         let message = LoadError::TooLarge(MAX_TEXT_BYTES + 1).to_string();
         assert!(
-            message.ends_with("too large to open as text (limit 8.4 MB)"),
+            message.ends_with("too large to open as text (limit 25.2 MB)"),
             "{message}"
         );
     }

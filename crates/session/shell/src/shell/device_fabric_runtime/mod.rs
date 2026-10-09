@@ -4,6 +4,8 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod display_auto_leases;
+pub(crate) mod person_layout;
 mod receive_recovery;
 mod remote_capture;
 mod window_views;
@@ -701,8 +703,15 @@ struct OutboundSpatialInput {
 struct SpatialInputState {
     /// Permissions this device issued and must enforce on inbound input.
     issued: BTreeMap<[u8; 16], InputLease>,
+    automatic_issued: BTreeMap<crate::shell::personal_continuity::DeviceId, [u8; 16]>,
+    issued_routes: BTreeMap<[u8; 16], crate::shell::network::AuthenticatedPersonalRoute>,
     /// Permissions other devices issued to this controller.
     received: BTreeMap<crate::shell::personal_continuity::DeviceId, InputLease>,
+    /// The exact certified topic/endpoint/epoch that delivered each grant.
+    received_routes: BTreeMap<
+        crate::shell::personal_continuity::DeviceId,
+        crate::shell::network::AuthenticatedPersonalRoute,
+    >,
     inbound: VecDeque<(
         crate::shell::personal_continuity::DeviceId,
         FabricInputEvent,
@@ -717,6 +726,15 @@ struct SpatialInputState {
 }
 
 impl SpatialInputState {
+    fn release_controller(&mut self, controller: &crate::shell::personal_continuity::DeviceId) {
+        // A down edge admitted before revocation must not be delivered after
+        // the compositor consumes that controller's seat release barrier.
+        self.inbound.retain(|(source, _)| source != controller);
+        if !self.release_controllers.contains(controller) {
+            self.release_controllers.push_back(controller.clone());
+        }
+    }
+
     /// Restore only shared-plane origin from the existing owner checkpoint.
     /// Dimensions always come from live native output geometry.
     fn placed_local_rect(
@@ -780,6 +798,46 @@ impl SpatialInputState {
         }
     }
 
+    fn accept_lease_bound_input(
+        &mut self,
+        route: &crate::shell::network::AuthenticatedPersonalRoute,
+        target: &crate::shell::personal_continuity::DeviceId,
+        input: ([u8; 16], FabricInputEvent),
+        now: u64,
+    ) {
+        if self.issued_routes.get(&input.0) == Some(route)
+            && crate::shell::device_fabric::permits_spatial_input(
+                self.issued.get(&input.0),
+                route.device(),
+                target,
+                input,
+                now,
+            )
+        {
+            self.inbound.push_back((route.device().clone(), input.1));
+        }
+    }
+
+    fn queue_lease_bound_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        input: OutboundSpatialInput,
+        now: u64,
+    ) -> Result<(), String> {
+        if !crate::shell::device_fabric::permits_spatial_input(
+            self.received.get(&input.target),
+            controller,
+            &input.target,
+            (input.lease_nonce, input.event),
+            now,
+        ) {
+            return Err(crate::shell::i18n::t(
+                "device-fabric-error-control-not-granted",
+            ));
+        }
+        self.queue_outbound(input)
+    }
+
     fn queue_outbound(&mut self, input: OutboundSpatialInput) -> Result<(), String> {
         if matches!(input.event, FabricInputEvent::PointerMotion { .. })
             && let Some(last) = self.outbound.back_mut()
@@ -796,6 +854,11 @@ impl SpatialInputState {
         self.outbound.push_back(input);
         Ok(())
     }
+}
+
+fn input_control_operations() -> &'static Mutex<()> {
+    static OPERATIONS: OnceLock<Mutex<()>> = OnceLock::new();
+    OPERATIONS.get_or_init(|| Mutex::new(()))
 }
 
 fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
@@ -1494,7 +1557,11 @@ impl DeviceFabricRuntime {
             return;
         }
         self.last_sample = Some(now);
-        crate::shell::mpris::refresh_handoff_reports();
+        if policy.permits(ContinuityCapability::Media) {
+            crate::shell::mpris::refresh_handoff_reports();
+        } else {
+            crate::shell::mpris::withdraw_handoff_reports();
+        }
         let Some((device, label)) = network.local_device_fabric_identity() else {
             publish_device_displays(network, policy);
             return;
@@ -1528,8 +1595,16 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
+        let hardware = policy
+            .permits(ContinuityCapability::DisplayInput)
+            .then(settings_store::hardware::DisplayHardwareSnapshot::load)
+            .flatten();
+        let rich_outputs = hardware.as_ref().and_then(native_display_outputs);
         if let Some(display) = candidate.display.as_mut() {
-            display.outputs = native_display_connectors();
+            display.outputs = hardware
+                .as_ref()
+                .map(native_display_connectors)
+                .unwrap_or_default();
         }
         candidate.presence.wake_routes = crate::shell::device_wake::local_routes(
             previous
@@ -1540,7 +1615,15 @@ impl DeviceFabricRuntime {
         // Connectors are populated after build_local_snapshot; preserve their
         // exact layout stamp only once the complete observation is available.
         preserve_unchanged_stamps(&mut candidate, previous.as_ref());
-        let fingerprint = local_snapshot_fingerprint(&candidate);
+        if let (Some(display), Some(outputs)) = (&mut candidate.display, &rich_outputs) {
+            refresh_display_observation_revision(
+                display,
+                &network.device_fabric(),
+                outputs,
+                &tentative_stamp,
+            );
+        }
+        let fingerprint = local_observation_fingerprint(&candidate, rich_outputs.as_deref());
         publish_device_displays(network, policy);
         let heartbeat_due = self
             .last_publish
@@ -1561,6 +1644,17 @@ impl DeviceFabricRuntime {
                 self.local_fingerprint = fingerprint;
                 self.last_publish = Some(now);
             }
+        }
+        if let Some(outputs) = rich_outputs
+            && let Some(stamp) = network
+                .device_fabric()
+                .snapshots()
+                .get(&device)
+                .and_then(|snapshot| snapshot.display.as_ref())
+                .map(|display| display.stamp.clone())
+            && let Err(error) = network.publish_local_display_outputs(&stamp, outputs)
+        {
+            tracing::debug!(%error, "could not publish rich display observations");
         }
         self.merge_remote_state(network, selection, &device, policy);
         crate::shell::device_unlock_runtime::refresh(network);
@@ -1664,7 +1758,7 @@ impl DeviceFabricRuntime {
         let fabric = network.device_fabric();
         if let Err(error) = publish_roaming_provenance(
             &fabric,
-            policy.permits(ContinuityCapability::WifiSettings),
+            policy,
             &mut self.roaming_provenance_fingerprint,
             None,
         ) {
@@ -1676,11 +1770,11 @@ impl DeviceFabricRuntime {
             merge_shared_clipboard_history(selection, &entries);
         }
 
-        let records = if policy.permits(ContinuityCapability::WifiSettings) {
-            fabric.merged_setting_records()
-        } else {
-            BTreeMap::new()
-        };
+        let records: BTreeMap<_, _> = fabric
+            .merged_setting_records()
+            .into_iter()
+            .filter(|(key, _)| permits_roaming_setting(policy, key))
+            .collect();
         let fingerprint = serde_json::to_vec(&records)
             .ok()
             .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -1904,7 +1998,7 @@ impl DeviceFabricRuntime {
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
                 }
-                action => handle_spatial_action(network, envelope.source, &envelope.target, action),
+                action => handle_spatial_action(network, &route, &envelope.target, action),
             }
         }
     }
@@ -2203,13 +2297,7 @@ impl DeviceFabricRuntime {
             state.decisions.clear();
         }
         self.gamepad_broker.reap_expired(Instant::now());
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         let expired_pending = gamepad_authorization_state().lock().map_or_else(
             |_| Vec::new(),
             |mut state| {
@@ -2335,11 +2423,10 @@ impl DeviceFabricRuntime {
         if !policy.permits(ContinuityCapability::RealtimeSessions) {
             if let Some(adapter) = self.realtime_adapter.as_ref() {
                 let peers = network
-                    .device_fabric()
-                    .snapshots()
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
+                    .with_device_fabric(|fabric| {
+                        fabric.snapshots().keys().cloned().collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 for peer in peers {
                     adapter.peer_offline(&peer, Instant::now());
                 }
@@ -2351,13 +2438,7 @@ impl DeviceFabricRuntime {
         let Some(adapter) = self.realtime_adapter.as_ref() else {
             return;
         };
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         for peer in self.realtime_online_peers.difference(&online) {
             adapter.peer_offline(peer, Instant::now());
         }
@@ -2454,11 +2535,9 @@ impl DeviceFabricRuntime {
             return;
         };
         let peers = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.owner != local && snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
+            .online_device_ids()
+            .into_iter()
+            .filter(|peer| *peer != local)
             .collect::<Vec<_>>();
         let online_sources = peers
             .iter()
@@ -2933,15 +3012,22 @@ fn prune_spatial_state(
             && !departed.contains(&lease.controller)
             && is_online(&lease.controller)
     });
+    spatial
+        .issued_routes
+        .retain(|nonce, _| spatial.issued.contains_key(nonce));
+    spatial
+        .automatic_issued
+        .retain(|_, nonce| spatial.issued.contains_key(nonce));
     spatial.received.retain(|target, lease| {
         lease.validate_at(now).is_ok() && !departed.contains(target) && is_online(target)
     });
     for controller in issued_to_release {
-        if !spatial.release_controllers.contains(&controller) {
-            spatial.release_controllers.push_back(controller);
-        }
+        spatial.release_controller(&controller);
     }
     let received = spatial.received.clone();
+    spatial
+        .received_routes
+        .retain(|device, _| received.contains_key(device));
     spatial.outbound.retain(|input| {
         received
             .get(&input.target)
@@ -2950,6 +3036,24 @@ fn prune_spatial_state(
 }
 
 fn prune_spatial_leases(network: &ShellNetwork) {
+    // Read routes before taking the state mutex; queue admission takes the
+    // route registry before the state mutex and must not invert that order.
+    let routes = spatial_input_state().lock().map_or_else(
+        |_| Vec::new(),
+        |spatial| {
+            spatial
+                .issued_routes
+                .values()
+                .chain(spatial.received_routes.values())
+                .cloned()
+                .collect::<Vec<_>>()
+        },
+    );
+    let withdrawn = routes
+        .into_iter()
+        .filter(|route| !network.personal_route_is_current(route))
+        .map(|route| route.device().clone())
+        .collect::<BTreeSet<_>>();
     if let Ok(mut spatial) = spatial_input_state().lock() {
         let fabric = network.device_fabric();
         prune_spatial_state(
@@ -2957,10 +3061,11 @@ fn prune_spatial_leases(network: &ShellNetwork) {
             unix_now_ms(),
             &network.peer_departures(),
             |device| {
-                fabric
-                    .snapshots()
-                    .get(device)
-                    .is_some_and(|snapshot| snapshot.presence.online)
+                !withdrawn.contains(device)
+                    && fabric
+                        .snapshots()
+                        .get(device)
+                        .is_some_and(|snapshot| snapshot.presence.online)
             },
         );
     }
@@ -3315,20 +3420,27 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !enabled {
         return;
     }
-    let fabric = network.device_fabric();
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
+    // Read in place, every frame; released before the clock lock is taken.
+    let (known, online_peers) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| snapshot.presence.online)
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<BTreeSet<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let online = |peer: &crate::shell::personal_continuity::DeviceId| {
-        local.as_ref() != Some(peer)
-            && snapshots
-                .get(peer)
-                .is_some_and(|snapshot| snapshot.presence.online)
+        local.as_ref() != Some(peer) && online_peers.contains(peer)
     };
     let now_us = fabric_monotonic_us();
     let probes = with_fabric_clock(|core| {
-        core.retain_peers(|peer| snapshots.contains_key(peer));
+        core.retain_peers(|peer| known.contains(peer));
         core.due_probes(online, now, now_us, || {
             let mut nonce = [0; 16];
             while nonce == [0; 16] {
@@ -3353,17 +3465,22 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
         return;
     }
     let now = Instant::now();
-    let fabric = network.device_fabric();
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshots = fabric.snapshots();
-    let all_peers = snapshots.keys().cloned().collect::<BTreeSet<_>>();
-    let online = snapshots
-        .values()
-        .filter(|snapshot| snapshot.presence.online && local.as_ref() != Some(&snapshot.owner))
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<Vec<_>>();
+    let (all_peers, online) = network
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let online = snapshots
+                .values()
+                .filter(|snapshot| {
+                    snapshot.presence.online && local.as_ref() != Some(&snapshot.owner)
+                })
+                .map(|snapshot| snapshot.owner.clone())
+                .collect::<Vec<_>>();
+            (snapshots.keys().cloned().collect::<BTreeSet<_>>(), online)
+        })
+        .unwrap_or_default();
     let mut probes = Vec::new();
     {
         let Ok(mut state) = device_health_state().lock() else {
@@ -3398,13 +3515,14 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
 
 fn handle_spatial_action(
     network: &ShellNetwork,
-    source: crate::shell::personal_continuity::DeviceId,
+    route: &crate::shell::network::AuthenticatedPersonalRoute,
     target: &crate::shell::personal_continuity::DeviceId,
     action: PersonalFabricAction,
 ) {
     let Ok(mut spatial) = spatial_input_state().lock() else {
         return;
     };
+    let source = route.device().clone();
     match action {
         action @ PersonalFabricAction::SetDisplayPlacementChecked { .. } => {
             spatial.apply_checked_display_move(&network.device_fabric(), target, &action);
@@ -3415,6 +3533,9 @@ fn handle_spatial_action(
         PersonalFabricAction::InputLeaseGranted { lease } => {
             if lease.validate_at(unix_now_ms()).is_ok() {
                 spatial.outbound.retain(|input| input.target != source);
+                spatial
+                    .received_routes
+                    .insert(source.clone(), route.clone());
                 spatial.received.insert(source, lease);
             }
         }
@@ -3422,21 +3543,15 @@ fn handle_spatial_action(
             spatial
                 .received
                 .retain(|device, lease| device != &source || lease.nonce != nonce);
+            if !spatial.received.contains_key(&source) {
+                spatial.received_routes.remove(&source);
+            }
             spatial
                 .outbound
                 .retain(|input| input.target != source || input.lease_nonce != nonce);
         }
         PersonalFabricAction::Input { lease_nonce, event } => {
-            let accepted = crate::shell::device_fabric::permits_spatial_input(
-                spatial.issued.get(&lease_nonce),
-                &source,
-                target,
-                (lease_nonce, event),
-                unix_now_ms(),
-            );
-            if accepted {
-                spatial.inbound.push_back((source, event));
-            }
+            spatial.accept_lease_bound_input(route, target, (lease_nonce, event), unix_now_ms());
         }
         PersonalFabricAction::ResumeMedia { .. }
         | PersonalFabricAction::MediaAccepted { .. }
@@ -3850,13 +3965,7 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
         finish_bluetooth_worker(network, result);
     }
 
-    let fabric = network.device_fabric();
-    let online = fabric
-        .snapshots()
-        .values()
-        .filter(|snapshot| snapshot.presence.online)
-        .map(|snapshot| snapshot.owner.clone())
-        .collect::<BTreeSet<_>>();
+    let online = network.online_device_ids();
     let lost = bluetooth_handoff_state().lock().map_or_else(
         |_| Vec::new(),
         |mut state| {
@@ -6164,9 +6273,12 @@ pub fn move_device_display(
     let fabric = network.device_fabric();
     let (target, expected, rect) = checked_display_move(&fabric, &local, request)
         .map_err(|_| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
+    let route = network
+        .current_personal_route(&target)
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-layout-changed"))?;
     network
-        .send_personal_fabric_action(
-            &target,
+        .send_personal_fabric_action_on_route(
+            &route,
             PersonalFabricAction::SetDisplayPlacementChecked {
                 expected,
                 rect,
@@ -6261,7 +6373,50 @@ pub fn grant_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<InputLease, String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let lease = grant_input_control_inner(network, controller, false)?;
+    display_auto_leases::record_decline(network, controller, false)?;
+    Ok(lease)
+}
+
+fn grant_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    prune_spatial_leases(network);
+    let policy = ContinuityPolicySnapshot::load();
+    let view = person_layout::current(network);
+    if !display_auto_leases::wanted_controllers(network, view.as_deref(), policy)
+        .contains(controller)
+    {
+        return Ok(());
+    }
+    let renew = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .automatic_needs_grant(controller, unix_now_ms());
+    if renew {
+        grant_input_control_inner(network, controller, true)?;
+    }
+    Ok(())
+}
+
+fn grant_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    automatic: bool,
+) -> Result<InputLease, String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(controller) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-controller-not-enrolled",
+        ));
+    }
     // Advance the authenticated-departure cursor before minting replacement
     // authority, so retained history cannot revoke a fresh reconnect lease.
     prune_spatial_leases(network);
@@ -6296,8 +6451,11 @@ pub fn grant_input_control(
         allow_keyboard: presence.capabilities.keyboard,
         allow_pointer: presence.capabilities.pointer,
     };
-    network.send_personal_fabric_action(
-        controller,
+    let route = network
+        .current_personal_route(controller)
+        .ok_or_else(|| "controller has no current certified route".to_string())?;
+    network.send_personal_fabric_action_on_route(
+        &route,
         PersonalFabricAction::InputLeaseGranted {
             lease: lease.clone(),
         },
@@ -6310,10 +6468,19 @@ pub fn grant_input_control(
         spatial
             .issued
             .retain(|_, current| current.controller != *controller);
-        if replaced && !spatial.release_controllers.contains(controller) {
-            spatial.release_controllers.push_back(controller.clone());
+        if replaced {
+            spatial.release_controller(controller);
         }
+        let retained = spatial.issued.keys().copied().collect::<BTreeSet<_>>();
+        spatial
+            .issued_routes
+            .retain(|nonce, _| retained.contains(nonce));
+        spatial.issued_routes.insert(nonce, route);
         spatial.issued.insert(nonce, lease.clone());
+        spatial.automatic_issued.remove(controller);
+        if automatic {
+            spatial.automatic_issued.insert(controller.clone(), nonce);
+        }
     }
     Ok(lease)
 }
@@ -6329,12 +6496,44 @@ pub fn revoke_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let persisted = display_auto_leases::record_decline(network, controller, true);
+    let revoked = revoke_input_control_inner(network, controller, None);
+    revoked.and(persisted)
+}
+
+fn revoke_input_control_automatic(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+) -> Result<(), String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    if !spatial_input_state()
+        .lock()
+        .is_ok_and(|state| state.automatic_lease_matches(controller, nonce))
+    {
+        return Ok(());
+    }
+    revoke_input_control_inner(network, controller, Some(nonce))
+}
+
+fn revoke_input_control_inner(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    expected: Option<[u8; 16]>,
+) -> Result<(), String> {
     let leases = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
         .issued
         .values()
-        .filter(|lease| &lease.controller == controller)
+        .filter(|lease| {
+            &lease.controller == controller && expected.is_none_or(|nonce| lease.nonce == nonce)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if leases.is_empty() {
@@ -6350,11 +6549,20 @@ pub fn revoke_input_control(
         }
     }
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        let revoked = leases
+            .iter()
+            .map(|lease| lease.nonce)
+            .collect::<BTreeSet<_>>();
+        let removed = spatial.issued.keys().any(|nonce| revoked.contains(nonce));
+        spatial.issued.retain(|nonce, _| !revoked.contains(nonce));
         spatial
-            .issued
-            .retain(|_, lease| &lease.controller != controller);
-        if !spatial.release_controllers.contains(controller) {
-            spatial.release_controllers.push_back(controller.clone());
+            .issued_routes
+            .retain(|nonce, _| !revoked.contains(nonce));
+        spatial
+            .automatic_issued
+            .retain(|_, nonce| !revoked.contains(nonce));
+        if removed {
+            spatial.release_controller(controller);
         }
     }
     delivery_error.map_or(Ok(()), Err)
@@ -6367,38 +6575,93 @@ pub fn revoke_input_control(
 /// Returns an error if the target has not granted control, the lease expired,
 /// its capability excludes the event, or transport delivery fails.
 pub fn send_spatial_input(
-    _network: &ShellNetwork,
+    network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
     event: FabricInputEvent,
 ) -> Result<(), String> {
-    require_continuity(ContinuityCapability::DisplayInput)?;
-    let lease = spatial_input_state()
+    let nonce = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
         .received
         .get(target)
-        .cloned()
+        .map(|lease| lease.nonce)
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-control-not-granted"))?;
-    lease
-        .validate_at(unix_now_ms())
-        .map_err(|error| error.to_string())?;
-    let allowed = match event {
-        FabricInputEvent::PointerMotion { .. }
-        | FabricInputEvent::PointerButton { .. }
-        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
-        FabricInputEvent::Key { .. } => lease.allow_keyboard,
-    };
-    if !allowed {
-        return Err(crate::shell::i18n::t("device-fabric-error-lease-input"));
+    send_spatial_input_bound(network, target, nonce, event)
+}
+
+/// Current exact-controller pointer authority, never inferred from layout or
+/// same-person identity. Gestures retain this nonce until they end.
+#[must_use]
+pub fn spatial_pointer_lease(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Option<InputLease> {
+    require_continuity(ContinuityCapability::DisplayInput).ok()?;
+    if !network.personal_device_is_enrolled(target) {
+        return None;
     }
-    spatial_input_state()
+    prune_spatial_leases(network);
+    let (controller, _) = network.local_device_fabric_identity()?;
+    let (lease, route) = {
+        let spatial = spatial_input_state().lock().ok()?;
+        (
+            spatial.received.get(target)?.clone(),
+            spatial.received_routes.get(target)?.clone(),
+        )
+    };
+    if !network.personal_route_is_current(&route) {
+        return None;
+    }
+    (lease.binds(&controller, target)
+        && lease.allow_pointer
+        && lease.validate_at(unix_now_ms()).is_ok())
+    .then_some(lease)
+}
+
+/// Queue an event only under the exact authority that began its gesture.
+///
+/// # Errors
+/// Rejects withdrawn policy, identity, replaced/revoked/expired authority or
+/// an event outside that lease's capabilities. Replacement grants never adopt
+/// a gesture's held keys or buttons.
+pub fn send_spatial_input_bound(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+    event: FabricInputEvent,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::DisplayInput)?;
+    if !network.personal_device_is_enrolled(target) {
+        return Err(crate::shell::i18n::t(
+            "device-fabric-error-control-not-granted",
+        ));
+    }
+    let (controller, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+    let route = spatial_input_state()
         .lock()
         .map_err(|_| "spatial input state is unavailable".to_string())?
-        .queue_outbound(OutboundSpatialInput {
-            target: target.clone(),
-            lease_nonce: lease.nonce,
-            event,
+        .received_routes
+        .get(target)
+        .cloned()
+        .ok_or_else(|| "spatial input grant has no current certified route".to_string())?;
+    network
+        .with_current_personal_route(&route, || {
+            spatial_input_state()
+                .lock()
+                .map_err(|_| "spatial input state is unavailable".to_string())?
+                .queue_lease_bound_input(
+                    &controller,
+                    OutboundSpatialInput {
+                        target: target.clone(),
+                        lease_nonce: nonce,
+                        event,
+                    },
+                    unix_now_ms(),
+                )
         })
+        .ok_or_else(|| "spatial input grant route is no longer current".to_string())?
 }
 
 fn flush_spatial_input(network: &ShellNetwork) {
@@ -6410,8 +6673,16 @@ fn flush_spatial_input(network: &ShellNetwork) {
         let Some(input) = input else {
             return;
         };
-        let result = network.send_personal_fabric_action(
-            &input.target,
+        let route = spatial_input_state()
+            .lock()
+            .ok()
+            .and_then(|spatial| spatial.received_routes.get(&input.target).cloned());
+        let Some(route) = route.filter(|route| network.personal_route_is_current(route)) else {
+            // Revoked topic/epoch authority cannot be adopted by a reconnect.
+            continue;
+        };
+        let result = network.send_personal_fabric_action_on_route(
+            &route,
             PersonalFabricAction::Input {
                 lease_nonce: input.lease_nonce,
                 event: input.event,
@@ -6448,11 +6719,10 @@ pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::D
     )
 }
 
-fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
+fn native_display_connectors(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {
     use crate::shell::device_fabric::DisplayConnectorPlacement;
-    let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() else {
-        return Vec::new();
-    };
     snapshot
         .layout
         .iter()
@@ -6480,6 +6750,62 @@ fn native_display_connectors() -> Vec<crate::shell::device_fabric::DisplayConnec
             })
         })
         .take(32)
+        .collect()
+}
+
+fn native_display_outputs(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Option<Vec<crate::shell::device_fabric::DisplayOutputObservation>> {
+    use crate::shell::device_fabric::DisplayOutputObservation;
+    use settings_store::person_displays::{DeviceOutput, MAX_DEVICE_OUTPUTS};
+    if snapshot.outputs.len() > MAX_DEVICE_OUTPUTS {
+        return None;
+    }
+    let identities = settings_store::hardware::DisplaySet::of(
+        snapshot
+            .outputs
+            .iter()
+            .map(|output| (&output.descriptor).into()),
+    );
+    snapshot
+        .outputs
+        .iter()
+        .map(|output| {
+            if !output.scale.is_finite() || !(0.5..=4.0).contains(&output.scale) {
+                return None;
+            }
+            let connector = &output.descriptor.connector;
+            let placement = snapshot
+                .layout
+                .iter()
+                .find(|placement| &placement.connector == connector);
+            let name = output
+                .descriptor
+                .monitor
+                .as_ref()
+                .map(settings_store::hardware::MonitorIdentity::display_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| output.descriptor.label().to_owned());
+            let facts = DeviceOutput {
+                id: identities.members.get(connector)?.clone(),
+                name,
+                builtin: output.builtin,
+                x: placement.map_or(0, |placement| placement.x),
+                y: placement.map_or(0, |placement| placement.y),
+                width: placement.map_or(0, |placement| placement.width),
+                height: placement.map_or(0, |placement| placement.height),
+                mode_width: output.current_mode.width,
+                mode_height: output.current_mode.height,
+                refresh_mhz: output.current_mode.refresh_mhz,
+                scale_milli: format!("{:.0}", output.scale * 1000.0).parse().ok()?,
+                connected: true,
+                enabled: placement.is_some(),
+            };
+            facts.valid().then(|| DisplayOutputObservation {
+                connector: connector.clone(),
+                output: facts,
+            })
+        })
         .collect()
 }
 
@@ -6524,6 +6850,7 @@ pub fn observed_device_displays(
 }
 
 fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    person_layout::refresh(network, policy);
     let Ok((publisher_pid, publisher_start_ticks)) = settings_store::hardware::publisher_identity()
     else {
         return;
@@ -6531,7 +6858,7 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
+    let mut snapshot = settings_store::device_displays::DeviceDisplaySnapshot {
         publisher_pid,
         publisher_start_ticks,
         displays: if local.is_some() && policy.permits(ContinuityCapability::DisplayInput) {
@@ -6540,8 +6867,34 @@ fn publish_device_displays(network: &ShellNetwork, policy: ContinuityPolicySnaps
             Vec::new()
         },
     };
+    snapshot.displays.retain(|display| {
+        crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+            .is_ok_and(|owner| network.personal_device_is_enrolled(&owner))
+    });
+    for display in &mut snapshot.displays {
+        if !display.local {
+            display.online &=
+                crate::shell::personal_continuity::DeviceId::new(display.device.clone())
+                    .is_ok_and(|owner| network.current_personal_route(&owner).is_some());
+        }
+    }
     if let Err(error) = snapshot.save() {
         tracing::debug!(%error, "could not publish device display observations");
+    }
+    let view = settings_store::person_displays::PersonDisplays {
+        schema_version: settings_store::person_displays::SCHEMA_VERSION,
+        publisher_pid,
+        publisher_start_ticks,
+        local_device: local
+            .as_ref()
+            .map_or_else(String::new, |device| device.as_str().to_owned()),
+        devices: local
+            .as_ref()
+            .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
+            .map_or_else(Vec::new, |local| network.person_display_devices(local)),
+    };
+    if let Err(error) = view.save() {
+        tracing::debug!(%error, "could not publish person display observations");
     }
 }
 
@@ -6579,18 +6932,16 @@ fn build_local_snapshot(
     } else {
         Vec::new()
     };
-    let (settings, wifi) = if policy.permits(ContinuityCapability::WifiSettings) {
-        (
-            reconcile_roaming_settings(
-                roaming_setting_values(),
-                previous,
-                applied_remote_settings,
-                stamp,
-            ),
-            previous.map_or_else(Vec::new, |state| state.wifi.clone()),
-        )
+    let settings = reconcile_roaming_settings(
+        permitted_roaming_setting_values(&settings_store::load(), policy),
+        previous,
+        applied_remote_settings,
+        stamp,
+    );
+    let wifi = if policy.permits(ContinuityCapability::WifiSettings) {
+        previous.map_or_else(Vec::new, |state| state.wifi.clone())
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
     };
     let display = if policy.permits(ContinuityCapability::DisplayInput) {
         local.display.map(|rect| DisplayPlacement {
@@ -6647,11 +6998,33 @@ fn policy_capabilities(
             || policy.permits(ContinuityCapability::DisplayInput))
             && local.display.is_some(),
         clipboard: policy.permits(ContinuityCapability::Clipboard),
-        roaming_settings: policy.permits(ContinuityCapability::WifiSettings),
+        roaming_settings: policy.permits(ContinuityCapability::WifiSettings)
+            || policy.permits(ContinuityCapability::DisplayInput),
         secret_store: policy.permits(ContinuityCapability::WifiSettings),
         app_continuation: policy.permits(ContinuityCapability::AppContinuations),
         audio_group: policy.permits(ContinuityCapability::Media) && local.audio_output,
     }
+}
+
+fn refresh_display_observation_revision(
+    display: &mut DisplayPlacement,
+    fabric: &DeviceFabric,
+    outputs: &[crate::shell::device_fabric::DisplayOutputObservation],
+    stamp: &FabricStamp,
+) {
+    if fabric.display_outputs(&display.device) != Some(outputs) {
+        // Mode or identity changes matter even when logical geometry is unchanged.
+        display.stamp = stamp.clone();
+    }
+}
+
+fn local_observation_fingerprint(
+    snapshot: &DeviceFabricSnapshot,
+    outputs: Option<&[crate::shell::device_fabric::DisplayOutputObservation]>,
+) -> Option<[u8; 32]> {
+    postcard::to_allocvec(&(local_snapshot_fingerprint(snapshot), outputs))
+        .ok()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
 }
 
 fn local_snapshot_fingerprint(snapshot: &DeviceFabricSnapshot) -> Option<[u8; 32]> {
@@ -6769,15 +7142,36 @@ fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String
     settings_store::continuity::personal_values(document)
 }
 
+fn permitted_roaming_setting_values(
+    document: &Map<String, Value>,
+    policy: ContinuityPolicySnapshot,
+) -> BTreeMap<String, Value> {
+    roaming_setting_values_from(document)
+        .into_iter()
+        .filter(|(key, _)| permits_roaming_setting(policy, key))
+        .collect()
+}
+
+fn permits_roaming_setting(policy: ContinuityPolicySnapshot, key: &str) -> bool {
+    let capability = if key == settings_store::person_displays::ARRANGEMENT_KEY {
+        ContinuityCapability::DisplayInput
+    } else {
+        ContinuityCapability::WifiSettings
+    };
+    policy.permits(capability)
+}
+
 fn roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
 ) -> settings_store::roaming_provenance::RoamingProvenance {
     use settings_store::roaming_provenance::{
         Origin, RoamingProvenance, SettingResolution, WifiResolution,
     };
 
-    if !enabled {
+    if !policy.permits(ContinuityCapability::WifiSettings)
+        && !policy.permits(ContinuityCapability::DisplayInput)
+    {
         return RoamingProvenance::default();
     }
     let origin = |stamp: &FabricStamp| Origin {
@@ -6793,7 +7187,10 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.settings)
-        .filter(|setting| settings_store::continuity::is_personal(&setting.key))
+        .filter(|setting| {
+            settings_store::continuity::is_personal(&setting.key)
+                && permits_roaming_setting(policy, &setting.key)
+        })
     {
         settings_by_key
             .entry(&setting.key)
@@ -6828,6 +7225,7 @@ fn roaming_provenance(
         .snapshots()
         .values()
         .flat_map(|snapshot| &snapshot.wifi)
+        .filter(|_| policy.permits(ContinuityCapability::WifiSettings))
     {
         wifi_by_network
             .entry(credential.network_id)
@@ -6865,11 +7263,11 @@ fn roaming_provenance(
 
 fn publish_roaming_provenance(
     fabric: &DeviceFabric,
-    enabled: bool,
+    policy: ContinuityPolicySnapshot,
     previous_fingerprint: &mut Option<[u8; 32]>,
     path: Option<&Path>,
 ) -> Result<bool, settings_store::roaming_provenance::ProvenanceError> {
-    let mut projection = roaming_provenance(fabric, enabled);
+    let mut projection = roaming_provenance(fabric, policy);
     let fingerprint = serde_json::to_vec(&projection)
         .ok()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -7234,6 +7632,9 @@ fn tear_down_spatial_input(network: &ShellNetwork) {
         }
         spatial.issued.clear();
         spatial.received.clear();
+        spatial.received_routes.clear();
+        spatial.issued_routes.clear();
+        spatial.automatic_issued.clear();
         spatial.outbound.clear();
         spatial.inbound.clear();
     }
@@ -7317,6 +7718,206 @@ mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
 
+    #[test]
+    fn rich_display_native_observation_preserves_identity_mode_scale_and_inactive_outputs() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+            OutputDescriptor, OutputMode,
+        };
+        let panel = DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: "eDP-1".into(),
+                connector_label: String::new(),
+                modes: Vec::new(),
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: Some(MonitorIdentity {
+                    make: "PanelCo".into(),
+                    model: "Panel".into(),
+                    serial: "123".into(),
+                    physical_size_mm: None,
+                }),
+            },
+            current_mode: OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 59_940,
+            },
+            scale: 2.0,
+            builtin: true,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: BTreeMap::new(),
+        };
+        let mut inactive = panel.clone();
+        inactive.descriptor.connector = "DP-2".into();
+        inactive.descriptor.monitor = None;
+        inactive.builtin = false;
+        let mut hardware = DisplayHardwareSnapshot {
+            outputs: vec![panel, inactive],
+            layout: vec![LiveOutputPlacement {
+                connector: "eDP-1".into(),
+                x: 40,
+                y: 20,
+                width: 1280,
+                height: 800,
+            }],
+            ..Default::default()
+        };
+        let outputs = native_display_outputs(&hardware).unwrap();
+        assert_eq!(outputs.len(), 2);
+        let panel = &outputs[0].output;
+        assert!(panel.builtin && panel.connected && panel.enabled);
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (40, 20, 1280, 800)
+        );
+        assert_eq!(
+            (panel.mode_width, panel.mode_height, panel.refresh_mhz),
+            (2560, 1600, 59_940)
+        );
+        assert_eq!(panel.scale_milli, 2000);
+        assert_eq!(panel.name, "PanelCo Panel");
+        assert!(!outputs[1].output.enabled);
+        assert_eq!(outputs[1].output.width, 0);
+        hardware.outputs[0].descriptor.connector = "eDP-9".into();
+        assert_eq!(
+            native_display_outputs(&hardware).unwrap()[0].output.id,
+            panel.id
+        );
+        hardware.outputs[0].scale = f64::NAN;
+        assert!(native_display_outputs(&hardware).is_none());
+    }
+
+    #[test]
+    fn rich_display_mode_change_gets_a_new_revision_without_geometry_change() {
+        let owner = DeviceId::new("local-mode-test").unwrap();
+        let previous = drag_snapshot(owner.clone(), 0);
+        let old_revision = previous.display.as_ref().unwrap().stamp.clone();
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(previous.clone()).unwrap();
+        let mut outputs = vec![crate::shell::device_fabric::DisplayOutputObservation {
+            connector: "eDP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: true,
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                mode_width: 1600,
+                mode_height: 900,
+                refresh_mhz: 60_000,
+                scale_milli: 1250,
+                connected: true,
+                enabled: true,
+            },
+        }];
+        fabric
+            .observe_display_outputs(&owner, &old_revision, outputs.clone())
+            .unwrap();
+        let fingerprint = local_observation_fingerprint(&previous, Some(&outputs));
+        let next_revision = FabricStamp {
+            counter: old_revision.counter + 1,
+            device: owner,
+        };
+        let mut candidate = previous.clone();
+        candidate.display.as_mut().unwrap().stamp = next_revision.clone();
+        preserve_unchanged_stamps(&mut candidate, Some(&previous));
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, old_revision);
+        outputs[0].output.refresh_mhz = 59_940;
+        refresh_display_observation_revision(
+            candidate.display.as_mut().unwrap(),
+            &fabric,
+            &outputs,
+            &next_revision,
+        );
+        assert_eq!(candidate.display.as_ref().unwrap().stamp, next_revision);
+        assert_eq!(
+            candidate.display.as_ref().unwrap().rect,
+            previous.display.unwrap().rect
+        );
+        assert_ne!(
+            local_observation_fingerprint(&candidate, Some(&outputs)),
+            fingerprint
+        );
+    }
+
+    fn roaming_test_policy(wifi_settings: bool, display_input: bool) -> ContinuityPolicySnapshot {
+        ContinuityPolicySnapshot::from_document(
+            serde_json::json!({
+                "continuity": { "enabled": true, "wifi_settings": wifi_settings,
+                    "display_input": display_input }
+            })
+            .as_object()
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn display_arrangement_policy_keeps_settings_and_credentials_independent() {
+        let device = DeviceId::new("desktop").unwrap();
+        let mut snapshot = provenance_snapshot(device, "Desktop", 1, Some(Value::Bool(true)));
+        let arrangement_key = settings_store::person_displays::ARRANGEMENT_KEY;
+        snapshot.settings.push(RoamingSetting {
+            key: arrangement_key.into(),
+            value: settings_store::person_displays::Arrangement::default().to_value(),
+            stamp: snapshot.presence.stamp.clone(),
+        });
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(snapshot).unwrap();
+        for (wifi, displays) in [(false, false), (true, false), (false, true), (true, true)] {
+            let policy = roaming_test_policy(wifi, displays);
+            let document = serde_json::json!({
+                "display": { "arrangement": { "displays": [] } },
+                "appearance": { "mode": true }
+            });
+            let records = permitted_roaming_setting_values(document.as_object().unwrap(), policy);
+            assert_eq!(records.contains_key(arrangement_key), displays);
+            assert_eq!(records.contains_key("tilo.appearance.mode"), wifi);
+            let projection = roaming_provenance(&fabric, policy);
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == arrangement_key),
+                displays
+            );
+            assert_eq!(
+                projection
+                    .settings
+                    .iter()
+                    .any(|item| item.key == "tilo.appearance.mode"),
+                wifi
+            );
+            let caps = policy_capabilities(
+                policy,
+                LocalFabricCapabilities {
+                    display: None,
+                    pointer: false,
+                    keyboard: false,
+                    audio_output: false,
+                },
+            );
+            assert_eq!(caps.roaming_settings, wifi || displays);
+            assert_eq!(caps.secret_store, wifi);
+        }
+        assert!(!permits_roaming_setting(
+            ContinuityPolicySnapshot::default(),
+            arrangement_key
+        ));
+    }
+
     fn drag_snapshot(device: DeviceId, x: i32) -> DeviceFabricSnapshot {
         let mut snapshot = provenance_snapshot(device.clone(), "Laptop", 7, None);
         snapshot.presence.capabilities.display = true;
@@ -7366,6 +7967,104 @@ mod tests {
             y: 720,
         };
         (fabric, local, peer, request)
+    }
+
+    #[test]
+    fn shared_pointer_layout_retains_checked_origins_and_observed_output_offsets() {
+        use crate::shell::device_fabric::DisplayOutputObservation;
+        use settings_store::person_displays::{Arrangement, DeviceOutput};
+        let (mut fabric, local, remote, _) = drag_pair();
+        let unknown = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(unknown.layout.displays.is_empty());
+        assert_eq!(unknown.legacy_targets, vec![remote.clone()]);
+        // Negative local output origins must not turn a device bounding box
+        // into its desktop origin. Both the admitted connector and rich facts
+        // report the same desktop-relative coordinate.
+        for owner in [&local, &remote] {
+            let mut snapshot = fabric.snapshots().get(owner).unwrap().clone();
+            snapshot.display.as_mut().unwrap().stamp.counter += 1;
+            snapshot.presence.stamp.counter += 1;
+            snapshot.display.as_mut().unwrap().outputs[0].rect.x = -120;
+            let display = snapshot.display.as_ref().unwrap().clone();
+            fabric.upsert(snapshot).unwrap();
+            let connector = &display.outputs[0];
+            fabric
+                .observe_display_outputs(
+                    owner,
+                    &display.stamp,
+                    vec![DisplayOutputObservation {
+                        connector: connector.connector.clone(),
+                        output: DeviceOutput {
+                            id: format!("monitor:{}", owner.as_str()),
+                            name: "Panel".into(),
+                            builtin: true,
+                            x: connector.rect.x,
+                            y: connector.rect.y,
+                            width: connector.rect.width,
+                            height: connector.rect.height,
+                            mode_width: 1600,
+                            mode_height: 900,
+                            refresh_mhz: 60_000,
+                            scale_milli: connector.scale_milli,
+                            connected: true,
+                            enabled: true,
+                        },
+                    }],
+                )
+                .unwrap();
+        }
+        let view = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(view.legacy_targets.is_empty());
+        let local_display = view
+            .layout
+            .find(local.as_str(), &format!("monitor:{}", local.as_str()))
+            .unwrap();
+        let remote_display = view
+            .layout
+            .find(remote.as_str(), &format!("monitor:{}", remote.as_str()))
+            .unwrap();
+        assert_eq!(local_display.local_rect.x, -120);
+        assert_eq!(local_display.rect.x, -120);
+        assert_eq!(remote_display.local_rect.x, -120);
+        assert_eq!(remote_display.rect.x, 1160);
+        assert_eq!(remote_display.to_device((1160.5, 40.25)), (-119.5, 40.25));
+        assert_eq!(remote_display.to_shared((-119.5, 40.25)), (1160.5, 40.25));
+        // The checked target-owned placement remains the anchor until an
+        // explicit arrangement pins this device elsewhere.
+        let mut snapshot = fabric.snapshots().get(&remote).unwrap().clone();
+        let display = snapshot.display.as_mut().unwrap();
+        display.rect.x = 2000;
+        display.stamp.counter += 1;
+        snapshot.presence.stamp.counter += 1;
+        let stamp = display.stamp.clone();
+        let facts = fabric.display_outputs(&remote).unwrap().to_vec();
+        fabric.upsert(snapshot).unwrap();
+        fabric
+            .observe_display_outputs(&remote, &stamp, facts)
+            .unwrap();
+        assert!(
+            !view.is_current(&fabric, &local),
+            "a stale pointer layout must stop routing immediately"
+        );
+        let moved = person_layout::resolve(
+            &fabric,
+            &local,
+            &Arrangement::default(),
+            &fabric.person_devices(&local),
+        );
+        assert!(moved.is_current(&fabric, &local));
+        assert!(!moved.is_current(&fabric, &remote));
+        assert_eq!(moved.layout.device_bounds(remote.as_str()).unwrap().x, 1880);
     }
 
     #[test]
@@ -8580,7 +9279,7 @@ mod tests {
                 ))
                 .unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.settings.len(), 1);
             assert_eq!(projection.settings[0].winner.device_label, "Laptop");
             assert_eq!(projection.settings[0].winner.counter, 5);
@@ -8589,7 +9288,11 @@ mod tests {
                 projection.settings[0].alternatives[0].device_label,
                 "Desktop"
             );
-            assert!(roaming_provenance(&fabric, false).settings.is_empty());
+            assert!(
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                    .settings
+                    .is_empty()
+            );
         }
 
         fn unchanged_provenance_is_not_rewritten_and_settings_can_reload_it() {
@@ -8608,13 +9311,25 @@ mod tests {
                 .join(settings_store::roaming_provenance::FILE_NAME);
             let mut fingerprint = None;
             assert!(
-                publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let first =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
             assert_eq!(first.settings[0].winner.device_label, "Laptop");
             assert!(
-                !publish_roaming_provenance(&fabric, true, &mut fingerprint, Some(&path)).unwrap()
+                !publish_roaming_provenance(
+                    &fabric,
+                    roaming_test_policy(true, false),
+                    &mut fingerprint,
+                    Some(&path)
+                )
+                .unwrap()
             );
             let second =
                 settings_store::roaming_provenance::RoamingProvenance::load_at(&path).unwrap();
@@ -8663,7 +9378,7 @@ mod tests {
             fabric.upsert(first_snapshot).unwrap();
             fabric.upsert(second_snapshot).unwrap();
 
-            let projection = roaming_provenance(&fabric, true);
+            let projection = roaming_provenance(&fabric, roaming_test_policy(true, false));
             assert_eq!(projection.wifi.len(), 1);
             assert_eq!(projection.wifi[0].ssid, "Home");
             assert_eq!(projection.wifi[0].winner.device_label, "Laptop");
@@ -8683,6 +9398,173 @@ mod tests {
         provenance_reports_the_deterministic_winner_and_only_divergent_origins();
         unchanged_provenance_is_not_rewritten_and_settings_can_reload_it();
         wifi_provenance_exposes_origins_but_neither_envelopes_nor_passwords();
+    }
+
+    #[test]
+    fn spatial_input_requires_the_grant_route_epoch_and_live_nonce() {
+        use crate::shell::network::AuthenticatedPersonalRoute;
+        let controller = DeviceId::new("controller").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let route = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 7);
+        let rejoined = AuthenticatedPersonalRoute::for_test_epoch(controller.clone(), 8);
+        let foreign = AuthenticatedPersonalRoute::for_test(DeviceId::new("foreign").unwrap());
+        let lease = InputLease {
+            controller: controller.clone(),
+            target: target.clone(),
+            issued_unix_ms: 100,
+            expires_unix_ms: 200,
+            nonce: [7; 16],
+            allow_pointer: true,
+            allow_keyboard: false,
+        };
+        let input = (
+            lease.nonce,
+            FabricInputEvent::PointerButton {
+                button: 0x110,
+                pressed: true,
+            },
+        );
+        let mut spatial = SpatialInputState::default();
+        spatial.issued.insert(lease.nonce, lease.clone());
+        spatial.issued_routes.insert(lease.nonce, route.clone());
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert_eq!(
+            spatial.inbound.pop_front(),
+            Some((controller.clone(), input.1))
+        );
+        for (candidate, destination, event, now) in [
+            (&rejoined, &target, input, 150),
+            (&foreign, &target, input, 150),
+            (&route, &controller, input, 150),
+            (&route, &target, ([8; 16], input.1), 150),
+            (&route, &target, input, 201),
+            (
+                &route,
+                &target,
+                (
+                    lease.nonce,
+                    FabricInputEvent::Key {
+                        keycode: 30,
+                        pressed: true,
+                        modifiers: 0,
+                    },
+                ),
+                150,
+            ),
+        ] {
+            spatial.accept_lease_bound_input(candidate, destination, event, now);
+            assert!(spatial.inbound.is_empty());
+        }
+        // Withdrawing the exact route releases the seat even if the device
+        // still appears online and the wall-clock lease has not expired.
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert_eq!(spatial.inbound.len(), 1);
+        prune_spatial_state(&mut spatial, 150, &[], |_| false);
+        assert!(
+            spatial.inbound.is_empty(),
+            "revocation must discard a queued down edge"
+        );
+        assert_eq!(spatial.release_controllers.pop_front(), Some(controller));
+        assert!(spatial.issued_routes.is_empty());
+        spatial.accept_lease_bound_input(&route, &target, input, 150);
+        assert!(spatial.inbound.is_empty());
+    }
+
+    #[test]
+    fn spatial_gestures_cannot_adopt_replacement_or_foreign_leases() {
+        let controller = DeviceId::new("controller").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let foreign = DeviceId::new("foreign").unwrap();
+        let mut spatial = SpatialInputState::default();
+        let lease = InputLease {
+            controller: controller.clone(),
+            target: target.clone(),
+            issued_unix_ms: 100,
+            expires_unix_ms: 200,
+            nonce: [7; 16],
+            allow_keyboard: true,
+            allow_pointer: true,
+        };
+        spatial.received.insert(target.clone(), lease.clone());
+        let event = |nonce, event| OutboundSpatialInput {
+            target: target.clone(),
+            lease_nonce: nonce,
+            event,
+        };
+        let press = FabricInputEvent::Key {
+            keycode: 30,
+            pressed: true,
+            modifiers: 0,
+        };
+        let release = FabricInputEvent::Key {
+            keycode: 30,
+            pressed: false,
+            modifiers: 0,
+        };
+        spatial
+            .queue_lease_bound_input(&controller, event(lease.nonce, press), 150)
+            .unwrap();
+        assert!(
+            spatial
+                .queue_lease_bound_input(&foreign, event(lease.nonce, press), 150)
+                .is_err()
+        );
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(lease.nonce, release), 201)
+                .is_err()
+        );
+        // A new grant may accept a new gesture, never the previous gesture's
+        // down/up edges. Pruning removes the old queue under the same contract.
+        let mut replacement = lease.clone();
+        replacement.nonce = [8; 16];
+        spatial.received.insert(target.clone(), replacement.clone());
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(lease.nonce, release), 150)
+                .is_err()
+        );
+        prune_spatial_state(&mut spatial, 150, &[], |_| true);
+        assert!(spatial.outbound.is_empty());
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+            .unwrap();
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, release), 150)
+            .unwrap();
+        assert_eq!(spatial.outbound.len(), 2);
+        assert!(
+            spatial
+                .outbound
+                .iter()
+                .all(|input| input.lease_nonce == replacement.nonce)
+        );
+        spatial.received.remove(&target);
+        assert!(
+            spatial
+                .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+                .is_err()
+        );
+        prune_spatial_state(&mut spatial, 150, &[], |_| true);
+        assert!(spatial.outbound.is_empty());
+        // A keyboard-only lease stays usable by the existing semantic sender.
+        replacement.allow_pointer = false;
+        spatial.received.insert(target.clone(), replacement.clone());
+        spatial
+            .queue_lease_bound_input(&controller, event(replacement.nonce, press), 150)
+            .unwrap();
+        assert!(
+            spatial
+                .queue_lease_bound_input(
+                    &controller,
+                    event(
+                        replacement.nonce,
+                        FabricInputEvent::PointerMotion { x: 1, y: 2 }
+                    ),
+                    150
+                )
+                .is_err()
+        );
     }
 
     #[test]

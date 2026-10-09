@@ -53,6 +53,7 @@ pub mod lsp;
 pub mod model;
 pub mod native_fixture;
 pub mod resource;
+mod row_viewport;
 mod sample_project;
 mod search;
 pub mod search_entries;
@@ -60,6 +61,9 @@ pub mod settings;
 mod status_bar;
 #[cfg(test)]
 mod test_support;
+mod text_operations;
+#[cfg(test)]
+mod text_operations_tests;
 
 pub use app::CodeApp;
 pub use effects::CodeEditorEffect;

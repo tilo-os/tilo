@@ -13,7 +13,7 @@ use std::{
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::{NeighbourMsg, Reseal, TransportOrigin, join::TransportHint};
-use tilo_relay::{RelayClient, RelayCoeditSession};
+use tilo_relay_session::{RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// An enrolled room to hold a session for.

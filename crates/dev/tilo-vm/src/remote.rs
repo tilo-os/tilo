@@ -217,6 +217,8 @@ impl Remote {
             return Err(CliError::io("start ssh")(std::io::Error::other("no pipes")));
         };
         let mut client = Client::new(BufReader::new(stdout), stdin);
+        // SSH stdio is byte-transparent; the audited peer bridge stays JSON-line oriented.
+        client.enable_binary_uploads();
         match client.hello(env!("CARGO_PKG_VERSION")) {
             Ok(hello) => Ok(Self {
                 child,

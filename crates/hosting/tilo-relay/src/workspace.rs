@@ -82,6 +82,12 @@ pub struct WorkspaceRuntime {
     /// Failed/pending replacements cap what an old external file may grant.
     pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
     pub(crate) membership_revision: u64,
+    /// The daemon's watch on this room's membership files, attached on the
+    /// first fresh read once a watch covers the state root.
+    pub(crate) disk_generation: Option<crate::membership_watch::DiskGeneration>,
+    /// The watched generation `membership` was last loaded at. `None` until a
+    /// live watch vouched for a load, so every read goes to the disk.
+    pub(crate) loaded_generation: Option<u64>,
     /// Whether any connection already admitted by the relay's trust policy may
     /// join this workspace. Enabled automatically for matching-user home hosts;
     /// shared/multi-tenant hosts use an explicit membership list.
@@ -316,6 +322,8 @@ impl WorkspaceRuntime {
             authorization: Arc::new(AsyncMutex::new(())),
             membership_ceiling: None,
             membership_revision: 0,
+            disk_generation: None,
+            loaded_generation: None,
             admit_authenticated: false,
             admitted_users: HashSet::new(),
             governed_user_roots,
@@ -522,6 +530,17 @@ impl WorkspaceRuntime {
         if let Some(served) = self.checkpoint_served.get_mut(device) {
             served.insert(channel);
         }
+    }
+
+    /// Whether `membership` reflects the files on disk without reading them:
+    /// a live watch has seen no change to them since they were last loaded.
+    pub(crate) fn membership_is_current(&self) -> bool {
+        self.loaded_generation.is_some()
+            && self.loaded_generation
+                == self
+                    .disk_generation
+                    .as_ref()
+                    .and_then(crate::membership_watch::DiskGeneration::current)
     }
 
     /// Remember an authenticated device before sharing this runtime, so deltas

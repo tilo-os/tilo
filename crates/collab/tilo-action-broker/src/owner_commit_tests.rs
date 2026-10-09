@@ -1989,7 +1989,8 @@ mod owner_commit_tests {
         let context = tilo_actions::ActionContext::default();
         let contract = tilo_actions::ActionContract::default();
         let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
-            "actor":actor,"contract":contract,"app_id":f.route.app_id,"action":"open"});
+            "actor":actor,"contract":contract,"app_id":f.route.app_id,
+            "resource":format!("app.{}", f.route.app_id),"action":"open"});
         let update = tilo_actions::InvocationUpdate::Succeeded {
             invocation: key.invocation,
             output: tilo_actions::ActionOutput::default(),

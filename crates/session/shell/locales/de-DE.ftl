@@ -1025,14 +1025,14 @@ notification-remote-input-stopped-shares = { $count ->
    *[other] Die Fernsteuerung wurde { $count } Freigaben entzogen; die Freigabe wurde beendet.
 }
 
-# Media codec pack notices
+# Hinweise zu Medienformaten
 codec-hardware-ready = Hardware-H.264/HEVC ist bereit
-codec-installed = Mediencodecs installiert
-codec-installed-mesa-waiting = { $applies } Hardware-H.264/HEVC folgt, sobald RPM Fusion einen zu diesem System passenden Mesa-Build veröffentlicht.
-codec-failed = Mediencodecs konnten nicht installiert werden
+codec-installed = Mehr Video- und Audioformate sind eingeschaltet
+codec-installed-mesa-waiting = { $applies } Hardware-H.264/HEVC folgt, sobald ein passender Treiber veröffentlicht ist.
+codec-failed = Mehr Video- und Audioformate konnten nicht eingeschaltet werden
 codec-failed-retry = Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-failed-with-error = { $error } Öffne Einstellungen, Updates, um es erneut zu versuchen.
-codec-app-name = Mediencodecs
+codec-app-name = Video- und Audioformate
 
 # Screen capture surfaces
 capture-live-alt = Live-Aufnahme: { $title }
@@ -1777,31 +1777,25 @@ onboarding-done-system-care-body = Tilo sucht nach der Einrichtung automatisch n
 onboarding-tour-take = Kurze Tour starten
 onboarding-finish = Weiter zum Desktop
 
-# Einrichtung: Mediencodecs
-onboarding-codecs-title = Mediencodecs installieren?
-onboarding-codecs-body = H.264 und HEVC, die Formate der meisten Videos, Kameras und Anrufe, sind patentiert und nicht Teil von Tilo. Du kannst sie jetzt mit einem Klick hinzufügen.
-onboarding-codecs-enables-title = Was sie ermöglichen
-onboarding-codecs-enables-hardware = Hardwarebeschleunigtes Video auf AMD- und Intel-Grafik.
-onboarding-codecs-enables-playback = Wiedergabe von H.264 und HEVC in Videos, die du öffnest.
-onboarding-codecs-enables-encoding = Kodierung in H.264 und HEVC für Bildschirmfreigabe, Aufnahmen und Anrufe.
-onboarding-codecs-source-title = Woher sie kommen
-onboarding-codecs-source = Dieser Computer lädt sie direkt von RPM Fusion und von Cisco (OpenH264) unter den Lizenzen dieser Projekte herunter und prüft die Signatur jedes Pakets. Tilo stellt sie weder bereit noch verteilt es sie. Du kannst sie jederzeit unter Einstellungen, Updates entfernen. OpenH264 Video Codec provided by Cisco Systems, Inc. Die vollständige Cisco-Binärlizenz steht unter /usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt und https://www.openh264.org/BINARY_LICENSE.txt.
-onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
+# Einrichtung: mehr Video- und Audioformate
+onboarding-codecs-title = Mehr Video- und Audioformate abspielen
+onboarding-codecs-note = Wird von den Herausgebern der Formate auf dieses Gerät geladen. Du kannst es in den Einstellungen wieder ausschalten.
+onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
 onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-starting = Wird gestartet …
-onboarding-codecs-installing-title = Mediencodecs werden installiert
-onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald die Codecs bereit sind.
-onboarding-codecs-offline-title = Die Mediencodecs werden installiert, sobald du online bist
-onboarding-codecs-offline-message = Dieser Computer ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Die Codecs werden automatisch installiert, sobald er online ist, und du erhältst eine Benachrichtigung.
-onboarding-codecs-installed-title = Mediencodecs installiert
-onboarding-codecs-failed-title = Mediencodecs konnten nicht installiert werden
-onboarding-codecs-failed-message = Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
-onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder installiere sie später unter Einstellungen, Updates.
-onboarding-codecs-installer-failed = Das Installationsprogramm konnte nicht gestartet werden: { $error }
+onboarding-codecs-installing-title = Weitere Formate werden installiert
+onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
+onboarding-codecs-offline-title = Wird installiert, sobald du online bist
+onboarding-codecs-offline-message = Dieses Gerät ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Der Download startet von selbst, sobald es online ist, und du erhältst eine Benachrichtigung.
+onboarding-codecs-installed-title = Mehr Video- und Audioformate sind eingeschaltet
+onboarding-codecs-failed-title = Weitere Formate konnten nicht installiert werden
+onboarding-codecs-failed-message = Versuche es erneut oder später unter Einstellungen, Updates.
+onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder später unter Einstellungen, Updates.
+onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
 onboarding-codecs-skip = Überspringen
 onboarding-codecs-not-now = Nicht jetzt
 onboarding-codecs-retry = Erneut versuchen
-onboarding-codecs-install = Mediencodecs installieren
+onboarding-codecs-install = Installieren
 
 # Desktop-Tour
 onboarding-tour-eyebrow = Desktop-Tour
@@ -2233,8 +2227,6 @@ speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
 # Drahtlose Bildschirmprojektion
 projection-service-unavailable-detail = Der Projektionsdienst ist nicht verfügbar ({ $error }). Prüfe den Tilo-Projektordienst.
-projection-service-exited = Der Projektionsdienst wurde beendet: { $status }
-projection-service-invalid-discovery = Der Projektionsdienst hat ungültige Suchergebnisse geliefert: { $error }
 projection-mode-unsupported = { $device } unterstützt den Modus „{ $mode }“ nicht
 projection-service-unavailable = Der Projektionsdienst ist nicht verfügbar
 projection-service-stopped = Der Projektionsdienst wurde beendet
@@ -2487,5 +2479,14 @@ task-review-retry = Aufgabe erneut versuchen
 task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
 task-review-provider = Aufgabenprüfung
 
+host-history-task-refused-title = Aufgabe konnte nicht geändert werden
+host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
+
+shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-retry = Fenster erneut öffnen
+
+device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
+device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
+device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.

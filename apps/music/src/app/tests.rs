@@ -22,6 +22,65 @@ fn app_with_doc() -> (MusicApp, AutoCommit) {
     (app, doc)
 }
 
+#[cfg(feature = "audio")]
+#[test]
+fn private_queue_metadata_restores_unsaved_songs_before_resume() {
+    let (mut original, _) = app_with_doc();
+    original.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+    original.pb.current = Some("tk_g1".into());
+    original.pb.playing = true;
+    let profile = crate::storage::DeviceProfile {
+        playback: original.pb.clone(),
+        queue_catalogue: original.queue_catalogue(),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("profile.json");
+    crate::storage::save_device_profile_to(&path, &profile).unwrap();
+    let restored = crate::storage::load_device_profile_from(&path);
+    let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
+    let mut doc = AutoCommit::new();
+    app.reload(&doc);
+    let before = doc.get_heads();
+    assert!(!app.pb.playing, "restoration never starts audio");
+    assert_eq!(app.pb.queue, original.pb.queue);
+    for id in &app.pb.queue {
+        assert_eq!(app.playback_track(id), original.playback_track(id));
+    }
+    let mut requested = app.pb.clone();
+    requested.playing = true;
+    assert!(app.apply_resource_playback(requested).is_ok());
+    assert!(doc::load_library(&doc).tracks.is_empty());
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
+}
+
+#[cfg(feature = "audio")]
+#[test]
+fn legacy_spotify_queue_resolves_canonical_ids_without_inventing_metadata() {
+    let (mut app, mut doc) = app_with_doc();
+    let before = doc.get_heads();
+    let next = "spotify:track:0DiWol3AO6WpXZgp0goxAV";
+    let request = Playback {
+        current: Some("tk_g1".into()),
+        queue: vec!["tk_g1".into(), next.into()],
+        ..Default::default()
+    };
+    assert!(app.playback_track(next).is_none());
+    assert!(app.apply_resource_playback(request.clone()).is_ok());
+    assert_eq!(app.pb.queue, request.queue);
+    let mut invalid = request;
+    invalid.queue.push("/private/not-granted.wav".into());
+    assert!(app.apply_resource_playback(invalid).is_err());
+    assert!(app.apply_resource_play_queue_item(1, next).is_ok());
+    assert!(
+        app.playback_track(next).is_none(),
+        "the provider must supply metadata"
+    );
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2942,10 +3001,15 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         .into_iter()
         .find(|action| action.id == "play")
         .expect("play resource action");
-        assert!(
-            matches!(play.contract.result, tilo_actions::ResultSpec::Job),
+        assert_eq!(
+            play.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false },
             "playing a track answers when its audio starts"
         );
+        play.contract
+            .result
+            .validate(&output)
+            .expect("the actual stream completion must match its published result");
     }
 
     // Phase `play_drives_the_audio_pipeline_path`.
@@ -4792,6 +4856,42 @@ fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
 fn playback_status_reports_observations_without_mutating_the_library() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let before = app.read_document(|doc| doc.clone().get_heads());
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Observed queue fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.effect(&crate::actions::MusicEffect::SetVolume { volume: 37 })
+        .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::ToggleShuffle,
+    )
+    .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::CycleRepeat,
+    )
+    .unwrap();
     let output = app
         .effect_on(
             "music.player:player",
@@ -4805,6 +4905,11 @@ fn playback_status_reports_observations_without_mutating_the_library() {
     assert_eq!(observed["rendered_buffers"], 0);
     assert!(observed["sink"].is_null());
     assert!(observed["spotify_stage"].is_null());
+    assert_eq!(observed["queue"], serde_json::json!([track]));
+    assert_eq!(observed["queue_index"], 0);
+    assert_eq!(observed["volume"], 37);
+    assert_eq!(observed["shuffle"], true);
+    assert_eq!(observed["repeat"], "all");
     assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
 }
 

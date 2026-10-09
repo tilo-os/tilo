@@ -203,14 +203,25 @@ struct Actor {
 pub(in crate::shell::in_process) fn new(principal: String, wake: Wake) -> Rc<dyn FirstAccounts> {
     let signal = with_source(principal.clone(), wake.clone(), Arc::new(SignedSource));
     let sms = super::sms_first::new(principal.clone(), wake.clone());
-    let whatsapp = super::whatsapp_first::new(principal.clone(), wake);
-    combine(principal, signal, sms, whatsapp)
+    let whatsapp = super::whatsapp_first::new(principal.clone(), wake.clone());
+    let native = super::native_first::new(principal.clone(), wake);
+    combine_all(principal, signal, sms, whatsapp, Some(native))
 }
+#[cfg(test)]
 fn combine(
     principal: String,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
     whatsapp: Rc<dyn FirstAccounts>,
+) -> Rc<dyn FirstAccounts> {
+    combine_all(principal, signal, sms, whatsapp, None)
+}
+fn combine_all(
+    principal: String,
+    signal: Rc<dyn FirstAccounts>,
+    sms: Rc<dyn FirstAccounts>,
+    whatsapp: Rc<dyn FirstAccounts>,
+    native: Option<Rc<dyn FirstAccounts>>,
 ) -> Rc<dyn FirstAccounts> {
     Rc::new(Combined {
         port: Arc::new(CombinedPort {
@@ -218,10 +229,12 @@ fn combine(
             signal: signal.client(),
             sms: sms.client(),
             whatsapp: whatsapp.client(),
+            native: native.as_ref().map(|owner| owner.client()),
         }),
         signal,
         sms,
         whatsapp,
+        native,
     })
 }
 fn with_source(principal: String, wake: Wake, source: Arc<dyn Source>) -> Rc<dyn FirstAccounts> {
@@ -762,12 +775,14 @@ pub(super) fn fixture(
 }
 
 struct Combined {
+    native: Option<Rc<dyn FirstAccounts>>,
     port: Arc<CombinedPort>,
     signal: Rc<dyn FirstAccounts>,
     sms: Rc<dyn FirstAccounts>,
     whatsapp: Rc<dyn FirstAccounts>,
 }
 struct CombinedPort {
+    native: Option<EnrollmentClient>,
     principal: String,
     signal: EnrollmentClient,
     sms: EnrollmentClient,
@@ -778,6 +793,7 @@ impl CombinedPort {
         match account.service.as_str() {
             "sms" => &self.sms,
             "whatsapp" => &self.whatsapp,
+            "tilo" => self.native.as_ref().unwrap_or(&self.signal),
             _ => &self.signal,
         }
     }
@@ -790,12 +806,22 @@ impl FirstAccounts for Combined {
         self.signal.pump(apps);
         self.sms.pump(apps);
         self.whatsapp.pump(apps);
+        if let Some(native) = &self.native {
+            native.pump(apps);
+        }
     }
 }
 impl EnrollmentHost for CombinedPort {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
-        let client = self.whatsapp.clone();
-        Box::pin(async move { client.prepare(service).await })
+        let whatsapp = self.whatsapp.clone();
+        let native = self.native.clone();
+        Box::pin(async move {
+            match service.as_str() {
+                "whatsapp" => whatsapp.prepare(service).await,
+                "tilo" => native.ok_or(SendError::Unavailable)?.prepare(service).await,
+                _ => Err(SendError::Unavailable),
+            }
+        })
     }
     fn begin(&self, service: String) -> PairingFuture {
         let client = self.account(&ServiceAccount::new(&service, "")).clone();

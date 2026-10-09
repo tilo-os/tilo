@@ -134,9 +134,9 @@ impl EnrollmentClient {
         self.host.cancel_sim_selection();
     }
     /// # Errors
-    /// Refuses unsupported storage preparation or a foreign private identity.
+    /// Refuses unsupported storage review or foreign unpublished identity.
     pub async fn prepare(&self, service: String) -> Result<EnrollmentReview, SendError> {
-        if service != "whatsapp" {
+        if !matches!(service.as_str(), "tilo" | "whatsapp") {
             return Err(SendError::InvalidRequest);
         }
         let review = self.host.prepare(service.clone()).await?;

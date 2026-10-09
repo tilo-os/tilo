@@ -100,13 +100,7 @@ impl RemoteCaptureIntegration {
             runtime.teardown_target_app(&app_id, &workspace_id);
         }
 
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
+        let online = network.online_device_ids();
         for peer in self.online_peers.difference(&online) {
             runtime.teardown_peer(peer);
         }
