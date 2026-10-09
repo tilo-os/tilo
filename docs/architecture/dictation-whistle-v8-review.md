@@ -83,6 +83,11 @@ Arabic and Mandarin are outside this model's supported language set.
 
 ## Reproduce and remaining validation
 
+This ledger records the original streaming adapter at commit
+`1f102809554b28a3bea932e368b99437ca8f2165`. Check out that commit to
+reproduce its exact bundle. The current harness and source qualify the separate
+[endpoint and lifecycle review](dictation-whistle-v8-endpoint-review.md).
+
 `tools/release/qualify_whistle_v8_scope.py` verifies the exact owned artifact bundle
 against the ledger and checked-out source, materializes only verified public PCM,
 runs bwrap with no home/network/hardware access, and calls the existing resource

@@ -412,4 +412,91 @@ mod tests {
             decoder.pushes.is_empty() && decoder.drafts.is_empty() && decoder.finals.is_empty()
         );
     }
+
+    #[derive(Default)]
+    struct CorrectingEndpointDecoder {
+        finished: bool,
+        final_samples: Vec<f32>,
+    }
+    impl SpeechDecoder for CorrectingEndpointDecoder {
+        fn draft_policy(&self) -> DraftPolicy {
+            DraftPolicy::Incremental
+        }
+        fn push(&mut self, _samples: &[f32]) -> Result<(), SpeechError> {
+            Ok(())
+        }
+        fn draft(&mut self, _samples: &[f32]) -> Result<String, SpeechError> {
+            Ok("Vielen Dank.".to_owned())
+        }
+        fn finish(&mut self, samples: &[f32]) -> Result<String, SpeechError> {
+            self.final_samples = samples.to_vec();
+            self.finished = true;
+            Ok("Für Hongkong — nein, für Kowloon. 東京 café".to_owned())
+        }
+    }
+
+    #[test]
+    fn endpoint_correction_replaces_provisional_text_and_preserves_spoken_corrections() {
+        let mut bytes = Vec::new();
+        append(
+            &mut bytes,
+            RequestKind::Configure,
+            1,
+            br#"{"language":"de","vocabulary":["Hongkong","Kowloon"]}"#,
+        );
+        append(&mut bytes, RequestKind::Audio, 2, &[0, 0]);
+        append(&mut bytes, RequestKind::Draft, 3, &[]);
+        append(&mut bytes, RequestKind::Audio, 4, &[0, 64]);
+        append(&mut bytes, RequestKind::Finish, 5, &[]);
+        let mut input = Cursor::new(bytes);
+        let session = configured(&mut input);
+        let mut decoder = CorrectingEndpointDecoder::default();
+        let mut output = Vec::new();
+        serve_decoder(
+            ("fixture", "revision"),
+            session,
+            &mut decoder,
+            &mut input,
+            &mut output,
+        )
+        .expect("real production pipe endpoint dispatch");
+        assert!(decoder.finished);
+        assert_eq!(decoder.final_samples, [0.0, 0.5]);
+        assert!(matches!(replies(output).as_slice(), [
+            SpeechReply::Ready { draft_policy: DraftPolicy::Incremental, .. },
+            SpeechReply::Draft { sequence: 3, text: provisional },
+            SpeechReply::Done { sequence: 5, text: final_text }
+        ] if provisional == "Vielen Dank." && final_text == "Für Hongkong — nein, für Kowloon. 東京 café"));
+    }
+
+    #[test]
+    fn stable_provisional_text_is_not_committed_when_the_pipe_ends_before_finish() {
+        let mut bytes = Vec::new();
+        append(
+            &mut bytes,
+            RequestKind::Configure,
+            1,
+            br#"{"language":"de"}"#,
+        );
+        append(&mut bytes, RequestKind::Audio, 2, &[0, 0]);
+        append(&mut bytes, RequestKind::Draft, 3, &[]);
+        let mut input = Cursor::new(bytes);
+        let session = configured(&mut input);
+        let mut decoder = CorrectingEndpointDecoder::default();
+        let mut output = Vec::new();
+        assert!(matches!(
+            serve_decoder(
+                ("fixture", "revision"),
+                session,
+                &mut decoder,
+                &mut input,
+                &mut output
+            ),
+            Err(SpeechError::WorkerStopped)
+        ));
+        assert!(!decoder.finished);
+        assert!(matches!(replies(output).as_slice(), [
+            SpeechReply::Ready { .. }, SpeechReply::Draft { sequence: 3, text }
+        ] if text == "Vielen Dank."));
+    }
 }

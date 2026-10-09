@@ -442,6 +442,42 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_correction_commits_once_without_appending_a_stable_hallucination() {
+        let mut fixture = Fixture::new();
+        let id = fixture.consent();
+        fixture.state.shell_field_active = true;
+        fixture
+            .state
+            .update_dictation(id, "Vielen Dank.".into(), Instant::now())
+            .unwrap();
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+
+        let corrected = "Für Hongkong — nein, für Kowloon. 東京 café";
+        fixture
+            .state
+            .update_dictation(id, corrected.into(), Instant::now())
+            .unwrap();
+        assert!(!fixture.state.take_native_dictation_commit());
+        fixture.state.finish_dictation(id, Instant::now()).unwrap();
+        assert!(fixture.state.take_native_dictation_commit());
+        fixture.display.flush_clients().unwrap();
+        let events = fixture.proxy.drain_dictation_commit().unwrap();
+        let committed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(committed, [corrected]);
+        assert!(fixture.proxy.drain_dictation_commit().is_none());
+    }
+
+    #[test]
     fn dictation_repeated_finish_and_toggle_keep_one_final_on_the_original_field() {
         let mut fixture = Fixture::new();
         let id = fixture.consent();

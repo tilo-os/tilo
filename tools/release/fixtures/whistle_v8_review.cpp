@@ -75,8 +75,21 @@ void buffer(v8::Local<v8::Context> context, const char* name,
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 6 && argc != 7)
-      throw std::runtime_error("script module model public-f32 language [public-name-cue] required");
+    if (argc < 6 || argc > 8)
+      throw std::runtime_error("script module model public-f32 language [public-name-cue] [--endpoint|--lifecycle] required");
+    std::string prompt;
+    std::string mode = "stream";
+    for (int index = 6; index < argc; ++index) {
+      const std::string option = argv[index];
+      if (option == "--endpoint" || option == "--lifecycle") {
+        if (mode != "stream") throw std::runtime_error("duplicate review mode");
+        mode = option.substr(2);
+      } else if (prompt.empty()) {
+        prompt = option;
+      } else {
+        throw std::runtime_error("duplicate public name cue");
+      }
+    }
     const auto script = read_bounded(argv[1], 65536);
     const auto module = read_bounded(argv[2], 923348);
     const auto model = read_bounded(argv[3], 16919407);
@@ -114,7 +127,9 @@ int main(int argc, char** argv) {
       if (!context->Global()->Set(context, text(isolate, "reviewLanguage"),
                                  text(isolate, argv[5])).FromMaybe(false) ||
           !context->Global()->Set(context, text(isolate, "reviewPrompt"),
-                                 text(isolate, argc == 7 ? argv[6] : "")).FromMaybe(false))
+                                 text(isolate, prompt.c_str())).FromMaybe(false) ||
+          !context->Global()->Set(context, text(isolate, "reviewMode"),
+                                 text(isolate, mode.c_str())).FromMaybe(false))
         throw std::runtime_error("review language binding failed");
       v8::TryCatch errors(isolate);
       v8::Local<v8::Script> program;
