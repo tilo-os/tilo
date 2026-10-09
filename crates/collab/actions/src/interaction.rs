@@ -19,11 +19,12 @@ pub const MAX_ID_BYTES: usize = 512;
 pub const MAX_LABEL_BYTES: usize = 512;
 pub const MAX_DETAIL_BYTES: usize = 2 * 1024;
 
-/// Authenticated principal kind.  This is assigned by the broker, never
-/// inferred from a display name or an `agent:` string prefix.
+/// What kind of actor did something: in presence, in history and at every
+/// door. Assigned by the host that authenticated the actor, never inferred
+/// from a display name or an `agent:` string prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InteractionActorKind {
+pub enum ActorKind {
     Person,
     Agent,
     /// A Shortcut running steps for a person.
@@ -32,7 +33,7 @@ pub enum InteractionActorKind {
     App,
 }
 
-impl InteractionActorKind {
+impl ActorKind {
     /// Software acting for someone (an agent, a Shortcut, an app), never a
     /// person at their own keyboard: shown with the agent mark and named
     /// with whom it acts for.
@@ -47,7 +48,7 @@ impl InteractionActorKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractionActor {
     pub id: String,
-    pub kind: InteractionActorKind,
+    pub kind: ActorKind,
     /// The person an agent, a Shortcut or an app acts for, as the host
     /// admitted the delegation: what presence names as "Claude, for Ada".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,7 +58,7 @@ pub struct InteractionActor {
 impl InteractionActor {
     /// `id`, of `kind`, acting for nobody but itself.
     #[must_use]
-    pub fn new(id: impl Into<String>, kind: InteractionActorKind) -> Self {
+    pub fn new(id: impl Into<String>, kind: ActorKind) -> Self {
         Self {
             id: id.into(),
             kind,
@@ -407,7 +408,7 @@ mod tests {
             sequence: 2,
             actor: InteractionActor {
                 id: "agent:scribe".into(),
-                kind: InteractionActorKind::Agent,
+                kind: ActorKind::Agent,
                 for_person: None,
             },
             phase: InteractionPhase::Applying,
@@ -481,7 +482,7 @@ mod tests {
         let normalized = claimed.normalized_by_broker(
             InteractionActor {
                 id: "agent:reviewer".into(),
-                kind: InteractionActorKind::Agent,
+                kind: ActorKind::Agent,
                 for_person: None,
             },
             17,

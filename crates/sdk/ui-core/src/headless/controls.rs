@@ -684,7 +684,7 @@ mod locus_tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-test-only".into(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
                 for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
@@ -726,7 +726,7 @@ mod locus_tests {
                 .unwrap();
             assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
             let mut event = interaction("first");
-            event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+            event.actor.kind = tilo_actions::ActorKind::Agent;
             let now = crate::time::now();
             frame.update_presence(|presence| {
                 presence.apply_interaction_at(event.clone(), now).unwrap()
@@ -825,7 +825,7 @@ mod locus_tests {
                     .unwrap();
                 let mut event = interaction("first");
                 event.actor.id = "scribe".into();
-                event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+                event.actor.kind = tilo_actions::ActorKind::Agent;
                 let at = crate::time::now()
                     .checked_sub(crate::time::Duration::from_secs(2))
                     .unwrap();

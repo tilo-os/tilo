@@ -10307,9 +10307,9 @@ impl presence_handle::Server for CapnpPresenceHandle {
             let normalized_actor = tilo_actions::InteractionActor::new(
                 CapnpBrokerState::participant_id(&self.verified_identity),
                 if actor.is_agent {
-                    tilo_actions::InteractionActorKind::Agent
+                    tilo_actions::ActorKind::Agent
                 } else {
-                    tilo_actions::InteractionActorKind::Person
+                    tilo_actions::ActorKind::Person
                 },
             );
             let sequence = {

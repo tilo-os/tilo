@@ -737,11 +737,8 @@ mod tests {
         );
         assert_eq!(
             interaction.actor,
-            tilo_actions::InteractionActor::new(
-                "agent:scribe",
-                tilo_actions::InteractionActorKind::Agent
-            )
-            .acting_for("owner")
+            tilo_actions::InteractionActor::new("agent:scribe", tilo_actions::ActorKind::Agent)
+                .acting_for("owner")
         );
         assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
         assert_eq!(interaction.action.id, "new-window");

@@ -119,12 +119,12 @@ impl ShownActor {
         action: &PublishedAction,
     ) -> Option<Self> {
         let kind = match caller.map(Caller::principal) {
-            Some(CallerPrincipal::Agent(_)) => tilo_actions::InteractionActorKind::Agent,
-            Some(CallerPrincipal::App(_)) => tilo_actions::InteractionActorKind::App,
+            Some(CallerPrincipal::Agent(_)) => tilo_actions::ActorKind::Agent,
+            Some(CallerPrincipal::App(_)) => tilo_actions::ActorKind::App,
             Some(CallerPrincipal::Person(_)) | None if actor.is_agent => {
-                tilo_actions::InteractionActorKind::Agent
+                tilo_actions::ActorKind::Agent
             }
-            Some(CallerPrincipal::Person(_)) | None => tilo_actions::InteractionActorKind::Person,
+            Some(CallerPrincipal::Person(_)) | None => tilo_actions::ActorKind::Person,
         };
         let for_person = caller.and_then(Caller::acting_for_person);
         let remote = caller.is_some_and(|caller| caller.device_public_key().is_some());

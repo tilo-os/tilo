@@ -97,7 +97,7 @@ mod tests {
                 sequence: 2,
                 actor: tilo_actions::InteractionActor {
                     id: "quill".into(),
-                    kind: tilo_actions::InteractionActorKind::Agent,
+                    kind: tilo_actions::ActorKind::Agent,
                     for_person: None,
                 },
                 phase: tilo_actions::InteractionPhase::Committed,

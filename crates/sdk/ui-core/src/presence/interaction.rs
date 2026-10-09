@@ -971,8 +971,7 @@ mod tests {
     use super::*;
     use crate::text_render::TextRenderer;
     use tilo_actions::{
-        ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor,
-        InteractionActorKind,
+        ActionResource, ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor,
     };
     use uuid::Uuid;
 
@@ -987,7 +986,7 @@ mod tests {
             sequence,
             actor: InteractionActor {
                 id: "quill".into(),
-                kind: InteractionActorKind::Agent,
+                kind: ActorKind::Agent,
                 for_person: None,
             },
             phase,
@@ -1024,7 +1023,7 @@ mod tests {
         assert_eq!(presence.agent_marker_interactions(at), vec![agent]);
 
         let mut shortcut = interaction(31, 1, InteractionPhase::Applying);
-        shortcut.actor = InteractionActor::new("shortcut:morning", InteractionActorKind::Shortcut);
+        shortcut.actor = InteractionActor::new("shortcut:morning", ActorKind::Shortcut);
         presence.set_display_name(UserId("shortcut:morning".into()), "Morning");
         assert!(presence.apply_interaction_at(shortcut, at).unwrap());
         let morning = UserId("shortcut:morning".into());
@@ -1032,7 +1031,7 @@ mod tests {
         assert_eq!(presence.agent_marker_interactions(at).len(), 2);
 
         let mut person = interaction(32, 1, InteractionPhase::Applying);
-        person.actor = InteractionActor::new("bob", InteractionActorKind::Person);
+        person.actor = InteractionActor::new("bob", ActorKind::Person);
         presence.set_display_name(UserId("bob".into()), "Bob");
         assert!(presence.apply_interaction_at(person, at).unwrap());
         assert_eq!(presence.display_name(&UserId("bob".into())), "Bob");

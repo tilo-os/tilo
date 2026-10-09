@@ -339,13 +339,13 @@ pub enum ParticipantKind {
     App,
 }
 
-impl From<tilo_actions::InteractionActorKind> for ParticipantKind {
-    fn from(kind: tilo_actions::InteractionActorKind) -> Self {
+impl From<tilo_actions::ActorKind> for ParticipantKind {
+    fn from(kind: tilo_actions::ActorKind) -> Self {
         match kind {
-            tilo_actions::InteractionActorKind::Person => Self::Person,
-            tilo_actions::InteractionActorKind::Agent => Self::Agent,
-            tilo_actions::InteractionActorKind::Shortcut => Self::Shortcut,
-            tilo_actions::InteractionActorKind::App => Self::App,
+            tilo_actions::ActorKind::Person => Self::Person,
+            tilo_actions::ActorKind::Agent => Self::Agent,
+            tilo_actions::ActorKind::Shortcut => Self::Shortcut,
+            tilo_actions::ActorKind::App => Self::App,
         }
     }
 }

@@ -1534,7 +1534,7 @@ impl Session {
             // strongly typed value is valid before crossing that boundary.
             actor: tilo_actions::InteractionActor {
                 id: self.cfg.agent_id.clone(),
-                kind: tilo_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::ActorKind::Agent,
                 for_person: None,
             },
             phase,
@@ -2783,7 +2783,7 @@ impl Session {
             sequence,
             actor: tilo_actions::InteractionActor {
                 id: agent_id.clone(),
-                kind: tilo_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::ActorKind::Agent,
                 for_person: None,
             },
             phase,

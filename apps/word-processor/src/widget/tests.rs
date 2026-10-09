@@ -7275,7 +7275,7 @@ fn semantic_text_caret_is_painted_without_a_selection_or_input() {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: "synthetic-semantic-run".into(),
-                kind: tilo_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::ActorKind::Agent,
                 for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,

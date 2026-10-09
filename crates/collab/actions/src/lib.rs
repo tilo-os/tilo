@@ -123,10 +123,10 @@ pub use executor::{
     dispatch_with_context, invoking_context, replay,
 };
 pub use interaction::{
-    INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
-    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionTextRange,
-    InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES,
-    MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
+    ActorKind, INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionAnchor,
+    InteractionGridRange, InteractionPhase, InteractionTextRange, InteractionUpdate,
+    InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
+    MAX_LABEL_BYTES, SemanticInteraction,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{

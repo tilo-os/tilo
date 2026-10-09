@@ -1150,7 +1150,7 @@ mod tests {
             sequence: 1,
             actor: tilo_actions::InteractionActor {
                 id: actor.to_string(),
-                kind: tilo_actions::InteractionActorKind::Person,
+                kind: tilo_actions::ActorKind::Person,
                 for_person: None,
             },
             phase: tilo_actions::InteractionPhase::Applying,
