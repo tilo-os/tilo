@@ -2703,7 +2703,6 @@ impl ReplayPendingWork {
 struct CheckpointBatchInput {
     continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
-    delta: Vec<u8>,
     raw: Vec<u8>,
     channel: [u8; 32],
     incoming: [u8; 32],
@@ -2740,9 +2739,8 @@ fn new_checkpoint_batch(
                 "checkpoint batch contained non-delta",
             ));
         };
-        let delta = delta.clone();
-        let Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) =
-            crate::coedit::CoeditPayload::decode(&delta)
+        let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
         else {
             return Err(crate::persistence::error(
                 "checkpoint batch contained non-checkpoint",
@@ -2776,7 +2774,6 @@ fn new_checkpoint_batch(
         inputs.push(CheckpointBatchInput {
             continuity,
             envelope: Arc::new(envelope),
-            delta,
             raw,
             channel,
             incoming,
@@ -2898,6 +2895,7 @@ fn commit_log_and_materialize(
         .ok_or_else(|| crate::persistence::error("checkpoint sequence was not reserved"))?;
     let Envelope::Delta {
         author_device_public_key,
+        delta,
         ..
     } = &*input.envelope
     else {
@@ -2910,9 +2908,9 @@ fn commit_log_and_materialize(
         received_at_ns: sequence,
         author_device_hex: hex::encode(author_device_public_key),
         authored_at_ns: sequence,
-        delta_len: input.delta.len() as u64,
+        delta_len: delta.len() as u64,
     });
-    state.materialize(&input.delta);
+    state.materialize(delta);
     Ok(input
         .stage
         .as_ref()
@@ -4129,6 +4127,7 @@ async fn enqueue_checkpoint_prefix(
                         .invariant("checkpoint input missing")?;
                     let Envelope::Delta {
                         author_device_public_key,
+                        delta,
                         ..
                     } = &*input.envelope
                     else {
@@ -4145,7 +4144,7 @@ async fn enqueue_checkpoint_prefix(
                             &work_source,
                             *author_device_public_key,
                             role,
-                            input.delta.len(),
+                            delta.len(),
                         )
                         .await?
                     };
@@ -4582,11 +4581,9 @@ async fn enqueue_state_inner(
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
                 let retention =
-                    crate::coedit::CoeditPayload::decode(delta).map(|payload| match payload {
-                        crate::coedit::CoeditPayload::Checkpoint { channel, .. } => (channel, None),
-                        crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                            (channel, Some(seq))
-                        }
+                    crate::coedit::retention_metadata(delta).map(|(channel, kind)| match kind {
+                        crate::coedit::RetentionKind::Checkpoint => (channel, None),
+                        crate::coedit::RetentionKind::Delta => (channel, Some(seq)),
                     });
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
@@ -5099,14 +5096,15 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
-    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+    // The tap hands the body to another task, so it needs the one owned copy;
+    // it is taken after the workspace lock is released.
+    let governor_tap = ws.lock().await.governor_tap.clone();
+    let governor = governor_tap.and_then(|tap| {
         let Envelope::Delta { delta, .. } = &env else {
             return None;
         };
-        match crate::coedit::CoeditPayload::decode(delta)? {
-            crate::coedit::CoeditPayload::Checkpoint { body, .. }
-            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
-        }
+        let (_, _, body) = crate::coedit::retention_view(delta)?;
+        Some((tap, body.to_vec()))
     });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {

@@ -71,3 +71,39 @@ thumbnails under its configured cache, and serves them through the bundled
 capability policy. `tilo-relay status` reports `full_content_replication: true`
 only after the atomic aggregate status confirms every configured workspace is
 complete.
+
+## Locate existing Files before initializing a host installation
+
+A Fedora Desktop may have an enrolled home peer but no local Files daemon or
+namespace. Do not infer a new empty workspace from this, or from an offline
+peer. The saved `home-peers.json` under the host's existing identity root
+(`$XDG_DATA_HOME/tilo`, normally `~/.local/share/tilo`) identifies the enrolled
+device, relay service and relay room IDs to probe:
+
+```sh
+tilo-relay-admin home-peer-files-status \
+  --identity-root "$HOME/.local/share/tilo" \
+  --device ENROLLED_DEVICE_PUBLIC_KEY --service RELAY_SERVICE_PUBLIC_KEY \
+  --workspace-id REGISTERED_RELAY_ROOM_ID
+```
+
+This read-only command uses the existing device key, verified certificate and
+signed revocation cache. It restricts the query to a room registered to that
+exact home peer and person, then uses the ordinary authenticated Iroh content
+finder. It prints the public Files namespace UUID and endpoint identifiers;
+it does not print or save the returned ticket, refresh the peer registry,
+create an identity, grant access, or start a Files mount. A timeout or denied
+query leaves the existence of remote data unknown. Probe the saved candidate
+rooms before deciding whether explicit new initialization is appropriate.
+
+The relay room ID is a routing key, not a Files namespace UUID. A successful
+probe identifies a recovery source; actual namespace recovery must still use
+the existing authenticated Files join path and corresponding authority.
+
+Current tooling keeps this registry at `<identity-root>/peers/home-peers.json`.
+An older host may still have `<identity-root>/home-peers.json`. To inspect that
+existing record without creating or migrating trust, pass
+`--registry /path/to/existing/home-peers.json` explicitly. The selected record
+must still match this person's verified certificate, exact enrolled device
+and service, and saved room. The command neither copies the legacy record nor
+changes which registry other services use.
