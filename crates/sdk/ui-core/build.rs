@@ -18,6 +18,17 @@ fn emit_hex_fixture(text: &str, filename: &str) -> Result<(), Box<dyn std::error
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Without an explicit input list Cargo watches the whole package, so a
+    // documentation or test edit needlessly rebuilds the toolkit and relinks
+    // every app using it. These fixtures are the script's only inputs; Rust
+    // sources remain tracked by rustc's normal dependency information.
+    for source in [
+        "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex",
+        "tests/fixtures/test_image.png.hex",
+        "../../browser/paint-stream/tests/fixtures/layers.top.png.hex",
+    ] {
+        println!("cargo::rerun-if-changed={source}");
+    }
     emit_hex_fixture(
         include_str!("tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex"),
         "TiloSansFeaturesFixture-Regular.ttf",

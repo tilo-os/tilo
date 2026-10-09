@@ -66,8 +66,10 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
         return Err(format!("the picture must be 1 to {MAX_EDGE} pixels a side"));
     }
     let rgba = decoded.to_rgba8();
+    let root = local_model_service::user_model_root()
+        .ok_or_else(|| "the model store has no data home".to_string())?;
     let installed = local_model_service::installed_in_process_model(
-        &local_model_service::user_model_root(),
+        &root,
         local_model_service::InProcessCapability::Segmentation,
     )
     .map_err(|error| format!("the model store cannot be read: {error}"))?
