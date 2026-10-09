@@ -2740,9 +2740,8 @@ fn new_checkpoint_batch(
                 "checkpoint batch contained non-delta",
             ));
         };
-        let delta = delta.clone();
-        let Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) =
-            crate::coedit::CoeditPayload::decode(&delta)
+        let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
+            crate::coedit::retention_metadata(delta)
         else {
             return Err(crate::persistence::error(
                 "checkpoint batch contained non-checkpoint",
@@ -4582,11 +4581,9 @@ async fn enqueue_state_inner(
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
                 let retention =
-                    crate::coedit::CoeditPayload::decode(delta).map(|payload| match payload {
-                        crate::coedit::CoeditPayload::Checkpoint { channel, .. } => (channel, None),
-                        crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                            (channel, Some(seq))
-                        }
+                    crate::coedit::retention_metadata(delta).map(|(channel, kind)| match kind {
+                        crate::coedit::RetentionKind::Checkpoint => (channel, None),
+                        crate::coedit::RetentionKind::Delta => (channel, Some(seq)),
                     });
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
@@ -5099,14 +5096,15 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
-    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+    // The tap hands the body to another task, so it needs the one owned copy;
+    // it is taken after the workspace lock is released.
+    let governor_tap = ws.lock().await.governor_tap.clone();
+    let governor = governor_tap.and_then(|tap| {
         let Envelope::Delta { delta, .. } = &env else {
             return None;
         };
-        match crate::coedit::CoeditPayload::decode(delta)? {
-            crate::coedit::CoeditPayload::Checkpoint { body, .. }
-            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
-        }
+        let (_, _, body) = crate::coedit::retention_view(delta)?;
+        Some((tap, body.to_vec()))
     });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
