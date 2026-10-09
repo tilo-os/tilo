@@ -3421,7 +3421,7 @@ mod command_path_tests {
         w.entries = vec![entry];
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
-        let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -3507,7 +3507,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Named(person),
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Never,
                             link_uses: None,
                             recipient_devices: vec![device],
@@ -3523,7 +3523,7 @@ mod command_path_tests {
                     == Some(FileCommand::CreateShare(
                         crate::sharing::ShareComposerRequest {
                             subject: crate::sharing::ShareSubjectChoice::Link,
-                            permission: collab_types::FilePermission::Edit,
+                            permission: fs_protocol::FilePermission::Edit,
                             expiry: crate::sharing::ShareExpiryChoice::Month,
                             link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                             recipient_devices: Vec::new(),
@@ -3756,9 +3756,9 @@ mod command_path_tests {
             stream.read_exact(&mut request).unwrap();
             seen_tx.send(()).unwrap();
             release_rx.recv().unwrap();
-            let response = collab_types::ShareControlResponseV1 {
-                protocol_version: collab_types::SHARE_CONTROL_VERSION,
-                result: collab_types::ShareControlResultV1::BearerCreatedV2 {
+            let response = fs_protocol::ShareControlResponseV1 {
+                protocol_version: fs_protocol::SHARE_CONTROL_VERSION,
+                result: fs_protocol::ShareControlResultV1::BearerCreatedV2 {
                     uri: "tilo-file://bounded".into(),
                 },
             };
@@ -3789,7 +3789,7 @@ mod command_path_tests {
         assert!(widget.apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
-                permission: collab_types::FilePermission::Edit,
+                permission: fs_protocol::FilePermission::Edit,
                 expiry: crate::sharing::ShareExpiryChoice::Month,
                 link_uses: Some(crate::sharing::LinkUseChoice::Bounded(10)),
                 recipient_devices: Vec::new(),
@@ -3813,11 +3813,11 @@ mod command_path_tests {
 
     fn named_share_status_distinguishes_pending_from_delivered() {
         let pending = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Pending),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Pending),
             &[arg("person", "Ada")],
         );
         let delivered = t_args(
-            named_delivery_status_key(collab_types::NamedShareDeliveryStateV1::Delivered),
+            named_delivery_status_key(fs_protocol::NamedShareDeliveryStateV1::Delivered),
             &[arg("person", "Ada")],
         );
         assert!(pending.contains("pending"));
@@ -3863,7 +3863,7 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
-        let expected = collab_types::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
+        let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
                 .context_menu_spec(&[])
@@ -3932,13 +3932,13 @@ mod command_path_tests {
         widget.entries = vec![entry];
         widget.selection.select_only(0);
         let menu = widget.context_menu_spec(&[]);
-        let current_id = collab_types::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
-        let other_id = collab_types::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
+        let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
+        let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepCurrent,
+                    strategy: fs_protocol::ConflictStrategy::KeepCurrent,
                     version_id: current_id,
                 })
         }));
@@ -3946,7 +3946,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::UseOther,
+                    strategy: fs_protocol::ConflictStrategy::UseOther,
                     version_id: other_id,
                 })
         }));
@@ -3954,7 +3954,7 @@ mod command_path_tests {
             *command
                 == Some(FileCommand::ResolveConflict {
                     conflict_id: conflict,
-                    strategy: collab_types::ConflictStrategy::KeepBoth,
+                    strategy: fs_protocol::ConflictStrategy::KeepBoth,
                     version_id: other_id,
                 })
         }));
@@ -3970,7 +3970,7 @@ mod command_path_tests {
 
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -3985,8 +3985,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),
@@ -4009,8 +4009,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             conflict_id,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id,
                 safe: false,
                 explanation: "Both revisions changed the same text region.".into(),
@@ -4030,7 +4030,7 @@ mod command_path_tests {
     fn late_merge_preflight_cannot_repurpose_an_unrelated_confirmation_sheet() {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
-        let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
+        let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
             history: None,
@@ -4046,8 +4046,8 @@ mod command_path_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
             stale_conflict,
             version_id,
-            Ok(collab_types::MergePreflightProjectionV1 {
-                schema_version: collab_types::MERGE_PREFLIGHT_VERSION,
+            Ok(fs_protocol::MergePreflightProjectionV1 {
+                schema_version: fs_protocol::MERGE_PREFLIGHT_VERSION,
                 conflict_id: stale_conflict,
                 safe: true,
                 explanation: "Changes are disjoint.".into(),

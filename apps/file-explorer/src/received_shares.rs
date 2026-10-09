@@ -7,7 +7,7 @@
 //! Every call is async: the UI spawns it on the app runtime
 //! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
-use collab_types::{
+use fs_protocol::{
     RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlOperationV1,
     RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
@@ -84,7 +84,7 @@ pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, St
 /// Returns a localized error when the service is unavailable, refuses the
 /// retry, or returns an invalid response.
 pub async fn retry(
-    key: collab_types::RecipientSubscriptionKeyV1,
+    key: fs_protocol::RecipientSubscriptionKeyV1,
 ) -> Result<RecipientSubscriptionStatusV1, String> {
     transact(RecipientControlOperationV1::Retry { key })
         .await
@@ -177,7 +177,7 @@ mod tests {
             let response = collab_types::canonical_bytes(&RecipientControlResponseV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 result: RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound,
+                    code: fs_protocol::RecipientControlErrorCode::NotFound,
                 },
             })
             .unwrap();
@@ -192,7 +192,7 @@ mod tests {
             assert!(matches!(
                 decoded.result,
                 RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound
+                    code: fs_protocol::RecipientControlErrorCode::NotFound
                 }
             ));
             let mut sent = vec![0_u8; 4 + body.len()];

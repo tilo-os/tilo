@@ -61,9 +61,10 @@ struct Cli {
 #[cfg(test)]
 mod share_mount_tests {
     use super::*;
-    use collab_types::{
-        ContentHash, Ed25519PublicKey, FileActor, FileMetadataV1, FileProvenance, FileRecordId,
-        FileVersionId, FileVersionV1, IndexStatus, PreviewStatus, PreviewVariant,
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{
+        ContentHash, FileActor, FileMetadataV1, FileProvenance, FileRecordId, FileVersionId,
+        FileVersionV1, IndexStatus, PreviewStatus, PreviewVariant,
     };
 
     fn actor() -> FileActor {
@@ -195,8 +196,8 @@ mod share_mount_tests {
                 index_status: IndexStatus::Indexed,
                 properties: None,
             }),
-            content_revision: Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            content_revision: Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
                 version_id: child,
                 content_hash: Some(ContentHash([0x33; 32])),
@@ -252,8 +253,8 @@ mod share_mount_tests {
             second
                 .versions
                 .push(version(record_id, next, vec![prior], 0x55));
-            second.content_revision = Some(collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            second.content_revision = Some(fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
                 version_id: next,
                 content_hash: Some(ContentHash([0x55; 32])),
@@ -1675,7 +1676,7 @@ async fn serve(
     let transport_identity =
         FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
             .with_transport_gate(transport_gate);
-    let history_actor = collab_types::FileActor {
+    let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -2119,7 +2120,7 @@ fn initialize_owner_record_authority(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     history: Arc<FileHistoryStore>,
-    actor: collab_types::FileActor,
+    actor: fs_protocol::FileActor,
     publisher: Arc<RecordPublisher>,
 ) -> Result<()> {
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -2183,7 +2184,7 @@ async fn mount(
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
         .with_transport_gate(transport_gate);
-    let history_actor = collab_types::FileActor {
+    let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -2343,7 +2344,7 @@ enum SharedCredential {
 }
 
 impl SharedCredential {
-    fn invite(&self) -> &collab_types::FileInviteV1 {
+    fn invite(&self) -> &fs_protocol::FileInviteV1 {
         match self {
             Self::Bearer(link) => &link.invite,
             Self::Named(envelope) => &envelope.invite,
@@ -2392,7 +2393,7 @@ async fn mount_share(
     let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
-    let actor = collab_types::FileActor {
+    let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
@@ -2907,7 +2908,7 @@ impl SharedFetchError {
 )] // Registry update and persistence are one mutation.
 fn track_shared_revision(
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
 ) -> Result<()> {
     let Some(availability) = availability else {
         return Ok(());
@@ -2937,7 +2938,7 @@ fn track_shared_revision(
 async fn refresh_host_replica_observation(
     client: &RecordProtocolClient,
     link: &FileShareLinkV2,
-    revision: collab_types::ContentRevisionV1,
+    revision: fs_protocol::ContentRevisionV1,
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
     local_device: collab_types::Ed25519PublicKey,
 ) -> Result<()> {
@@ -3027,7 +3028,7 @@ fn apply_shared_snapshot(
         if let Some(preview) = metadata
             .previews
             .iter()
-            .filter(|preview| preview.status == collab_types::PreviewStatus::Ready)
+            .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
             .filter_map(|preview| preview.hash.map(|hash| (preview.max_edge, hash)))
             .max_by_key(|(max_edge, _)| *max_edge)
         {
@@ -3047,7 +3048,7 @@ fn apply_shared_snapshot(
 /// than exposing an unrelated file through the read-only FUSE mount.
 fn validate_shared_namespace(
     namespace: &mut Namespace,
-    expected_record: collab_types::FileRecordId,
+    expected_record: fs_protocol::FileRecordId,
     allow_empty: bool,
 ) -> Result<()> {
     let mut entries = namespace
@@ -3106,7 +3107,7 @@ fn append_snapshot_history(
     Ok(())
 }
 
-fn shared_record_name(record_id: collab_types::FileRecordId, mime: Option<&str>) -> String {
+fn shared_record_name(record_id: fs_protocol::FileRecordId, mime: Option<&str>) -> String {
     let extension = match mime.unwrap_or_default() {
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
@@ -3403,7 +3404,7 @@ struct MountServices {
     availability: Option<Arc<Mutex<fs::AvailabilityRegistry>>>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<fs::eviction::EvictionQueue>>>,
     share_authority: Option<Arc<ShareAuthority>>,
-    history: Option<(Arc<FileHistoryStore>, collab_types::FileActor)>,
+    history: Option<(Arc<FileHistoryStore>, fs_protocol::FileActor)>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,

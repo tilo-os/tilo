@@ -20,14 +20,14 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use collab_types::{
-    ContentHash, ContentRevisionV1, FilePermission, FileRecordId, SHARE_CONTROL_VERSION,
-    ShareControlOperationV1, ShareControlRequestV1, ShareControlResultV1,
-};
 use ed25519_dalek::SigningKey;
 use fs::availability::{EvictionDecision, EvictionRequirements, Residency};
 use fs::eviction::{EvictionQueue, EvictionRequestState};
 use fs::{AvailabilityRegistry, ContentStore};
+use fs_protocol::{
+    ContentHash, ContentRevisionV1, FilePermission, FileRecordId, SHARE_CONTROL_VERSION,
+    ShareControlOperationV1, ShareControlRequestV1, ShareControlResultV1,
+};
 use tempfile::TempDir;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
@@ -583,7 +583,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         .await
         .unwrap();
     let revision = ContentRevisionV1 {
-        schema_version: collab_types::CONTENT_REVISION_VERSION,
+        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
         record_id,
         version_id: observation.version_id,
         content_hash: Some(ContentHash(content_hash)),

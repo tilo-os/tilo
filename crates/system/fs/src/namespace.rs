@@ -15,7 +15,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use automerge::sync::SyncDoc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use collab_types::{
+use fs_protocol::{
     ContentRevisionV1, FILE_BINDING_VERSION, FileActor, FileBindingV1, FileMutationParticipantRole,
     FileMutationTransaction, FileNameV1, FileNodeKind, FileRecordId,
 };
@@ -1535,7 +1535,7 @@ impl Namespace {
         transaction: &FileMutationTransaction,
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
-            collab_types::FileMutationOperation::RestoreContent { prior_revision, .. } => {
+            fs_protocol::FileMutationOperation::RestoreContent { prior_revision, .. } => {
                 transaction
                     .verify()
                     .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
@@ -1562,10 +1562,10 @@ impl Namespace {
                 }
                 Ok(Some(self.save_incremental()))
             }
-            collab_types::FileMutationOperation::ReplacementRename { .. } => {
+            fs_protocol::FileMutationOperation::ReplacementRename { .. } => {
                 self.apply_replacement_transaction(transaction)
             }
-            collab_types::FileMutationOperation::KeepBothContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::KeepBothContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1574,7 +1574,7 @@ impl Namespace {
                 }
                 Ok(delta)
             }
-            collab_types::FileMutationOperation::MergeContentConflict { .. } => {
+            fs_protocol::FileMutationOperation::MergeContentConflict { .. } => {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
@@ -1600,7 +1600,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1657,7 +1657,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::MergeContentConflict {
+        let fs_protocol::FileMutationOperation::MergeContentConflict {
             source_record,
             parent_record,
             source_name,
@@ -1720,7 +1720,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1800,7 +1800,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::KeepBothContentConflict {
+        let fs_protocol::FileMutationOperation::KeepBothContentConflict {
             source_record,
             sibling_record,
             parent_record,
@@ -1900,7 +1900,7 @@ impl Namespace {
         transaction
             .verify()
             .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-        let collab_types::FileMutationOperation::ReplacementRename {
+        let fs_protocol::FileMutationOperation::ReplacementRename {
             source_parent,
             source_name,
             destination_parent,
@@ -3569,12 +3569,12 @@ mod tests {
         // This scenario intentionally covers every durable phase and replay of a
         // two-record replacement transaction in one linear assertion trace.
         {
-            use collab_types::{
+            use ed25519_dalek::SigningKey;
+            use fs_protocol::{
                 ContentHash, FILE_MUTATION_TRANSACTION_VERSION, FileMutationOperation,
                 FileMutationParticipant, FileMutationTransactionManifest, FileProvenance,
                 FileVersionId, FileVersionV1,
             };
-            use ed25519_dalek::SigningKey;
             use getrandom::{SysRng, rand_core::UnwrapErr};
 
             let mut ns = Namespace::new("a").unwrap();
@@ -3596,7 +3596,7 @@ mod tests {
                 assert!(ns.set_content_revision(
                     ino,
                     &ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(ContentHash([byte; 32])),
@@ -3641,7 +3641,7 @@ mod tests {
                         observed_at_ms: 2,
                     },
                     proposed_content_revision: Some(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id: version.id,
                         content_hash: version.content_hash,
@@ -3669,7 +3669,7 @@ mod tests {
                 ),
             ];
             participants.sort_by_key(|participant| participant.record_id);
-            let transaction = collab_types::FileMutationTransaction::signed(
+            let transaction = fs_protocol::FileMutationTransaction::signed(
                 FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                     transaction_id: Uuid::new_v4(),
@@ -3717,12 +3717,12 @@ mod tests {
             assert!(ns.live_paths_for_blob(h(1)).is_empty());
 
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(ns.install_verified_content_revision(revision));
             assert!(ns.install_verified_thumbnail(record_id, Some(h(4))));
@@ -3732,8 +3732,8 @@ mod tests {
             ns.set_field(&id, "size", 999_u64);
             ns.set_field(&id, "thumb", hash_to_hex(&h(9)));
             let mut forged = revision;
-            forged.version_id = collab_types::FileVersionId::new();
-            forged.content_hash = Some(collab_types::ContentHash([9; 32]));
+            forged.version_id = fs_protocol::FileVersionId::new();
+            forged.content_hash = Some(fs_protocol::ContentHash([9; 32]));
             forged.byte_len = 999;
             ns.set_field(
                 &id,
@@ -3768,12 +3768,12 @@ mod tests {
             );
             ns.enable_signed_content_authority();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([3; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([3; 32])),
                 byte_len: 3,
-                metadata_hash: collab_types::ContentHash([4; 32]),
+                metadata_hash: fs_protocol::ContentHash([4; 32]),
             };
             assert!(!ns.install_verified_content_revision(revision));
             assert_eq!(ns.hash_for(first), None);
@@ -3973,20 +3973,20 @@ mod tests {
             let mut b = Namespace::from_bytes("b", &bytes).unwrap();
             let bino = b.lookup(ROOT_INO, "atomic.bin").unwrap().ino.0;
             let revision_a = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([10; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([10; 32])),
                 byte_len: 10,
-                metadata_hash: collab_types::ContentHash([11; 32]),
+                metadata_hash: fs_protocol::ContentHash([11; 32]),
             };
             let revision_b = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id,
-                version_id: collab_types::FileVersionId::new(),
-                content_hash: Some(collab_types::ContentHash([20; 32])),
+                version_id: fs_protocol::FileVersionId::new(),
+                content_hash: Some(fs_protocol::ContentHash([20; 32])),
                 byte_len: 20,
-                metadata_hash: collab_types::ContentHash([21; 32]),
+                metadata_hash: fs_protocol::ContentHash([21; 32]),
             };
             assert!(a.set_content_revision(ino, &revision_a, 2));
             assert!(b.set_content_revision(bino, &revision_b, 2));
@@ -4013,12 +4013,12 @@ mod tests {
                 .create_file(ROOT_INO, "compat.bin", Some(&h(1)), 1, 1)
                 .unwrap();
             let revision = ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: ns.record_id_for(ino).unwrap(),
-                version_id: collab_types::FileVersionId::new(),
+                version_id: fs_protocol::FileVersionId::new(),
                 content_hash: None,
                 byte_len: 0,
-                metadata_hash: collab_types::ContentHash([7; 32]),
+                metadata_hash: fs_protocol::ContentHash([7; 32]),
             };
             assert!(ns.set_content_revision(ino, &revision, 2));
             assert_eq!(ns.hash_for(ino), None, "None must not resurrect the mirror");

@@ -504,7 +504,7 @@ impl SessionProtocol {
         let mut batches = Vec::new();
         let mut size = 0_usize;
         // The content each pulled record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         for pull in streams {
             let stream = pull.stream;
             let key = RecordRepositoryKey {
@@ -601,7 +601,7 @@ impl SessionProtocol {
     /// The bytes of the small files `current` names, in frames.
     async fn send_inline(
         &self,
-        current: BTreeMap<collab_types::FileRecordId, [u8; 32]>,
+        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
         inline_limit: u64,
         send: &mut SendStream,
     ) -> Result<()> {
@@ -703,7 +703,7 @@ impl SessionProtocol {
             .await;
         };
         // The content each sent record ends at, per record.
-        let mut current: BTreeMap<collab_types::FileRecordId, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
         let mut note = |envelope: &RecordEnvelopeV1| {
             if let RecordOperationV1::SetContentRevision(revision) = &envelope.operation {
                 match revision.content_hash {

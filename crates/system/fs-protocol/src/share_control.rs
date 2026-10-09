@@ -7,7 +7,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Ed25519PublicKey, FilePermission, FileRecordId};
+use collab_types::Ed25519PublicKey;
+
+use crate::{FilePermission, FileRecordId};
 
 pub const SHARE_CONTROL_VERSION: u16 = 2;
 pub const MAX_NAMED_SHARE_RECIPIENT_DEVICES: usize = 32;
@@ -167,7 +169,7 @@ mod tests {
                 protocol_version: SHARE_CONTROL_VERSION,
                 operation: ShareControlOperationV1::Revoke { grant_id },
             };
-            let request_bytes = crate::canonical_bytes(&request).unwrap();
+            let request_bytes = collab_types::canonical_bytes(&request).unwrap();
             assert_eq!(
                 request_bytes,
                 [
@@ -176,8 +178,10 @@ mod tests {
                 ]
             );
             assert_eq!(
-                crate::canonical::from_canonical_bytes::<ShareControlRequestV1>(&request_bytes)
-                    .unwrap(),
+                collab_types::canonical::from_canonical_bytes::<ShareControlRequestV1>(
+                    &request_bytes
+                )
+                .unwrap(),
                 request
             );
 
@@ -188,7 +192,7 @@ mod tests {
                     revoked: true,
                 },
             };
-            let response_bytes = crate::canonical_bytes(&response).unwrap();
+            let response_bytes = collab_types::canonical_bytes(&response).unwrap();
             assert_eq!(
                 response_bytes,
                 [
@@ -197,8 +201,10 @@ mod tests {
                 ]
             );
             assert_eq!(
-                crate::canonical::from_canonical_bytes::<ShareControlResponseV1>(&response_bytes)
-                    .unwrap(),
+                collab_types::canonical::from_canonical_bytes::<ShareControlResponseV1>(
+                    &response_bytes
+                )
+                .unwrap(),
                 response
             );
         }
