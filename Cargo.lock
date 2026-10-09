@@ -15963,6 +15963,7 @@ dependencies = [
  "tilo-browser-peer",
  "tilo-clock",
  "tilo-crypto",
+ "tilo-desktop-model",
  "tilo-document",
  "tilo-model-gateway",
  "tilo-moq",

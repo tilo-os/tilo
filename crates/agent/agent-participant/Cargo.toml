@@ -66,6 +66,8 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true
+# The shared desktop an agent puts the views it works in on.
+tilo-desktop-model = { path = "../../session/desktop-model" }
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true

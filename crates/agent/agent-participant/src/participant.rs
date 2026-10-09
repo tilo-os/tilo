@@ -512,6 +512,7 @@ impl AgentParticipant {
         }
         self.apps.insert(route.clone(), app);
         self.generation = self.generation.wrapping_add(1);
+        self.show_on_desk(&route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
@@ -594,11 +595,13 @@ impl AgentParticipant {
                 .publish(route.clone(), &mutation)
                 .map_err(Refusal::Agent)?;
         }
+        let place = app.presence();
+        self.show_on_desk(route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
-        self.place = app.presence();
+        self.place = place;
         self.control.set_activity(label);
         self.publish_presence();
         Ok(Some(output))
@@ -631,6 +634,55 @@ impl AgentParticipant {
                 }
                 activity.get(..end).unwrap_or_default().to_owned()
             }),
+        }
+    }
+
+    /// Put the view of the record at `route` on the room's shared desktop
+    /// when no tab shows it, beside the view the agent worked in last, so
+    /// the people see where it acts ([`crate::desk`]).
+    fn show_on_desk(&mut self, route: &DocumentRoute) {
+        let desktop = DocumentRoute {
+            app_id: DESKTOP_APP.to_owned(),
+            cluster_id: self.room.clone(),
+            record: DESKTOP_RECORD.to_owned(),
+        };
+        let Some(record) = self.apps.get(route).map(|app| app.record().to_owned()) else {
+            return;
+        };
+        let beside = self
+            .focus
+            .as_ref()
+            .map(|focus| DocumentRoute {
+                app_id: focus.app.clone(),
+                cluster_id: self.room.clone(),
+                record: focus.record.clone(),
+            })
+            .filter(|last| last != route)
+            .and_then(|last| self.apps.get(&last).map(|app| app.record().to_owned()));
+        let title = self
+            .catalogue
+            .get(&route.app_id)
+            .map_or(route.app_id.as_str(), |definition| definition.title);
+        let view = crate::desk::View {
+            app_id: &route.app_id,
+            title,
+            record: &record,
+            beside: beside.as_deref(),
+        };
+        let author = format!("agent:{}", self.identity.delegation.agent_id);
+        let Some(change) = crate::desk::place_view(
+            self.durable.get(&desktop).map_or(&[][..], Vec::as_slice),
+            &author,
+            &view,
+        ) else {
+            return;
+        };
+        match self.peer.publish(
+            desktop.clone(),
+            &collab_types::DocumentMutation::Incremental(change.clone()),
+        ) {
+            Ok(()) => self.durable.entry(desktop).or_default().push(change),
+            Err(error) => tracing::warn!(%error, "agent: its view did not reach the desk"),
         }
     }
 

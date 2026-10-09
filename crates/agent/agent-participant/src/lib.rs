@@ -44,6 +44,7 @@
 
 pub mod apps;
 pub mod control;
+mod desk;
 pub mod host;
 pub mod model;
 pub mod participant;
