@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import http.server
+import io
 import json
 import sys
 import tempfile
@@ -43,6 +45,42 @@ class Local(unittest.TestCase):
             local = store.LocalStore(root)
             self.assertEqual(local.files(["2026-10", "2026-09"]), [("2026-10", "20261009T011500Z-1-1.jsonl")])
             self.assertEqual(len(store.history(local, ["2026-10", "2026-06"])), 2)
+
+
+class Fetch(unittest.TestCase):
+    """`fetch` prints measurements; a gate test's multiplied records only on request."""
+
+    def fetch(self, *extra: str) -> tuple[list[dict], str]:
+        real = record.from_samples("footprint.tapp.bytes.x86_64", "bytes", [2_000_000.0], **ENV)
+        fake = record.from_samples("footprint.tapp.bytes.x86_64", "bytes", [2_500_000.0],
+                                   meta={"synthetic_series": "til-580-check", "synthetic_factor": "1.25"}, **ENV)
+        with tempfile.TemporaryDirectory() as directory:
+            month = store.months_back(datetime.datetime.now(datetime.timezone.utc))[0]
+            (Path(directory) / month).mkdir()
+            (Path(directory) / month / "20261009T011500Z-1-1.jsonl").write_text(real.to_json() + "\n")
+            (Path(directory) / month / "20261009T013000Z-2-1.jsonl").write_text(fake.to_json() + "\n")
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(store.main(["fetch", directory, *extra]), 0)
+        return [json.loads(line) for line in out.getvalue().splitlines()], err.getvalue()
+
+    def test_fetch_omits_synthetic_records_by_default(self):
+        printed, err = self.fetch()
+        self.assertEqual([item["p50"] for item in printed], [2_000_000.0])
+        self.assertIn("omitted 1 synthetic gate-test records", err)
+
+    def test_fetch_synthetic_includes_them(self):
+        printed, err = self.fetch("--synthetic")
+        self.assertEqual([item["p50"] for item in printed], [2_000_000.0, 2_500_000.0])
+        self.assertEqual(err, "")
+
+    def test_history_keeps_them_for_compare(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "2026-10").mkdir()
+            item = record.from_samples("fs.a-b", "ms", [1.0], meta={"synthetic_series": "s"}, **ENV)
+            (Path(directory) / "2026-10" / "20261009T011500Z-1-1.jsonl").write_text(item.to_json() + "\n")
+            [kept] = store.history(store.LocalStore(Path(directory)), ["2026-10"])
+            self.assertTrue(store.synthetic(kept))
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

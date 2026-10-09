@@ -3779,13 +3779,14 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press};
+    use crate::testing::dispatch;
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(
@@ -4165,64 +4166,13 @@ mod tests {
         hover_row_tracks_cursor_y();
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    /// Build a `KeyEvent` over a zeroed buffer — winit 0.30's `KeyEventExtra`
-    /// is `pub(crate)`, so a struct literal is not available. Only the pub
-    /// fields the widget reads are overwritten.
+    /// Only the pub fields the widget reads are overwritten.
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an
-        // `Option` whose niche-optimised `None` is all-zero.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]
@@ -4680,10 +4630,10 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::testing::{Dispatch, dispatch};
     use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
-    use automerge::AutoCommit;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -4829,66 +4779,16 @@ mod group_tests {
         t.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern — `logical_key` is overwritten below and `text` is an `Option`
-        // whose niche-optimised `None` is all-zero. winit 0.30 keeps
-        // `KeyEventExtra` crate-private, so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(t: &mut ActivityTimeline, event: &WindowEvent) {
-        dispatch_mod(t, event, Modifiers::default());
-    }
-
-    fn dispatch_mod(t: &mut ActivityTimeline, event: &WindowEvent, m: Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        t.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     /// Shift held down, built the same way winit reports it.
@@ -5526,7 +5426,9 @@ mod group_tests {
 
             let r4 = t.row_rect(4).unwrap();
             dispatch(&mut t, &cursor_moved(r4.x0 + 40.0, r4.center().y));
-            dispatch_mod(&mut t, &mouse_press(), shift());
+            Dispatch::new()
+                .modifiers(shift())
+                .send(&mut t, &mouse_press());
             assert_eq!(t.selection(), Some((16, 19)), "shift-click extends the run");
 
             // Paint so the bar's action rect is where the click handler will look.

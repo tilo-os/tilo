@@ -1,13 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 //! The desktop's appearance preferences: light or dark, the accent colour,
 //! and the increased-contrast and reduced-motion accessibility options.
 //! [`System`] reads them from this target's own source:

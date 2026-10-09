@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::search::{ScopeDecl, SearchRequest, SearchResult, search_button};
+use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ModelPath, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
@@ -53,11 +54,7 @@ impl Widget for MailRoot {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.search.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &[child])
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(taffy::Style::default(), &[child], node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let child = taffy.children(node).unwrap()[0];

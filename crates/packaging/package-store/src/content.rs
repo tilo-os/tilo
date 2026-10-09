@@ -113,12 +113,36 @@ impl Content<'_> {
     }
 }
 
+/// Drain complete imports and commit their metadata before registry publication.
+/// Package sessions do not write partial-download handles that need a shutdown
+/// bitfield write. The caller holds the exclusive package-store lock.
+pub(crate) fn flush(content: &Content<'_>) -> Result<(), StoreError> {
+    content.runtime.block_on(async {
+        content
+            .store
+            .store()
+            .wait_idle()
+            .await
+            .map_err(content_error)?;
+        content.store.store().sync_db().await.map_err(content_error)
+    })
+}
+
 /// Open the content store in `dir` for one session, run `work`, and close
 /// the store whatever `work` returned.
 pub(crate) fn session<R: Send>(
     dir: &Path,
     staging: &Path,
     work: impl FnOnce(&Content<'_>) -> Result<R, StoreError> + Send,
+) -> Result<R, StoreError> {
+    session_with_close(dir, staging, work, |_, closed| closed)
+}
+
+pub(crate) fn session_with_close<R: Send>(
+    dir: &Path,
+    staging: &Path,
+    work: impl FnOnce(&Content<'_>) -> Result<R, StoreError> + Send,
+    after_close: impl FnOnce(Option<&R>, Result<(), StoreError>) -> Result<(), StoreError> + Send,
 ) -> Result<R, StoreError> {
     let dir: PathBuf = dir.to_path_buf();
     std::thread::scope(|scope| {
@@ -137,6 +161,7 @@ pub(crate) fn session<R: Send>(
                     staging,
                 });
                 let closed = runtime.block_on(store.close()).map_err(content_error);
+                let closed = after_close(result.as_ref().ok(), closed);
                 let value = result?;
                 closed?;
                 Ok(value)

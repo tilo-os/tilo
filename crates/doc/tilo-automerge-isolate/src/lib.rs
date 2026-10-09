@@ -44,16 +44,6 @@
 //! browser's bound comes from where its bytes come from: publications are
 //! signed by the host, which admitted them through its workers first.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod engine;
 #[cfg(target_os = "linux")]
 mod pool;

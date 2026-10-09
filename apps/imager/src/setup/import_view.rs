@@ -4,6 +4,7 @@ use crate::page;
 use crate::page::Frame;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,16 +16,11 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::TextKind;
 use ui::a11y::Politeness;
 use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonRole, Column, ControlSize, ListRow, ProgressBar, Property, PropertyList, Row,
     Section, SectionHeader, Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -2746,58 +2742,22 @@ impl Widget for ImportApp {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.composed.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.composed
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.composed.handle_event(event, ctx);
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.children_mut()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "ImportApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.composed.rect()
     }
 
     fn needs_idle_sync(&self) -> bool {

@@ -9,7 +9,7 @@ use std::io;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use collab_types::{
+use fs_protocol::{
     BearerFileInvite, ContentRevisionV1, FileBindingV1, FileConflictV1, FileInviteV1,
     FileMetadataV1, FileRecordId, FileVersionV1,
 };
@@ -135,7 +135,7 @@ impl RecordProtocolSessionV1 {
     /// its record. A recipient accepts a snapshot only from such a session,
     /// never one the host opened on another workspace or record.
     #[must_use]
-    pub fn is_for_invite(&self, invite: &collab_types::FileInviteV1) -> bool {
+    pub fn is_for_invite(&self, invite: &fs_protocol::FileInviteV1) -> bool {
         self.workspace_id == invite.workspace_id && self.record_id == invite.record_id
     }
 }
@@ -606,7 +606,7 @@ impl RecordProtocol {
                 {
                     return RecordProtocolResponseV1::ReplicaUnavailable;
                 }
-                let actor = collab_types::FileActor {
+                let actor = fs_protocol::FileActor {
                     person: collab_types::Ed25519PublicKey(self.credentials.user_public_key()),
                     device: collab_types::Ed25519PublicKey(self.credentials.device_public_key()),
                 };
@@ -995,11 +995,12 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    use collab_types::{
-        Ed25519PublicKey, FileActor, FileInviteSpec, FileInviteSubject, FilePermission,
-        IndexStatus, mint_bearer_file_invite, mint_file_invite,
-    };
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{
+        FileActor, FileInviteSpec, FileInviteSubject, FilePermission, IndexStatus,
+        mint_bearer_file_invite, mint_file_invite,
+    };
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
@@ -1232,7 +1233,7 @@ mod tests {
             device: Ed25519PublicKey::from_bytes(client.credentials.device_public_key()),
         };
         let metadata = FileMetadataV1 {
-            schema_version: collab_types::files::FILE_METADATA_VERSION,
+            schema_version: fs_protocol::files::FILE_METADATA_VERSION,
             record_id: record,
             content_hash: None,
             byte_len: 12,
@@ -1424,7 +1425,7 @@ mod tests {
             actor,
             1,
             crate::record_replication::RecordOperationV1::SetMetadata(FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id: other_record,
                 content_hash: None,
                 byte_len: 0,
@@ -1460,17 +1461,17 @@ mod tests {
         // durable eviction receipt; the live named share supplies scope and
         // the mutually authenticated connection supplies identity.
         let version = FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+            id: fs_protocol::FileVersionId::new(),
             record_id: record,
             parents: vec![],
             actor,
             timestamp_ms: unix_now_ms(),
-            content_hash: Some(collab_types::ContentHash(*replica_manifest.as_bytes())),
-            metadata_hash: collab_types::ContentHash([44; 32]),
-            provenance: collab_types::FileProvenance::Edit,
+            content_hash: Some(fs_protocol::ContentHash(*replica_manifest.as_bytes())),
+            metadata_hash: fs_protocol::ContentHash([44; 32]),
+            provenance: fs_protocol::FileProvenance::Edit,
         };
         let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: record,
             version_id: version.id,
             content_hash: version.content_hash,
@@ -1640,7 +1641,7 @@ mod tests {
         );
 
         let wrong_version = ContentRevisionV1 {
-            version_id: collab_types::FileVersionId::new(),
+            version_id: fs_protocol::FileVersionId::new(),
             ..revision
         };
         assert!(matches!(
@@ -1654,7 +1655,7 @@ mod tests {
         ));
         let sibling_revision = ContentRevisionV1 {
             record_id: other_record,
-            version_id: collab_types::FileVersionId::new(),
+            version_id: fs_protocol::FileVersionId::new(),
             ..revision
         };
         assert!(matches!(

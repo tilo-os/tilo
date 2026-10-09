@@ -1134,7 +1134,7 @@ crate::widget::activation::activation_controls!(Chip, activation);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
 
     fn lay_out(w: &mut dyn Widget) {
         lay_out_with_theme(w, &Theme::dark());
@@ -1254,7 +1254,7 @@ mod tests {
             assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
             dispatch(&mut c, &cursor(just_above));
             assert!(
-                dispatch(&mut c, &press()),
+                dispatch(&mut c, &mouse_press()),
                 "a click in the grown target is consumed"
             );
             assert!(c.is_selected());
@@ -1341,44 +1341,13 @@ mod tests {
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    fn synth() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn chip_pointer_toggles_and_removes_by_kind() {
@@ -1390,14 +1359,14 @@ mod tests {
             let center = c.get_rect().center();
             dispatch(&mut c, &cursor(center));
             assert!(
-                dispatch(&mut c, &press()),
+                dispatch(&mut c, &mouse_press()),
                 "body click on a selectable chip is consumed"
             );
             assert!(c.is_selected(), "click selects");
             assert!(c.take_toggled(), "toggle signal fires");
             assert!(!c.take_toggled(), "toggle drains after one read");
             // Click again → deselect.
-            dispatch(&mut c, &press());
+            dispatch(&mut c, &mouse_press());
             assert!(!c.is_selected(), "second click deselects");
         }
 
@@ -1407,7 +1376,10 @@ mod tests {
             draw(&mut c);
             let center = c.get_rect().center();
             dispatch(&mut c, &cursor(center));
-            assert!(!dispatch(&mut c, &press()), "a plain chip ignores clicks");
+            assert!(
+                !dispatch(&mut c, &mouse_press()),
+                "a plain chip ignores clicks"
+            );
             assert!(!c.take_toggled());
         }
 
@@ -1418,7 +1390,7 @@ mod tests {
             let x = c.remove_rect().center();
             assert!(x.x > 0.0, "× rect resolves after draw");
             dispatch(&mut c, &cursor(x));
-            assert!(dispatch(&mut c, &press()), "× click is consumed");
+            assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
             assert!(c.take_removed(), "remove signal fires");
             assert!(!c.take_removed(), "remove drains after one read");
         }
@@ -1429,7 +1401,7 @@ mod tests {
             draw(&mut c);
             let x = c.remove_rect().center();
             dispatch(&mut c, &cursor(x));
-            dispatch(&mut c, &press());
+            dispatch(&mut c, &mouse_press());
             assert!(c.take_removed(), "× removes");
             assert!(!c.take_toggled(), "× does not also toggle selection");
             assert!(!c.is_selected());

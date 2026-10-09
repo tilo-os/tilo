@@ -40,8 +40,7 @@ fn duplicate_subtree_round_trips_rich_content_and_refuses_stale_or_reused_ids() 
             .unwrap();
         let mut a = doc.clone();
         let mut b = doc.clone();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        actions::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(actions::register);
         let dispatched = tilo_actions::dispatch(
             &mut a,
             &action,
@@ -543,8 +542,7 @@ fn bound_edits_are_one_owned_history_entry_each() {
             &mut tilo_actions::LocalTransport::new(),
         )
         .unwrap();
-        let mut registry = tilo_actions::ActionRegistry::new();
-        actions::register(&mut registry);
+        let registry = tilo_actions::ActionRegistry::with(actions::register);
         tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         notes::notebook::validate(&a).unwrap();

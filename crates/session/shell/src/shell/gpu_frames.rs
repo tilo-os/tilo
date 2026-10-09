@@ -1,11 +1,20 @@
 //! Client frames that stay on the GPU.
 //!
 //! A Wayland client's dma-buf is imported on the device the compositor
-//! presents with and copied, GPU to GPU, into a texture the compositor owns;
-//! the client gets its buffer back as soon as that copy completes. The frame
-//! is drawn from that texture: the presenting renderer copies it into its
-//! image atlas (`vello::Renderer::override_image`), so no pixel crosses the
-//! CPU on the way to the panel.
+//! presents with — once per buffer: [`import_dmabuf`] keeps the import for
+//! the buffer's later commits — and drawn straight from that import. The
+//! presenting renderer draws it into its image atlas through a render pass
+//! (`vello::Renderer::draw_image_from`), which is the frame's one and only
+//! copy: the format conversion (a client's `BGRA` buffer, alpha forced for
+//! `X` formats) happens in it, inside the presenter's own command buffer.
+//!
+//! Drawing from the client's buffer means the compositor holds it: a
+//! [`GpuFrame`] carries the [`BufferLease`] that gives the buffer back, and
+//! the lease runs only once nothing can read the buffer again — the store
+//! replaced the frame, every queued frame that draws it was presented (they
+//! pin it, [`FramePins`]), every readback finished — and a GPU marker
+//! submitted after that completed. A buffer is never handed back while the
+//! GPU may still read it, and never later than the frames already in flight.
 //!
 //! Pixels are read back only when something asks for them: a screenshot, a
 //! window preview, a stream, or a renderer on another device. Those go
@@ -13,17 +22,21 @@
 //! source this module installs.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use vello::wgpu;
 
-/// How long an image of a superseded frame stays drawable. A scene built
-/// before the newer frame arrived can still be waiting for the presenter.
-const SUPERSEDED_GRACE: Duration = Duration::from_secs(1);
-/// The longest a GPU copy or readback may take before it is abandoned.
+/// The longest a GPU marker or readback may take before it is abandoned.
 const GPU_WAIT: Duration = Duration::from_secs(1);
+/// Client buffers kept imported per surface: a swapchain of up to four, and
+/// the buffers of the size it is being resized away from.
+#[cfg(any(test, target_os = "linux"))]
+const IMPORTS_PER_SURFACE: usize = 8;
+/// Buffer releases summarised per `CLIENT-BUFFER-RELEASE` line: about ten
+/// seconds of one 60 Hz client.
+const RELEASE_SUMMARY_EVERY: usize = 600;
 
 /// The device and queue the compositor presents with.
 ///
@@ -56,6 +69,7 @@ pub fn publish_present_device(device: &wgpu::Device, queue: &wgpu::Queue) -> u64
     generation
 }
 
+#[cfg(target_os = "linux")]
 fn present_device() -> Option<PresentDevice> {
     PRESENT_DEVICE
         .lock()
@@ -66,22 +80,49 @@ fn present_device() -> Option<PresentDevice> {
 /// A region of a frame: `x, y, width, height` in its pixels.
 type Crop = (u32, u32, u32, u32);
 
-/// One client frame in a compositor-owned `Rgba8Unorm` texture, with
-/// premultiplied alpha like the client's buffer.
+/// Gives a client its buffer back (`wl_buffer.release`). Run once nothing
+/// reads the buffer any more; see the module doc.
+pub struct BufferLease(Box<dyn FnOnce() + Send>);
+
+impl BufferLease {
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self(Box::new(release))
+    }
+}
+
+impl std::fmt::Debug for BufferLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BufferLease")
+    }
+}
+
+/// One client frame: the client's buffer as imported on the presenting
+/// device, premultiplied like the buffer. Any 8-bit RGB format; `X` formats
+/// are drawn and read back opaque.
 pub struct GpuFrame {
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// The presenting device it was made on.
     generation: u64,
+    /// The imported buffer, read in place.
     texture: wgpu::Texture,
+    /// The buffer's alpha channel is padding.
+    opaque: bool,
     width: u32,
     height: u32,
-    /// The surface it belongs to: its older frames retire when it registers an image.
+    /// The surface it belongs to.
     surface: u64,
     /// The pixels, once something read them back.
     rgba: OnceLock<Option<Arc<Vec<u8>>>>,
     /// The image drawn for a crop of this frame, reused while the crop holds.
     image: Mutex<Option<(Crop, ImageData)>>,
+    /// What gives the client's buffer back once this frame is gone.
+    leases: Mutex<Vec<BufferLease>>,
+    /// When a newer frame of the surface replaced it.
+    superseded: OnceLock<Instant>,
+    /// The client's buffer itself, for a display that can scan it out.
+    #[cfg(target_os = "linux")]
+    dmabuf: Option<smithay::backend::allocator::dmabuf::Dmabuf>,
 }
 
 impl std::fmt::Debug for GpuFrame {
@@ -94,39 +135,88 @@ impl std::fmt::Debug for GpuFrame {
     }
 }
 
-/// Textures of dropped frames, reused for the next frames of the same size so
-/// a client presenting steadily costs no allocation per frame.
-static POOL: Mutex<Vec<(u64, wgpu::Texture)>> = Mutex::new(Vec::new());
-/// Spare textures kept: a window's next frame or two, for a few windows.
-const POOL_LIMIT: usize = 6;
-
-fn take_pooled(generation: u64, width: u32, height: u32) -> Option<wgpu::Texture> {
-    let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
-    let at = pool.iter().position(|(owner, texture)| {
-        *owner == generation && texture.width() == width && texture.height() == height
-    })?;
-    Some(pool.swap_remove(at).1)
-}
-
 impl Drop for GpuFrame {
     fn drop(&mut self) {
-        let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
-        // The pool holds one device's textures: a new device starts it over.
-        pool.retain(|(owner, _)| *owner == self.generation);
-        if pool.len() == POOL_LIMIT {
-            pool.remove(0);
+        let leases = std::mem::take(
+            self.leases
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        if leases.is_empty() {
+            return;
         }
-        pool.push((self.generation, self.texture.clone()));
+        // The queue runs in order: once this marker completes, so did every
+        // render and readback submitted while the frame could still be read.
+        let marker = self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
+        retire(Retiring {
+            device: self.device.clone(),
+            marker,
+            leases,
+            superseded: self.superseded.get().copied(),
+        });
     }
 }
 
 impl GpuFrame {
+    #[cfg(any(test, target_os = "linux"))]
+    fn borrowing(
+        present: &PresentDevice,
+        texture: wgpu::Texture,
+        opaque: bool,
+        surface: u64,
+    ) -> Self {
+        Self {
+            device: present.device.clone(),
+            queue: present.queue.clone(),
+            generation: present.generation,
+            width: texture.width(),
+            height: texture.height(),
+            texture,
+            opaque,
+            surface,
+            rgba: OnceLock::new(),
+            image: Mutex::new(None),
+            leases: Mutex::new(Vec::new()),
+            superseded: OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            dmabuf: None,
+        }
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }
 
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// The buffer's alpha channel is padding: drawn, it covers what is below.
+    pub fn opaque(&self) -> bool {
+        self.opaque
+    }
+
+    /// The client's buffer, when the frame was imported from one. A display
+    /// scanning it out holds this frame — and so the buffer — until the page
+    /// flip that replaces it retires.
+    #[cfg(target_os = "linux")]
+    pub fn dmabuf(&self) -> Option<&smithay::backend::allocator::dmabuf::Dmabuf> {
+        self.dmabuf.as_ref()
+    }
+
+    /// Give the client's buffer back through `lease` once this frame is gone
+    /// and the GPU finished reading it.
+    pub fn hold(&self, lease: BufferLease) {
+        self.leases
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(lease);
+    }
+
+    /// A newer frame of the surface replaced this one; the buffer's release
+    /// latency is measured from here.
+    pub fn note_superseded(&self) {
+        let _ = self.superseded.set(Instant::now());
     }
 
     /// The frame's pixels, tightly packed RGBA, read back on first use.
@@ -155,23 +245,171 @@ impl GpuFrame {
         let image = ImageData {
             data: Blob::new(Arc::new(Vec::<u8>::new())),
             format: ImageFormat::Rgba8,
-            // Wayland `ARGB8888` is premultiplied; `X` formats are made opaque on import.
+            // Wayland `ARGB8888` is premultiplied; `X` formats are drawn opaque.
             alpha_type: ImageAlphaType::AlphaPremultiplied,
             width: crop.2,
             height: crop.3,
         };
-        registry().register(&image, Arc::clone(self), crop);
+        registry().register(&image, self, crop);
         *cached = Some((crop, image.clone()));
         image
     }
 }
 
+/// A frame's leases, waiting for the GPU marker submitted when it went.
+struct Retiring {
+    device: wgpu::Device,
+    marker: wgpu::SubmissionIndex,
+    leases: Vec<BufferLease>,
+    superseded: Option<Instant>,
+}
+
+impl Retiring {
+    fn run(self) {
+        let done = self
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(self.marker),
+                timeout: Some(GPU_WAIT),
+            })
+            .is_ok();
+        if !done {
+            // A lost or hung device never finishes; nothing reads the buffer
+            // through it any more either way.
+            tracing::warn!(
+                target: "shell::compositor::foreign_capture",
+                "the GPU did not finish with a client buffer in time; giving it back"
+            );
+        }
+        if let Some(superseded) = self.superseded {
+            note_release_latency(superseded.elapsed());
+        }
+        for lease in self.leases {
+            (lease.0)();
+        }
+    }
+}
+
+/// Hand `retiring` to the thread that gives buffers back, in the order their
+/// frames went. Without that thread, wait here: a buffer is never given back
+/// while the GPU may still read it.
+fn retire(retiring: Retiring) {
+    type Retirer = Option<Mutex<std::sync::mpsc::Sender<Retiring>>>;
+    static RETIRER: OnceLock<Retirer> = OnceLock::new();
+    let sender = RETIRER.get_or_init(|| {
+        let (sender, receiver) = std::sync::mpsc::channel::<Retiring>();
+        std::thread::Builder::new()
+            .name("tilo-buffer-retire".into())
+            .spawn(move || {
+                while let Ok(retiring) = receiver.recv() {
+                    retiring.run();
+                }
+            })
+            .map_err(|error| {
+                tracing::warn!(%error, "could not start the client buffer release thread");
+            })
+            .ok()
+            .map(|_| Mutex::new(sender))
+    });
+    let unsent = match sender {
+        Some(sender) => sender
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .send(retiring)
+            .err()
+            .map(|std::sync::mpsc::SendError(unsent)| unsent),
+        None => Some(retiring),
+    };
+    if let Some(retiring) = unsent {
+        retiring.run();
+    }
+}
+
+/// How long client buffers were held after a newer frame replaced them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReleaseLatency {
+    /// Buffers given back since the process started.
+    pub releases: u64,
+    /// Over the latest window of up to [`RELEASE_SUMMARY_EVERY`] releases.
+    pub p50: Duration,
+    pub p99: Duration,
+    pub max: Duration,
+}
+
+struct ReleaseStats {
+    window: Vec<Duration>,
+    latest: ReleaseLatency,
+}
+
+static RELEASES: Mutex<ReleaseStats> = Mutex::new(ReleaseStats {
+    window: Vec::new(),
+    latest: ReleaseLatency {
+        releases: 0,
+        p50: Duration::ZERO,
+        p99: Duration::ZERO,
+        max: Duration::ZERO,
+    },
+});
+
+/// The latency summary of `window` (sorted here).
+fn summarise(window: &mut [Duration], releases: u64) -> ReleaseLatency {
+    window.sort_unstable();
+    let at = |permille: usize| {
+        let index = window
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(permille)
+            .checked_div(1000)
+            .unwrap_or(0);
+        window.get(index).copied().unwrap_or_default()
+    };
+    ReleaseLatency {
+        releases,
+        p50: at(500),
+        p99: at(990),
+        max: window.last().copied().unwrap_or_default(),
+    }
+}
+
+fn note_release_latency(held: Duration) {
+    let mut stats = RELEASES.lock().unwrap_or_else(PoisonError::into_inner);
+    stats.window.push(held);
+    let releases = stats.latest.releases.saturating_add(1);
+    let mut window = std::mem::take(&mut stats.window);
+    stats.latest = summarise(&mut window, releases);
+    if window.len() < RELEASE_SUMMARY_EVERY {
+        stats.window = window;
+        return;
+    }
+    let latest = stats.latest;
+    drop(stats);
+    eprintln!(
+        "CLIENT-BUFFER-RELEASE releases={} window={} p50_us={} p99_us={} max_us={}",
+        latest.releases,
+        window.len(),
+        latest.p50.as_micros(),
+        latest.p99.as_micros(),
+        latest.max.as_micros(),
+    );
+}
+
+/// Client buffer release latency — from a newer frame replacing the buffer's
+/// frame to the buffer going back — over the latest window.
+pub fn release_latency() -> ReleaseLatency {
+    RELEASES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .latest
+}
+
 struct Registered {
     image: ImageData,
-    frame: Arc<GpuFrame>,
-    crop: (u32, u32, u32, u32),
-    /// When a newer frame of the same surface registered an image.
-    superseded: Option<Instant>,
+    /// Weak: an image is drawable exactly as long as something holds its
+    /// frame — the store while it is current, a queued frame that draws it,
+    /// a readback.
+    frame: Weak<GpuFrame>,
+    surface: u64,
+    crop: Crop,
 }
 
 #[derive(Default)]
@@ -185,29 +423,16 @@ fn registry() -> &'static Registry {
 }
 
 impl Registry {
-    fn register(&self, image: &ImageData, frame: Arc<GpuFrame>, crop: (u32, u32, u32, u32)) {
-        let now = Instant::now();
+    fn register(&self, image: &ImageData, frame: &Arc<GpuFrame>, crop: Crop) {
         let mut images = self.images.lock().unwrap_or_else(PoisonError::into_inner);
-        for entry in images.values_mut() {
-            if entry.frame.surface == frame.surface
-                && !Arc::ptr_eq(&entry.frame, &frame)
-                && entry.superseded.is_none()
-            {
-                entry.superseded = Some(now);
-            }
-        }
-        images.retain(|_, entry| {
-            entry
-                .superseded
-                .is_none_or(|at| now.saturating_duration_since(at) < SUPERSEDED_GRACE)
-        });
+        images.retain(|_, entry| entry.frame.strong_count() > 0);
         images.insert(
             image.data.id(),
             Registered {
                 image: image.clone(),
-                frame,
+                frame: Arc::downgrade(frame),
+                surface: frame.surface,
                 crop,
-                superseded: None,
             },
         );
     }
@@ -217,13 +442,83 @@ impl Registry {
         self.images
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, entry| entry.frame.surface != surface);
+            .retain(|_, entry| entry.surface != surface);
+    }
+
+    /// The live frame image `id` draws, and its crop.
+    fn frame(&self, id: u64) -> Option<(Arc<GpuFrame>, Crop)> {
+        self.images
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .and_then(|entry| Some((entry.frame.upgrade()?, entry.crop)))
     }
 }
 
-/// Stop drawing `surface`'s GPU frames once it is gone.
+/// The client frame `image` draws, when it draws one whole: the image a
+/// [`crate::shell::scanout_candidate::ScanoutCandidate`] names. Alive as long
+/// as the store or a queued frame holds it.
+pub fn client_frame(image: &ImageData) -> Option<Arc<GpuFrame>> {
+    // Client frames carry no CPU pixels; every other image does.
+    if !image.data.is_empty() {
+        return None;
+    }
+    let (frame, crop) = registry().frame(image.data.id())?;
+    (crop == (0, 0, frame.width, frame.height)).then_some(frame)
+}
+
+/// Stop drawing `surface`'s GPU frames once it is gone, and drop the imports
+/// of its buffers. A frame something still holds (a queued frame drawing it)
+/// gives its buffer back when it goes.
 pub fn forget_surface(surface: u64) {
     registry().forget_surface(surface);
+    #[cfg(target_os = "linux")]
+    IMPORTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .forget_surface(surface);
+}
+
+/// The client frames a queued frame draws, held until it was presented: the
+/// buffers behind them are not given back while it can still be rendered.
+#[derive(Default)]
+pub struct FramePins(Vec<Arc<GpuFrame>>);
+
+impl FramePins {
+    /// Pin every client frame `scene` draws.
+    pub fn add_scene(&mut self, scene: &vello::Scene) {
+        let registry = registry();
+        for patch in &scene.encoding().resources.patches {
+            let vello_encoding::Patch::Image { image, .. } = patch else {
+                continue;
+            };
+            // Client frames carry no CPU pixels; every other image does.
+            if !image.data.is_empty() {
+                continue;
+            }
+            let Some((frame, _)) = registry.frame(image.data.id()) else {
+                continue;
+            };
+            if !self.0.iter().any(|pinned| Arc::ptr_eq(pinned, &frame)) {
+                self.0.push(frame);
+            }
+        }
+    }
+
+    /// Client frames pinned.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for FramePins {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FramePins").field(&self.0.len()).finish()
+    }
 }
 
 /// The client frames a renderer draws from their textures, by image id.
@@ -233,36 +528,39 @@ pub struct AppliedFrames {
 }
 
 /// Point `renderer`, on the presenting device of `generation`, at the textures
-/// of every live frame made there, and drop the frames that retired since the
-/// last call. A renderer on any other device (`None`) draws them through the
-/// external image source.
+/// of every live frame made there, and stop drawing the frames that went
+/// since the last call. A renderer on any other device (`None`) draws them
+/// through the external image source.
 pub fn apply(renderer: &mut vello::Renderer, generation: Option<u64>, applied: &mut AppliedFrames) {
     let images = registry()
         .images
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     applied.applied.retain(|id, image| {
-        let live = images.contains_key(id);
+        let live = images
+            .get(id)
+            .is_some_and(|entry| entry.frame.strong_count() > 0);
         if !live {
-            renderer.override_image(image, None);
+            renderer.draw_image_from(image, None);
         }
         live
     });
     for (id, entry) in images.iter() {
-        if Some(entry.frame.generation) != generation || applied.applied.contains_key(id) {
+        if applied.applied.contains_key(id) {
             continue;
         }
-        renderer.override_image(
+        let Some(frame) = entry.frame.upgrade() else {
+            continue;
+        };
+        if Some(frame.generation) != generation {
+            continue;
+        }
+        renderer.draw_image_from(
             &entry.image,
-            Some(wgpu::TexelCopyTextureInfoBase {
-                texture: entry.frame.texture.clone(),
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: entry.crop.0,
-                    y: entry.crop.1,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
+            Some(vello::ImageSource {
+                texture: frame.texture.clone(),
+                origin: [entry.crop.0, entry.crop.1],
+                opaque: frame.opaque,
             }),
         );
         applied.applied.insert(*id, entry.image.clone());
@@ -270,14 +568,9 @@ pub fn apply(renderer: &mut vello::Renderer, generation: Option<u64>, applied: &
 }
 
 /// The vello external image source: a registered image's pixels, read back
-/// for a renderer that cannot copy its texture.
+/// for a renderer that cannot draw its texture.
 fn external_pixels(id: u64) -> Option<Vec<u8>> {
-    let (frame, crop) = registry()
-        .images
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&id)
-        .map(|entry| (Arc::clone(&entry.frame), entry.crop))?;
+    let (frame, crop) = registry().frame(id)?;
     let pixels = frame.rgba()?;
     Some(crop_rgba(&pixels, frame.width, crop))
 }
@@ -297,7 +590,14 @@ pub fn crop_rgba(rgba: &[u8], width: u32, (x, y, w, h): (u32, u32, u32, u32)) ->
     out
 }
 
+/// Read `frame` back as tightly packed RGBA: a `BGRA` buffer is swizzled and
+/// an `X` format made opaque, as the presenting renderer draws them.
 fn read_back(frame: &GpuFrame) -> Result<Vec<u8>, String> {
+    let bgra = match frame.texture.format() {
+        wgpu::TextureFormat::Rgba8Unorm => false,
+        wgpu::TextureFormat::Bgra8Unorm => true,
+        other => return Err(format!("{other:?} is not read back")),
+    };
     let row = frame.width.saturating_mul(4);
     let padded = row
         .div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
@@ -350,195 +650,17 @@ fn read_back(frame: &GpuFrame) -> Result<Vec<u8>, String> {
     }
     drop(mapped);
     buffer.unmap();
+    for texel in pixels.chunks_exact_mut(4) {
+        if bgra {
+            texel.swap(0, 2);
+        }
+        if frame.opaque
+            && let Some(alpha) = texel.get_mut(3)
+        {
+            *alpha = u8::MAX;
+        }
+    }
     Ok(pixels)
-}
-
-/// The copy pipelines for one device: alpha kept, and alpha forced opaque.
-struct CopyPipelines {
-    generation: u64,
-    layout: wgpu::BindGroupLayout,
-    keep_alpha: wgpu::RenderPipeline,
-    opaque: wgpu::RenderPipeline,
-}
-
-const COPY_SHADER: &str = r"
-override opaque: bool = false;
-@group(0) @binding(0) var source: texture_2d<f32>;
-
-@vertex
-fn vs(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
-    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
-    return vec4<f32>(corner * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
-}
-
-@fragment
-fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
-    let texel = textureLoad(source, vec2<i32>(at.xy), 0);
-    return select(texel, vec4<f32>(texel.rgb, 1.0), opaque);
-}
-";
-
-impl CopyPipelines {
-    fn new(device: &wgpu::Device, generation: u64) -> Self {
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("client-frame-copy"),
-            source: wgpu::ShaderSource::Wgsl(COPY_SHADER.into()),
-        });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("client-frame-copy"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("client-frame-copy"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = |opaque: bool| {
-            let constants = [("opaque", if opaque { 1.0 } else { 0.0 })];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("client-frame-copy"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &module,
-                    entry_point: Some("vs"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &module,
-                    entry_point: Some("fs"),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &constants,
-                        ..Default::default()
-                    },
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        Self {
-            generation,
-            layout,
-            keep_alpha: pipeline(false),
-            opaque: pipeline(true),
-        }
-    }
-}
-
-/// Copy `source` (any colour format the device samples) into a new owned
-/// `Rgba8Unorm` texture and wait for the copy, so the caller may release the
-/// buffer behind `source`.
-fn copy_to_owned(
-    present: &PresentDevice,
-    source: &wgpu::Texture,
-    opaque: bool,
-    surface: u64,
-) -> Result<GpuFrame, String> {
-    static PIPELINES: Mutex<Option<Arc<CopyPipelines>>> = Mutex::new(None);
-    let pipelines = {
-        let mut slot = PIPELINES.lock().unwrap_or_else(PoisonError::into_inner);
-        match slot.as_ref() {
-            Some(pipelines) if pipelines.generation == present.generation => Arc::clone(pipelines),
-            _ => {
-                let pipelines = Arc::new(CopyPipelines::new(&present.device, present.generation));
-                *slot = Some(Arc::clone(&pipelines));
-                pipelines
-            }
-        }
-    };
-    let (width, height) = (source.width(), source.height());
-    let texture = take_pooled(present.generation, width, height).unwrap_or_else(|| {
-        present.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("client-frame"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        })
-    });
-    let source_view = source.create_view(&wgpu::TextureViewDescriptor::default());
-    let target_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = present
-        .device
-        .create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("client-frame-copy"),
-            layout: &pipelines.layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&source_view),
-            }],
-        });
-    let mut encoder = present
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("client-frame-copy"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(if opaque {
-            &pipelines.opaque
-        } else {
-            &pipelines.keep_alpha
-        });
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
-    let submission = present.queue.submit([encoder.finish()]);
-    present
-        .device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: Some(GPU_WAIT),
-        })
-        .map_err(|error| format!("client frame copy wait: {error:?}"))?;
-    Ok(GpuFrame {
-        device: present.device.clone(),
-        queue: present.queue.clone(),
-        generation: present.generation,
-        texture,
-        width,
-        height,
-        surface,
-        rgba: OnceLock::new(),
-        image: Mutex::new(None),
-    })
 }
 
 /// A frame holding `texel` everywhere, on `device`, as an imported client
@@ -571,8 +693,31 @@ pub(crate) fn frame_pixels_for_test(
     pixels: &[u8],
     surface: u64,
 ) -> Arc<GpuFrame> {
-    let source = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("client-frame-test-source"),
+    let present = PresentDevice {
+        device: device.clone(),
+        queue: queue.clone(),
+        generation,
+    };
+    let texture = test_buffer(
+        &present,
+        wgpu::TextureFormat::Rgba8Unorm,
+        (width, height),
+        pixels,
+    );
+    Arc::new(GpuFrame::borrowing(&present, texture, false, surface))
+}
+
+/// A texture as the import of a client buffer is: sampled and copied from,
+/// never written by the compositor.
+#[cfg(test)]
+fn test_buffer(
+    present: &PresentDevice,
+    format: wgpu::TextureFormat,
+    (width, height): (u32, u32),
+    pixels: &[u8],
+) -> wgpu::Texture {
+    let texture = present.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("client-frame-test-buffer"),
         size: wgpu::Extent3d {
             width,
             height,
@@ -581,12 +726,14 @@ pub(crate) fn frame_pixels_for_test(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        source.as_image_copy(),
+    present.queue.write_texture(
+        texture.as_image_copy(),
         pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
@@ -599,17 +746,134 @@ pub(crate) fn frame_pixels_for_test(
             depth_or_array_layers: 1,
         },
     );
-    let present = PresentDevice {
-        device: device.clone(),
-        queue: queue.clone(),
-        generation,
-    };
-    Arc::new(copy_to_owned(&present, &source, false, surface).expect("copy"))
+    texture
 }
 
-/// Import a client's single-plane 8-bit RGB dma-buf on the presenting device
-/// and copy it into a compositor-owned frame. On return the client's buffer
-/// is no longer read.
+/// What names a client buffer in the import cache, and says when it is gone.
+#[cfg(any(test, target_os = "linux"))]
+trait BufferIdentity: PartialEq {
+    /// The buffer was destroyed: its import can never be used again.
+    fn is_gone(&self) -> bool;
+}
+
+#[cfg(target_os = "linux")]
+impl BufferIdentity for smithay::backend::allocator::dmabuf::WeakDmabuf {
+    fn is_gone(&self) -> bool {
+        smithay::backend::allocator::dmabuf::WeakDmabuf::is_gone(self)
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+struct CachedImport<K, V> {
+    /// The presenting device it was imported on.
+    generation: u64,
+    surface: u64,
+    buffer: K,
+    value: V,
+    /// When it was last used, on the cache's own clock.
+    used: u64,
+}
+
+/// Client buffers imported on the presenting device, kept for their next
+/// commits: a client cycles through the same two to four buffers, so a steady
+/// one costs no Vulkan import after each buffer's first commit. An entry goes
+/// when its buffer is destroyed, its surface is forgotten, the presenting
+/// device changes, or its surface imports more than [`IMPORTS_PER_SURFACE`]
+/// buffers (the least recently used goes first).
+#[cfg(any(test, target_os = "linux"))]
+struct ImportCache<K, V> {
+    entries: Vec<CachedImport<K, V>>,
+    clock: u64,
+    /// Imports made since the process started.
+    imports: u64,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl<K: BufferIdentity, V: Clone> ImportCache<K, V> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            clock: 0,
+            imports: 0,
+        }
+    }
+
+    /// The import of `buffer` on the device of `generation`, made by `import`
+    /// only when it is not cached.
+    fn get_or_import(
+        &mut self,
+        (generation, surface): (u64, u64),
+        buffer: K,
+        import: impl FnOnce() -> Result<V, String>,
+    ) -> Result<V, String> {
+        self.clock = self.clock.wrapping_add(1);
+        self.entries
+            .retain(|entry| entry.generation == generation && !entry.buffer.is_gone());
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.surface == surface && entry.buffer == buffer)
+        {
+            entry.used = self.clock;
+            return Ok(entry.value.clone());
+        }
+        let value = import()?;
+        self.imports = self.imports.saturating_add(1);
+        let oldest = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.surface == surface)
+            .min_by_key(|(_, entry)| entry.used)
+            .map(|(at, _)| at);
+        let held = self
+            .entries
+            .iter()
+            .filter(|entry| entry.surface == surface)
+            .count();
+        if held >= IMPORTS_PER_SURFACE
+            && let Some(oldest) = oldest
+        {
+            self.entries.swap_remove(oldest);
+        }
+        self.entries.push(CachedImport {
+            generation,
+            surface,
+            buffer,
+            value: value.clone(),
+            used: self.clock,
+        });
+        Ok(value)
+    }
+
+    fn forget_surface(&mut self, surface: u64) {
+        self.entries.retain(|entry| entry.surface != surface);
+    }
+}
+
+/// The imports of every client buffer, as the texture of their one plane.
+#[cfg(target_os = "linux")]
+static IMPORTS: Mutex<ImportCache<smithay::backend::allocator::dmabuf::WeakDmabuf, wgpu::Texture>> =
+    Mutex::new(ImportCache::new());
+
+/// Vulkan imports of client buffers since the process started. A steady
+/// client adds one per buffer it owns, not one per commit.
+#[cfg(target_os = "linux")]
+pub fn buffer_imports() -> u64 {
+    IMPORTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .imports
+}
+
+/// Import a client's single-plane 8-bit RGB dma-buf on the presenting device,
+/// or reuse its import from an earlier commit, as a frame drawn straight from
+/// it. Nothing is copied or submitted here.
+///
+/// The caller makes sure the client's rendering into the buffer finished
+/// first (its implicit fence signalled): Vulkan does not wait for it. Once the
+/// frame can be drawn, the caller holds the buffer for it ([`GpuFrame::hold`]):
+/// the client must not get it back while the frame lives.
 ///
 /// # Errors
 ///
@@ -620,10 +884,19 @@ pub fn import_dmabuf(
     dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
     surface: u64,
 ) -> Result<Arc<GpuFrame>, String> {
+    let present = present_device().ok_or_else(|| "no presenting GPU yet".to_owned())?;
+    import_dmabuf_on(&present, dmabuf, surface)
+}
+
+#[cfg(target_os = "linux")]
+fn import_dmabuf_on(
+    present: &PresentDevice,
+    dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+    surface: u64,
+) -> Result<Arc<GpuFrame>, String> {
     use smithay::backend::allocator::{Buffer as _, Fourcc};
     use std::os::fd::AsFd as _;
 
-    let present = present_device().ok_or_else(|| "no presenting GPU yet".to_owned())?;
     let fourcc = dmabuf.format().code;
     let opaque = match fourcc {
         Fourcc::Argb8888 | Fourcc::Abgr8888 => false,
@@ -641,49 +914,56 @@ pub fn import_dmabuf(
     ) else {
         return Err("expected one plane".to_owned());
     };
-    // Vulkan does not wait for the client's rendering into the buffer: the
-    // dma-buf's implicit fence does. Readable means its writes are done.
-    wait_readable(fd.as_fd());
-    let planes = [ui::dmabuf_import::PlaneRef {
-        fd: fd.as_fd(),
-        offset,
-        stride,
-    }];
-    let imported = ui::dmabuf_import::import(
-        &present.device,
-        &ui::dmabuf_import::DmabufRef {
-            planes: &planes,
-            fourcc: fourcc as u32,
-            modifier: u64::from(dmabuf.format().modifier),
-            width: dmabuf.width(),
-            height: dmabuf.height(),
-            colorimetry: media::dmabuf::Colorimetry::RGB,
-        },
-    )
-    .map_err(|error| error.to_string())?;
-    let source = imported
-        .planes
-        .first()
-        .ok_or_else(|| "the import returned no plane".to_owned())?;
-    let frame = copy_to_owned(&present, source, opaque, surface)?;
-    // The imported aliases go only after the copy completed.
-    drop(imported);
+    let source = IMPORTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get_or_import((present.generation, surface), dmabuf.weak(), || {
+            let planes = [ui::dmabuf_import::PlaneRef {
+                fd: fd.as_fd(),
+                offset,
+                stride,
+            }];
+            let imported = ui::dmabuf_import::import(
+                &present.device,
+                &ui::dmabuf_import::DmabufRef {
+                    planes: &planes,
+                    fourcc: fourcc as u32,
+                    modifier: u64::from(dmabuf.format().modifier),
+                    width: dmabuf.width(),
+                    height: dmabuf.height(),
+                    colorimetry: media::dmabuf::Colorimetry::RGB,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            // The texture owns its `VkImage` and imported memory; wgpu frees
+            // them only after the last submission that used them retired.
+            imported
+                .planes
+                .into_iter()
+                .next()
+                .ok_or_else(|| "the import returned no plane".to_owned())
+        })?;
+    let mut frame = GpuFrame::borrowing(present, source, opaque, surface);
+    frame.dmabuf = Some(dmabuf.clone());
     Ok(Arc::new(frame))
 }
 
 /// Block until a dma-buf's pending writes (its implicit fence) are done, at
-/// most [`GPU_WAIT`].
+/// most [`GPU_WAIT`]. Only for a buffer whose fence could not be watched on
+/// the compositor loop.
 #[cfg(target_os = "linux")]
-fn wait_readable(fd: std::os::fd::BorrowedFd<'_>) {
+pub(crate) fn wait_readable(dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf) {
     use std::os::fd::AsRawFd as _;
-    let mut poll = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
     let timeout = i32::try_from(GPU_WAIT.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: one valid pollfd, borrowed for the duration of the call.
-    let _ = unsafe { libc::poll(&raw mut poll, 1, timeout) };
+    for fd in dmabuf.handles() {
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd, borrowed for the duration of the call.
+        let _ = unsafe { libc::poll(&raw mut poll, 1, timeout) };
+    }
 }
 
 #[cfg(test)]
@@ -701,52 +981,32 @@ mod tests {
         })
     }
 
-    fn source(
+    /// A 3×2 client buffer of `format` holding `texel` everywhere, wrapped as
+    /// the frame its import would be.
+    fn client_frame(
         present: &PresentDevice,
         format: wgpu::TextureFormat,
         texel: [u8; 4],
-    ) -> wgpu::Texture {
-        let texture = present.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("client-frame-test-source"),
-            size: wgpu::Extent3d {
-                width: 3,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        present.queue.write_texture(
-            texture.as_image_copy(),
-            &texel.repeat(6),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(12),
-                rows_per_image: Some(2),
-            },
-            wgpu::Extent3d {
-                width: 3,
-                height: 2,
-                depth_or_array_layers: 1,
-            },
-        );
-        texture
+        (opaque, surface): (bool, u64),
+    ) -> Arc<GpuFrame> {
+        let texture = test_buffer(present, format, (3, 2), &texel.repeat(6));
+        Arc::new(GpuFrame::borrowing(present, texture, opaque, surface))
     }
 
     #[test]
-    fn client_frames_copy_on_the_gpu_and_read_back_only_on_demand() {
+    fn client_frames_are_read_in_place_and_read_back_only_on_demand() {
         let Some(present) = present() else {
             eprintln!("no wgpu adapter; skipping");
             return;
         };
-        // Phase `a_bgra_buffer_lands_as_rgba_with_its_alpha`.
+        // Phase `a_bgra_buffer_reads_back_as_rgba_with_its_alpha`.
         {
-            let texture = source(&present, wgpu::TextureFormat::Bgra8Unorm, [10, 20, 30, 128]);
-            let frame = Arc::new(copy_to_owned(&present, &texture, false, 1).expect("copy"));
+            let frame = client_frame(
+                &present,
+                wgpu::TextureFormat::Bgra8Unorm,
+                [10, 20, 30, 128],
+                (false, 1),
+            );
             assert!(
                 frame.rgba.get().is_none(),
                 "nothing is read back until asked"
@@ -755,16 +1015,24 @@ mod tests {
             assert_eq!(pixels.len(), 3 * 2 * 4);
             assert_eq!(&pixels[..4], &[30, 20, 10, 128]);
         }
-        // Phase `an_x_format_is_made_opaque`.
+        // Phase `an_x_format_reads_back_opaque`.
         {
-            let texture = source(&present, wgpu::TextureFormat::Rgba8Unorm, [1, 2, 3, 0]);
-            let frame = Arc::new(copy_to_owned(&present, &texture, true, 2).expect("copy"));
+            let frame = client_frame(
+                &present,
+                wgpu::TextureFormat::Bgra8Unorm,
+                [3, 2, 1, 0],
+                (true, 2),
+            );
             assert_eq!(&frame.rgba().expect("readback")[..4], &[1, 2, 3, 255]);
         }
         // Phase `a_renderer_without_the_texture_gets_the_cropped_pixels`.
         {
-            let texture = source(&present, wgpu::TextureFormat::Rgba8Unorm, [9, 8, 7, 255]);
-            let frame = Arc::new(copy_to_owned(&present, &texture, false, 3).expect("copy"));
+            let frame = client_frame(
+                &present,
+                wgpu::TextureFormat::Rgba8Unorm,
+                [9, 8, 7, 255],
+                (false, 3),
+            );
             let image = frame.image((1, 0, 2, 2));
             assert_eq!((image.width, image.height), (2, 2));
             assert!(image.data.is_empty(), "the image carries no CPU pixels");
@@ -780,5 +1048,325 @@ mod tests {
             forget_surface(3);
             assert_eq!(external_pixels(image.data.id()), None);
         }
+        // Phase `an_image_is_drawable_exactly_while_its_frame_is_held`.
+        {
+            let frame = client_frame(
+                &present,
+                wgpu::TextureFormat::Rgba8Unorm,
+                [1, 1, 1, 255],
+                (false, 4),
+            );
+            let image = frame.image((0, 0, 3, 2));
+            assert!(external_pixels(image.data.id()).is_some());
+            drop(frame);
+            assert_eq!(
+                external_pixels(image.data.id()),
+                None,
+                "no grace period: a frame nobody holds is not drawn"
+            );
+        }
+    }
+
+    /// The renderer target and its pixels, read back as RGBA.
+    fn render_and_read(
+        present: &PresentDevice,
+        renderer: &mut vello::Renderer,
+        scene: &vello::Scene,
+        (width, height): (u32, u32),
+    ) -> Vec<u8> {
+        let target = present.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("client-frame-test-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        renderer
+            .render_to_texture(
+                &present.device,
+                &present.queue,
+                scene,
+                &view,
+                &vello::RenderParams {
+                    base_color: vello::peniko::Color::BLACK,
+                    width,
+                    height,
+                    antialiasing_method: vello::AaConfig::Area,
+                },
+            )
+            .expect("render");
+        let frame = GpuFrame::borrowing(present, target, false, u64::MAX);
+        read_back(&frame).expect("target readback")
+    }
+
+    fn assert_near(got: &[u8], want: &[u8]) {
+        assert!(
+            got.iter().zip(want).all(|(g, w)| g.abs_diff(*w) <= 1),
+            "{got:?} is not {want:?}"
+        );
+    }
+
+    /// One client buffer reaches the panel with one GPU copy: the presenting
+    /// renderer draws it into its atlas from the import itself, converting
+    /// `BGRA` and `X` formats on the way, and draws it from the atlas after.
+    #[test]
+    fn a_client_frame_is_drawn_with_one_copy() {
+        let Some(present) = present() else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        let mut renderer = vello::Renderer::new(
+            &present.device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .expect("renderer");
+        let mut applied = AppliedFrames::default();
+        let draw = |frame: &Arc<GpuFrame>| {
+            let mut scene = vello::Scene::new();
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                &vello::peniko::ImageBrush::new(frame.image((0, 0, 3, 2))),
+                None,
+                &vello::kurbo::Rect::new(0.0, 0.0, 3.0, 2.0),
+            );
+            scene
+        };
+        // Phase `a_bgra_x_buffer_is_converted_by_the_one_copy`.
+        let frame = client_frame(
+            &present,
+            wgpu::TextureFormat::Bgra8Unorm,
+            [0x30, 0x20, 0x10, 0x00],
+            (true, 10),
+        );
+        let scene = draw(&frame);
+        apply(&mut renderer, Some(present.generation), &mut applied);
+        let before = renderer.image_source_writes();
+        let pixels = render_and_read(&present, &mut renderer, &scene, (3, 2));
+        assert_near(&pixels[..4], &[0x10, 0x20, 0x30, 0xFF]);
+        let after = renderer.image_source_writes();
+        assert_eq!(
+            after.0.saturating_sub(before.0),
+            1,
+            "one copy, from the client's buffer"
+        );
+        assert_eq!(
+            after.1.saturating_sub(before.1),
+            3 * 2 * 4,
+            "of the frame's bytes"
+        );
+        // Phase `the_next_render_draws_it_from_the_atlas`.
+        apply(&mut renderer, Some(present.generation), &mut applied);
+        let again = render_and_read(&present, &mut renderer, &scene, (3, 2));
+        assert_eq!(again, pixels);
+        assert_eq!(
+            renderer.image_source_writes(),
+            after,
+            "a frame already in the atlas is not copied again"
+        );
+        // Phase `a_premultiplied_buffer_keeps_its_alpha`.
+        let translucent = client_frame(
+            &present,
+            wgpu::TextureFormat::Rgba8Unorm,
+            [0x40, 0x00, 0x00, 0x80],
+            (false, 11),
+        );
+        let scene = draw(&translucent);
+        apply(&mut renderer, Some(present.generation), &mut applied);
+        let pixels = render_and_read(&present, &mut renderer, &scene, (3, 2));
+        // Half-covering red over the black base.
+        assert_near(&pixels[..4], &[0x40, 0x00, 0x00, 0xFF]);
+        // Phase `a_frame_that_went_is_no_longer_drawn_from_its_buffer`.
+        drop(frame);
+        apply(&mut renderer, Some(present.generation), &mut applied);
+        assert_eq!(
+            applied.applied.len(),
+            1,
+            "only the live frame stays applied"
+        );
+    }
+
+    #[test]
+    fn a_buffer_goes_back_only_after_its_last_holder_and_a_gpu_marker() {
+        let Some(present) = present() else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        let (on_release, given_back) = std::sync::mpsc::channel::<&'static str>();
+        let lease = |name: &'static str| {
+            let on_release = on_release.clone();
+            BufferLease::new(move || {
+                let _ = on_release.send(name);
+            })
+        };
+        let frame = client_frame(
+            &present,
+            wgpu::TextureFormat::Rgba8Unorm,
+            [1, 2, 3, 255],
+            (false, 20),
+        );
+        frame.hold(lease("first"));
+        let image = frame.image((0, 0, 3, 2));
+        let mut scene = vello::Scene::new();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            &vello::peniko::ImageBrush::new(image),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 3.0, 2.0),
+        );
+        // Phase `a_queued_frame_pins_what_it_draws`.
+        let mut pins = FramePins::default();
+        pins.add_scene(&scene);
+        pins.add_scene(&scene);
+        assert_eq!(pins.len(), 1, "one frame, pinned once");
+        // Phase `a_superseded_frame_a_queued_frame_draws_is_kept`.
+        let releases_before = release_latency().releases;
+        frame.note_superseded();
+        drop(frame);
+        assert!(
+            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the buffer stays held while a queued frame can still draw it"
+        );
+        // Phase `presenting_the_frame_gives_the_buffer_back_once`.
+        drop(pins);
+        assert_eq!(
+            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            Ok("first"),
+            "the buffer goes back once the frame drawing it is done"
+        );
+        assert!(given_back.recv_timeout(Duration::from_millis(50)).is_err());
+        assert!(release_latency().releases > releases_before);
+        // Phase `a_readback_holds_its_frame`.
+        let frame = client_frame(
+            &present,
+            wgpu::TextureFormat::Rgba8Unorm,
+            [4, 5, 6, 255],
+            (false, 21),
+        );
+        frame.hold(lease("second"));
+        let reader = Arc::clone(&frame);
+        drop(frame);
+        assert_eq!(&reader.rgba().expect("readback")[..4], &[4, 5, 6, 255]);
+        assert!(given_back.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(reader);
+        assert_eq!(
+            given_back.recv_timeout(GPU_WAIT.saturating_mul(2)),
+            Ok("second")
+        );
+    }
+
+    #[test]
+    fn release_latency_summarises_its_window() {
+        let mut window: Vec<Duration> = (1..=100).map(Duration::from_millis).collect();
+        let summary = summarise(&mut window, 7);
+        assert_eq!(summary.releases, 7);
+        assert_eq!(summary.p50, Duration::from_millis(50));
+        assert_eq!(summary.p99, Duration::from_millis(99));
+        assert_eq!(summary.max, Duration::from_millis(100));
+        assert_eq!(summarise(&mut [], 0), ReleaseLatency::default());
+    }
+    /// A client buffer in the import cache: equal by id, gone once dropped.
+    struct TestBuffer(u32, Arc<std::sync::atomic::AtomicBool>);
+
+    impl PartialEq for TestBuffer {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+
+    impl BufferIdentity for TestBuffer {
+        fn is_gone(&self) -> bool {
+            self.1.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[test]
+    fn a_client_buffer_is_imported_once_across_commits() {
+        let fresh = |id| TestBuffer(id, Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut cache = ImportCache::<TestBuffer, u32>::new();
+        let mut made: usize = 0;
+        let mut import = |value| {
+            made = made.saturating_add(1);
+            Ok::<u32, String>(value)
+        };
+        // Phase `a_steady_swapchain_imports_each_buffer_once`.
+        let first = fresh(1);
+        let second = fresh(2);
+        for _ in 0..3 {
+            for buffer in [&first, &second] {
+                let got = cache
+                    .get_or_import((1, 10), TestBuffer(buffer.0, Arc::clone(&buffer.1)), || {
+                        import(buffer.0)
+                    })
+                    .expect("import");
+                assert_eq!(got, buffer.0, "the cached import is the buffer's own");
+            }
+        }
+        assert_eq!(cache.imports, 2, "three commits of two buffers import two");
+        // Phase `the_same_buffer_on_another_surface_is_its_own_import`.
+        cache
+            .get_or_import((1, 11), TestBuffer(1, Arc::clone(&first.1)), || import(1))
+            .expect("import");
+        assert_eq!(cache.imports, 3);
+        // Phase `a_destroyed_buffer_is_dropped_and_a_new_device_imports_again`.
+        first.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        cache
+            .get_or_import((1, 10), TestBuffer(2, Arc::clone(&second.1)), || import(2))
+            .expect("import");
+        assert!(
+            cache.entries.iter().all(|entry| entry.buffer.0 != 1),
+            "the destroyed buffer's imports are gone"
+        );
+        cache
+            .get_or_import((2, 10), TestBuffer(2, Arc::clone(&second.1)), || import(2))
+            .expect("import");
+        assert_eq!(cache.imports, 4, "a new presenting device imports again");
+        assert_eq!(cache.entries.len(), 1, "nothing of the old device is kept");
+        // Phase `a_failed_import_is_not_cached`.
+        let failed = cache.get_or_import((2, 10), fresh(3), || Err("refused".to_owned()));
+        assert_eq!(failed, Err("refused".to_owned()));
+        assert_eq!(cache.entries.len(), 1);
+        // Phase `a_surface_keeps_a_bounded_set_and_forgets_on_destroy`.
+        let buffers: Vec<_> = (100..)
+            .take(IMPORTS_PER_SURFACE.saturating_add(3))
+            .map(fresh)
+            .collect();
+        for buffer in &buffers {
+            cache
+                .get_or_import((2, 12), TestBuffer(buffer.0, Arc::clone(&buffer.1)), || {
+                    import(buffer.0)
+                })
+                .expect("import");
+        }
+        assert_eq!(
+            cache
+                .entries
+                .iter()
+                .filter(|entry| entry.surface == 12)
+                .count(),
+            IMPORTS_PER_SURFACE
+        );
+        assert!(
+            cache.entries.iter().all(|entry| entry.buffer.0 != 100),
+            "the least recently used buffer went first"
+        );
+        cache.forget_surface(12);
+        assert!(cache.entries.iter().all(|entry| entry.surface != 12));
+        assert_eq!(cache.entries.len(), 1, "another surface's import stays");
+        assert_eq!(made, buffers.len().saturating_add(4));
     }
 }

@@ -250,5 +250,6 @@ pub fn serve_socket(
     Ok(handle)
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
+#[cfg(feature = "filesystem")]
 mod tests;

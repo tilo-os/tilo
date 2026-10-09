@@ -15,8 +15,8 @@ use std::collections::HashMap as StdHashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 const TAB_A: u64 = 0xa1;
 const TAB_B: u64 = 0xa2;
@@ -188,22 +188,12 @@ impl Harness {
     }
 
     fn send_with_modifiers(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut self.doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.root,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .modifiers(modifiers)
+            .doc(&mut self.doc)
+            .layout(&self.taffy, self.root)
+            .send(&mut self.host, event)
+            .handled
     }
 
     fn move_to(&mut self, p: Point) {
@@ -237,14 +227,8 @@ impl Harness {
         modifiers: winit::keyboard::ModifiersState,
         repeat: bool,
     ) -> bool {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let mut event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         event.repeat = repeat;
-        event.text = None;
         self.send_with_modifiers(
             &WindowEvent::KeyboardInput {
                 device_id: DeviceId::dummy(),

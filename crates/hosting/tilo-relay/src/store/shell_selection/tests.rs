@@ -17,6 +17,8 @@ use crate::transport::Envelope;
 use automerge::transaction::Transactable;
 use tilo_peer_state::{StatePeer, TransportOrigin};
 
+mod tail_cache_tests;
+
 // ---- shared drivers -------------------------------------------------------
 
 fn finish<T>(mut step: impl FnMut() -> Step<T>) -> T {
@@ -425,12 +427,21 @@ fn synthetic_signed(
     seq: u64,
     now: web_time::SystemTime,
 ) -> NeighbourMsg {
+    synthetic_signed_record(key, room, "one", &mutation, (seq, now))
+}
+fn synthetic_signed_record(
+    key: &ed25519_dalek::SigningKey,
+    room: &str,
+    record: &str,
+    mutation: &collab_types::DocumentMutation,
+    (seq, now): (u64, web_time::SystemTime),
+) -> NeighbourMsg {
     let source = key.verifying_key().to_bytes();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id("selector.app", room, "one"),
+        collab_types::document_artifact_id("selector.app", room, record),
         collab_types::Ed25519PublicKey::from_bytes(source),
-        collab_types::document_attestation_id("selector.app", room, "one"),
+        collab_types::document_attestation_id("selector.app", room, record),
         collab_types::OpClass::Splice,
         now,
         seq,
@@ -440,7 +451,7 @@ fn synthetic_signed(
         peer: tilo_peer_state::peer_handle(&source),
         app_id: "selector.app".into(),
         cluster_id: room.into(),
-        record_id: "one".into(),
+        record_id: record.into(),
         envelope: Box::new(envelope),
     }
 }

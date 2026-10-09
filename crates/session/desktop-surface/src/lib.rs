@@ -11,10 +11,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard; layout tests pin exact computed positions"
     )

@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::testing::{Dispatch, dispatch};
 use crate::widget::ResourceOperation;
 use crate::widget::TaffyTreeExt;
 use automerge::ReadDoc;
@@ -88,21 +89,10 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             &theme,
             &PresenceCtx::empty(),
         );
-        let mut handled = false;
-        let mut focus = None;
-        widget.handle_event(
-            &WindowEvent::Focused(true),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(widget, &WindowEvent::Focused(true));
         assert_eq!(crate::resources::resources(widget, &doc).len(), 1);
         assert!(crate::widget::controls::take_control_invocation(widget).is_none());
         assert_eq!(
@@ -165,24 +155,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             inner: Recorder::new(&log),
             seen: 0,
         };
-        let mut taffy = TaffyTree::new();
-        let node = taffy.leaf_node(taffy::Style::default());
-        let (mut handled, mut focus) = (false, None);
-        Widget::handle_event(
-            &mut swallow,
-            &WindowEvent::Focused(true),
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled);
+        assert!(dispatch(&mut swallow, &WindowEvent::Focused(true)));
         assert_eq!(swallow.seen, 1);
         assert!(log.borrow().is_empty(), "the inner widget never saw it");
     }

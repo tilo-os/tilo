@@ -14,6 +14,10 @@ struct Cli {
     catalog: Option<PathBuf>,
     #[arg(long)]
     keys: Option<PathBuf>,
+    /// Emit aggregate preparation timing and native attention mode to stderr.
+    /// Never includes model paths, vocabulary, audio or transcript text.
+    #[arg(long)]
+    diagnostics: bool,
 }
 
 pub fn main() -> std::process::ExitCode {
@@ -37,7 +41,12 @@ fn run(args: &Cli, input: &mut impl Read, output: &mut impl Write) -> Result<(),
     }
     // SAFETY: these argument-free identity queries cannot fail.
     let elevated = unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() };
-    if elevated && (args.root.is_some() || args.catalog.is_some() || args.keys.is_some()) {
+    if elevated
+        && (args.root.is_some()
+            || args.catalog.is_some()
+            || args.keys.is_some()
+            || args.diagnostics)
+    {
         return Err(SpeechError::ModelUnavailable);
     }
     let root = args
@@ -55,5 +64,11 @@ fn run(args: &Cli, input: &mut impl Read, output: &mut impl Write) -> Result<(),
         .unwrap_or_else(|| Path::new(IMAGE_KEYS));
     let verified =
         VerifiedCatalog::load(catalogue, keys).map_err(|_| SpeechError::ModelUnavailable)?;
-    local_model_service::speech::worker::serve(&root, &verified, input, output)
+    local_model_service::speech::worker::serve_with_diagnostics(
+        &root,
+        &verified,
+        input,
+        output,
+        args.diagnostics,
+    )
 }

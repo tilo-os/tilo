@@ -432,9 +432,7 @@ mod tests {
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// The workspace tree the framework publishes for `doc`; nothing for

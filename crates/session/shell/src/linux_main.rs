@@ -14,11 +14,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -487,6 +483,11 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
+    {
+        eprintln!("approved project check configuration refused: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     if !early_args.iter().any(|arg| {
         matches!(
             arg.as_str(),
@@ -570,7 +571,13 @@ pub fn run() -> std::process::ExitCode {
         .then(|| ui::warmup::spawn_warmup(!want_vello))
         .flatten();
 
-    tracing_subscriber::fmt::init();
+    // RUST_LOG as `fmt::init` reads it, with the per-launch timing lines kept:
+    // the open-latency gate reads them from the session log.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
+        .init();
     shell::crash_log::install("tilo shell panic");
     // After the crash log: a panic outside a helper's panic boundary still
     // ends the compositor, in every build. Inside one (the collaboration

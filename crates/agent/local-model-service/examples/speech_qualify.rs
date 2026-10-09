@@ -21,6 +21,25 @@ mod qualification {
         size: u64,
         digest: &str,
     ) -> Result<Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
+        if let Some(cache) = std::env::var_os("TILO_SPEECH_QUALIFY_FIXTURE_CACHE") {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let path = std::path::Path::new(&cache);
+            if !path.is_absolute() {
+                return Err("qualification cache must be absolute".into());
+            }
+            let mut bytes = Zeroizing::new(Vec::new());
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path.join(digest))?
+                .take(size.saturating_add(1))
+                .read_to_end(&mut bytes)?;
+            if u64::try_from(bytes.len())? != size || hex::encode(Sha256::digest(&*bytes)) != digest
+            {
+                return Err("public qualification cache receipt mismatch".into());
+            }
+            return Ok(bytes);
+        }
         let client = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(180))
             .build()?;
@@ -100,13 +119,28 @@ mod qualification {
         let root = fixture.path().join("store");
         fs::create_dir_all(root.join("sha256"))?;
         let sha = hex::encode(Sha256::digest(model));
+        let whistle = model.len() == 16_919_407
+            && sha == "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb";
+        let (format, license, revision) = if whistle {
+            (
+                "whistle_cact",
+                "Apache-2.0",
+                "b358ddadd89b7a713b5aa131f23032d3cca1b251",
+            )
+        } else {
+            (
+                "whisper_ggml",
+                "MIT",
+                "5359861c739e955e79d9a303bcbc70fb988958b1",
+            )
+        };
         let object = root.join("sha256").join(&sha);
         fs::write(&object, model)?;
         let release: agent_provider_config::local::LocalModelRelease = serde_json::from_value(
             serde_json::json!({
-                "id": "speech-qualification", "label": "Public fixture", "description": "Isolated test only", "version": "5359861c739e955e79d9a303bcbc70fb988958b1",
+                "id": "speech-qualification", "label": "Public fixture", "description": "Isolated test only", "version": revision,
                 "artifact": {"url": "https://example.invalid/public-fixture", "sha256": sha, "size_bytes": model.len()},
-                "artifact_format": "whisper_ggml", "license_id": "MIT", "license_url": "https://example.invalid/LICENSE", "requires_acceptance": true,
+                "artifact_format": format, "license_id": license, "license_url": "https://example.invalid/LICENSE", "requires_acceptance": true,
                 "installed_size_bytes": model.len(), "allowed_runtimes": [], "required_memory_mib": 1024, "required_accelerator_mib": 0, "context_window": 0,
                 "vision": false, "face_recognition": false, "segmentation": false
             }),
@@ -120,7 +154,7 @@ mod qualification {
                 process: None,
                 in_process: Some(InProcessRecord {
                     revision: release.version.clone(),
-                    license_id: "MIT".into(),
+                    license_id: license.into(),
                     size_bytes: u64::try_from(model.len())?,
                     capabilities: vec![InProcessCapability::SpeechRecognition],
                     recorded_at_unix_ms: 1,
@@ -132,7 +166,7 @@ mod qualification {
             LicenseAcceptance {
                 model_version: release.version.clone(),
                 model_sha256: sha,
-                license_id: "MIT".into(),
+                license_id: license.into(),
             },
         );
         fs::write(root.join("state.json"), serde_json::to_vec(&state)?)?;
@@ -184,6 +218,7 @@ mod qualification {
         model: &[u8],
         samples: &[i16],
         core: bool,
+        vocabulary: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let Fixture {
             _directory,
@@ -216,7 +251,7 @@ mod qualification {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
             let mut child = OwnedChild(command.spawn()?);
-            worker_stream(&mut child.0, samples, cancel)?;
+            worker_stream(&mut child.0, samples, cancel, vocabulary)?;
         }
         Ok(())
     }
@@ -225,6 +260,7 @@ mod qualification {
         child: &mut Child,
         samples: &[i16],
         cancel: bool,
+        vocabulary: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut input = child.stdin.take().ok_or("worker input")?;
         let mut output = child.stdout.take().ok_or("worker output")?;
@@ -245,9 +281,14 @@ mod qualification {
                 .map_err(|_| "worker reply deadline")
                 .and_then(|message| message.map_err(|_| "worker reply schema"))
         };
+        let configuration = if vocabulary {
+            br#"{"language":"en","vocabulary":["TiLo","Americans"]}"#.as_slice()
+        } else {
+            br#"{"language":"en"}"#.as_slice()
+        };
         FRAME.write(
             &mut input,
-            &request(RequestKind::Configure, 1, br#"{"language":"en"}"#),
+            &request(RequestKind::Configure, 1, configuration),
         )?;
         input.flush()?;
         match next()? {
@@ -280,7 +321,9 @@ mod qualification {
                 SpeechReply::Draft {
                     sequence: reply,
                     text,
-                } if reply == sequence && text.to_lowercase().contains("ask not") => {}
+                } if reply == sequence
+                    && text.to_lowercase().contains("ask not")
+                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
                 _ => return Err("worker draft journey failed".into()),
             }
             sequence = sequence.checked_add(1).ok_or("sequence")?;
@@ -290,7 +333,9 @@ mod qualification {
                 SpeechReply::Done {
                     sequence: reply,
                     text,
-                } if reply == sequence && text.to_lowercase().contains("country") => {}
+                } if reply == sequence
+                    && text.to_lowercase().contains("country")
+                    && (!vocabulary || !text.to_lowercase().contains("tilo")) => {}
                 _ => return Err("worker final journey failed".into()),
             }
             if !child.wait()?.success() {
@@ -321,16 +366,133 @@ mod qualification {
         Ok(())
     }
 
+    fn special_mode(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
+        if arguments == ["--help"] {
+            println!(
+                "speech_qualify [--worker[-small] | --worker-core[-small] | --worker-vocabulary-core | --hold-fixture REVIEWED_MODEL_FILE]"
+            );
+            return Ok(true);
+        }
+        if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
+            child_fixture(arguments.get(1..).ok_or("fixture arguments")?)?;
+            return Ok(true);
+        }
+        // The parent owns this pipe and a bounded disposable namespace. EOF
+        // drops every fixture file; this never changes an OS/user trust store.
+        if arguments.first().is_some_and(|arg| arg == "--hold-fixture") && arguments.len() == 2 {
+            let path = arguments.get(1).ok_or("public model path")?;
+            let mut model = Zeroizing::new(Vec::new());
+            fs::File::open(path)?
+                .take(256 * 1024 * 1024 + 1)
+                .read_to_end(&mut model)?;
+            let digest = hex::encode(Sha256::digest(&*model));
+            let reviewed = [
+                (
+                    16_919_407,
+                    "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
+                ),
+                (
+                    77_691_713,
+                    "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+                ),
+                (
+                    147_951_465,
+                    "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+                ),
+                (
+                    81_768_585,
+                    "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
+                ),
+                (
+                    190_085_487,
+                    "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+                ),
+            ];
+            if !reviewed
+                .iter()
+                .any(|(size, sha)| model.len() == *size && digest == *sha)
+            {
+                return Err("unreviewed public model fixture".into());
+            }
+            let held = fixture(&model)?;
+            drop(model);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "root": held.root, "catalog": held.catalog, "keys": held.keys,
+                    "ephemeral": true, "model_sha256": digest,
+                })
+            );
+            std::io::stdout().flush()?;
+            let mut end = [0];
+            let _ = std::io::stdin().read(&mut end)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn qualify_vocabulary(
+        engine: &mut SpeechEngine,
+        samples: &[f32],
+        language: &std::ffi::CString,
+        baseline: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        engine
+            .set_vocabulary(&["TiLo".into(), "Americans".into()])
+            .map_err(|_| "public vocabulary configuration failed")?;
+        let biased = engine
+            .transcribe(samples, language)
+            .map_err(|_| "public vocabulary decode failed")?;
+        if !biased.to_lowercase().contains("ask not") || biased.to_lowercase().contains("tilo") {
+            return Err("public vocabulary hallucinated an unspoken hint".into());
+        }
+        if engine.set_vocabulary(&["<|endoftext|>".into()]).is_ok() {
+            return Err("decoder accepted a special-token hint".into());
+        }
+        let cleared = engine
+            .transcribe(samples, language)
+            .map_err(|_| "cleared vocabulary decode failed")?;
+        if cleared != baseline {
+            return Err("failed vocabulary replacement retained prior bias".into());
+        }
+        Ok(())
+    }
+
+    fn languages(
+        engine: &SpeechEngine,
+    ) -> Result<(std::ffi::CString, std::ffi::CString), Box<dyn std::error::Error>> {
+        let en = engine.language("en").map_err(|_| "English unavailable")?;
+        let auto = engine
+            .language("auto")
+            .map_err(|_| "auto language unavailable")?;
+        if engine.language("yue").is_ok() || engine.language("en-US").is_ok() {
+            return Err("unsupported language accepted".into());
+        }
+        engine
+            .language("fr")
+            .map_err(|_| "multilingual model unavailable")?;
+        Ok((en, auto))
+    }
+
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments.first().is_some_and(|arg| arg == "--fixture") && arguments.len() == 4 {
-            return child_fixture(arguments.get(1..).ok_or("fixture arguments")?);
+        if special_mode(&arguments)? {
+            return Ok(());
         }
-        let mut model = fetch(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
-            77_691_713,
-            "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-        )?;
+        let small = arguments == ["--worker-small"] || arguments == ["--worker-core-small"];
+        let mut model = if small {
+            fetch(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+                190_085_487,
+                "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            )?
+        } else {
+            fetch(
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+                77_691_713,
+                "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+            )?
+        };
         let wave = fetch(
             "https://raw.githubusercontent.com/ggml-org/whisper.cpp/2eeeba56e9edd762b4b38467bab96c2517163158/samples/jfk.wav",
             352_078,
@@ -343,27 +505,27 @@ mod qualification {
                 .collect::<Vec<_>>(),
         );
         drop(wave);
-        if arguments == ["--worker"] || arguments == ["--worker-core"] {
-            worker_journey(&model, &pcm, arguments == ["--worker-core"])?;
+        let vocabulary = arguments == ["--worker-vocabulary-core"];
+        if arguments == ["--worker"] || arguments == ["--worker-core"] || small || vocabulary {
+            worker_journey(
+                &model,
+                &pcm,
+                arguments == ["--worker-core"]
+                    || arguments == ["--worker-core-small"]
+                    || vocabulary,
+                vocabulary,
+            )?;
         } else if !arguments.is_empty() {
-            return Err("expected no arguments, --worker or --worker-core".into());
+            return Err("expected no arguments, --worker[-small] or --worker-core[-small]".into());
         }
         drop(pcm);
         local_model_service::speech::confine_worker().map_err(|_| "worker confinement failed")?;
         let start = Instant::now();
         let mut engine = SpeechEngine::load(&mut model).map_err(|_| "model load failed")?;
         drop(model);
+        engine.prepare().map_err(|_| "decoder allocation failed")?;
         let load_ms = start.elapsed().as_millis();
-        let en = engine.language("en").map_err(|_| "English unavailable")?;
-        let auto = engine
-            .language("auto")
-            .map_err(|_| "auto language unavailable")?;
-        if engine.language("yue").is_ok() || engine.language("en-US").is_ok() {
-            return Err("unsupported language accepted".into());
-        }
-        engine
-            .language("fr")
-            .map_err(|_| "multilingual model unavailable")?;
+        let (en, auto) = languages(&engine)?;
         let prefix = samples.get(..5 * SAMPLE_RATE).ok_or("short fixture")?;
         let start = Instant::now();
         let draft = engine
@@ -382,6 +544,9 @@ mod qualification {
             || !lower.contains("do for")
         {
             return Err("public speech recognition journey failed".into());
+        }
+        if vocabulary {
+            qualify_vocabulary(&mut engine, &samples, &en, &text)?;
         }
         let detected = engine
             .transcribe(&samples, &auto)

@@ -2,7 +2,7 @@
 use super::{Arc, CapnpBrokerState, VerifiedActionCaller, published_invocation::InvocationCaller};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, PendingPoll,
 };
 
 #[derive(Clone)]
@@ -165,7 +165,10 @@ impl CapnpBrokerState {
             effective,
             admission,
         });
-        host.check(caller).map_err(|error| error.to_string())?;
+        // The presentation was verified against current membership and
+        // policy above, with this clock sample; only the lease is new.
+        host.check_lease(caller)
+            .map_err(|error| error.to_string())?;
         Ok(host)
     }
 }
@@ -192,6 +195,7 @@ impl CertifiedPersonContext {
     pub fn revalidate(&self) -> Result<(), String> {
         self.checked
             .check(&self.checked.caller)
+            .map(|_| ())
             .map_err(|_| "personal device admission unavailable".into())
     }
 }
@@ -233,7 +237,9 @@ impl CapnpBrokerState {
 }
 
 impl CertifiedLocalActionHost {
-    fn check(&self, caller: &Caller) -> Result<(), ActionHostError> {
+    /// The exact caller, its live execution, an accepting host and the
+    /// original policy clock. No verification of the presentation.
+    fn check_lease(&self, caller: &Caller) -> Result<(), ActionHostError> {
         if caller != &self.caller
             || caller.execution_id().is_none()
             || !caller.execution_is_live()
@@ -242,10 +248,16 @@ impl CertifiedLocalActionHost {
         {
             return Err(ActionHostError::NotPermitted);
         }
+        Ok(())
+    }
+
+    /// [`Self::check_lease`], then the presentation verified again against
+    /// current certificate, fleet, membership and policy.
+    fn check(&self, caller: &Caller) -> Result<super::AdmittedJoinIdentity, ActionHostError> {
+        self.check_lease(caller)?;
         self.state
             .current_action_caller(&self.admission)
-            .map_err(|_| ActionHostError::NotPermitted)?;
-        Ok(())
+            .map_err(|_| ActionHostError::NotPermitted)
     }
 }
 
@@ -267,25 +279,25 @@ impl ActionHost for CertifiedLocalActionHost {
         {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let answer = self.state.action_query(&self.effective, &query);
+        let mut answer = self.state.action_query(&self.effective, &query);
+        // An answer this call produced is covered by the check above; one
+        // that arrives later is checked again when it does.
+        if let PendingPoll::Ready(page) = answer.poll_ready() {
+            return Pending::ready(page.map(certified_page));
+        }
         let (complete, pending) = tilo_actions::remote::pending();
         let host = self.clone();
         answer.then(move |page| {
             let result = host
                 .check(&host.caller)
-                .and_then(|()| {
+                .and_then(|_| {
                     page.unwrap_or_else(|| {
                         Err(ActionHostError::Unavailable {
                             reason: "catalogue closed".into(),
                         })
                     })
                 })
-                .map(|mut page| {
-                    page.rows.retain(|row| certified_provider(&row.provider));
-                    page.providers
-                        .retain(|provider| certified_provider(&provider.provider));
-                    page
-                });
+                .map(certified_page);
             complete.complete(result);
         });
         pending
@@ -296,22 +308,27 @@ impl ActionHost for CertifiedLocalActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if let Err(error) = self.check(caller) {
-            return Pending::ready(Err(error));
-        }
+        let admitted = match self.check(caller) {
+            Ok(admitted) => admitted,
+            Err(error) => return Pending::ready(Err(error)),
+        };
         if !certified_provider(&request.target.provider) {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        self.state.action_invoke_with_origin(
-            &self.effective,
-            None,
-            None,
-            Some(&InvocationCaller::Certified {
-                caller: Box::new(self.admission.clone()),
-                foreign_restriction: self.effective.is_foreign_device(),
-            }),
-            &request,
-        )
+        // This admission stands for the dispatch this call reaches; whatever
+        // continues after it returns verifies again.
+        super::admission_memo::with_admitted_now(&self.admission, admitted, || {
+            self.state.action_invoke_with_origin(
+                &self.effective,
+                None,
+                None,
+                Some(&InvocationCaller::Certified {
+                    caller: Box::new(self.admission.clone()),
+                    foreign_restriction: self.effective.is_foreign_device(),
+                }),
+                &request,
+            )
+        })
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -333,6 +350,14 @@ impl ActionHost for CertifiedLocalActionHost {
         self.check(caller)?;
         self.state.action_cancel(&self.effective, id)
     }
+}
+
+/// `page` without rows or providers outside this door.
+fn certified_page(mut page: CataloguePage) -> CataloguePage {
+    page.rows.retain(|row| certified_provider(&row.provider));
+    page.providers
+        .retain(|provider| certified_provider(&provider.provider));
+    page
 }
 
 // Only existing provider forms with preserved original SDK-delivery custody.

@@ -56,6 +56,14 @@ impl Env {
         }
     }
 
+    /// An environment whose home is under `parent`.
+    fn in_dir(parent: &Path) -> Self {
+        Self {
+            home: tempfile::tempdir_in(parent).unwrap(),
+            publisher: key(),
+        }
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
         self.home.path().join(rel)
     }
@@ -334,10 +342,14 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     let package = env.runtime_tapp("one", &one_bundle, &format!("tilo-runtime/{one}"));
     let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
     assert!(ok, "{out}");
-    // The installed loader no longer holds the bytes its manifest lists.
+    // The installed loader no longer holds the bytes its manifest lists. A
+    // runtime sealed with fs-verity cannot be written, but its directory can:
+    // the loader is replaced, not edited.
     let shared = tilo_app_package::BlobHash::of(b"loader").to_hex();
     let loader = bundle_path_of(&env.installed_bundle(&one), &shared);
-    std::fs::write(env.installed_bundle(&one).join(&loader), b"loadeR").unwrap();
+    let loader_path = env.installed_bundle(&one).join(&loader);
+    std::fs::remove_file(&loader_path).unwrap();
+    std::fs::write(&loader_path, b"loadeR").unwrap();
     let (two, two_bundle) = env.bundle("two", b"toolkit build two", &runtime_identity);
     let (thin, blobs) = env.thin_runtime_tapp("two", &two_bundle, &format!("tilo-runtime/{two}"));
     let (url, requested) = registry(blobs);
@@ -360,6 +372,64 @@ fn runtime_install_refuses_a_local_file_whose_hash_differs() {
     let installed = env.installed_bundle(&two);
     runtime_bundle::verify_bundle(&installed).expect("the installed bundle verifies");
     assert_eq!(std::fs::read(installed.join(loader)).unwrap(), b"loader");
+}
+
+/// A temporary directory on a filesystem with fs-verity:
+/// `TILO_FSVERITY_DIR`, else the target's temporary directory.
+fn verity_dir() -> Result<tempfile::TempDir, String> {
+    let base = std::env::var_os("TILO_FSVERITY_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);
+    std::fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let dir = tempfile::tempdir_in(&base).map_err(|e| format!("{}: {e}", base.display()))?;
+    let probe = dir.path().join("probe");
+    std::fs::write(&probe, b"probe").map_err(|e| e.to_string())?;
+    runtime_bundle::verity::enable(&probe).map_err(|e| format!("{}: {e}", base.display()))?;
+    Ok(dir)
+}
+
+#[test]
+fn an_installed_runtime_is_sealed_so_a_launch_reads_none_of_it() {
+    let dir = tilo_test_env::require_capability!(
+        FsVerity,
+        verity_dir(),
+        "no fs-verity filesystem to install a runtime on"
+    );
+    let env = Env::in_dir(dir.path());
+    let (runtime_key, runtime_identity) = identity_file(&env, "runtime-publisher");
+    env.trust(&[&runtime_key]);
+    let (version, bundle) = env.bundle("one", b"toolkit build one", &runtime_identity);
+    let package = env.runtime_tapp("one", &bundle, &format!("tilo-runtime/{version}"));
+    let (ok, out) = env.cmd(&["install", package.to_str().unwrap(), "--allow-self-signed"]);
+    assert!(ok, "{out}");
+    let installed = env.installed_bundle(&version);
+    let policy = runtime_bundle::VerifyOptions {
+        require_publisher: Some(runtime_key),
+        require_signature: true,
+        require_arch: None,
+    };
+    let (manifest, check) = runtime_bundle::verify_bundle_verity_with(&installed, &policy).unwrap();
+    let files = manifest.files.len();
+    assert!(
+        out.contains(&format!("sealed   : {files} file(s) with fs-verity")),
+        "{out}"
+    );
+    assert_eq!(
+        check,
+        runtime_bundle::PayloadCheck {
+            by_verity: files,
+            hashed: 0,
+            hashed_bytes: 0,
+        }
+    );
+    // Sealed means immutable: the toolkit cannot be edited in place.
+    let toolkit = installed.join("lib/libruntime_dylib.so");
+    assert!(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&toolkit)
+            .is_err()
+    );
 }
 
 /// The path `bundle`'s manifest lists for the file hashing to `hash`.

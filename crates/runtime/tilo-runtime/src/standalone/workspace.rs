@@ -308,11 +308,13 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
 }
 
 impl WorkspaceAuthority for ProfileWorkspace {
-    fn snapshot(&self) -> Result<DesktopTree, String> {
-        self.tree
+    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+        let tree = self
+            .tree
             .read()
-            .map(|tree| tree.clone())
-            .map_err(|_| "runtime workspace lock poisoned".to_owned())
+            .map_err(|_| "runtime workspace lock poisoned".to_owned())?;
+        read(&tree);
+        Ok(())
     }
 
     /// This host's own journal, also for an adopted profile: the desktop

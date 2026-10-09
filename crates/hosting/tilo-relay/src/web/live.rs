@@ -28,6 +28,8 @@ use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
 use tokio::sync::Notify;
 
+use crate::auth::AuthenticatedPeer;
+use crate::room_access::{self, RoomOperation};
 use crate::web::sessions::Sessions;
 
 // The live relay (`tilo-moq`, which stays free of the host's wire crate) and
@@ -98,22 +100,22 @@ impl LiveGrants {
         }
     }
 
-    /// Issue a grant for `workspace_id` to the session `token`, if its
-    /// device is subscribed-capable there now.
+    /// Issue a grant for `workspace_id` to the session `token` of `peer`, if
+    /// it is admitted to the room's live plane now.
     /// With `agent`, the grant publishes as that agent of the device
     /// ([`agent_publisher`]).
     pub(crate) async fn issue(
         &self,
         sessions: &Sessions,
         token: [u8; 32],
-        device: [u8; 32],
-        user: [u8; 32],
+        peer: &AuthenticatedPeer,
         workspace_id: u64,
         agent: Option<&str>,
     ) -> Option<LiveGrant> {
-        if !admitted(sessions, device, user, workspace_id).await {
+        if !admitted(sessions, peer, workspace_id).await {
             return None;
         }
+        let device = peer.device_public_key;
         let grant_token: [u8; 32] = rand::random();
         let room = live_room(workspace_id);
         let publisher = agent.map_or_else(
@@ -184,16 +186,15 @@ impl LiveGrants {
             .values()
             .cloned()
             .collect();
-        let open: HashMap<[u8; 32], [u8; 32]> = sessions
-            .open_devices()
-            .into_iter()
-            .map(|(token, peer)| (token, peer.user_public_key))
-            .collect();
+        let open: HashMap<[u8; 32], AuthenticatedPeer> =
+            sessions.open_devices().into_iter().collect();
         for grant in grants {
             let permitted = grant.expires > Instant::now()
                 && match open.get(&grant.session) {
-                    Some(user) => admitted(sessions, grant.device, *user, grant.workspace_id).await,
-                    None => false,
+                    Some(peer) if peer.device_public_key == grant.device => {
+                        admitted(sessions, peer, grant.workspace_id).await
+                    }
+                    Some(_) | None => false,
                 };
             // Update only grants this observation checked. A grant issued
             // while admission awaits a workspace lock keeps its own decision.
@@ -202,35 +203,25 @@ impl LiveGrants {
     }
 }
 
-/// Whether `device` of `user` may be in `workspace_id`'s live plane now:
-/// not revoked and admitted exactly as a subscribe would be.
+/// Whether `peer` may be in `workspace_id`'s live plane now: its
+/// certificate current relay-wide and admitted by the room, see
+/// [`room_access::decide`].
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
 pub(crate) async fn admitted(
     sessions: &Sessions,
-    device: [u8; 32],
-    user: [u8; 32],
+    peer: &AuthenticatedPeer,
     workspace_id: u64,
 ) -> bool {
     let relay = &sessions.context().relay;
-    if relay
-        .revocations
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_revoked(&device)
-    {
-        return false;
-    }
     let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(workspace) = workspace else {
         return false;
     };
     let workspace = workspace.lock().await;
-    workspace.admit_authenticated
-        || workspace.membership.contains(&device)
-        || workspace.admitted_users.contains(&user)
+    room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
 }
 
 struct Admitted {

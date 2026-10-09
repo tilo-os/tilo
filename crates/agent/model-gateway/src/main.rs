@@ -1214,7 +1214,11 @@ const MAX_CACHE_BREAKPOINTS: usize = 4;
 /// 3. the last tool, which still holds when the system prompt changes.
 ///
 /// A caller's own breakpoints count against the limit and are never moved or
-/// duplicated. A caller that chose a non-default TTL owns the whole layout
+/// duplicated. The agent places one closing its action catalogue at the head
+/// of the first user turn, so the catalogue is cached across tasks: system,
+/// catalogue, tail and tools are the whole budget, and while the first turn
+/// is still the last one its tail marker goes on the request after the
+/// catalogue. A caller that chose a non-default TTL owns the whole layout
 /// (a shorter-lived entry may not precede a longer one), so nothing is
 /// added. A profile listing `cache_control` in `omit_params` (an
 /// Anthropic-compatible endpoint that rejects it) gets no breakpoints and

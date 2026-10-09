@@ -1335,6 +1335,7 @@ mod tests {
     use super::*;
     use crate::a11y::{AccessNode, AccessState, Role};
     use crate::theme::Theme;
+    use crate::widget::TaffyTreeExt;
     use crate::widget::Widget;
     use std::collections::HashMap;
     use taffy::TaffyTree;
@@ -1382,11 +1383,7 @@ mod tests {
                 .iter_mut()
                 .map(|c| c.build_layout(taffy, theme, node_map))
                 .collect();
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &child_nodes)
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
         }
         fn apply_layout(
             &mut self,
@@ -1721,11 +1718,7 @@ mod tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let kid = self.child.build_layout(taffy, theme, node_map);
-            let node = taffy
-                .new_with_children(taffy::Style::default(), &[kid])
-                .unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
+            taffy.widget_node(taffy::Style::default(), &[kid], node_map, self)
         }
         fn apply_layout(
             &mut self,
