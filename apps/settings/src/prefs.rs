@@ -864,7 +864,26 @@ impl ui::storage::SettingsSchema for AppearancePrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
-impl AppearancePrefs {}
+impl AppearancePrefs {
+    /// Set the theme every app draws with; Automatic is light by day and
+    /// dark by night.
+    #[action]
+    pub fn choose_theme(
+        &mut self,
+        #[param(
+            "The theme: Automatic, Dark, Light, Dark graphite, Dark cool or Dark soft"
+        )]
+        theme: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !Self::THEMES.contains(&theme.as_str()) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{theme}` is not a theme"
+            )));
+        }
+        self.choose_legacy_theme(theme);
+        Ok(())
+    }
+}
 
 impl AppearancePrefs {
     pub const THEMES: &'static [&'static str] = &[

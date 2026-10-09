@@ -2,7 +2,6 @@ use super::*;
 use crate::effects::SettingsEffect;
 use crate::resource::SettingsShell;
 use ui::prelude::TestApp;
-use ui::tilo_resource::Effect as _;
 
 fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
     let action = app
@@ -20,7 +19,7 @@ fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
     .unwrap()
 }
 
-use crate::host::testing::{APPEARANCE, edit_field};
+use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
 
 fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
     app.effect(&SettingsEffect::from(effect)).unwrap();
@@ -29,16 +28,19 @@ fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
 #[test]
 fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_changes() {
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    for effect in [
-        AppearanceEffect::SetTheme {
-            theme: "Automatic".into(),
-        },
+    invoke_section(
+        &mut app,
+        APPEARANCE,
+        "choose-theme",
+        serde_json::json!({ "theme": "Automatic" }),
+    )
+    .unwrap();
+    set(
+        &mut app,
         AppearanceEffect::SetDayNightSchedule {
             schedule: "custom".into(),
         },
-    ] {
-        set(&mut app, effect);
-    }
+    );
     edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
     edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
     let original = read(&mut app);
@@ -50,19 +52,21 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
     assert_eq!(original["sunrise"], "06:30");
     assert_eq!(original["sunset"], "21:00");
     assert_eq!(app.settings::<AppearancePrefs>().get(), preferences);
-    set(
+    invoke_section(
         &mut app,
-        AppearanceEffect::SetTheme {
-            theme: "Light".into(),
-        },
-    );
+        APPEARANCE,
+        "choose-theme",
+        serde_json::json!({ "theme": "Light" }),
+    )
+    .unwrap();
     assert_eq!(read(&mut app)["theme"], "Light");
-    set(
+    invoke_section(
         &mut app,
-        AppearanceEffect::SetTheme {
-            theme: original["theme"].as_str().unwrap().into(),
-        },
-    );
+        APPEARANCE,
+        "choose-theme",
+        serde_json::json!({ "theme": original["theme"].as_str().unwrap() }),
+    )
+    .unwrap();
     assert_eq!(read(&mut app), original);
     assert_eq!(app.settings::<AppearancePrefs>().get(), preferences);
 }
@@ -95,13 +99,12 @@ fn appearance_inspection_is_read_only_and_refuses_foreign_device_invocation() {
         matches!(refused, Err(ui::tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "private_view"),
         "{refused:?}"
     );
-    let setting = SettingsEffect::from(AppearanceEffect::SetTheme {
-        theme: "Dark".into(),
-    });
+    // Nor may anyone but the person choose their theme.
     assert!(
-        app.call_on(
-            &action.address.resource,
-            setting.id(),
+        app.call_by(
+            ui::tilo_actions::ActionInvoker::actor("unrelated-collaborator"),
+            &format!("settings:{APPEARANCE}"),
+            "choose-theme",
             serde_json::json!({"theme":"Dark"})
         )
         .is_err()

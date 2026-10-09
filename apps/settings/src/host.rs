@@ -238,6 +238,21 @@ impl PaneCx {
         }
     }
 
+    /// `control`, invoking the verb `verb` of section `T` with each committed
+    /// value. Disabled outside a host.
+    #[must_use]
+    pub fn bind_verb<T, I, C>(&self, control: C, verb: impl Binds<T, I>) -> C
+    where
+        T: Section,
+        I: 'static,
+        C: ActionControl<I>,
+    {
+        match self.section::<T>() {
+            Some(actions) => actions.bind(control, verb),
+            None => control.unavailable(),
+        }
+    }
+
     /// The binding of the field of section `T` at `path`, for a pane's own
     /// widget that emits the field's value. `None` outside a host.
     #[must_use]
@@ -422,6 +437,22 @@ pub(crate) mod testing {
         value: impl serde::Serialize,
     ) -> Result<(), String> {
         edit_path(app, kind, &[field], value)
+    }
+
+    /// Invoke the verb `action` of the section `kind` with `arguments`
+    /// through the door, as an agent does.
+    ///
+    /// # Errors
+    /// The door's refusal.
+    pub(crate) fn invoke_section(
+        app: &mut TestApp<crate::SettingsShell>,
+        kind: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<(), String> {
+        app.call_on(&format!("settings:{kind}"), action, arguments)
+            .map(drop)
+            .map_err(|error| format!("{error:?}"))
     }
 
     /// Set the field at `path` (field names, outermost first) of the section

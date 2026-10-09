@@ -252,12 +252,6 @@ pub enum AppearanceEffect {
         label = "Inspect appearance preferences"
     )]
     InspectAppearance,
-    /// Set the theme every app draws with.
-    #[effect(idempotent)]
-    SetTheme {
-        #[param("The theme; Automatic is light by day and dark by night", choices = AppearancePrefs::THEMES.iter().copied())]
-        theme: String,
-    },
     /// Set the interface scale.
     #[effect(idempotent)]
     SetUiScale {
@@ -313,12 +307,6 @@ pub(crate) fn answer(
             serde_json::to_value(AppearanceInspection::from(&prefs))
                 .map(Effected::value)
                 .map_err(|error| format!("the appearance preferences could not be read: {error}"))
-        }
-        AppearanceEffect::SetTheme { theme } => {
-            if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
-                return Err(format!("`{theme}` is not a theme"));
-            }
-            host.update(|prefs: &mut AppearancePrefs| prefs.choose_legacy_theme(theme))
         }
         AppearanceEffect::SetUiScale { scale } => {
             let factor =
@@ -536,7 +524,7 @@ impl AppearancePane {
                 .collect(),
             &self.shown.theme,
             "appearance.theme",
-            |control| cx.bind(control, effect(AppearanceEffect::SET_THEME)),
+            |control| cx.bind_verb(control, AppearancePrefs::CHOOSE_THEME),
         );
         let ui_scale = Self::dropdown(
             UI_SCALE_NAMES
@@ -845,7 +833,7 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::prelude::TestApp;
 
-    use crate::host::testing::{APPEARANCE, edit_field};
+    use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
 
     fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
         app.effect(&SettingsEffect::from(effect))
@@ -858,12 +846,13 @@ mod tests {
     #[test]
     fn appearance_effects_write_the_shared_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        set(
+        invoke_section(
             &mut app,
-            AppearanceEffect::SetTheme {
-                theme: "Automatic".into(),
-            },
-        );
+            APPEARANCE,
+            "choose-theme",
+            serde_json::json!({ "theme": "Automatic" }),
+        )
+        .unwrap();
         set(
             &mut app,
             AppearanceEffect::SetUiScale {
@@ -909,9 +898,12 @@ mod tests {
         assert_eq!(config.fixed.sunset, 21 * 60);
 
         assert!(
-            app.effect(&SettingsEffect::from(AppearanceEffect::SetTheme {
-                theme: "Neon".into(),
-            }))
+            invoke_section(
+                &mut app,
+                APPEARANCE,
+                "choose-theme",
+                serde_json::json!({ "theme": "Neon" })
+            )
             .is_err()
         );
         assert!(edit_field(&mut app, APPEARANCE, "sunrise", "25:00").is_err());
