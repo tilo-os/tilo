@@ -665,6 +665,14 @@ impl AppActionBroker {
         self.state.invocation_changes()
     }
 
+    /// Sees every published-surface change after this call — what
+    /// [`Self::surfaces_generation`] counts — so a waiter for a listing of
+    /// these actions can sleep until one happens.
+    #[must_use]
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.state.surface_changes()
+    }
+
     /// One invocation's current status, only when `actor` owns it.
     #[must_use]
     pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
