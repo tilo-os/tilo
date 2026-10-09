@@ -10605,37 +10605,21 @@ impl ShellOverlayHost {
     }
 
     /// May the local user invite into the room they're looking at? Asked
-    /// through the same policy the palette's `peer.invite` row is filtered
-    /// on, not re-decided here — a second opinion is a second security
-    /// boundary. Fail-closed at every missing piece (no chrome, no
-    /// workspace, peer-sync off).
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st feeds peer_sync_enabled, then tree(), then local_user_id right through to \
-                  the final can_see() call built from workspace/actor, both borrowed from tree; \
-                  nothing to drop earlier without cloning the tree data out for no real gain"
-    )]
+    /// through the one invitation policy the issuer and the palette's
+    /// `peer.invite` rows answer to, not re-decided here — a second opinion
+    /// is a second security boundary. Offered only when submitting it can
+    /// produce an invitation: a member who may invite into a room another
+    /// person governs is not shown a composer the issuer would refuse.
+    /// Fail-closed at every missing piece (no chrome, no workspace,
+    /// peer-sync off).
     fn may_invite_here(&self) -> bool {
-        use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
-        use crate::shell::search::visibility::CapabilityVisibility;
-
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
         let st = chrome.borrow();
-        if !st.peer_sync_enabled {
-            return false;
-        }
-        let tree = st.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return false;
-        };
-        let actor_id = st.local_user_for_room(&workspace.room);
-        let actor = workspace.actor_for_person(&actor_id);
-        CapabilityVisibility::new(workspace, actor).can_see(
-            &ResourceRef::new("actions", "peer.invite.named"),
-            &crate::shell::search::ResourceKind::Action,
-        )
+        st.peer_sync_enabled
+            && crate::shell::invite_policy::active_invite_route(&st)
+                .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here)
     }
 
     /// Lays the room-activity sheet out (by hand, not taffy, like the

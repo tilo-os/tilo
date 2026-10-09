@@ -78,6 +78,7 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
