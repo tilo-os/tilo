@@ -79,7 +79,7 @@ mod tests {
         let spawned = crate::spawn_thread("tilo-rt-caps-test", || 5);
         match availability(Feature::Threads) {
             Availability::Available | Availability::Prompt => {
-                assert_eq!(spawned.unwrap().join().unwrap(), 5)
+                assert_eq!(spawned.unwrap().join().unwrap(), 5);
             }
             Availability::Unsupported(_) => assert!(spawned.is_err()),
         }
