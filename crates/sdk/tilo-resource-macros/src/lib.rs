@@ -315,6 +315,10 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         let text = match self { #(Self::#idents => #names,)* };
                         slot.put_scalar(doc, #krate::__private::ScalarValue::Str(text.into()))
                     }
+                    fn collect_text(&self, out: &mut ::std::vec::Vec<::std::string::String>) {
+                        let text = match self { #(Self::#idents => #names,)* };
+                        out.push(::std::string::String::from(text));
+                    }
                 }
             })
         }

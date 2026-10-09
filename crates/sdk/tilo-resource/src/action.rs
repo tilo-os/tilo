@@ -93,13 +93,9 @@ impl ActionCx {
 
     /// A fresh id, unique to this action and stable under replay.
     pub fn id(&mut self) -> Id {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&self.seed);
-        hasher.update(&self.minted.to_le_bytes());
+        let id = minted(&self.seed, self.minted);
         self.minted = self.minted.saturating_add(1);
-        let digest = hasher.finalize();
-        let hex = digest.to_hex();
-        Id::from_raw(hex.as_str().get(..20).unwrap_or_default())
+        id
     }
 
     /// When the action was authored, in milliseconds since the Unix epoch, as
@@ -134,6 +130,33 @@ impl ActionCx {
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         crate::content::current()
     }
+}
+
+fn minted(seed: &[u8; 32], counter: u64) -> Id {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(seed);
+    hasher.update(&counter.to_le_bytes());
+    let digest = hasher.finalize();
+    let hex = digest.to_hex();
+    Id::from_raw(hex.as_str().get(..20).unwrap_or_default())
+}
+
+/// The ids the action `envelope` committed minted with [`ActionCx::id`], in
+/// the order it minted them: how the one who invoked it learns which item
+/// its action created (the first id of a "new snippet"). For an action
+/// that is not a group, applied with nothing else pending.
+pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item = Id> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo-resource/action-seed/v1");
+    hasher.update(envelope.actor().to_bytes());
+    let mut heads = envelope.base_heads.clone();
+    heads.sort_unstable();
+    for head in &heads {
+        hasher.update(head);
+    }
+    hasher.update(&envelope.action.payload);
+    let seed = *hasher.finalize().as_bytes();
+    (0_u64..).map(move |counter| minted(&seed, counter))
 }
 
 /// A deterministic seed for applying `payload` to `doc`: the document's

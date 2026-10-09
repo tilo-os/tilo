@@ -103,7 +103,9 @@ impl<R, P: Serialize> ActionRef<R, P> {
 pub struct Derived<R> {
     id: String,
     label: String,
+    kind: Option<String>,
     actions: Vec<Bound<R>>,
+    effects: Vec<tilo_actions::ActionSpec>,
 }
 
 impl<R> Derived<R> {
@@ -114,8 +116,26 @@ impl<R> Derived<R> {
         Self {
             id: label.clone(),
             label,
+            kind: None,
             actions: Vec::new(),
+            effects: Vec::new(),
         }
+    }
+
+    /// What kind of thing it is among the record's derived resources
+    /// (`folder`, `tag`), published as `<record kind>.<kind>`.
+    #[must_use]
+    pub fn of_kind(mut self, kind: impl Into<String>) -> Self {
+        self.kind = Some(kind.into());
+        self
+    }
+
+    /// Offer the effect `effect` on it, its arguments bound (a view that
+    /// reveals the folder).
+    #[must_use]
+    pub fn with_effect<E: crate::Effect>(mut self, effect: &E) -> Self {
+        self.effects.push(effect.bound());
+        self
     }
 
     /// Identify it by `id` rather than its label, when the label can change.
@@ -150,15 +170,19 @@ impl<R: Resource> Derived<R> {
     #[must_use]
     pub fn publish(&self) -> tilo_actions::Resource {
         let declarations = R::declarations();
+        let kind = self.kind.as_deref().unwrap_or("derived");
         let mut child = tilo_actions::Resource::new(
             format!("{}/derived/{}", R::KIND, self.id),
-            format!("{}.derived", R::KIND),
+            format!("{}.{kind}", R::KIND),
             &self.label,
         );
         for bound in &self.actions {
             if let Some(decl) = declarations.iter().find(|decl| decl.id == bound.action) {
                 child = child.with_action(crate::items::bound(decl, &bound.values));
             }
+        }
+        for effect in &self.effects {
+            child = child.with_action(effect.clone());
         }
         child
     }

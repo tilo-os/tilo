@@ -138,7 +138,7 @@ pub mod text;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Stamped,
+    Outcome, Params, Refusal, Stamped, minted_ids,
 };
 pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
@@ -158,8 +158,8 @@ pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
     ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
-    SearchWeight, SharedRecord, bind_declaration, build_action, declaration_spec, encode,
-    origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
+    SearchWeight, SharedRecord, bind_declaration, build_action, declaration_spec, default_search,
+    encode, origin_now_ms, publish, reset_type_schemas, scope_contains, spec_kind,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -194,34 +194,7 @@ pub mod __private {
         schema
     }
 
-    /// The default search entries of a record: one per labelled item,
-    /// anchored at its item resource, or else all of its text in one entry.
-    pub fn default_search<R: crate::Resource + crate::Fields>(
-        label: &str,
-        record: &R,
-    ) -> Vec<crate::SearchEntry> {
-        let items = crate::Fields::item_search(record);
-        if !items.is_empty() {
-            return items
-                .into_iter()
-                .map(|item| {
-                    crate::SearchEntry::new(item.label, item.text)
-                        .anchored(crate::items::item_resource_id::<R>(item.field, &item.id))
-                })
-                .collect();
-        }
-        let mut text = Vec::new();
-        record.collect_text(&mut text);
-        if text.is_empty() {
-            return Vec::new();
-        }
-        vec![crate::SearchEntry {
-            anchor: None,
-            title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
-            text: text.join("\n"),
-            ..Default::default()
-        }]
-    }
+    pub use crate::resource::default_search;
 
     /// The label an item is offered under: its `#[model(label)]`, else its
     /// first text, else its id.

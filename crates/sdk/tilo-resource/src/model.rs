@@ -815,6 +815,11 @@ impl Model for Atom {
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
         slot.put_scalar(doc, ScalarValue::Str(self.0.as_str().into()))
     }
+    fn collect_text(&self, out: &mut Vec<String>) {
+        if !self.0.is_empty() {
+            out.push(self.0.clone());
+        }
+    }
 }
 
 impl Settable for uuid::Uuid {}

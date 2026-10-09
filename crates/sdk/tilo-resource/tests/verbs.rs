@@ -123,7 +123,7 @@ impl Shelf {
         colours
             .into_iter()
             .map(|colour| {
-                Derived::new(colour).with(Self::ADD.bind(
+                Derived::new(colour).of_kind("colour").with(Self::ADD.bind(
                     shelf::Add::paths().colour,
                     Some(Colour {
                         red: u8::from(colour == "red") * 255,
@@ -324,6 +324,7 @@ fn seed_availability_children_and_content() {
         .iter()
         .find(|child| child.id.as_str() == "test.shelf/derived/red")
         .unwrap();
+    assert_eq!(red.kind, "test.shelf.colour");
     let add = red.actions.iter().find(|spec| spec.id == "add").unwrap();
     assert_eq!(add.params().len(), 1, "the colour is bound");
     let built = add.build_json(&serde_json::Map::from_iter([(

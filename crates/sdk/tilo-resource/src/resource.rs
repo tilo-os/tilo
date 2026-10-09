@@ -1317,6 +1317,38 @@ fn group_spec<R: Resource>() -> ActionSpec {
     })
 }
 
+/// The default search entries of a record: one per item with a
+/// `#[model(label)]`, anchored at its item resource, or else all of its text
+/// in one entry. A `#[resource(search = path)]` function extends it by
+/// calling it.
+#[must_use]
+pub fn default_search<R: crate::Resource + crate::Fields>(
+    label: &str,
+    record: &R,
+) -> Vec<crate::SearchEntry> {
+    let items = crate::Fields::item_search(record);
+    if !items.is_empty() {
+        return items
+            .into_iter()
+            .map(|item| {
+                crate::SearchEntry::new(item.label, item.text)
+                    .anchored(crate::items::item_resource_id::<R>(item.field, &item.id))
+            })
+            .collect();
+    }
+    let mut text = Vec::new();
+    record.collect_text(&mut text);
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![crate::SearchEntry {
+        anchor: None,
+        title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
+        text: text.join("\n"),
+        ..Default::default()
+    }]
+}
+
 /// The resource tree published for one open resource: every declared and
 /// state-bound action, the generic [`APPLY`] and [`GROUP`](crate::GROUP)
 /// actions, the named [`Resource::views`], and the nested resources.

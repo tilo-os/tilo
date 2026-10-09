@@ -506,3 +506,34 @@ fn history_records_what_an_edit_or_verb_did_and_to_which_item() {
     assert_eq!(verb.action.action, "record-use");
     assert_eq!(used.item.unwrap().label, "Deploy script");
 }
+
+#[test]
+fn the_invoker_learns_the_ids_its_action_minted() {
+    let mut library = Replica::<Library>::new();
+    library.apply(Library::NEW_SNIPPET.with("One")).unwrap();
+    let envelope = library
+        .apply(Library::NEW_SNIPPET.with("Two"))
+        .unwrap()
+        .clone();
+    let created = tilo_resource::minted_ids(&envelope).next().unwrap();
+    assert_eq!(library.state().unwrap().snippets[&created].title, "Two");
+}
+
+#[test]
+fn search_finds_an_item_by_its_codes_and_variants() {
+    let mut library = Replica::<Library>::new();
+    library.apply(Library::NEW_SNIPPET.with("Deploy")).unwrap();
+    let id = first_snippet(&library);
+    edit(
+        &mut library,
+        &Library::paths()
+            .snippets
+            .item(&id)
+            .language
+            .set(Language::Rust),
+    )
+    .unwrap();
+    let entries = Library::search(&library.state().unwrap());
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].text.contains("rust"), "{:?}", entries[0].text);
+}
