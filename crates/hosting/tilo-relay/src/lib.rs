@@ -132,6 +132,8 @@ pub mod workspace_join;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 tilo_automerge_isolate::test_worker!();
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the

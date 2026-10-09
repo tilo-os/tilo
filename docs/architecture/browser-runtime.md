@@ -910,9 +910,22 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Agents run no app's code.** An agent holds records as replicas of their
-resources, so nothing it does reads the host user's files or secret store;
-it plans with the host's model.
+**App code runs in confined workers, never in the host.** An agent holds
+records as replicas of their resources, and a replica runs the app's own
+resource code (its operations, seed and presence). Each record an agent or
+the host's room actions hold lives in its own app worker
+(`tilo_agent_participant::worker`, `ConfinedReplica`): the host's executable
+started again, which confines itself before it reads a request: no path
+opened or changed, no socket, no exec, no signal to another process. The
+same goes for a record's registered reads and its view discovery. The host
+keeps the device keys and signs; the worker returns unsigned Automerge
+bytes, which the host admits through `tilo-automerge-isolate` before it
+signs them. So nothing an agent does reads the host user's files, secret
+store or the agents' keys; it plans with the host's model. Every binary that
+hosts agents calls `tilo_agent_participant::worker::dispatch_early()` first
+thing in `main` (a test crate, `app_worker!()`); see
+`docs/architecture/security.md`, "App workers for host agents and room
+actions".
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the

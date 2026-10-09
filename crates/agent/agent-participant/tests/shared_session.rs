@@ -39,6 +39,11 @@ mod support;
 
 mod common;
 
+// Agents hold each record in a confined app worker (this binary, started
+// again), whose changes are admitted through the Automerge isolate.
+tilo_agent_participant::app_worker!();
+tilo_automerge_isolate::test_worker!();
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -277,9 +282,8 @@ async fn receive_until(
     }
 }
 
-fn body(app: &Replica) -> String {
-    app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
-        .unwrap()
+fn body(app: &impl common::Body) -> String {
+    app.body()
 }
 
 /// Open a sealed live frame with `peer`'s channel keys.
