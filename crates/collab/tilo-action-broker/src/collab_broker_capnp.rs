@@ -9655,11 +9655,7 @@ struct DirectoryQuestion<'a> {
 impl<'a> DirectoryQuestion<'a> {
     /// The question the row's decoded contract asks. Resource-only rows
     /// carry the visibility contract.
-    fn of(
-        resource: &'a str,
-        action: &'a str,
-        contract: &tilo_actions::ActionContract,
-    ) -> Self {
+    fn of(resource: &'a str, action: &'a str, contract: &tilo_actions::ActionContract) -> Self {
         Self {
             resource,
             action,
