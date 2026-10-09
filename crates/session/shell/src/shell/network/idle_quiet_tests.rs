@@ -132,7 +132,7 @@ fn run(
         for desktop in desktops.iter_mut() {
             desktop.frame();
         }
-        if done(desktops) {
+        if done(&*desktops) {
             return true;
         }
         if Instant::now() >= deadline {

@@ -126,6 +126,32 @@ scrollback messages are bound to the authenticated transport endpoint before
 dispatch. A member therefore cannot impersonate another member merely by
 copying that member's numeric session handle.
 
+### Liveness without chatter
+
+A converged desktop that nobody is using sends no application message. The
+transport keeps liveness: a gossip neighbour is a member while its link is up,
+iroh sends a QUIC keep-alive after 5 s without traffic, and the collaboration
+endpoint ends a connection that hears nothing for 15 s, which takes the link
+down. A peer whose link went down is dropped 5 s later unless it returns, so a
+peer that leaves cleanly is gone within 5 s and one that vanishes (power,
+network) within 20 s (`DEPARTURE_GRACE`, `PEER_TIMEOUT` in `actor.rs`).
+
+Everything else is said when it changes or when someone new can hear it. A
+device announces its identity and codecs when a link comes up and again only
+when they change; a new revocation is read from disk on the 5 s upkeep tick
+and announced at once, as before. Room changes are pushed when they land, and
+a repair pull follows 2 s after activity settles; a peer that sees a request
+naming changes it lacks asks back, and an idle desktop pulls once every 5
+minutes and whenever a peer joins. A resting pointer is not restated: it is
+said again only for a peer that joins. An idle workspace-host session pings
+its host after 15 s of silence and is redialled after 25 s.
+
+Older builds evict a peer silent for 15 s and beat every 5 s with a wall-clock
+`Heartbeat`. A current build that hears such a beat on a topic beats back on
+it (with a numbered, not timed, heartbeat, plus its identity and codecs) for
+as long as the older build is there, so mixed rooms interoperate at the old
+cadence and rooms of current builds only are silent.
+
 ## Room admission
 
 A room document — owner, capabilities, governed identities, media policy,

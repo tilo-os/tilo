@@ -2153,6 +2153,16 @@ impl WorkspaceTree {
         )
     }
 
+    /// Whether `heads`, a peer's heads of `room`, name a change this
+    /// machine does not hold.
+    pub fn room_lacks_any(&mut self, room: RoomId, heads: &[ChangeHash]) -> bool {
+        self.room_docs.get_mut(&room).is_some_and(|doc| {
+            heads
+                .iter()
+                .any(|head| doc.get_change_meta_by_hash(head).is_none())
+        })
+    }
+
     /// The sender of a batch for `room` as this machine knows it: the
     /// transport-authenticated origin, and the person and role behind it when
     /// the network layer has authenticated that person. A sender with no
