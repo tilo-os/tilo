@@ -1,0 +1,177 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "camera"
+label = "Camera"
+version = 1
+
+[[resources.fields]]
+owner = "record"
+path = "scans"
+readonly = true
+stored = "value"
+title = "Scanned codes, newest first"
+type = "Vec<ScanEntry>"
+
+[[resources.fields]]
+owner = "record"
+path = "recent"
+readonly = true
+stored = "record"
+title = "The capture taken last, to hand off to Photos or Video Player"
+type = "Option<SharedCapture>"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.id"
+stored = "value"
+title = "The capture's name: its file name on the device that took it"
+type = "String"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.media_id"
+stored = "value"
+title = "The content-addressed id of its bytes"
+type = "String"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.kind"
+stored = "value"
+title = "Photo or video"
+type = "CaptureKind"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.ts"
+stored = "value"
+title = "When it was taken, in Unix seconds"
+type = "i64"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.w"
+stored = "value"
+title = "Width in pixels"
+type = "u32"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.h"
+stored = "value"
+title = "Height in pixels"
+type = "u32"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.dur_ms"
+stored = "value"
+title = "How long a video runs, in milliseconds"
+type = "i64"
+
+[[resources.fields]]
+label = true
+owner = "shared-capture"
+path = "recent.label"
+stored = "value"
+title = "Name"
+type = "String"
+
+[[resources.fields]]
+owner = "shared-capture"
+path = "recent.facing"
+stored = "value"
+title = "The camera that took it"
+type = "Facing"
+
+[[resources.verbs]]
+description = "Hand off a capture.  The capture taken last, whose verified bytes are in the content store, becomes the one Camera offers to open in Photos or Video Player."
+id = "register-capture"
+kind = "undoable"
+label = "Hand off a capture"
+
+[[resources.verbs.params]]
+name = "capture"
+required = true
+
+[resources.verbs.params.schema]
+additionalProperties = false
+description = "The capture"
+required = [
+    "id",
+    "media_id",
+    "kind",
+    "ts",
+    "w",
+    "h",
+    "dur_ms",
+    "label",
+    "facing",
+]
+type = "object"
+
+[resources.verbs.params.schema.properties.dur_ms]
+description = "How long a video runs, in milliseconds."
+type = "integer"
+
+[resources.verbs.params.schema.properties.facing]
+description = "The camera that took it."
+enum = [
+    "Back",
+    "Front",
+    "Wide",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.h]
+description = "Height in pixels."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[resources.verbs.params.schema.properties.id]
+description = "The capture's name: its file name on the device that took it."
+type = "string"
+
+[resources.verbs.params.schema.properties.kind]
+description = "Photo or video"
+enum = [
+    "Photo",
+    "Video",
+]
+type = "string"
+
+[resources.verbs.params.schema.properties.label]
+description = "Name"
+type = "string"
+
+[resources.verbs.params.schema.properties.media_id]
+description = "The content-addressed id of its bytes."
+type = "string"
+
+[resources.verbs.params.schema.properties.ts]
+description = "When it was taken, in Unix seconds."
+type = "integer"
+
+[resources.verbs.params.schema.properties.w]
+description = "Width in pixels."
+maximum = 4294967295
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Record a scanned code.  It goes to the front of the history; the same code scanned again moves there rather than repeating."
+id = "record-scan"
+kind = "undoable"
+label = "Record a scanned code"
+
+[[resources.verbs.params]]
+name = "raw"
+required = true
+
+[resources.verbs.params.schema]
+description = "What the code said"
+type = "string"

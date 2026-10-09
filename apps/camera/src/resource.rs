@@ -1,5 +1,5 @@
-//! Camera as a [`tilo_resource::Resource`]: one action vocabulary for scan
-//! history and the recent-capture handoff; the shutter, devices and scanners
+//! Camera as a resource: its record ([`Record`]: the recent capture handoff
+//! and the scan history) is the document; the shutter, devices and scanners
 //! are live rows the surface publishes.
 //!
 //! Everything else is the surface's [`CameraEffect`] vocabulary: the screen,
@@ -12,81 +12,19 @@
 
 use std::rc::Rc;
 
-use automerge::ROOT;
 use ui::framework::{
     Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
     RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::Resource as PublishedResource;
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
-use crate::actions::{
-    CAMERA_ACTION_TYPE, CameraAction, CameraEffect, capture_item_from_shared,
-    publish_document_children,
-};
+use crate::actions::CameraEffect;
 use crate::app::CameraApp;
-use crate::doc::{self, SharedCapture};
 use crate::model::{
-    CameraDevicePreferences, CaptureKind, CaptureMode, CapturePreferences, Facing, ScanEntry, Timer,
+    CameraDevicePreferences, CaptureKind, CaptureMode, CapturePreferences, Facing, Timer,
 };
-
-/// Stable id for the published camera root.
-pub const CAMERA_RESOURCE_ID: &str = "camera";
-
-/// Shared camera document projection.
-#[derive(Clone, Debug, Default)]
-pub struct CameraState {
-    pub scans: Vec<ScanEntry>,
-    pub recent: Option<SharedCapture>,
-}
-
-/// The camera resource.
-pub struct Camera;
-
-impl Resource for Camera {
-    const KIND: &'static str = "camera";
-    const LABEL: &'static str = "Camera";
-    const ACTION_TYPE: &'static str = CAMERA_ACTION_TYPE;
-
-    type State = CameraState;
-    type Action = CameraAction;
-
-    fn read(doc: &Doc) -> Result<CameraState, ModelError> {
-        Ok(CameraState {
-            scans: doc::read_scans(doc, &ROOT),
-            recent: doc::read_recent_capture(doc, &ROOT),
-        })
-    }
-
-    fn children(state: &CameraState) -> Vec<PublishedResource> {
-        let recent = state.recent.as_ref().map(capture_item_from_shared);
-        publish_document_children(recent.as_ref(), &state.scans)
-    }
-
-    fn search(state: &CameraState) -> Vec<SearchEntry> {
-        let mut entries = Vec::new();
-        if let Some(recent) = &state.recent {
-            entries.push(SearchEntry {
-                anchor: Some(format!("camera.capture:{}", recent.id)),
-                title: recent.label.clone(),
-                text: "recent capture".into(),
-                action: None,
-                ..Default::default()
-            });
-        }
-        for scan in &state.scans {
-            entries.push(SearchEntry {
-                anchor: Some(format!("camera.scan:{}", scan.ts)),
-                title: scan.raw.clone(),
-                text: "scan".into(),
-                action: None,
-                ..Default::default()
-            });
-        }
-        entries
-    }
-}
+use crate::record::{Record, SharedCapture};
 
 /// The clock a screenshot reads instead of the machine's, in Unix seconds,
 /// so capture times and their relative labels come out the same every run.
@@ -116,8 +54,8 @@ const SCENARIOS: &[&str] = &[
 
 /// The recent capture every screenshot hands off: a photo taken two minutes
 /// before the shot.
-pub(crate) fn sample_capture() -> CameraAction {
-    CameraAction::RegisterCapture {
+pub(crate) fn sample_capture() -> SharedCapture {
+    SharedCapture {
         id: "c1".into(),
         media_id: format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1),
         kind: CaptureKind::Photo,
@@ -130,11 +68,11 @@ pub(crate) fn sample_capture() -> CameraAction {
     }
 }
 
-/// Framework app: the camera widget is the surface over [`Camera`].
+/// Framework app: the camera widget is the surface over its [`Record`].
 pub struct CameraShell;
 
 impl ResourceApp for CameraShell {
-    type Resource = Camera;
+    type Resource = Record;
     const ID: &'static str = "so.tilo.camera";
     const TITLE: &'static str = "Camera";
     const ICON: Option<&'static str> = Some("camera");
@@ -142,7 +80,7 @@ impl ResourceApp for CameraShell {
     /// A live window drives the cameras and scanners of this device and
     /// writes captures to its picture folder; a screenshot or a past version
     /// shows sample frames and reaches nothing.
-    fn view(cx: &mut ViewCx<Camera>) -> Element {
+    fn view(cx: &mut ViewCx<Record>) -> Element {
         if cx.mode().is_live() {
             let app = CameraApp::disk();
             let app = match cx.content() {
@@ -165,7 +103,7 @@ impl ResourceApp for CameraShell {
 
     /// The video scenario films; the timer scenario counts down from a
     /// three-second self-timer the person chose.
-    fn fixture(fixture: &mut Fixture<Camera>) {
+    fn fixture(fixture: &mut Fixture<Record>) {
         fixture.provide(ShotClock(SHOT_NOW));
         match fixture.scenario() {
             Some("video") => fixture.provide(CaptureMode::Video),
@@ -178,8 +116,12 @@ impl ResourceApp for CameraShell {
     }
 
     /// Every screenshot has a recent capture to hand off.
-    fn scenario(_name: Option<&str>) -> Vec<Invoke<Camera>> {
-        Invoke::apply(&sample_capture()).into_iter().collect()
+    fn scenario(_name: Option<&str>) -> Vec<Invoke<Record>> {
+        vec![Record::REGISTER_CAPTURE.with(sample_capture())]
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::CATALOG)
     }
 
     fn commands() -> &'static [Command] {
@@ -212,17 +154,17 @@ fn emit_photos(dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl ResourceSurface<Camera, CameraEffect> for CameraApp {
+impl ResourceSurface<Record, CameraEffect> for CameraApp {
     /// The scan history and the recent capture, from the live record or a
     /// past version in History.
-    fn present(&mut self, state: &Rc<CameraState>) {
+    fn present(&mut self, state: &Rc<Record>) {
         self.present_record(state);
     }
 
     /// A live window follows the person's and this device's capture
     /// preferences; a capture shows its scenario's; a past version the
     /// defaults.
-    fn attach(&mut self, cx: SurfaceCx<Camera>) {
+    fn attach(&mut self, cx: SurfaceCx<Record>) {
         match cx.mode() {
             RunMode::Capture => {
                 if let Some(clock) = cx.fixture::<ShotClock>() {
@@ -248,7 +190,7 @@ impl ResourceSurface<Camera, CameraEffect> for CameraApp {
         self.stage_scene(scenario);
     }
 
-    fn effect(&mut self, effect: CameraEffect, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: CameraEffect, cx: &mut EffectCx<Record, Self>) -> EffectAnswer {
         self.answer_effect(effect, cx)
     }
 
@@ -288,11 +230,8 @@ mod tests {
         ] {
             assert!(surface.contains(id), "{id} is published: {surface}");
         }
-        let published = ui::tilo_resource::publish::<Camera>(
-            CAMERA_RESOURCE_ID,
-            "Camera",
-            &CameraState::default(),
-        );
+        let published =
+            ui::tilo_resource::publish::<Record>("camera", "Camera", &Record::default());
         assert_eq!(published.kind, "camera");
         assert!(
             !published
