@@ -153,6 +153,22 @@ impl<R, T: Model + Identified> Path<R, Keyed<T>> {
         T::paths_at(self.child(Segment::Item(id.clone())))
     }
 
+    /// The path of the item `id` itself.
+    #[must_use]
+    pub fn item_path(&self, id: &Id) -> Path<R, T> {
+        self.child(Segment::Item(id.clone()))
+    }
+
+    /// The edits that make the item `after` what it is: added when `before`
+    /// is `None`, else changed field by field from `before`.
+    #[must_use]
+    pub fn upsert(&self, before: Option<&T>, after: &T) -> Vec<Edit<R>> {
+        match before {
+            Some(before) => self.item_path(&after.id()).edits(before, after),
+            None => vec![self.insert(after)],
+        }
+    }
+
     /// Add `item` under its own id.
     #[must_use]
     pub fn insert(&self, item: &T) -> Edit<R> {

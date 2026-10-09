@@ -290,7 +290,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 .description
                 .clone()
                 .unwrap_or_else(|| humanize(&param));
-            let (param_ty, optional) = param_type(ty);
+            let (param_ty, optional) = param_type(ty, false);
             let param_ty = if described.secret {
                 quote!(#krate::__private::ParamType::Secret)
             } else {

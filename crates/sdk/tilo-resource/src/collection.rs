@@ -324,13 +324,74 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
     }
 }
 
-struct Stored {
-    id: Id,
-    key: String,
-    entry: ObjId,
+pub(crate) struct Stored {
+    pub(crate) id: Id,
+    pub(crate) key: String,
+    pub(crate) entry: ObjId,
 }
 
-fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
+/// Write `items`, in this order, as the map from id to `{ k, v }` a
+/// [`Collection`] is stored as: items no longer there are deleted, every
+/// order key still consistent with the new order is kept (the longest
+/// increasing run), and keys are minted only for new or moved items.
+pub(crate) fn store_in_order<T: Model>(
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    items: &[(&Id, &T)],
+) -> Result<(), ModelError> {
+    let map = slot.object(doc, ObjType::Map)?;
+    let stored = stored_entries(doc, &map)?;
+    let present: std::collections::HashSet<&Id> = items.iter().map(|(id, _)| *id).collect();
+    for entry in &stored {
+        if !present.contains(&entry.id) {
+            doc.delete(&map, entry.id.as_str())?;
+        }
+    }
+    let by_id: HashMap<&Id, &str> = stored
+        .iter()
+        .map(|entry| (&entry.id, entry.key.as_str()))
+        .collect();
+    let existing: Vec<Option<&str>> = items.iter().map(|(id, _)| by_id.get(id).copied()).collect();
+    let kept = longest_increasing(&existing);
+    let mut keys: Vec<Option<String>> = vec![None; items.len()];
+    for &index in &kept {
+        if let (Some(slot), Some(Some(key))) = (keys.get_mut(index), existing.get(index)) {
+            *slot = Some((*key).to_owned());
+        }
+    }
+    let mut index = 0;
+    while index < keys.len() {
+        if keys.get(index).is_some_and(Option::is_some) {
+            index = index.saturating_add(1);
+            continue;
+        }
+        let start = index;
+        while keys.get(index).is_some_and(Option::is_none) {
+            index = index.saturating_add(1);
+        }
+        let low = start
+            .checked_sub(1)
+            .and_then(|before| keys.get(before))
+            .and_then(Clone::clone);
+        let high = keys.get(index).and_then(Clone::clone);
+        let minted = order::sequence(low.as_deref(), high.as_deref(), index.saturating_sub(start));
+        for (offset, key) in minted.into_iter().enumerate() {
+            if let Some(slot) = keys.get_mut(start.saturating_add(offset)) {
+                *slot = Some(key);
+            }
+        }
+    }
+    for ((id, item), key) in items.iter().zip(keys) {
+        let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
+        let key = key.unwrap_or_default();
+        Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
+        item.store(doc, Slot::Key(&entry, VALUE))
+            .map_err(|error| error.at(id.as_str()))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
     let mut entries = Vec::new();
     for key in doc.keys(map) {
         let Some((Value::Object(ObjType::Map), entry)) = doc.get(map, key.as_str())? else {
@@ -349,7 +410,7 @@ fn stored_entries(doc: &Doc, map: &ObjId) -> Result<Vec<Stored>, ModelError> {
 
 /// An order key placing an item at `at` among `stored` (which may hold the
 /// item itself, `moving`, which does not count).
-fn key_at(stored: &[Stored], at: usize, moving: Option<&Id>) -> String {
+pub(crate) fn key_at(stored: &[Stored], at: usize, moving: Option<&Id>) -> String {
     let others: Vec<&Stored> = stored
         .iter()
         .filter(|entry| Some(&entry.id) != moving)
@@ -660,62 +721,8 @@ impl<T: Model> Model for Collection<T> {
     }
 
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        let stored = stored_entries(doc, &map)?;
-        for entry in &stored {
-            if !self.contains(&entry.id) {
-                doc.delete(&map, entry.id.as_str())?;
-            }
-        }
-        // Keep every order key that is still consistent with the new order
-        // (the longest increasing run); mint keys only for new or moved items.
-        let by_id: std::collections::HashMap<&Id, &str> = stored
-            .iter()
-            .map(|entry| (&entry.id, entry.key.as_str()))
-            .collect();
-        let existing: Vec<Option<&str>> = self
-            .items
-            .iter()
-            .map(|entry| by_id.get(&entry.id).copied())
-            .collect();
-        let kept = longest_increasing(&existing);
-        let mut keys: Vec<Option<String>> = vec![None; self.items.len()];
-        for &index in &kept {
-            if let (Some(slot), Some(Some(key))) = (keys.get_mut(index), existing.get(index)) {
-                *slot = Some((*key).to_owned());
-            }
-        }
-        let mut index = 0;
-        while index < keys.len() {
-            if keys.get(index).is_some_and(Option::is_some) {
-                index = index.saturating_add(1);
-                continue;
-            }
-            let start = index;
-            while keys.get(index).is_some_and(Option::is_none) {
-                index = index.saturating_add(1);
-            }
-            let low = start
-                .checked_sub(1)
-                .and_then(|before| keys.get(before))
-                .and_then(Clone::clone);
-            let high = keys.get(index).and_then(Clone::clone);
-            let minted =
-                order::sequence(low.as_deref(), high.as_deref(), index.saturating_sub(start));
-            for (offset, key) in minted.into_iter().enumerate() {
-                if let Some(slot) = keys.get_mut(start.saturating_add(offset)) {
-                    *slot = Some(key);
-                }
-            }
-        }
-        for (Entry { id, item, .. }, key) in self.items.iter().zip(keys) {
-            let entry = Slot::Key(&map, id.as_str()).object(doc, ObjType::Map)?;
-            let key = key.unwrap_or_default();
-            Slot::Key(&entry, ORDER).put_scalar(doc, ScalarValue::Str(key.into()))?;
-            item.store(doc, Slot::Key(&entry, VALUE))
-                .map_err(|error| error.at(id.as_str()))?;
-        }
-        Ok(())
+        let items: Vec<(&Id, &T)> = self.iter().collect();
+        store_in_order(doc, slot, &items)
     }
 
     fn collect_text(&self, out: &mut Vec<String>) {
