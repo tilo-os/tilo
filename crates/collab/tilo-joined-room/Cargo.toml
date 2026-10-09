@@ -17,6 +17,8 @@ managed-message-test = ["launcher/managed-tree-test"]
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../../system/content" }
 automerge.workspace = true
+# Byte fields of the owner record are base64 text in its JSON file.
+base64.workspace = true
 # Scoped owner admission decodes untrusted app mutations only in workers.
 tilo-automerge-isolate.workspace = true
 blake3.workspace = true

@@ -124,7 +124,7 @@ pub enum PeerActionAttachmentError {
     /// Local validation, custody, capacity, or broker work failed.
     Failed,
     /// The broker answered no effect-free request (the initial catalogue or a
-    /// heartbeat) in time. Nothing was admitted, so a fresh attachment on a
+    /// liveness probe) in time. Nothing was admitted, so a fresh attachment on a
     /// reconnected transport may replace this one.
     Unresponsive,
 }
@@ -149,6 +149,11 @@ impl RequestFailure {
         }
     }
 }
+
+/// How often an attachment asks its broker whether it is still alive and
+/// its durable host available. Matches the request deadline: a hung broker
+/// is noticed within two of them, as a real request would notice it.
+const LIVENESS_PROBE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct PeerActionQueue {
@@ -418,7 +423,7 @@ impl PeerActionQueue {
         let mut watches: Vec<(CertifiedAction, tilo_actions::InvocationId, ActionMessage)> =
             Vec::new();
         let mut transitions = self.transitions.subscribe();
-        let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut probe = Self::liveness_probe();
         loop {
             tokio::select! {
                 event = session.recv_certified_action() => match event {
@@ -457,11 +462,47 @@ impl PeerActionQueue {
                     }
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
-                _ = tick.tick() => {
-                    self.request("heartbeat", None, None, None).await.map_err(effect_free_failure)?;
+                due = self.liveness_due(&mut probe) => {
+                    due?;
+                    self.probe_liveness().await?;
                 }
             }
         }
+    }
+
+    /// The schedule of [`Self::liveness_due`]: its first probe one
+    /// [`LIVENESS_PROBE`] from now.
+    fn liveness_probe() -> tokio::time::Interval {
+        let first = tokio::time::Instant::now()
+            .checked_add(LIVENESS_PROBE)
+            .unwrap_or_else(tokio::time::Instant::now);
+        let mut probe = tokio::time::interval_at(first, LIVENESS_PROBE);
+        probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        probe
+    }
+
+    /// Resolves when the broker behind this queue must be asked whether it
+    /// still serves — `probe` ticked — or with why it cannot: its queue
+    /// closed, which is an event and ends the attachment at once. A broker
+    /// whose loop hangs, or whose durable host becomes unavailable, still
+    /// holds its queue open; only asking ([`Self::probe_liveness`]) reveals
+    /// that. Real requests detect both too, as they arrive.
+    async fn liveness_due(
+        &self,
+        probe: &mut tokio::time::Interval,
+    ) -> Result<(), PeerActionAttachmentError> {
+        tokio::select! {
+            () = self.sender.closed() => Err(PeerActionAttachmentError::Failed),
+            _ = probe.tick() => Ok(()),
+        }
+    }
+
+    /// Ask the broker, with an effect-free request, whether it still serves.
+    async fn probe_liveness(&self) -> Result<(), PeerActionAttachmentError> {
+        self.request("liveness_probe", None, None, None)
+            .await
+            .map(drop)
+            .map_err(effect_free_failure)
     }
 }
 fn registration_acknowledged(
@@ -786,6 +827,74 @@ mod tests {
                 PeerActionAttachmentError::Failed
             );
         }
+    }
+
+    /// A broker whose request queue closes ends its attachment then, not on
+    /// the next probe: the clock is paused, and closing the queue must not
+    /// need it to move.
+    #[tokio::test(start_paused = true)]
+    async fn peer_attachment_ends_when_broker_queue_closes() {
+        let (queue, broker) = PeerActionQueue::channel();
+        let mut probe = PeerActionQueue::liveness_probe();
+        let started = tokio::time::Instant::now();
+        let lost = queue.liveness_due(&mut probe);
+        tokio::pin!(lost);
+        assert!(
+            futures::poll!(lost.as_mut()).is_pending(),
+            "a live queue keeps the attachment"
+        );
+        drop(broker);
+        assert_eq!(lost.await, Err(PeerActionAttachmentError::Failed));
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::ZERO,
+            "the closed queue woke the attachment; no timer had to notice it"
+        );
+    }
+
+    /// An idle attachment costs one probe per [`LIVENESS_PROBE`], not ten a
+    /// second: a broker that answers keeps it, and one that stops answering
+    /// ends it as replaceable.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_attachment_probes_its_broker_rarely() {
+        let (queue, mut broker) = PeerActionQueue::channel();
+        let answered = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let answering = {
+            let answered = std::sync::Arc::clone(&answered);
+            tokio::spawn(async move {
+                while let Some(request) = broker.recv().await {
+                    if answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                        // The third probe hangs: the broker stopped answering.
+                        let _held = request;
+                        std::future::pending::<()>().await;
+                    } else {
+                        let _ = request.reply.send(Ok(ActionMessage::BrokerCatalogue {
+                            host: Uuid::nil(),
+                            catalogue: serde_json::Value::Null,
+                        }));
+                    }
+                }
+            })
+        };
+        let started = tokio::time::Instant::now();
+        let mut probe = PeerActionQueue::liveness_probe();
+        // What the attachment loop does while idle, until it ends.
+        let ended = loop {
+            if let Err(ended) = queue.liveness_due(&mut probe).await {
+                break ended;
+            }
+            if let Err(ended) = queue.probe_liveness().await {
+                break ended;
+            }
+        };
+        assert_eq!(ended, PeerActionAttachmentError::Unresponsive);
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(
+            started.elapsed() >= LIVENESS_PROBE.saturating_mul(3),
+            "probes are {LIVENESS_PROBE:?} apart, took {:?}",
+            started.elapsed()
+        );
+        answering.abort();
     }
 
     #[test]

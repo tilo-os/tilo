@@ -18,10 +18,18 @@ Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
 never attaches to a second authority beside it. Elsewhere — stock macOS or a
 foreign Linux desktop — the standalone `tilo-runtime` comes first, then
 `tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
-`tilo-runtime`. In a source checkout, the first ordinary `cargo run`
-can bootstrap a missing host with a bounded, serialized Cargo build using the
-checkout's normal Cargo cache, network, target directory, and explicit offline
-settings. Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a
+`tilo-runtime`. In a source checkout on a foreign desktop, build the host once:
+
+```sh
+cargo build --locked -p tilo-runtime --bin tilo-runtime
+cargo run --locked --profile thin-app -p ebook
+```
+
+Source apps also find hosts in `target/debug`, `target/thin-app` and
+`target/release` in the same checkout, so the host and app need not use the
+same profile. A missing source host reports the exact build command. Installed
+apps keep the beside-app and `PATH` lookup; they never search Cargo profiles.
+Set `TILO_RUNTIME_BINARY` only when packaging or testing must select a
 specific absolute host binary. Startup errors are printed instead of silently
 running an app disconnected.
 
@@ -29,7 +37,19 @@ Without configuration, the persistent profile is
 `$HOME/Library/Application Support/Tilo/runtime` on macOS and
 `$HOME/.local/state/tilo/runtime` on other Unix systems. An absolute
 `TILO_RUNTIME_PROFILE` selects another profile, which is useful for isolated
-development runs. The daemon owns the profile independently of every app and
+development runs. For a fresh, separate development workspace, choose a private
+directory once and reuse it while editing:
+
+```sh
+export TILO_RUNTIME_PROFILE="$(mktemp -d /tmp/tilo-app-dev.XXXXXX)"
+cargo run --locked --profile thin-app -p ebook
+```
+
+This profile has a separate runtime workspace and identity state. It does not
+unlock or repair a personal profile whose identity keys are unavailable; preserve that
+profile and recover its identity through the normal identity workflow.
+
+The daemon owns the profile independently of every app and
 MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
 socket checks reject unsafe or competing owners.

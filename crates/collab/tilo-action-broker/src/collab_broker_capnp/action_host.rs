@@ -1213,50 +1213,47 @@ impl CapnpBrokerState {
                 return Pending::ready(Err(error));
             }
         };
+        let runtime = match super::launchable::delivery_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.abandon(&request.invocation);
+                }
+                return Pending::ready(Err(ActionHostError::Unavailable {
+                    reason: format!("the launch could not start: {error}"),
+                }));
+            }
+        };
         let origin = origin.cloned();
         let (completer, answer) = pending();
         let state = Arc::clone(self);
         let caller = caller.clone();
         let request = request.clone();
-        let invocation = request.invocation;
-        // Launching and waiting for the app block; they run beside the
-        // broker, never on its local set.
-        let spawned = std::thread::Builder::new()
-            .name("tilo-launchable-invoke".into())
-            .spawn(move || {
-                let started = state.relaunch_and_deliver(
-                    &completer,
-                    &caller,
-                    &destination,
-                    origin.as_ref(),
-                    &request,
-                );
-                let result = match state.remote_invocations.lock() {
-                    Ok(mut ledger) => match started {
-                        Ok(job) => {
-                            ledger.complete(&request.invocation, job);
-                            drop(ledger);
-                            Ok(state.receipt_for(request.invocation, job))
-                        }
-                        Err(error) => {
-                            ledger.abandon(&request.invocation);
-                            Err(error)
-                        }
-                    },
-                    Err(_) => Err(ActionHostError::Unavailable {
-                        reason: "the invocation ledger is unavailable".into(),
-                    }),
-                };
-                completer.complete(result);
-            });
-        if let Err(error) = spawned {
-            if let Ok(mut ledger) = self.remote_invocations.lock() {
-                ledger.abandon(&invocation);
-            }
-            return Pending::ready(Err(ActionHostError::Unavailable {
-                reason: format!("the launch could not start: {error}"),
-            }));
-        }
+        // Launching blocks and waiting for the app is an event: the launch
+        // runs on the delivery runtime's blocking pool, the wait is a task
+        // there, and neither runs on the broker's local set.
+        runtime.spawn(async move {
+            let started = state
+                .relaunch_and_deliver(&completer, &caller, &destination, origin.as_ref(), &request)
+                .await;
+            let result = match state.remote_invocations.lock() {
+                Ok(mut ledger) => match started {
+                    Ok(job) => {
+                        ledger.complete(&request.invocation, job);
+                        drop(ledger);
+                        Ok(state.receipt_for(request.invocation, job))
+                    }
+                    Err(error) => {
+                        ledger.abandon(&request.invocation);
+                        Err(error)
+                    }
+                },
+                Err(_) => Err(ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                }),
+            };
+            completer.complete(result);
+        });
         answer
     }
 
@@ -1347,27 +1344,36 @@ impl CapnpBrokerState {
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
-    fn relaunch_and_deliver(
-        &self,
+    ///
+    /// The wait wakes on what readiness depends on — a surface published or
+    /// withdrawn, an invocation stream opened or closed, in either order —
+    /// on the delivery deadline, and on the caller dropping its answer.
+    async fn relaunch_and_deliver(
+        self: &Arc<Self>,
         completer: &Completer<Result<InvocationReceipt, ActionHostError>>,
         caller: &Caller,
         destination: &LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
-        const POLL: std::time::Duration = std::time::Duration::from_millis(50);
+        let stopped_waiting = || ActionHostError::Unavailable {
+            reason: "the caller stopped waiting for admission".into(),
+        };
         let room = destination.workspace.room.to_string();
         let app_id = &destination.app_id;
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
-        let deadline = std::time::Instant::now().checked_add(timeout);
+        let deadline = tokio::time::sleep(timeout);
+        let abandoned = completer.abandoned();
+        tokio::pin!(deadline, abandoned);
+        // Taken before the first look, so a publication between that look
+        // and the wait below still wakes it.
+        let mut changes = self.publisher_changes();
         let mut launched = false;
         loop {
             self.check_launch_origin(caller, origin, &room)?;
             if completer.is_abandoned() {
-                return Err(ActionHostError::Unavailable {
-                    reason: "the caller stopped waiting for admission".into(),
-                });
+                return Err(stopped_waiting());
             }
             if let Some(peer_id) =
                 self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
@@ -1385,23 +1391,36 @@ impl CapnpBrokerState {
                 {
                     return Err(ActionHostError::NotPermitted);
                 }
-                self.launch_retained(app_id, &current.workspace)
-                    .map_err(|reason| ActionHostError::Refused {
-                        reason: format!("{app_id} could not be launched: {reason}"),
-                    })?;
+                let state = Arc::clone(self);
+                let app = app_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    state.launch_retained(&app, &current.workspace)
+                })
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()))
+                .map_err(|reason| ActionHostError::Refused {
+                    reason: format!("{app_id} could not be launched: {reason}"),
+                })?;
                 launched = true;
                 continue;
             }
-            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                return Err(ActionHostError::Unavailable {
-                    reason: format!(
-                        "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                        address.action,
-                        timeout.as_secs_f32()
-                    ),
-                });
+            tokio::select! {
+                seen = changes.changed() => if seen.is_err() {
+                    return Err(ActionHostError::Unavailable {
+                        reason: "the broker stopped".into(),
+                    });
+                },
+                () = &mut deadline => {
+                    return Err(ActionHostError::Unavailable {
+                        reason: format!(
+                            "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                            address.action,
+                            timeout.as_secs_f32()
+                        ),
+                    });
+                }
+                () = &mut abandoned => return Err(stopped_waiting()),
             }
-            std::thread::sleep(POLL);
         }
     }
 

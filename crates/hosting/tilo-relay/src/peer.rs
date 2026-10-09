@@ -1522,9 +1522,20 @@ fn authorize_replay_now(
     source: &StateSource,
     authority: &crate::persistence::ReplayAuthority,
 ) -> Result<(), StoreError> {
-    let members = store.load_membership()?;
+    // The in-memory set while the membership watch vouches for it; otherwise
+    // the file, as a fresh membership reload would read it.
+    let current = workspace.blocking_lock().membership_is_current();
+    let members = if current {
+        None
+    } else {
+        Some(store.load_membership()?)
+    };
     let runtime = workspace.blocking_lock();
-    let member = (members.contains(&source.peer.device_public_key)
+    let listed = members.as_ref().map_or_else(
+        || runtime.membership.contains(&source.peer.device_public_key),
+        |members| members.contains(&source.peer.device_public_key),
+    );
+    let member = (listed
         && runtime
             .membership_ceiling
             .as_ref()

@@ -1639,8 +1639,11 @@ impl CollaborationPreferences {
         }
     }
 
+    /// The settings section these preferences own as a whole.
+    const SECTION: &'static str = "collaboration";
+
     fn load() -> Self {
-        Self::from_values(&settings_store::load_section("collaboration"))
+        Self::from_values(&settings_store::load_section(Self::SECTION))
     }
 
     fn values(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -4140,7 +4143,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let snapshot = {
+        let (desktop, failures) = {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.desktop.active.raw();
@@ -4166,9 +4169,9 @@ impl ShellOverlayHost {
                 }
                 Some(_) => {}
             }
-            tree.clone()
+            (tree.desktop.clone(), st.record_creation_errors(&tree))
         };
-        let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
+        let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
             self.content_rebuild_owes_scene = true;
             self.start_workspace_switch_frames();
@@ -4176,40 +4179,43 @@ impl ShellOverlayHost {
         swapped
     }
 
-    /// Rebuilds the desktop surface for `snapshot` and replaces the row
+    /// Rebuilds the desktop surface for `desktop` and replaces the row
     /// pointer map with it. Tabs whose tile is unchanged in the same room
     /// keep their live hosts, so a strip added or removed beside them costs
-    /// no app state; a different workspace gets fresh content.
+    /// no app state; a different workspace gets fresh content. Takes the
+    /// desktop alone, with `failures` read beside it under the same tree
+    /// lock, so a workspace switch never copies the replication documents.
     fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
-        snapshot: &crate::shell::state::WorkspaceTree,
+        desktop: &crate::shell::state::DesktopTree,
+        failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
         let records = chrome.borrow().records().clone();
         if let Some(surface) = self.desktop_surface_mut() {
-            let surface_chrome = crate::shell::workspace_surface_chrome(snapshot, chrome);
+            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
             let state = chrome.borrow();
-            let failures = state.record_creation_errors(snapshot);
             surface.rebuild_retaining(
-                &snapshot.desktop,
+                desktop,
                 &records,
                 &mut crate::shell::NativeTileResolver {
                     inputs: &state.hosted_inputs,
-                    failures: &failures,
+                    failures,
                 },
                 surface_chrome,
             );
             for id in surface.strip_ids() {
                 if let Some(row) = surface.row_mut(id) {
                     for group in &mut row.groups {
-                        crate::shell::tab_documents::apply_creation_failures(group, &failures);
+                        crate::shell::tab_documents::apply_creation_failures(group, failures);
                     }
                 }
             }
             // The rebuild replaced every row; the old addresses are gone.
             self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
         } else {
-            let (root, ptrs) = crate::shell::build_workspace_root(snapshot, &records, chrome);
+            let (root, ptrs) =
+                crate::shell::build_desktop_root(desktop, &records, chrome, failures);
             // Settle outgoing components while the old root still owns them,
             // so their recovery reports survive the swap.
             self.desktop_close_reports
@@ -4225,8 +4231,8 @@ impl ShellOverlayHost {
             self.content = root;
             self.group_row_ptrs = ptrs;
         }
-        self.content_built_for_ws = Some(snapshot.desktop.active.raw());
-        self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
+        self.content_built_for_ws = Some(desktop.active.raw());
+        self.content_built_empty = desktop.active_workspace().map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -4867,8 +4873,12 @@ impl ShellOverlayHost {
             tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
             tilo_desktop::composition::ReconcileOutcome::Updated => true,
             tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
-                let snapshot = chrome.borrow().tree().clone();
-                self.rebuild_workspace_content(&chrome, &snapshot)
+                let (desktop, failures) = {
+                    let st = chrome.borrow();
+                    let tree = st.tree();
+                    (tree.desktop.clone(), st.record_creation_errors(&tree))
+                };
+                self.rebuild_workspace_content(&chrome, &desktop, &failures)
             }
         }
     }
@@ -14941,7 +14951,7 @@ impl ShellOverlayHost {
             self.capture_studio.open();
         }
         if flags.collaborators {
-            self.handle_shell_collaborators_click(p, handled);
+            *handled = true;
             return true;
         }
         if flags.quick_settings {
@@ -15111,14 +15121,30 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Clicks inside the open collaborators dropdown: invite, join,
-    /// jump to room activity, or (falling through the specific rows)
-    /// swallow the click so content beneath doesn't grab it. Reached
-    /// only once `flags.collaborators` is true, at which point every
-    /// path absorbs the click.
-    fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
-        let hit = self.collaborators_overlay.hit_test(p);
-        self.apply_collaborators_hit(hit, handled);
+    fn route_collaborators_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let open = self.overlay_flags().collaborators;
+        if !open && !self.collaborators_overlay.wants_pointer_capture() {
+            return false;
+        }
+        if self.status_editing && matches!(event, WindowEvent::KeyboardInput { .. }) {
+            return false;
+        }
+        let hit = self
+            .collaborators_overlay
+            .handle_event(event, ctx, open, self.last_cursor);
+        if let Some(hit) = hit {
+            self.apply_collaborators_hit(hit, ctx.handled);
+        }
+        if (*ctx.handled || matches!(event, WindowEvent::Focused(false)))
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            chrome.borrow_mut().bump();
+        }
+        *ctx.handled
     }
 
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
@@ -15145,17 +15171,21 @@ impl ShellOverlayHost {
             return;
         }
         if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self.chrome.as_ref().and_then(|chrome| {
-                let state = chrome.borrow();
-                let local_user = state.active_local_user();
-                tilo_desktop::collaborators::collaborator_roster_rows(
-                    &state.tree().desktop,
-                    &local_user,
-                )
-                .get(index)
-                .filter(|row| row.followable)
-                .cloned()
-            });
+            let target = self
+                .collaborators_overlay
+                .follow_target(index)
+                .and_then(|id| {
+                    self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        let local_user = state.active_local_user();
+                        tilo_desktop::collaborators::collaborator_roster_rows(
+                            &state.tree().desktop,
+                            &local_user,
+                        )
+                        .into_iter()
+                        .find(|row| row.id == id && row.followable)
+                    })
+                });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
                     self.set_followed_peer(None);
@@ -15326,7 +15356,9 @@ impl ShellOverlayHost {
             sharing: self.status_sharing,
             manual_status,
         };
-        if let Err(error) = settings_store::update_section("collaboration", preferences.values()) {
+        if let Err(error) =
+            settings_store::update_section(CollaborationPreferences::SECTION, preferences.values())
+        {
             tracing::warn!(%error, "collaboration preferences save failed");
         }
     }
@@ -16908,9 +16940,8 @@ impl ShellOverlayHost {
     /// Persist the rotation lock; the compositor's accelerometer worker
     /// reads it from the same settings document.
     fn save_rotation_lock(locked: bool) {
-        let mut values = serde_json::Map::new();
-        values.insert("rotation_lock".into(), serde_json::Value::Bool(locked));
-        if let Err(e) = settings_store::update_section("display", values) {
+        let origin = settings_store::ChangeOrigin::local("qs.rotation-lock");
+        if let Err(e) = settings_store::hardware::ROTATION_LOCK.set_by(locked, &origin) {
             tracing::warn!(error = %e, "rotation lock preference save failed");
         }
     }
@@ -16976,9 +17007,8 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending.night_light {
-            let mut values = serde_json::Map::new();
-            values.insert("night_light".into(), serde_json::Value::Bool(v));
-            if let Err(e) = settings_store::update_section("display", values) {
+            let origin = settings_store::ChangeOrigin::local("qs.night-light");
+            if let Err(e) = settings_store::hardware::NIGHT_LIGHT.set_by(v, &origin) {
                 tracing::warn!(error = %e, "night light preference save failed");
             }
         }
@@ -19210,8 +19240,34 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
+        let people_open = self.overlay_flags().collaborators;
+        if self
+            .collaborators_overlay
+            .consume_sequence_edge(event, people_open)
+        {
+            *ctx.handled = true;
+            return;
+        }
+
         if self.consume_workspace_rename_submit_edge(event) {
             *ctx.handled = true;
+            return;
+        }
+        if !self.overlay_flags().collaborators
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
             return;
         }
         // Print Screen has an explicit arbitration policy. It must run before
@@ -19691,6 +19747,23 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
+        if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
+            return;
+        }
         if self.route_absorbable_pointer_and_toast_click(event, ctx.handled) {
             return;
         }
@@ -19755,6 +19828,23 @@ impl Widget for ShellOverlayHost {
                     path: ctx.path,
                     handled: &mut *ctx.handled,
                     focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
+            return;
+        }
+        if !Self::is_pointer_event(event)
+            && self.route_collaborators_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled: ctx.handled,
+                    focus_target: ctx.focus_target,
                     node_id: ctx.node_id,
                     taffy: ctx.taffy,
                 },

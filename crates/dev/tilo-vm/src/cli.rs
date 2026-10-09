@@ -255,6 +255,9 @@ pub enum Command {
         /// Content hashes the target has verified; at most eight.
         #[arg(long)]
         cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(

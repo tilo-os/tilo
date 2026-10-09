@@ -53,7 +53,10 @@ fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(default_socket_path);
+    let socket = cli
+        .socket
+        .or_else(default_socket_path)
+        .ok_or_else(|| anyhow::anyhow!("XDG_RUNTIME_DIR not set: pass --socket"))?;
     let root = cli
         .store
         .or_else(package_store::layout::default_user_root)

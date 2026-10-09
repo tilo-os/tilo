@@ -6,8 +6,12 @@
 use crate::shell::state::WorkspaceAuthority as _;
 
 mod boot_join;
+#[cfg(test)]
+mod display_input_tests;
+mod display_observations;
 mod governor_actions;
 mod hosted_topology;
+mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
 pub(crate) mod live_interaction;
@@ -578,17 +582,24 @@ pub(crate) struct AuthenticatedPersonalRoute {
 }
 
 impl AuthenticatedPersonalRoute {
-    #[cfg(test)]
     pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
         &self.device
     }
 
     #[cfg(test)]
     pub(crate) fn for_test(device: crate::shell::personal_continuity::DeviceId) -> Self {
+        Self::for_test_epoch(device, 1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_epoch(
+        device: crate::shell::personal_continuity::DeviceId,
+        epoch: u64,
+    ) -> Self {
         Self {
             workspace_topic: 1,
             endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
-            membership_epoch: crate::network::actor::MembershipEpoch::for_test(1),
+            membership_epoch: crate::network::actor::MembershipEpoch::for_test(epoch),
             user_public_key: [0xE8; 32],
             device,
         }
@@ -2005,6 +2016,7 @@ impl ShellNetwork {
         if !app_continuations_permitted {
             network.enforce_app_continuations_policy();
         }
+        network.restore_display_observations();
         Ok(network)
     }
 
@@ -5454,6 +5466,107 @@ impl ShellNetwork {
             })
     }
 
+    fn display_observations_path(path: &Path) -> PathBuf {
+        path.with_file_name("personal-display-observations.json")
+    }
+
+    fn persist_device_fabric(
+        &self,
+        path: &Path,
+        fabric: &crate::shell::device_fabric::DeviceFabric,
+    ) -> Result<(), String> {
+        persist_device_fabric(path, fabric)?;
+        self.persist_display_observations(path, fabric)
+    }
+
+    fn persist_display_observations(
+        &self,
+        path: &Path,
+        fabric: &crate::shell::device_fabric::DeviceFabric,
+    ) -> Result<(), String> {
+        if let Some(user) = self.personal_continuity_user {
+            display_observations::save(&Self::display_observations_path(path), fabric, user)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_display_observations(&self) {
+        let (Some(path), Some(user)) = (
+            self.device_fabric_path.as_deref(),
+            self.personal_continuity_user,
+        ) else {
+            return;
+        };
+        let enrolled = self.certified_secret_recipients();
+        if let Ok(mut fabric) = self.device_fabric.lock()
+            && let Err(error) = display_observations::restore(
+                &Self::display_observations_path(path),
+                &mut fabric,
+                user,
+                &enrolled,
+            )
+        {
+            tracing::warn!(%error, "cached display observations were not admitted");
+        }
+    }
+
+    pub(crate) fn personal_device_is_enrolled(
+        &self,
+        device: &crate::shell::personal_continuity::DeviceId,
+    ) -> bool {
+        self.personal_continuity_user.is_some()
+            && self.certified_secret_recipients().contains(device)
+    }
+
+    /// Retain offline facts without treating a checkpoint as live reachability.
+    pub(crate) fn person_display_devices(
+        &self,
+        local: &crate::shell::personal_continuity::DeviceId,
+    ) -> Vec<settings_store::person_displays::PersonDevice> {
+        if self.personal_continuity_user.is_none()
+            || self.personal_continuity_device.as_ref() != Some(local)
+        {
+            return Vec::new();
+        }
+        let enrolled = self.certified_secret_recipients();
+        self.device_fabric()
+            .person_devices(local)
+            .into_iter()
+            .filter(|device| {
+                crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                    .is_ok_and(|owner| enrolled.contains(&owner))
+            })
+            .map(|mut device| {
+                device.online = device.local
+                    || (device.online
+                        && crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                            .is_ok_and(|owner| self.current_personal_route(&owner).is_some()));
+                device
+            })
+            .collect()
+    }
+
+    fn observe_display_outputs(
+        &self,
+        owner: &crate::shell::personal_continuity::DeviceId,
+        stamp: &crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        let mut fabric = self
+            .device_fabric
+            .lock()
+            .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
+        let changed = fabric.observe_display_outputs(owner, stamp, outputs)?;
+        if changed
+            && let Some(path) = self.device_fabric_path.as_deref()
+            && let Err(error) = self.persist_display_observations(path, &fabric)
+        {
+            tracing::warn!(%error, "display observation persistence failed");
+        }
+        drop(fabric);
+        Ok(changed)
+    }
+
     /// Replace this machine's self-authored fabric snapshot and advertise it
     /// to currently connected, certified devices of the same person.
     ///
@@ -5479,7 +5592,7 @@ impl ShellNetwork {
             let changed = fabric.upsert(snapshot)?;
             if changed
                 && let Some(path) = self.device_fabric_path.as_deref()
-                && let Err(error) = persist_device_fabric(path, &fabric)
+                && let Err(error) = self.persist_device_fabric(path, &fabric)
             {
                 tracing::warn!(%error, "device fabric persistence failed");
             }
@@ -5490,6 +5603,63 @@ impl ShellNetwork {
             self.publish_device_fabric_snapshot();
         }
         Ok(changed)
+    }
+
+    /// Advertise this compositor's rich hardware observations for its exact
+    /// display revision. These facts confer no input or placement authority.
+    /// # Errors
+    /// Rejects metadata without the local owner identity or current revision.
+    pub fn publish_local_display_outputs(
+        &self,
+        stamp: &crate::shell::device_fabric::FabricStamp,
+        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        use crate::shell::device_fabric::FabricError;
+        if !self
+            .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
+            || self.personal_continuity_device.as_ref() != Some(&stamp.device)
+        {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        let changed = self.observe_display_outputs(&stamp.device, stamp, outputs.clone())?;
+        if changed {
+            self.publish_device_fabric_payload(PersonalFabricPayload::DisplayOutputs {
+                stamp: stamp.clone(),
+                outputs,
+            });
+        }
+        Ok(changed)
+    }
+
+    fn display_input_declines_path(&self) -> Result<(PathBuf, [u8; 32]), String> {
+        let user = self
+            .personal_continuity_user
+            .ok_or("display input has no selected identity")?;
+        let path = self
+            .device_fabric_path
+            .as_ref()
+            .ok_or("display input has no private state directory")?;
+        let name = format!(
+            "personal-display-input-declines-{}.json",
+            blake3::hash(&user).to_hex()
+        );
+        Ok((path.with_file_name(name), user))
+    }
+
+    pub(crate) fn load_display_input_declines(
+        &self,
+    ) -> Result<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>, String>
+    {
+        let (path, user) = self.display_input_declines_path()?;
+        input_declines::load(&path, user)
+    }
+
+    pub(crate) fn save_display_input_declines(
+        &self,
+        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    ) -> Result<(), String> {
+        let (path, user) = self.display_input_declines_path()?;
+        input_declines::save(&path, user, devices)
     }
 
     /// The person whose devices form this device's personal fabric.
@@ -5505,7 +5675,7 @@ impl ShellNetwork {
         };
         if fabric.remove_device(device)
             && let Some(path) = self.device_fabric_path.as_deref()
-            && let Err(error) = persist_device_fabric(path, &fabric)
+            && let Err(error) = self.persist_device_fabric(path, &fabric)
         {
             tracing::warn!(%error, "device fabric persistence failed");
         }
@@ -5862,10 +6032,20 @@ impl ShellNetwork {
                 .get(local)
                 .and_then(|snapshot| snapshot.display.clone())
         {
+            let rich_outputs = self
+                .device_fabric()
+                .display_outputs(local)
+                .map(<[_]>::to_vec);
             self.publish_device_fabric_payload(PersonalFabricPayload::DisplayConnectors {
-                stamp: display.stamp,
+                stamp: display.stamp.clone(),
                 outputs: display.outputs,
             });
+            if let Some(outputs) = rich_outputs {
+                self.publish_device_fabric_payload(PersonalFabricPayload::DisplayOutputs {
+                    stamp: display.stamp,
+                    outputs,
+                });
+            }
         }
     }
 
@@ -6424,6 +6604,15 @@ impl ShellNetwork {
                     tracing::debug!(%error, peer = %peer, "dropping invalid connector observation");
                 }
             }
+            PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
+                if self.permits_continuity(
+                    crate::shell::continuity_policy::ContinuityCapability::DisplayInput,
+                ) && let Err(error) =
+                    self.observe_display_outputs(&route.device, &stamp, outputs)
+                {
+                    tracing::debug!(%error, peer = %peer, "dropping invalid rich display observation");
+                }
+            }
             PersonalFabricPayload::Action(bytes) => {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
@@ -6488,7 +6677,7 @@ impl ShellNetwork {
         match fabric.upsert(snapshot) {
             Ok(true) => {
                 if let Some(path) = self.device_fabric_path.as_deref()
-                    && let Err(error) = persist_device_fabric(path, &fabric)
+                    && let Err(error) = self.persist_device_fabric(path, &fabric)
                 {
                     tracing::warn!(%error, "device fabric merge persistence failed");
                 }
@@ -9685,7 +9874,7 @@ mod tests {
 
     /// A shell for one of `root`'s devices, `device`, holding `tree` and
     /// keeping the person's workspace list.
-    fn personal_workspaces_network_for_test(
+    pub(super) fn personal_workspaces_network_for_test(
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
         mut tree: WorkspaceTree,
@@ -9737,7 +9926,7 @@ mod tests {
         (tree, room)
     }
 
-    fn drain(commands: &mut mpsc::Receiver<NetCmd>) -> Vec<NetCmd> {
+    pub(super) fn drain(commands: &mut mpsc::Receiver<NetCmd>) -> Vec<NetCmd> {
         std::iter::from_fn(|| commands.try_recv().ok()).collect()
     }
 
@@ -9939,7 +10128,7 @@ mod tests {
         )
     }
 
-    fn authenticated_personal_peer(
+    pub(super) fn authenticated_personal_peer(
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
@@ -10383,6 +10572,310 @@ mod tests {
         );
         assert_eq!(std::fs::read(&key_path).unwrap(), key_before);
         assert_eq!(std::fs::read_dir(&key_dir).unwrap().count(), 1);
+    }
+
+    pub(super) fn rich_display_network_snapshot(
+        owner: crate::shell::personal_continuity::DeviceId,
+    ) -> (
+        crate::shell::device_fabric::DeviceFabricSnapshot,
+        crate::shell::device_fabric::DisplayOutputObservation,
+    ) {
+        use crate::shell::device_fabric::{
+            DisplayConnectorPlacement, DisplayOutputObservation, DisplayPlacement, DisplayRect,
+        };
+        let mut snapshot = fabric_snapshot(owner.clone(), 1);
+        let rect = DisplayRect {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        };
+        snapshot.display = Some(DisplayPlacement {
+            device: owner,
+            rect,
+            scale_milli: 1000,
+            stamp: snapshot.presence.stamp.clone(),
+            outputs: vec![DisplayConnectorPlacement {
+                connector: "eDP-1".into(),
+                label: "Panel".into(),
+                rect,
+                scale_milli: 1000,
+            }],
+        });
+        let observation = DisplayOutputObservation {
+            connector: "eDP-1".into(),
+            output: settings_store::person_displays::DeviceOutput {
+                id: "monitor:panel".into(),
+                name: "Panel".into(),
+                builtin: true,
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 800,
+                mode_width: 1280,
+                mode_height: 800,
+                refresh_mhz: 60_000,
+                scale_milli: 1000,
+                connected: true,
+                enabled: true,
+            },
+        };
+        (snapshot, observation)
+    }
+
+    #[test]
+    fn offline_display_cache_requires_root_enrolment_and_exact_revision() {
+        use crate::shell::device_fabric::DeviceFabric;
+        use crate::shell::personal_continuity::DeviceId;
+        use std::collections::BTreeSet;
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.json");
+        let owner = DeviceId::new("offline-display").unwrap();
+        let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
+        let mut saved = DeviceFabric::default();
+        saved.upsert(snapshot.clone()).unwrap();
+        let checkpoint = saved.encode_checkpoint().unwrap();
+        saved
+            .observe_display_outputs(&owner, &stamp, vec![observation.clone()])
+            .unwrap();
+        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let enrolled = BTreeSet::from([owner.clone()]);
+        let mut restored = DeviceFabric::decode_checkpoint(&checkpoint).unwrap();
+        assert!(restored.display_outputs(&owner).is_none());
+        assert!(display_observations::restore(&path, &mut restored, [8; 32], &enrolled).is_err());
+        assert!(restored.display_outputs(&owner).is_none());
+        assert!(
+            !display_observations::restore(&path, &mut restored, [7; 32], &BTreeSet::new())
+                .unwrap()
+        );
+        assert!(restored.display_outputs(&owner).is_none());
+        assert!(display_observations::restore(&path, &mut restored, [7; 32], &enrolled).unwrap());
+        assert_eq!(
+            restored.display_outputs(&owner),
+            Some([observation].as_slice())
+        );
+        assert_eq!(
+            restored.encode_checkpoint().unwrap(),
+            checkpoint,
+            "cached facts must not alter the wire checkpoint"
+        );
+        let mut next = snapshot;
+        next.display.as_mut().unwrap().stamp.counter += 1;
+        next.presence.stamp.counter += 1;
+        let mut changed = DeviceFabric::default();
+        changed.upsert(next).unwrap();
+        assert!(!display_observations::restore(&path, &mut changed, [7; 32], &enrolled).unwrap());
+        assert!(changed.display_outputs(&owner).is_none());
+        let mut forgotten = DeviceFabric::default();
+        assert!(!display_observations::restore(&path, &mut forgotten, [7; 32], &enrolled).unwrap());
+        assert!(forgotten.snapshots().is_empty());
+    }
+
+    #[test]
+    fn offline_display_cache_rejects_corruption_without_partial_projection() {
+        use crate::shell::device_fabric::DeviceFabric;
+        use crate::shell::personal_continuity::DeviceId;
+        use std::collections::BTreeSet;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("facts.json");
+        let owner = DeviceId::new("offline-display").unwrap();
+        let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        let mut saved = DeviceFabric::default();
+        saved.upsert(snapshot.clone()).unwrap();
+        saved
+            .observe_display_outputs(
+                &owner,
+                &snapshot.display.as_ref().unwrap().stamp,
+                vec![observation],
+            )
+            .unwrap();
+        display_observations::save(&path, &saved, [7; 32]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let enrolled = BTreeSet::from([owner.clone()]);
+        let checkpoint = saved.encode_checkpoint().unwrap();
+        let mut cases = Vec::new();
+        let mut foreign = original.clone();
+        foreign["observations"][0]["stamp"]["device"] = "foreign".into();
+        cases.push(foreign);
+        let mut geometry = original.clone();
+        geometry["observations"][0]["outputs"][0]["output"]["width"] = 1.into();
+        cases.push(geometry);
+        let mut duplicate = original.clone();
+        duplicate["observations"]
+            .as_array_mut()
+            .unwrap()
+            .push(original["observations"][0].clone());
+        cases.push(duplicate);
+        let mut version = original;
+        version["schema_version"] = 2.into();
+        cases.push(version);
+        for invalid in cases {
+            std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            let mut restored = DeviceFabric::decode_checkpoint(&checkpoint).unwrap();
+            assert!(
+                display_observations::restore(&path, &mut restored, [7; 32], &enrolled).is_err()
+            );
+            assert!(restored.display_outputs(&owner).is_none());
+            assert_eq!(restored.encode_checkpoint().unwrap(), checkpoint);
+        }
+        std::fs::write(&path, vec![b' '; 2 * 1024 * 1024 + 1]).unwrap();
+        let mut restored = DeviceFabric::decode_checkpoint(&checkpoint).unwrap();
+        assert!(display_observations::restore(&path, &mut restored, [7; 32], &enrolled).is_err());
+        assert!(restored.display_outputs(&owner).is_none());
+    }
+
+    #[test]
+    fn offline_display_cache_does_not_enrol_an_authenticated_workspace_peer() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE3; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::from_bytes(&[0xE4; 32]);
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer);
+        let owner =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
+        net.device_fabric.lock().unwrap().upsert(snapshot).unwrap();
+        net.observe_display_outputs(&owner, &stamp, vec![observation])
+            .unwrap();
+        assert!(net.current_personal_route(&owner).is_some());
+        assert!(net.device_fabric().display_outputs(&owner).is_some());
+        assert!(!net.personal_device_is_enrolled(&owner));
+        let local = net.personal_continuity_device.as_ref().unwrap();
+        assert!(net.person_display_devices(local).is_empty());
+    }
+
+    #[test]
+    fn offline_display_cache_preserves_facts_without_live_route_authority() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint_path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(checkpoint_path.clone());
+        net.registered_home_device_ids
+            .lock()
+            .unwrap()
+            .insert(*peer.public().as_bytes());
+        let owner =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        let local = net.personal_continuity_device.clone().unwrap();
+        let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
+        net.device_fabric.lock().unwrap().upsert(snapshot).unwrap();
+        net.observe_display_outputs(&owner, &stamp, vec![observation.clone()])
+            .unwrap();
+        net.persist_device_fabric(&checkpoint_path, &net.device_fabric.lock().unwrap())
+            .unwrap();
+        *net.device_fabric.lock().unwrap() = load_device_fabric(&checkpoint_path);
+        net.restore_display_observations();
+        let devices = net.person_display_devices(&local);
+        assert_eq!(devices.len(), 1);
+        assert!(
+            !devices[0].online,
+            "a retained checkpoint is not a current certified route"
+        );
+        assert_eq!(devices[0].outputs, vec![observation.output]);
+        assert!(net.current_personal_route(&owner).is_none());
+        assert!(net.take_personal_fabric_actions().is_empty());
+        authenticated_personal_peer(&net, &root, &peer);
+        assert!(net.person_display_devices(&local)[0].online);
+        net.dispatch_net_event(NetEvent::PeerLeft {
+            ws: personal_continuity_topic_id(&user),
+            peer: peer.public(),
+            cause: PeerDepartureCause::GossipNeighborDown,
+            membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
+        });
+        assert!(!net.person_display_devices(&local)[0].online);
+        assert_eq!(net.person_display_devices(&local)[0].outputs.len(), 1);
+        net.forget_device_fabric(&owner);
+        assert!(net.person_display_devices(&local).is_empty());
+        let store: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(ShellNetwork::display_observations_path(&checkpoint_path)).unwrap(),
+        )
+        .unwrap();
+        assert!(store["observations"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rich_display_dispatch_requires_opt_in_and_current_certified_route() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let allowed = net.continuity_policy_override;
+        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        authenticated_personal_peer_at(&net, &root, &peer, epoch);
+        let owner =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        let (mut snapshot, observation) = rich_display_network_snapshot(owner.clone());
+        net.device_fabric
+            .lock()
+            .unwrap()
+            .upsert(snapshot.clone())
+            .unwrap();
+        let payload = PersonalFabricPayload::DisplayOutputs {
+            stamp: snapshot.display.as_ref().unwrap().stamp.clone(),
+            outputs: vec![observation.clone()],
+        };
+        let topic = personal_continuity_topic_id(&user);
+        net.continuity_policy_override =
+            Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload.clone());
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.continuity_policy_override = allowed;
+        net.dispatch_personal_fabric(
+            topic,
+            peer.public(),
+            crate::network::actor::MembershipEpoch::for_test(2),
+            user,
+            payload.clone(),
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.dispatch_personal_fabric(
+            topic.wrapping_add(1),
+            peer.public(),
+            epoch,
+            user,
+            payload.clone(),
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
+        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload);
+        assert_eq!(
+            net.device_fabric().display_outputs(&owner),
+            Some([observation.clone()].as_slice())
+        );
+        snapshot.presence.stamp.counter = 2;
+        snapshot.display.as_mut().unwrap().stamp.counter = 2;
+        net.device_fabric
+            .lock()
+            .unwrap()
+            .upsert(snapshot.clone())
+            .unwrap();
+        net.peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
+        net.dispatch_personal_fabric(
+            topic,
+            peer.public(),
+            epoch,
+            user,
+            PersonalFabricPayload::DisplayOutputs {
+                stamp: snapshot.display.unwrap().stamp,
+                outputs: vec![observation],
+            },
+        );
+        assert!(net.device_fabric().display_outputs(&owner).is_none());
     }
 
     #[test]
