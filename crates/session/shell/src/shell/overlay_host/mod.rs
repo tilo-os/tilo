@@ -3164,7 +3164,8 @@ impl ShellOverlayHost {
             return;
         };
         let mut st = chrome.borrow_mut();
-        if st.status != next {
+        if st.status != next || st.quick_settings.observed_link != next.link {
+            st.quick_settings.observed_link.clone_from(&next.link);
             // The bridge is the shell's one volume: a level that changed
             // there — a media key, the poller, the panel's own read — moves
             // the panel's slider too, so the two never show different values.

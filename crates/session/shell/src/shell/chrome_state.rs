@@ -343,6 +343,9 @@ pub struct QuickSettingsState {
     /// False after the audio service cannot provide a sink reading.
     pub volume_available: bool,
     pub wifi: bool,
+    /// Last primary-link observation from the registered status bridge. Kept
+    /// separate from access-point discovery, which can fail or become stale.
+    pub observed_link: Option<os_actions::LinkStatus>,
     pub bluetooth: bool,
     /// `true` only when `BlueZ` reported a physical adapter. Keeping this
     /// separate from `bluetooth` prevents an unavailable controller from
@@ -442,6 +445,7 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             volume_available: true,
             wifi: true,
+            observed_link: None,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
@@ -482,6 +486,7 @@ impl QuickSettingsState {
             volume: 0.4,
             volume_available: true,
             wifi: true,
+            observed_link: None,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,

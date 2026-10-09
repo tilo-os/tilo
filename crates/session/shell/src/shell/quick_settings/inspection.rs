@@ -7,7 +7,12 @@ use settings_store::hardware::QuickSettingsControl;
 
 pub(crate) fn network(state: &ChromeState) -> Result<serde_json::Value, &'static str> {
     let cache = &state.quick_settings;
-    if cache.wifi_networks.len() > 256
+    if cache
+        .observed_link
+        .as_ref()
+        .and_then(|link| link.name.as_ref())
+        .is_some_and(|name| name.len() > 1024)
+        || cache.wifi_networks.len() > 256
         || cache.wifi_networks.iter().any(|ap| ap.ssid.len() > 1024)
         || cache
             .wifi_scan_error
@@ -30,6 +35,13 @@ pub(crate) fn network(state: &ChromeState) -> Result<serde_json::Value, &'static
         .collect();
     let value = serde_json::json!({
         "source": "painted-cache", "revision": state.revision,
+        "observed_link": cache.observed_link.as_ref().map(|link| serde_json::json!({
+            "source": "status-bridge", "kind": match link.kind {
+                os_actions::LinkKind::Offline => "offline",
+                os_actions::LinkKind::Wifi => "wifi",
+                os_actions::LinkKind::Wired => "wired",
+            }, "name": link.name,
+        })),
         "quick_settings_open": state.overlays.quick_settings,
         "network_control": {
             "label": QuickSettingsRoot::rendered_label(QuickSettingsControl::Wifi, cache),

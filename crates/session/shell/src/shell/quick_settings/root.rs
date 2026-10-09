@@ -1149,6 +1149,24 @@ impl QuickSettingsRoot {
             QuickSettingsControl::RotationLock => s.rotation_lock,
         }
     }
+    fn wifi_connection_subline(state: &QuickSettingsState) -> String {
+        match state.observed_link.as_ref() {
+            Some(link) if link.kind == os_actions::LinkKind::Wifi => link
+                .name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| t("qs-connected")),
+            Some(link) if link.kind == os_actions::LinkKind::Offline => t("qs-not-connected"),
+            // A primary wired connection does not establish whether a separate
+            // Wi-Fi link is connected. Preserve the last AP observation here.
+            _ => state
+                .wifi_networks
+                .iter()
+                .find(|ap| ap.connected)
+                .map_or_else(|| t("qs-not-connected"), |ap| ap.ssid.clone()),
+        }
+    }
+
     pub(super) fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         if s.radio_change_pending
             && matches!(
@@ -1175,11 +1193,7 @@ impl QuickSettingsRoot {
                         }
                     },
                 ),
-            QuickSettingsControl::Wifi if s.wifi => s
-                .wifi_networks
-                .iter()
-                .find(|v| v.connected)
-                .map_or_else(|| t("qs-not-connected"), |v| v.ssid.clone()),
+            QuickSettingsControl::Wifi if s.wifi => Self::wifi_connection_subline(s),
             QuickSettingsControl::Bluetooth if s.bluetooth => s
                 .bt_devices
                 .iter()
