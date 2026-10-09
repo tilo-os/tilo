@@ -371,7 +371,7 @@ pub enum BackendEvent {
         input_time_ns: u64,
     },
     /// A button edge from a real libinput pointer event, retaining its kernel
-    /// monotonic origin. MouseKeys, touch/tablet emulation and injected control
+    /// monotonic origin. `MouseKeys`, touch/tablet emulation and injected control
     /// events remain ordinary `Input` and do not acquire a physical witness.
     PhysicalPointerButton {
         event: WindowEvent,

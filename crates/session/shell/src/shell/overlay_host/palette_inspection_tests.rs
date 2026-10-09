@@ -54,6 +54,7 @@ fn inspection_reads_real_identity_geometry_hover_without_mutating_selection() {
     assert_eq!(host.search_results.len(), 3);
     assert_eq!(host.palette_inspection(), inspection, "reads are inert");
     assert!(!inspection.to_string().contains("Same label"));
+    drop(host);
 }
 
 #[test]
@@ -75,6 +76,7 @@ fn inspection_maps_filtered_visible_ordinal_to_real_result_ordinal() {
         blake3::hash(b"Charlie").to_hex().to_string()
     );
     assert!(!inspection.to_string().contains("Charlie"));
+    drop(host);
 }
 
 #[test]
@@ -98,6 +100,7 @@ fn inspection_has_no_hover_on_header_and_no_mounted_rows_when_hidden() {
     ] {
         assert!(hidden[field].is_null(), "hidden {field} must be absent");
     }
+    drop(host);
 }
 
 #[test]
@@ -118,6 +121,7 @@ fn inspection_generation_changes_only_when_real_results_are_refreshed() {
     host.refresh_search_results(&doc, &automerge::ROOT);
     assert_eq!(host.palette_inspection()["results_generation"], 2);
     assert_eq!(host.palette_inspection()["query_current"], true);
+    drop(host);
 }
 
 fn draw_palette(host: &mut ShellOverlayHost) {
@@ -162,4 +166,5 @@ fn rendered_inspection_requires_real_draw_and_rejects_replaced_entry_mapping() {
     );
     host.palette_visible = false;
     assert!(host.palette_inspection()["rendered"].is_null());
+    drop(host);
 }

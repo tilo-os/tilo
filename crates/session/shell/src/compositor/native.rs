@@ -10401,7 +10401,7 @@ pub fn run() {
             if let Some(input) = palette_input
                 && let Some(end) = client_input::monotonic_time_ns()
                 && let Some(row) =
-                    palette_trace.finish(input, frame_builder.host().palette_inspection(), end)
+                    palette_trace.finish(&input, frame_builder.host().palette_inspection(), end)
             {
                 eprintln!("tilo-palette-input {row}");
             }
@@ -12384,7 +12384,12 @@ pub fn run() {
                 && crate::shell::launcher::LaunchSession::current()
                     .presentation_observer_enabled())
             .then(|| {
-                let state = frame_builder.host().palette_inspection()["rendered"].clone();
+                let state = frame_builder
+                    .host()
+                    .palette_inspection()
+                    .get("rendered")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 client_input::monotonic_time_ns().map(|time| (state, time))
             })
             .flatten();

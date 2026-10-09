@@ -85,7 +85,7 @@ impl PaletteTrace {
     }
 
     pub(crate) fn begin(
-        &mut self,
+        &self,
         kind: &'static str,
         input_ns: u64,
         before: Value,
@@ -105,16 +105,16 @@ impl PaletteTrace {
         Some(Input { identity, before })
     }
 
-    pub(crate) fn finish(&mut self, input: Input, after: Value, end_ns: u128) -> Option<Value> {
+    pub(crate) fn finish(&mut self, input: &Input, after: Value, end_ns: u128) -> Option<Value> {
         let after = live(after)?;
-        if (input.before["visible"] != true && after["visible"] != true)
-            || input.before == after
+        if (input.before.get("visible").and_then(Value::as_bool) != Some(true)
+            && after.get("visible").and_then(Value::as_bool) != Some(true))
+            || (input.before == after && input.identity.kind != "physical_pointer_button")
             || end_ns < input.identity.dispatch_ns
         {
             return None;
         }
-        self.next_id += 1;
-        OBSERVER.set(Some((self.session, input.identity.id)));
+        self.next_id = self.next_id.saturating_add(1);
         // Retain a cause across later background result publication. A new
         // physical change replaces it only after a scene was submitted; input
         // changes coalesced before the first scene stay explicitly multiple.
@@ -124,10 +124,13 @@ impl PaletteTrace {
             self.submitted = false;
         }
         if self.pending.len() >= MAX_INPUTS {
+            // Exhaust this observer: resuming could hide earlier coalesced causes.
+            self.next_id = MAX_EVENTS.saturating_add(1);
             self.reset();
             return None;
         }
         self.pending.push(input.identity.id);
+        OBSERVER.set(Some((self.session, input.identity.id)));
         Some(json!({
             "schema": 1, "clock_id": libc::CLOCK_MONOTONIC,
             "process_id": std::process::id(), "observer_session": self.session,
@@ -150,21 +153,22 @@ impl PaletteTrace {
             || revision == 0
             || self.pending.is_empty()
             || draw_ns > submit_ns
-            || drawn["visible"] != true
-            || drawn["mounted"] != true
+            || drawn.get("visible").and_then(Value::as_bool) != Some(true)
+            || drawn.get("mounted").and_then(Value::as_bool) != Some(true)
             || serde_json::to_vec(&drawn).ok()?.len() > MAX_SNAPSHOT_BYTES
             || self.last_drawn.as_ref() == Some(&drawn)
         {
             return None;
         }
-        self.last_drawn = Some(drawn.clone());
         self.submitted = true;
-        Some(json!({
+        let row = json!({
             "schema": 1, "clock_id": libc::CLOCK_MONOTONIC,
             "process_id": std::process::id(), "observer_session": self.session,
             "pipe_serial": serial, "scene_revision": revision, "input_ids": self.pending,
             "draw_time_ns": draw_ns, "submit_time_ns": submit_ns, "state": drawn,
-        }))
+        });
+        self.last_drawn = Some(drawn);
+        Some(row)
     }
 }
 
@@ -183,11 +187,11 @@ mod tests {
         let first = trace
             .begin("physical_key", 10, snapshot(false, ""), 20)
             .unwrap();
-        let first = trace.finish(first, snapshot(true, ""), 30).unwrap();
+        let first = trace.finish(&first, snapshot(true, ""), 30).unwrap();
         let next = trace
             .begin("physical_pointer_motion", 40, snapshot(true, ""), 50)
             .unwrap();
-        let next = trace.finish(next, snapshot(true, "result:1"), 60).unwrap();
+        let next = trace.finish(&next, snapshot(true, "result:1"), 60).unwrap();
         assert!(first["before"].get("rendered").is_none());
         let drawn = snapshot(true, "result:1");
         let frame = trace.frame(7, 9, drawn.clone(), 70, 80).unwrap();
@@ -204,7 +208,7 @@ mod tests {
         let input = trace
             .begin("physical_key", 10, snapshot(false, ""), 20)
             .unwrap();
-        trace.finish(input, snapshot(true, ""), 30).unwrap();
+        trace.finish(&input, snapshot(true, ""), 30).unwrap();
         let early = trace.frame(1, 1, snapshot(true, ""), 40, 50).unwrap();
         let ready = trace
             .frame(2, 2, snapshot(true, "result:1"), 60, 70)
@@ -219,13 +223,98 @@ mod tests {
             )
             .unwrap();
         let event = trace
-            .finish(input, snapshot(true, "result:2"), 100)
+            .finish(&input, snapshot(true, "result:2"), 100)
             .unwrap();
         assert_eq!(
             trace
                 .frame(3, 3, snapshot(true, "result:2"), 110, 120)
                 .unwrap()["input_ids"],
             json!([event["id"]])
+        );
+    }
+
+    #[test]
+    fn overflow_cannot_resume_as_a_fabricated_single_input_frame() {
+        let mut trace = PaletteTrace::default();
+        for index in 0..=MAX_INPUTS {
+            let before = snapshot(true, &format!("result:{index}"));
+            let after = snapshot(true, &format!("result:{}", index.saturating_add(1)));
+            let input = trace
+                .begin("physical_pointer_motion", 10, before, 20)
+                .unwrap();
+            let result = trace.finish(&input, after, 30);
+            assert_eq!(result.is_some(), index < MAX_INPUTS);
+        }
+        assert!(
+            trace
+                .begin(
+                    "physical_pointer_motion",
+                    40,
+                    snapshot(true, "result:33"),
+                    50
+                )
+                .is_none()
+        );
+        assert!(
+            trace
+                .frame(99, 99, snapshot(true, "result:34"), 60, 70)
+                .is_none()
+        );
+        trace.reset();
+        assert!(
+            trace
+                .begin("physical_key", 80, snapshot(false, ""), 90)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ineffective_palette_click_still_has_its_actual_dispatch_witness() {
+        let mut trace = PaletteTrace::default();
+        let input = trace
+            .begin(
+                "physical_pointer_button",
+                10,
+                snapshot(true, "result:1"),
+                20,
+            )
+            .unwrap();
+        let row = trace
+            .finish(&input, snapshot(true, "result:1"), 30)
+            .unwrap();
+        assert_eq!(row["kind"], "physical_pointer_button");
+        assert_eq!(row["before"], row["after"]);
+        assert!(row.get("invocation").is_none());
+        assert!(row.get("presented_time_ns").is_none());
+        let next = trace
+            .begin(
+                "physical_pointer_button",
+                40,
+                snapshot(true, "result:1"),
+                50,
+            )
+            .unwrap();
+        assert_eq!(
+            next.identity.id, 2,
+            "a failed click cannot alias a later invocation"
+        );
+    }
+
+    #[test]
+    fn unchanged_native_events_do_not_exhaust_the_observation_budget() {
+        let mut trace = PaletteTrace::default();
+        for _ in 0..=MAX_EVENTS {
+            let input = trace
+                .begin("physical_pointer_motion", 10, snapshot(false, ""), 20)
+                .unwrap();
+            assert!(trace.finish(&input, snapshot(false, ""), 30).is_none());
+        }
+        let input = trace
+            .begin("physical_key", 40, snapshot(false, ""), 50)
+            .unwrap();
+        assert_eq!(
+            trace.finish(&input, snapshot(true, ""), 60).unwrap()["id"],
+            1
         );
     }
 
@@ -240,12 +329,12 @@ mod tests {
         let input = trace
             .begin("physical_key", 10, snapshot(true, ""), 20)
             .unwrap();
-        assert!(trace.finish(input, snapshot(true, ""), 30).is_none());
+        assert!(trace.finish(&input, snapshot(true, ""), 30).is_none());
         assert!(trace.frame(1, 1, snapshot(true, ""), 40, 50).is_none());
         let input = trace
             .begin("physical_key", 60, snapshot(false, ""), 70)
             .unwrap();
-        trace.finish(input, snapshot(true, ""), 80).unwrap();
+        trace.finish(&input, snapshot(true, ""), 80).unwrap();
         assert!(trace.frame(0, 1, snapshot(true, ""), 90, 100).is_none());
         assert!(trace.frame(1, 0, snapshot(true, ""), 90, 100).is_none());
         assert!(trace.frame(1, 1, Value::Null, 90, 100).is_none());

@@ -3430,7 +3430,7 @@ impl DrmDispatchState {
         }
     }
 
-    /// Preserve libinput's CLOCK_MONOTONIC microseconds on both button edges.
+    /// Preserve libinput's `CLOCK_MONOTONIC` microseconds on both button edges.
     /// This entry point is only for libinput pointer buttons; keyboard and
     /// touch/tablet emulation keep using the unstamped mouse input path.
     fn handle_physical_pointer_button(&mut self, code: u32, state: ButtonState, time_usec: u64) {

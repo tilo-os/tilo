@@ -8152,38 +8152,45 @@ impl ShellOverlayHost {
         if !mounted {
             return None;
         }
-        let mut drawn = self.palette.drawn_inspection()?.clone();
-        if drawn["entries_generation"].as_u64()? != self.palette.entries_generation() {
+        let mut drawn = self.palette.drawn_inspection()?.as_object()?.clone();
+        if drawn.get("entries_generation")?.as_u64()? != self.palette.entries_generation() {
             return None;
         }
-        for row in drawn["rows"].as_array_mut()? {
-            let index = row["entry_id"]
+        for row in drawn.get_mut("rows")?.as_array_mut()? {
+            let row = row.as_object_mut()?;
+            let index = row
+                .get("entry_id")?
                 .as_str()?
                 .strip_prefix("result:")?
                 .parse::<usize>()
                 .ok()?;
             let result = self.search_results.get(index)?;
-            row["result_index"] = serde_json::json!(index);
-            row["provider_id"] = serde_json::json!(result.provider_id);
-            row["action_id"] = serde_json::json!(result.id);
+            row.insert("result_index".into(), serde_json::json!(index));
+            row.insert("provider_id".into(), serde_json::json!(result.provider_id));
+            row.insert("action_id".into(), serde_json::json!(result.id));
         }
-        drawn["results_generation"] = serde_json::json!(self.palette_results_generation);
-        drawn["visible"] = serde_json::json!(true);
-        drawn["mounted"] = serde_json::json!(true);
-        drawn["query_current"] = serde_json::json!(
-            drawn["query_hash"].as_str()
-                == Some(
-                    blake3::hash(self.last_search_query.as_bytes())
-                        .to_hex()
-                        .as_str()
-                )
+        let current = drawn.get("query_hash")?.as_str()
+            == Some(
+                blake3::hash(self.last_search_query.as_bytes())
+                    .to_hex()
+                    .as_str(),
+            );
+        drawn.insert(
+            "results_generation".into(),
+            serde_json::json!(self.palette_results_generation),
         );
-        drawn["published_revision_hash"] = serde_json::json!(
-            blake3::hash(self.last_search_revision.as_bytes())
-                .to_hex()
-                .to_string()
+        drawn.insert("visible".into(), serde_json::json!(true));
+        drawn.insert("mounted".into(), serde_json::json!(true));
+        drawn.insert("query_current".into(), serde_json::json!(current));
+        drawn.insert(
+            "published_revision_hash".into(),
+            serde_json::json!(
+                blake3::hash(self.last_search_revision.as_bytes())
+                    .to_hex()
+                    .to_string()
+            ),
         );
-        Some(drawn)
+        Some(serde_json::Value::Object(drawn))
     }
 
     fn selected_search_identity(&self) -> Option<(String, String)> {
