@@ -332,12 +332,9 @@ mod native {
             .register();
 
         let mut phase = Phase::Globals;
-        let mut pending = match core.sync(0) {
-            Ok(pending) => pending,
-            Err(_) => {
-                let _ = ready.send(Err("PipeWire synchronization failed".into()));
-                return;
-            }
+        let Ok(mut pending) = core.sync(0) else {
+            let _ = ready.send(Err("PipeWire synchronization failed".into()));
+            return;
         };
         if ready.send(Ok(())).is_err() {
             return;
@@ -367,13 +364,11 @@ mod native {
             if phase != Phase::Live && completed.get() == Some(pending) {
                 if phase == Phase::Globals {
                     phase = Phase::Properties;
-                    match core.sync(1) {
-                        Ok(next) => pending = next,
-                        Err(_) => {
-                            notify(GraphWatchEvent::Lost);
-                            return;
-                        }
-                    }
+                    let Ok(next) = core.sync(1) else {
+                        notify(GraphWatchEvent::Lost);
+                        return;
+                    };
+                    pending = next;
                 } else {
                     phase = Phase::Live;
                     live.set(true);
