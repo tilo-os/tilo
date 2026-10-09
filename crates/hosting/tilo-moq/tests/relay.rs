@@ -400,8 +400,9 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
     .await
     .unwrap()
     .unwrap();
-    let mut bundle = voice(2);
-    bundle.extend_from_slice(&voice(1));
+    // Each attempt carries two objects the relay has not forwarded yet: it
+    // forwards an object once, never a copy whose objects all went out.
+    let mut sent = Vec::new();
     let received = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         let broadcast = b_sub.broadcast("opaque-call/a").await;
         let mut track = broadcast
@@ -415,8 +416,12 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
             // An invalid object is refused at the relay without costing the session.
             at.append_datagram(moq_net::Timestamp::ZERO, vec![0u8; 40])
                 .unwrap();
+            let newest = 2 * sent.len() as u64 + 2;
+            let mut bundle = voice(newest);
+            bundle.extend_from_slice(&voice(newest - 1));
             at.append_datagram(moq_net::Timestamp::ZERO, bundle.clone())
                 .unwrap();
+            sent.push(bundle);
             if let Ok(Ok(Some(datagram))) =
                 tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
             {
@@ -426,7 +431,7 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
     })
     .await
     .expect("real WebTransport datagram delivery deadline");
-    assert_eq!(received, bundle);
+    assert!(sent.contains(&received), "a valid bundle arrives intact");
     assert!(
         relay.counters().dropped > 0,
         "invalid datagram was not refused"
@@ -437,5 +442,249 @@ async fn real_webtransport_relays_voice_datagram_bundles_and_drops_invalid_ones(
             .is_err(),
         "an invalid datagram must not close the publisher session"
     );
+    drop((a_session, b_session));
+}
+
+/// One voice object of `payload` Opus bytes at media frame `frame`.
+fn opus_object(sequence: u64, frame: u64, payload: usize) -> Vec<u8> {
+    VoiceObject {
+        sequence,
+        timestamp: frame * u64::from(FRAME_SAMPLES),
+        duration: FRAME_SAMPLES,
+        payload: vec![0x5a; payload],
+    }
+    .encode()
+    .unwrap()
+}
+
+/// How a browser publisher sends 20 ms of voice.
+#[derive(Clone, Copy, Debug)]
+enum Publisher {
+    /// Before TIL-624: every frame, each datagram carrying it and the two
+    /// before it.
+    TripleBundles,
+    /// After: one object per datagram, and in silence only the encoder's
+    /// DTX comfort-noise updates, one per 400 ms (20 frames).
+    Dtx,
+}
+
+/// Real Opus sizes at 32 kbit/s, measured with `opusenc` (bitrate=32000,
+/// audio-type=voice, frame-size=20): speech averages 80 bytes a frame,
+/// silence 35 bytes, and with DTX silence sends one 35-byte comfort-noise
+/// update per 20 frames.
+const SPEECH_BYTES: usize = 80;
+const SILENCE_BYTES: usize = 35;
+const DTX_INTERVAL: u64 = 20;
+const MEASURE: Duration = Duration::from_secs(2);
+
+/// Per-second costs of one publisher's stream over [`MEASURE`].
+#[derive(Debug)]
+struct Cost {
+    /// UDP plus IPv4 header bytes the subscriber received.
+    subscriber_wire: f64,
+    /// Voice object bytes the subscriber received.
+    subscriber_objects: f64,
+    subscriber_datagrams: f64,
+    /// UDP plus IPv4 bytes the publisher sent: what a relay that forwards
+    /// bundles verbatim (before TIL-624) sends every subscriber.
+    publisher_wire: f64,
+}
+
+const IPV4_UDP_HEADER: u64 = 28;
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "byte counts over seconds, reported as rates"
+)]
+async fn measure(
+    publisher: Publisher,
+    speaking: bool,
+    track: &mut moq_net::track::Producer,
+    sessions: (&tilo_moq::carrier::Connected, &tilo_moq::carrier::Connected),
+    received: &std::sync::Mutex<(u64, u64)>,
+    sequence: &mut u64,
+) -> Cost {
+    let (a, b) = sessions;
+    let wire = |stats: tilo_moq::carrier::WireStats, rx: bool| {
+        if rx {
+            stats.rx_bytes + IPV4_UDP_HEADER * stats.rx_datagrams
+        } else {
+            stats.tx_bytes + IPV4_UDP_HEADER * stats.tx_datagrams
+        }
+    };
+    let (a0, b0) = (wire(a.wire(), false), wire(b.wire(), true));
+    let r0 = *received.lock().unwrap();
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+    let frames = MEASURE.as_millis() as u64 / 20;
+    let first = *sequence;
+    let mut recent: Vec<Vec<u8>> = Vec::new();
+    for index in 0..frames {
+        tick.tick().await;
+        let frame = 10_000 + first + index;
+        let payload = if speaking {
+            SPEECH_BYTES
+        } else {
+            SILENCE_BYTES
+        };
+        match publisher {
+            Publisher::TripleBundles => {
+                let object = opus_object(*sequence, frame, payload);
+                *sequence += 1;
+                let mut bundle = object.clone();
+                for earlier in recent.iter().rev().take(2) {
+                    bundle.extend_from_slice(earlier);
+                }
+                recent.push(object);
+                track
+                    .append_datagram(moq_net::Timestamp::ZERO, bundle)
+                    .unwrap();
+            }
+            Publisher::Dtx => {
+                if speaking || index % DTX_INTERVAL == 0 {
+                    let object = opus_object(*sequence, frame, payload);
+                    *sequence += 1;
+                    track
+                        .append_datagram(moq_net::Timestamp::ZERO, object)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let r1 = *received.lock().unwrap();
+    let seconds = MEASURE.as_secs_f64();
+    Cost {
+        subscriber_wire: (wire(b.wire(), true) - b0) as f64 / seconds,
+        subscriber_objects: (r1.0 - r0.0) as f64 / seconds,
+        subscriber_datagrams: (r1.1 - r0.1) as f64 / seconds,
+        publisher_wire: (wire(a.wire(), false) - a0) as f64 / seconds,
+    }
+}
+
+/// TIL-624: the relay's egress for one forwarded voice stream, measured on
+/// a real QUIC connection (UDP payload bytes plus 28 bytes of IPv4/UDP
+/// header per datagram) at the subscriber. Run with `--nocapture` for the
+/// table.
+#[tokio::test]
+async fn forwarded_voice_costs_its_opus_bitrate_while_speaking_and_almost_nothing_while_silent() {
+    let (dialer, _active, _relay) = setup();
+    let (a_pub, b_sub) = (Origin::new(), Origin::new());
+    let (_ab, mut at) = a_pub.publish("opaque-call/a");
+    let a_session = dialer
+        .connect(b"isolated-a", Some(&a_pub), None)
+        .await
+        .unwrap();
+    let b_session = dialer
+        .connect(b"isolated-b", None, Some(&b_sub))
+        .await
+        .unwrap();
+    let received = Arc::new(std::sync::Mutex::new((0_u64, 0_u64)));
+    let broadcast = b_sub.broadcast("opaque-call/a").await;
+    let mut track = broadcast
+        .track("audio")
+        .unwrap()
+        .subscribe(None)
+        .await
+        .unwrap();
+    let (attached_tx, attached) = tokio::sync::oneshot::channel();
+    let counter = received.clone();
+    let reader = tokio::spawn(async move {
+        let mut attached_tx = Some(attached_tx);
+        while let Ok(Some(datagram)) = track.recv_datagram().await {
+            {
+                let mut counted = counter.lock().unwrap();
+                counted.0 += datagram.payload.len() as u64;
+                counted.1 += 1;
+            }
+            if let Some(attached) = attached_tx.take() {
+                let _ = attached.send(());
+            }
+        }
+    });
+    // Offer frames until the relay's subscription is attached end to end.
+    let mut sequence = 0;
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        tokio::pin!(attached);
+        loop {
+            at.append_datagram(
+                moq_net::Timestamp::ZERO,
+                opus_object(sequence, sequence, SPEECH_BYTES),
+            )
+            .unwrap();
+            sequence += 1;
+            if tokio::time::timeout(Duration::from_millis(20), &mut attached)
+                .await
+                .is_ok()
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("voice datagrams reach the subscriber");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut costs = Vec::new();
+    for (publisher, speaking) in [
+        (Publisher::TripleBundles, true),
+        (Publisher::TripleBundles, false),
+        (Publisher::Dtx, true),
+        (Publisher::Dtx, false),
+    ] {
+        let cost = measure(
+            publisher,
+            speaking,
+            &mut at,
+            (&a_session, &b_session),
+            &received,
+            &mut sequence,
+        )
+        .await;
+        eprintln!(
+            "{publisher:?} {}: publisher sends {:.0} B/s ({:.1} kbit/s); subscriber receives {:.0} B/s ({:.1} kbit/s) on the wire, {:.0} B/s of voice objects in {:.1} datagrams/s",
+            if speaking { "speaking" } else { "silent" },
+            cost.publisher_wire,
+            cost.publisher_wire * 8.0 / 1000.0,
+            cost.subscriber_wire,
+            cost.subscriber_wire * 8.0 / 1000.0,
+            cost.subscriber_objects,
+            cost.subscriber_datagrams,
+        );
+        costs.push(cost);
+    }
+    reader.abort();
+    let [legacy_speaking, legacy_silent, speaking, silent] = costs.try_into().unwrap();
+    let kbit = |bytes: f64| bytes * 8.0 / 1000.0;
+    // A speaking stream is one object per 20 ms frame: its Opus bitrate plus
+    // the 32-byte object header (target <= 45 kbit/s)...
+    let per_frame = speaking.subscriber_objects / speaking.subscriber_datagrams;
+    assert!(kbit(per_frame * 50.0) <= 45.0, "{speaking:?}");
+    // ...and a silent one a few DTX updates a second (target <= 5 kbit/s on
+    // the wire, <= 5 packets/s, <= 10% of speaking).
+    assert!(kbit(silent.subscriber_wire) <= 5.0, "{silent:?}");
+    assert!(silent.subscriber_datagrams <= 5.0, "{silent:?}");
+    assert!(silent.subscriber_wire <= speaking.subscriber_wire / 10.0);
+    // A triple-bundling (older) publisher costs its subscribers no more than
+    // a new one: the relay forwards each object once on a clean downlink.
+    assert!(
+        legacy_speaking.subscriber_wire <= speaking.subscriber_wire * 1.1,
+        "{legacy_speaking:?} vs {speaking:?}"
+    );
+    assert!(
+        legacy_silent.subscriber_wire < legacy_speaking.subscriber_wire,
+        "{legacy_silent:?}"
+    );
+    // Before, the relay forwarded each publisher's bundles verbatim.
+    assert!(legacy_speaking.publisher_wire > 2.0 * speaking.subscriber_wire);
+    // A 4-person call with one speaker: each of 3 listeners receives the
+    // speaker, and each silent participant reaches the 3 others.
+    let call = 3.0 * speaking.subscriber_wire + 3.0 * 3.0 * silent.subscriber_wire;
+    let before = 3.0 * legacy_speaking.publisher_wire + 3.0 * 3.0 * legacy_silent.publisher_wire;
+    eprintln!(
+        "4-person call, 1 speaker: relay egress {:.0} kbit/s (before: {:.0} kbit/s)",
+        kbit(call),
+        kbit(before)
+    );
+    assert!(kbit(call) <= 350.0, "{call}");
     drop((a_session, b_session));
 }

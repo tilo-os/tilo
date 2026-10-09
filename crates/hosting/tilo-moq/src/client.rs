@@ -653,14 +653,20 @@ struct Delivered {
 impl Delivered {
     /// Frames published between this object and `next` that never arrived:
     /// the publisher, relay or receiver dropped them past a latency budget.
-    /// A publisher that abandons a partial group skips sequence numbers to the
-    /// next group without skipping media time, so only frames missing from
-    /// both count.
-    fn skipped(self, next: &VoiceObject) -> u64 {
-        let sequences = next
-            .sequence
-            .saturating_sub(self.sequence)
-            .saturating_sub(1);
+    /// Only frames missing from both the sequence and the media time count:
+    /// a publisher in DTX (silence) skips media time without skipping
+    /// sequence numbers, and a `grouped` publisher that abandons a partial
+    /// group, as it does at the end of every talk spurt, resumes at the next
+    /// group without ever sending the rest of the one it left.
+    fn skipped(self, next: &VoiceObject, grouped: bool) -> u64 {
+        let mut first_missing = self.sequence.saturating_add(1);
+        if grouped && next.sequence.is_multiple_of(voice::FRAMES_PER_GROUP) {
+            let next_group = (self.sequence / voice::FRAMES_PER_GROUP)
+                .saturating_add(1)
+                .saturating_mul(voice::FRAMES_PER_GROUP);
+            first_missing = first_missing.max(next_group);
+        }
+        let sequences = next.sequence.saturating_sub(first_missing);
         let frames = next
             .timestamp
             .saturating_sub(self.timestamp)
@@ -676,6 +682,7 @@ fn deliver(
     shared: &Shared,
     name: &str,
     group: u64,
+    grouped: bool,
     object: VoiceObject,
     last: &Mutex<Option<Delivered>>,
 ) -> bool {
@@ -692,7 +699,7 @@ fn deliver(
         state.counters.late_dropped = state
             .counters
             .late_dropped
-            .saturating_add(prior.skipped(&object));
+            .saturating_add(prior.skipped(&object, grouped));
     }
     *last = Some(Delivered {
         sequence: object.sequence,
@@ -751,7 +758,7 @@ async fn receive_datagrams(
             let Ok(object) = VoiceObject::decode(bytes) else {
                 return;
             };
-            if !deliver(shared, name, datagram.sequence, object, last) {
+            if !deliver(shared, name, datagram.sequence, false, object, last) {
                 return;
             }
         }
@@ -787,7 +794,7 @@ async fn receive_groups(
                         state.counters.late_dropped = state.counters.late_dropped.saturating_add(1);
                         drop(state); continue;
                     }
-                    if !deliver(shared, name, group.sequence, object, last) { return; }
+                    if !deliver(shared, name, group.sequence, true, object, last) { return; }
                 }
                 fresh = track.recv_group() => { next = fresh; break; }
                 () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
