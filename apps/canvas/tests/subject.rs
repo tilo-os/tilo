@@ -191,10 +191,74 @@ fn a_named_edge_job_commits_one_step_as_its_original_agent() {
             .actor,
         "agent:canvas-finder"
     );
-    assert!(app.undo());
+    let undo = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            "canvas.artwork",
+            "undo",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(undo.value.unwrap()["undone"].as_array().unwrap().len(), 1);
     assert_eq!(app.state(), before);
-    assert!(app.redo());
+    let redo = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-finder"),
+            "canvas.artwork",
+            "redo",
+            json!({}),
+        )
+        .unwrap();
+    assert_eq!(redo.value.unwrap()["redone"].as_array().unwrap().len(), 1);
     assert_eq!(app.state(), after);
+}
+
+#[test]
+fn an_accepted_edge_job_allows_another_agents_published_inspect() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let effect = canvas::resource::ViewOp::FindArea(canvas::resource::FindArea {
+        refine: Some(8.0),
+        ..Default::default()
+    });
+    let invocation = app.start_effect(&effect).unwrap();
+    assert!(
+        !app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+    );
+    let output = app
+        .call_by(
+            ui::tilo_actions::ActionInvoker::actor("agent:canvas-reader"),
+            "canvas.artwork",
+            "inspect",
+            json!({}),
+        )
+        .unwrap();
+    assert!(
+        output.value.unwrap()["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mark| mark["id"] == "photo")
+    );
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
+    );
+    // A subsequent invocation reuses the same window without staying busy.
+    app.effect(&effect).unwrap();
 }
 
 #[test]
