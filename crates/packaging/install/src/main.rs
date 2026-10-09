@@ -1838,7 +1838,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     );
     println!(
         "installed     : {} seconds ago",
-        now().saturating_sub(entry.installed_at)
+        tilo_clock::unix_now().saturating_sub(entry.installed_at)
     );
     if entry.runtime.is_empty() {
         println!("runtime       : (none declared)");
@@ -2440,12 +2440,8 @@ fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn now() -> u64 {
-    tilo_clock::unix_now()
-}
-
 fn age(installed_at: u64) -> String {
-    let n = now();
+    let n = tilo_clock::unix_now();
     let elapsed = n.saturating_sub(installed_at);
     match elapsed {
         0..=59 => format!("{elapsed}s ago"),

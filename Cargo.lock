@@ -6139,6 +6139,7 @@ name = "host-fs"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "tilo-clock",
  "tilo-paths",
  "trash",
  "workspace-hack",
@@ -7959,6 +7960,7 @@ dependencies = [
  "legacy-agent-protocol",
  "libc",
  "tempfile",
+ "tilo-clock",
  "tilo-desktop-entry",
  "workspace-hack",
 ]
@@ -7990,6 +7992,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-advisory-lock",
  "tilo-callstream",
+ "tilo-clock",
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-libvirt-domain",
@@ -8658,6 +8661,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-clock",
  "tilo-files",
  "tilo-net",
  "tilo-paths",
@@ -12999,6 +13003,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings-store",
+ "tilo-clock",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -13139,6 +13144,7 @@ dependencies = [
  "ashpd",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-rt",
  "tilo-test-env",
  "workspace-hack",
@@ -16356,6 +16362,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "serde_json",
+ "tilo-clock",
  "workspace-hack",
 ]
 
@@ -16417,6 +16424,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-clock",
  "tilo-files",
  "tilo-paths",
  "tracing",
@@ -16640,6 +16648,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-clock",
  "tilo-user-identity",
  "tokio",
  "workspace-hack",
@@ -16745,6 +16754,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tracing",
  "workspace-hack",
 ]
@@ -17666,10 +17676,10 @@ dependencies = [
  "rand 0.10.1",
  "serde",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
- "web-time",
  "wire-frame",
  "workspace-hack",
 ]
@@ -17808,6 +17818,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde_json",
+ "tilo-clock",
  "tokio",
  "tokio-rustls",
  "workspace-hack",
@@ -18074,6 +18085,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-clock",
  "tilo-files",
  "tracing",
  "web-time",
