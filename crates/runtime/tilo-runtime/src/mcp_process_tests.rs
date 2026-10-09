@@ -84,6 +84,34 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
     }
 }
 
+/// The stdio host answers one session's requests as they finish, not in
+/// the order asked: a `tilo_status` and a `tilo_cancel` answer while two
+/// invokes wait, and every reply is one whole line.
+#[test]
+fn parallel_requests_complete_out_of_order() {
+    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    let host = GatedHost::default();
+    let server = std::sync::Arc::new(crate::mcp::McpServer::new(
+        host.clone(),
+        "room".into(),
+        "owner".into(),
+    ));
+    let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
+    let input = super::spawn_reader(served.try_clone().unwrap()).unwrap();
+    let serving = std::thread::spawn(move || {
+        let mut writer = served;
+        super::serve_lines(
+            tilo_rt::try_app().unwrap(),
+            input,
+            &mut writer,
+            |request| super::mcp_answer(&server, request),
+            Some(&mut || Ok(())),
+        )
+    });
+    overlapping_lines(&host, client);
+    serving.join().unwrap().unwrap();
+}
+
 #[test]
 fn cli_and_manifest_are_validated_before_launch() {
     // Phase `manifest_validation_precedes_launch_and_accepts_duplicate_ids`.

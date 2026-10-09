@@ -76,7 +76,7 @@ tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
