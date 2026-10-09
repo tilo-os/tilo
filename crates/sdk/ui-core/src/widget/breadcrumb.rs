@@ -485,10 +485,9 @@ impl Widget for Breadcrumb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -498,30 +497,6 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_press;
-
-    /// Drive an event through the breadcrumb with default scaffolding.
-    /// Mirrors `permission_prompt.rs::tests::dispatch`.
-    fn dispatch(bc: &mut Breadcrumb, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        bc.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 
     #[test]
     fn breadcrumb_paints_separators_centres_labels_and_truncates() {

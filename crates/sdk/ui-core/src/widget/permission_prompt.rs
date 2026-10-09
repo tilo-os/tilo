@@ -896,22 +896,15 @@ mod tests {
         let mut tree = TaffyTree::<()>::new();
         let field = tree.leaf_node(Style::default());
         let overlay = tree.leaf_node(Style::default());
-        let mut focus = Some(field);
-        let mut handled = false;
+        let (mut handled, mut focus) = (false, Some(field));
         for event in [cursor_at(prompt.allow_rect().center()), mouse_press()] {
-            prompt.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: overlay,
-                    taffy: &tree,
-                },
-            );
+            let sent = crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .handled(handled)
+                .focus_target(focus)
+                .layout(&tree, overlay)
+                .send(&mut prompt, &event);
+            (handled, focus) = (sent.handled, sent.focus_target);
         }
         assert_eq!(prompt.pending_choice, Some(PromptChoice::Allow));
         assert_eq!(
@@ -1032,28 +1025,7 @@ mod tests {
     }
 
     use crate::synthetic_input::mouse_press;
-
-    fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
+    use crate::testing::dispatch;
 
     /// 600x80 with computed button rects; `is_owner` is the only
     /// knob, every other field is fixed.

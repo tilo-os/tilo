@@ -123,28 +123,7 @@ use crate::synthetic_input::mouse_press;
 
 use crate::synthetic_input::named_key;
 
-fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) -> bool {
-    let mut tree = TaffyTree::<()>::new();
-    let node = tree.leaf_node(Style::default());
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    d.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
-    handled
-}
+use crate::testing::dispatch;
 
 /// Run the retained passes with the dialog's node filling `area`, through
 /// the production solver (measure functions and layout adjustments), as a

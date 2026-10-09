@@ -288,22 +288,14 @@ fn named_key_event(key: NamedKey, state: ElementState) -> WindowEvent {
 }
 
 fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
-    let mut handled = false;
-    let mut focus_target = None;
-    app.root_widget.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &app.input.modifiers,
-            state: crate::widget::Edits::lend(&mut app.state.doc),
-            path: &app.state.root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: app.layout.root_node.unwrap(),
-            taffy: &app.layout.taffy,
-        },
-    );
-    if let Some(target) = focus_target {
+    let sent = crate::testing::Dispatch::new()
+        .modifiers(app.input.modifiers)
+        .doc(&mut app.state.doc)
+        .path(&app.state.root)
+        .layout(&app.layout.taffy, app.layout.root_node.unwrap())
+        .send(app.root_widget.as_mut(), event);
+    let mut handled = sent.handled;
+    if let Some(target) = sent.focus_target {
         app.set_focused_node(Some(target));
     }
     app.handle_unconsumed_activation_key(event, &mut handled);

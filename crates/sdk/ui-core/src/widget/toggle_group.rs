@@ -2513,6 +2513,7 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::testing::dispatch;
     use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::cell::RefCell;
@@ -2665,32 +2666,6 @@ mod tests {
             force: None,
             id: 7,
         })
-    }
-    fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
-        let _ = dispatch_handled(g, event);
-    }
-
-    fn dispatch_handled(g: &mut ToggleGroup, event: &WindowEvent) -> bool {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        g.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-        handled
     }
 
     #[test]
@@ -3012,9 +2987,9 @@ mod tests {
         dispatch(&mut g, &mouse_press());
         assert_eq!(g.selected(), 0, "a click on it chooses nothing");
         g.set_focus(true);
-        assert!(dispatch_handled(&mut g, &named_key(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowRight)));
         assert_eq!(g.selected(), 2, "the arrow steps over it");
-        assert!(dispatch_handled(&mut g, &named_key(NamedKey::ArrowLeft)));
+        assert!(dispatch(&mut g, &named_key(NamedKey::ArrowLeft)));
         assert_eq!(g.selected(), 0);
         let node = g.accessibility().expect("a group node");
         assert!(
@@ -3071,26 +3046,17 @@ mod tests {
             .on_change(move |index| captured.borrow_mut().push(index));
             group.set_focus(true);
 
-            assert!(dispatch_handled(
-                &mut group,
-                &named_key(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 1);
-            assert!(dispatch_handled(&mut group, &named_key(NamedKey::End)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::End)));
             assert_eq!(group.selected(), 2);
-            assert!(dispatch_handled(
-                &mut group,
-                &named_key(NamedKey::ArrowRight)
-            ));
+            assert!(dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(group.selected(), 0, "arrow navigation wraps");
-            assert!(dispatch_handled(&mut group, &named_key(NamedKey::Enter)));
+            assert!(dispatch(&mut group, &named_key(NamedKey::Enter)));
             assert_eq!(&*changes.borrow(), &[1, 2, 0]);
 
             group.set_focus(false);
-            assert!(!dispatch_handled(
-                &mut group,
-                &named_key(NamedKey::ArrowRight)
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight)));
             assert_eq!(
                 group.selected(),
                 0,
@@ -3143,15 +3109,12 @@ mod tests {
             assert!(!Widget::is_enabled(&group));
 
             dispatch(&mut group, &cursor_moved(150.0, 22.0));
-            assert!(!dispatch_handled(&mut group, &mouse_press()));
-            assert!(!dispatch_handled(
+            assert!(!dispatch(&mut group, &mouse_press()));
+            assert!(!dispatch(
                 &mut group,
                 &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
             ));
-            assert!(!dispatch_handled(
-                &mut group,
-                &named_key(NamedKey::ArrowRight),
-            ));
+            assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
             assert_eq!(group.selected(), 0);
         }
     }

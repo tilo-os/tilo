@@ -947,6 +947,7 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
 
     use crate::synthetic_input::cursor_moved;
@@ -957,29 +958,6 @@ mod tests {
             delta: MouseScrollDelta::LineDelta(0.0, dy),
             phase: winit::event::TouchPhase::Moved,
         }
-    }
-
-    /// Drive an event through the picker with default scaffolding.
-    fn dispatch(tp: &mut TimePicker, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus_target = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        tp.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
     }
 
     /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
