@@ -96,6 +96,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     };
     let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");

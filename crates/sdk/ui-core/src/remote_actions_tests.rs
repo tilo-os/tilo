@@ -33,11 +33,14 @@ fn target(action: &str) -> RemoteActionTarget {
     }
 }
 
-/// Two catalogue pages; `done` completes at once, `slow` runs until
-/// observed, `forbidden` is refused.
+/// Two catalogue pages; `done` completes at once, `slow` is still running
+/// the first time it is observed and done the next, `forbidden` is refused.
+/// It cannot signal changes, so it answers a waiting observe at once, as a
+/// host from before waits does.
 #[derive(Default)]
 struct FakeHost {
     seen: Mutex<Vec<Caller>>,
+    observed: std::sync::atomic::AtomicUsize,
 }
 
 impl ActionHost for FakeHost {
@@ -79,11 +82,19 @@ impl ActionHost for FakeHost {
     }
 
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let first = self
+            .observed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0;
         Some(InvocationState::new(
             *id,
-            InvocationUpdate::Succeeded {
-                invocation: *id,
-                output: ActionOutput::default(),
+            if first {
+                InvocationUpdate::Accepted { invocation: *id }
+            } else {
+                InvocationUpdate::Succeeded {
+                    invocation: *id,
+                    output: ActionOutput::default(),
+                }
             },
         ))
     }
@@ -440,6 +451,9 @@ fn a_retry_safe_invocation_keeps_the_callers_durable_identity() {
     assert_eq!(request.invocation, invocation);
 }
 
+/// Against a host that answers a waiting observe at once with nothing new
+/// (one from before waits), the client falls back to observing on its
+/// interval.
 #[test]
 fn a_running_invocation_is_followed_until_it_ends() {
     let clock = crate::background::Pumped::new();
@@ -615,4 +629,178 @@ fn an_entered_host_serves_the_current_client_until_the_guard_drops() {
         1,
         "without a guard the client talks through the session"
     );
+}
+
+/// The one remote-action request in `requests`.
+fn only_message(requests: Vec<CollabRequest>) -> RemoteActionMessage {
+    let [CollabRequest::RemoteAction { message }] = <[CollabRequest; 1]>::try_from(requests)
+        .unwrap_or_else(|requests| panic!("one request: {requests:?}"))
+    else {
+        panic!("a remote-action request");
+    };
+    message
+}
+
+fn accepted(invocation: InvocationId) -> RemoteActionMessage {
+    RemoteActionMessage::Receipt(InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Accepted,
+    })
+}
+
+fn update(invocation: InvocationId, update: InvocationUpdate) -> CollabEvent {
+    CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Update {
+            invocation,
+            state: Some(InvocationState::new(invocation, update)),
+        },
+    }
+}
+
+fn progress(invocation: InvocationId, sequence: u64) -> InvocationUpdate {
+    InvocationUpdate::Progress {
+        invocation,
+        sequence,
+        phase: "renaming".into(),
+        completed: None,
+        total: None,
+        message: None,
+    }
+}
+
+/// A running invocation is followed by one waiting observe at a time, sent
+/// the moment the last answer lands — never by a poll on a timer.
+#[test]
+fn a_running_invocation_sends_one_waiting_observe_not_a_poll() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x60; 16]));
+    let mut actions = RemoteActions::session();
+    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let requests = actions.take_collab_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(InvokeRequest {
+                    wait_ms: Some(INVOKE_WAIT_MS),
+                    ..
+                }),
+            }]
+        ),
+        "the invocation asks for its outcome in the same round trip: {requests:?}"
+    );
+
+    // Still running when the receipt was due: follow it at once.
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: accepted(invocation),
+    });
+    assert_eq!(
+        only_message(actions.take_collab_requests()),
+        RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(OBSERVE_WAIT_MS),
+            seen: Some(UpdateMark::Accepted),
+        }
+    );
+    for _ in 0..5 {
+        clock.advance(OBSERVE_INTERVAL);
+        assert!(
+            actions.take_collab_requests().is_empty(),
+            "no poll while a waiting observe is out"
+        );
+    }
+
+    actions.handle_collab_event(&update(invocation, progress(invocation, 1)));
+    assert!(matches!(
+        running.get(),
+        RemoteCall::Done(InvocationUpdate::Progress { sequence: 1, .. })
+    ));
+    assert_eq!(
+        only_message(actions.take_collab_requests()),
+        RemoteActionMessage::Observe {
+            invocation,
+            wait_ms: Some(OBSERVE_WAIT_MS),
+            seen: Some(UpdateMark::Progress { sequence: 1 }),
+        }
+    );
+
+    actions.handle_collab_event(&update(
+        invocation,
+        InvocationUpdate::Succeeded {
+            invocation,
+            output: ActionOutput::default(),
+        },
+    ));
+    assert!(running.get().is_settled());
+    assert!(actions.take_collab_requests().is_empty());
+    assert!(!actions.is_busy());
+}
+
+/// A wait that ran out with nothing new is waited again, not mistaken for
+/// a host that does not wait.
+#[test]
+fn a_wait_that_ran_out_is_waited_again() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x61; 16]));
+    let mut actions = RemoteActions::session();
+    let _running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: accepted(invocation),
+    });
+    let _observe = actions.take_collab_requests();
+    clock.advance(Duration::from_millis(u64::from(OBSERVE_WAIT_MS)));
+    actions.handle_collab_event(&update(
+        invocation,
+        InvocationUpdate::Accepted { invocation },
+    ));
+    assert!(matches!(
+        actions.take_collab_requests().as_slice(),
+        [CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Observe {
+                wait_ms: Some(OBSERVE_WAIT_MS),
+                seen: Some(UpdateMark::Accepted),
+                ..
+            },
+        }]
+    ));
+}
+
+/// A host from before waits answers the waiting observe at once with
+/// nothing new; the client then observes it on its interval, as before.
+#[test]
+fn an_old_host_is_observed_on_the_interval() {
+    let clock = crate::background::Pumped::new();
+    let _entered = clock.background().enter();
+    let invocation = InvocationId(uuid::Uuid::from_bytes([0x62; 16]));
+    let mut actions = RemoteActions::session();
+    let running = actions.invoke_with_id(invocation, target("slow"), InvokeArgument::None, None);
+    let _invoke = actions.take_collab_requests();
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: accepted(invocation),
+    });
+    let _observe = actions.take_collab_requests();
+    actions.handle_collab_event(&update(
+        invocation,
+        InvocationUpdate::Accepted { invocation },
+    ));
+    assert!(
+        actions.take_collab_requests().is_empty(),
+        "not asked again before the interval"
+    );
+    clock.advance(OBSERVE_INTERVAL);
+    assert_eq!(
+        only_message(actions.take_collab_requests()),
+        RemoteActionMessage::observe(invocation)
+    );
+    actions.handle_collab_event(&update(
+        invocation,
+        InvocationUpdate::Succeeded {
+            invocation,
+            output: ActionOutput::default(),
+        },
+    ));
+    assert!(running.get().is_settled());
 }

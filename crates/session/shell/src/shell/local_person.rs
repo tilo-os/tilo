@@ -153,6 +153,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }
     }
 

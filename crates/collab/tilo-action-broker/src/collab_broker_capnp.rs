@@ -13936,6 +13936,7 @@ pub mod tests {
                     confirmation: None,
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
+                    wait_ms: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -14048,6 +14049,7 @@ pub mod tests {
                 },
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
+                wait_ms: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {

@@ -970,6 +970,11 @@ pub(crate) fn answer_remote_actions(
     host: Option<&crate::shell::remote_actions::BrokerActionHost>,
     requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
 ) {
+    // A waiting request parks on the broker's change signal, a task on the
+    // session runtime; without one it is answered at once, as before.
+    let _runtime = crate::session_runtime::runtime()
+        .ok()
+        .map(tokio::runtime::Runtime::enter);
     for request in requests {
         // A record is read from where this device keeps it, by the device
         // itself; no action host is asked.
