@@ -67,6 +67,56 @@ impl<R> Path<R, R> {
     }
 }
 
+impl<R: Model, T> Path<R, T> {
+    /// The object the value at this path is stored in — a record's map, a
+    /// list, a text — resolved through each container's own layout, for an
+    /// editor that binds to the object itself (a rich-text field inside a
+    /// collection item); `None` when absent or stored as a scalar.
+    #[must_use]
+    pub fn object(&self, doc: &crate::Doc) -> Option<automerge::ObjId> {
+        use crate::Shape;
+        use automerge::ReadDoc;
+        fn child(doc: &crate::Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::ObjId> {
+            match doc.get(obj, key).ok()?? {
+                (automerge::Value::Object(_), id) => Some(id),
+                (automerge::Value::Scalar(_), _) => None,
+            }
+        }
+        let mut obj = automerge::ROOT;
+        let mut shape = R::SHAPE;
+        for segment in &self.segments {
+            match (shape, segment) {
+                (Shape::Record(fields), Segment::Field(key)) => {
+                    shape = fields
+                        .iter()
+                        .find(|field| field.key == key)
+                        .map_or(Shape::Value, |field| field.shape);
+                    obj = child(doc, &obj, key)?;
+                }
+                (Shape::Collection(item), Segment::Item(id)) => {
+                    let entry = child(doc, &obj, id.as_str())?;
+                    obj = child(doc, &entry, crate::collection::VALUE)?;
+                    shape = *item;
+                }
+                (Shape::Keyed(item), Segment::Item(id)) => {
+                    obj = child(doc, &obj, id.as_str())?;
+                    shape = *item;
+                }
+                (_, Segment::Field(key) | Segment::Key(key)) => {
+                    obj = child(doc, &obj, key)?;
+                    shape = Shape::Value;
+                }
+                (_, Segment::Item(id)) => {
+                    obj = child(doc, &obj, id.as_str())?;
+                    shape = Shape::Value;
+                }
+                (_, Segment::Cell { .. }) => return None,
+            }
+        }
+        Some(obj)
+    }
+}
+
 impl<R, T> Path<R, T> {
     /// A path from stored segments. A path read back from storage or the
     /// wire is checked when an edit at it applies.
