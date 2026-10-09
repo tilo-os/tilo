@@ -617,7 +617,7 @@ mod tests {
             let mut tree = TaffyTree::<()>::new();
             let node = tree.leaf_node(Style::default());
             let mods = winit::event::Modifiers::default();
-            let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mut feed = |g: &mut IconGrid, ev: WindowEvent| {

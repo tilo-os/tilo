@@ -96,26 +96,22 @@ impl Widget for Stack {
             let _ = taffy.set_style(node, style);
         }
 
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    // With every child `position: Absolute`, the stack
-                    // contributes zero to intrinsic size, so `Dimension::auto()`
-                    // here made the parent ration percent-based descendant
-                    // heights from 0 rather than the viewport — a Column's
-                    // bottom-padding got silently dropped. Pinning to the
-                    // parent's height makes the viewport size flow through
-                    // to absolute children correctly.
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                // With every child `position: Absolute`, the stack
+                // contributes zero to intrinsic size, so `Dimension::auto()`
+                // here made the parent ration percent-based descendant
+                // heights from 0 rather than the viewport — a Column's
+                // bottom-padding got silently dropped. Pinning to the
+                // parent's height makes the viewport size flow through
+                // to absolute children correctly.
+                height: percent(1.0_f32),
             },
-            &child_nodes,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

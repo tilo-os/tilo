@@ -24,7 +24,7 @@ struct RetainedEditor {
 
 impl RetainedEditor {
     fn click(&mut self, point: Point) {
-        let device_id = unsafe { std::mem::zeroed() };
+        let device_id = winit::event::DeviceId::dummy();
         for event in [
             WindowEvent::CursorMoved {
                 device_id,
@@ -157,21 +157,18 @@ impl RetainedEditor {
     }
 
     fn key(&mut self, key: Key, modifiers: Modifiers) {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.text = match &key {
-            Key::Character(s) => Some(s.clone()),
-            _ => None,
-        };
-        event.logical_key = key;
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            key.clone(),
+            match &key {
+                Key::Character(s) => Some(s.clone()),
+                _ => None,
+            },
+            ElementState::Pressed,
         );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
         let mut handled = false;
         self.editor.handle_event(
             &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event,
                 is_synthetic: false,
             },

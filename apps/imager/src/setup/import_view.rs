@@ -4,6 +4,7 @@ use crate::page;
 use crate::page::Frame;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use ui::widget::TaffyTreeExt;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -2741,22 +2742,16 @@ impl Widget for ImportApp {
         let child = self
             .composed
             .build_layout(composition, taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     ui::forward_to_composed!(composed);

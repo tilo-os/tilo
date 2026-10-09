@@ -60,7 +60,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
 /// Narrows the canvas size (bounded, well under 10,000px) from `u32` to
@@ -1002,7 +1002,7 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
 }
 
 fn make_cursor(x: f64, y: f64) -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::CursorMoved {
         device_id,
         position: PhysicalPosition::new(x, y),
@@ -1010,7 +1010,7 @@ fn make_cursor(x: f64, y: f64) -> WindowEvent {
 }
 
 fn make_click_press() -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseInput {
         device_id,
         state: ElementState::Pressed,
@@ -1019,7 +1019,7 @@ fn make_click_press() -> WindowEvent {
 }
 
 fn make_click_release() -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseInput {
         device_id,
         state: ElementState::Released,
@@ -1028,7 +1028,7 @@ fn make_click_release() -> WindowEvent {
 }
 
 fn make_wheel(dy: f32) -> WindowEvent {
-    let device_id: DeviceId = unsafe { std::mem::zeroed() };
+    let device_id = winit::event::DeviceId::dummy();
     WindowEvent::MouseWheel {
         device_id,
         delta: MouseScrollDelta::LineDelta(0.0, dy),

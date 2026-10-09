@@ -16,6 +16,7 @@
 //! sweeping its `node_map`, so the control works at any depth.
 
 use crate::widget::ModelPath;
+use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -203,18 +204,15 @@ impl Widget for UndoButton {
             clippy::expect_used,
             reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
         )]
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: Size {
-                    width: w,
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .expect("fixed-size leaf style is valid");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            flex_shrink: 0.0,
+            size: Size {
+                width: w,
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -487,7 +485,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mods = winit::event::Modifiers::default();
-        let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+        let device = winit::event::DeviceId::dummy();
         let centre = b.rect.center();
         for ev in [
             WindowEvent::CursorMoved {

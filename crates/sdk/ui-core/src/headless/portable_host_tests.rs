@@ -109,17 +109,14 @@ impl Widget for Blocker {
         _theme: &Theme,
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::style_helpers::length(240.0_f32),
-                    height: taffy::style_helpers::length(80.0_f32),
-                },
-                ..Default::default()
-            })
-            .expect("leaf");
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::style_helpers::length(240.0_f32),
+                height: taffy::style_helpers::length(80.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);

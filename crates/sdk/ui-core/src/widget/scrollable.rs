@@ -2031,13 +2031,13 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
     fn mouse(state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state,
             button: MouseButton::Left,
         }
@@ -2993,7 +2993,7 @@ mod tests {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
             let ev = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3007,7 +3007,7 @@ mod tests {
             let mut s = both(1200.0, 1200.0);
             let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
             let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -1.0), // a plain vertical wheel
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3024,7 +3024,7 @@ mod tests {
         {
             let mut s = both(1200.0, 1200.0);
             let tilt = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(-1.0, 0.0), // horizontal tilt
                 phase: winit::event::TouchPhase::Moved,
             };
@@ -3497,21 +3497,11 @@ mod tests {
     }
 
     fn key(named: NamedKey) -> WindowEvent {
-        // winit keeps `KeyEvent`'s tail fields non-public; zero-init and set
-        // what we read.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch_mods(

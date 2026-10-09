@@ -1641,15 +1641,14 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style {
+            let style = Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 ..Default::default()
-            });
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            };
+            taffy.widget_leaf(style, node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
@@ -1704,32 +1703,29 @@ mod tests {
         (w, events)
     }
 
-    fn synth_device() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
     fn left_release() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }
     }
     fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,

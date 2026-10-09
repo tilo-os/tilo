@@ -854,23 +854,19 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             children.push(self.handle.build_layout(taffy, theme, node_map));
         }
         self.style_panes(taffy, left_node, right_node);
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: match self.orientation {
-                    SplitOrientation::Horizontal => taffy::FlexDirection::Row,
-                    SplitOrientation::Vertical => taffy::FlexDirection::Column,
-                },
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: match self.orientation {
+                SplitOrientation::Horizontal => taffy::FlexDirection::Row,
+                SplitOrientation::Vertical => taffy::FlexDirection::Column,
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     /// The panes follow a moved divider without rebuilding the tree.
@@ -1223,14 +1219,14 @@ mod tests {
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -1238,7 +1234,7 @@ mod tests {
 
     fn mouse_release() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }
@@ -1604,7 +1600,7 @@ mod tests {
         let (tree, node) = solve(&mut s, 400.0, 300.0);
         assert!(s.is_focusable());
         s.set_focus(true);
-        let right = crate::synthetic_input::key_event(
+        let right = crate::synthetic_input::key_input(
             &Key::Named(NamedKey::ArrowRight),
             ElementState::Pressed,
         );

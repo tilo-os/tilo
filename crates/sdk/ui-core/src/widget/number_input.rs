@@ -1196,8 +1196,7 @@ impl crate::widget::controls::ActionControls for NumberInput {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{KeyEvent, Modifiers};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+    use winit::event::Modifiers;
 
     fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
         let mut tree = TaffyTree::new();
@@ -1409,30 +1408,23 @@ mod tests {
 
     fn cursor(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
     fn press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
     }
     fn named_key(k: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(k);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Named(k),
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]

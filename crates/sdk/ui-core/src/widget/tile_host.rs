@@ -3251,9 +3251,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4483,9 +4481,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -4539,9 +4535,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
         fn draw(
@@ -5039,7 +5033,7 @@ mod tests {
             assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
             let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
             assert!(host.get_rect().contains(body) && !toolbar.contains(body));
-            let device = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let motion = |point: Point| WindowEvent::CursorMoved {
                 device_id: device,
                 position: (point.x * scale, point.y * scale).into(),

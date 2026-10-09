@@ -15,6 +15,7 @@ mod keyboard_editor;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 
 use settings_store::hardware::{
     EraserAction, InputDeviceKind, InputDeviceSnapshot, InputHardwareSnapshot, PadDial,
@@ -2776,9 +2777,7 @@ impl Widget for MouseKeyboardPane {
         // `child` was just created in this same tree, so this call is not
         // reachable to fail; if it (impossibly) did, wrap it in itself
         // rather than panic this panic=abort process.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

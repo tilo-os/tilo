@@ -3679,8 +3679,8 @@ mod tests {
 }
 
 use std::io::BufRead;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, PhysicalKey};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::Key;
 pub const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
 /// Read up to one `\n`-terminated line from `reader`, capped at
 /// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
@@ -3774,32 +3774,23 @@ impl BoundedLineBuffer {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
+/// Build a `WindowEvent::KeyboardInput` for `key`; `text` is set for
+/// `Character` keys so text-input branches see the same glyph real hardware
+/// would send.
 pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key.clone(),
+        if let Key::Character(s) = key {
+            Some(s.clone())
+        } else {
+            None
+        },
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    ))
 }
 #[cfg(test)]
 mod framing_tests {

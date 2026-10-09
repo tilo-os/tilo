@@ -19,6 +19,7 @@
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 
 use ui::theme::Theme;
 use ui::widget::{
@@ -507,13 +508,7 @@ impl Widget for SettingsPane {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child_node], node_map, self)
     }
 
     ui::forward_to_composed!(composed);
@@ -627,7 +622,7 @@ mod tests {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live
             // widget tree and assert the CRDT bool changed.
-            use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+            use winit::event::{ElementState, MouseButton, WindowEvent};
 
             // Locate the ad-block toggle's rect by walking the live tree.
             fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
@@ -668,7 +663,7 @@ mod tests {
                 .expect("ad-block toggle is addressable in the tree");
             let center = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mods = winit::event::Modifiers::default();
             let mut dispatch = |pane: &mut SettingsPane, ev: WindowEvent| {
                 let mut handled = false;

@@ -4490,18 +4490,18 @@ mod tests {
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
                     let cursor = WindowEvent::CursorMoved {
-                        device_id: unsafe { std::mem::zeroed() },
+                        device_id: winit::event::DeviceId::dummy(),
                         position: winit::dpi::PhysicalPosition::new(center.x, center.y),
                     };
                     let events = [
                         cursor,
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Pressed,
                             button: winit::event::MouseButton::Left,
                         },
                         WindowEvent::MouseInput {
-                            device_id: unsafe { std::mem::zeroed() },
+                            device_id: winit::event::DeviceId::dummy(),
                             state: winit::event::ElementState::Released,
                             button: winit::event::MouseButton::Left,
                         },

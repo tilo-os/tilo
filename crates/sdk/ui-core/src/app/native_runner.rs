@@ -2785,25 +2785,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         match event {
             UserEvent::Hover { x, y } => {
                 let ev = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
                 let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: PhysicalPosition::new(x, y),
                 };
                 self.injected_window_event(event_loop, window_id, moved);
                 let press = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 };
                 self.injected_window_event(event_loop, window_id, press);
                 let release = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 };
@@ -2814,13 +2814,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.injected_window_event(
                         event_loop,
                         window_id,
-                        crate::synthetic_input::key_event(&key, state),
+                        crate::synthetic_input::key_input(&key, state),
                     );
                 }
             }
             UserEvent::Wheel { dx, dy } => {
                 let ev = WindowEvent::MouseWheel {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
                     phase: winit::event::TouchPhase::Moved,
                 };
@@ -2900,18 +2900,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
                                 let moved = WindowEvent::CursorMoved {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     position: PhysicalPosition::new(px, py),
                                 };
                                 self.injected_window_event(event_loop, window_id, moved);
                                 let press = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Pressed,
                                     button: MouseButton::Left,
                                 };
                                 self.injected_window_event(event_loop, window_id, press);
                                 let release = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
+                                    device_id: winit::event::DeviceId::dummy(),
                                     state: ElementState::Released,
                                     button: MouseButton::Left,
                                 };

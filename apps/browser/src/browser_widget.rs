@@ -21,6 +21,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -3596,13 +3597,7 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
-        #[allow(
-            clippy::unwrap_used,
-            reason = "all child nodes were just created in this tree"
-        )]
-        let node = taffy.new_with_children(style, &children).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4899,22 +4894,16 @@ mod architecture_tests {
 
     fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             button,
             state,
         }
     }
 
     fn key(named: WNamedKey) -> WindowEvent {
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = WKey::Named(named);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
+        let event = ui::synthetic_input::key_event(WKey::Named(named), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -5934,7 +5923,7 @@ mod architecture_tests {
             dispatch_back_event(
                 &mut widget,
                 &WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
+                    device_id: winit::event::DeviceId::dummy(),
                     position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
                 },
             );

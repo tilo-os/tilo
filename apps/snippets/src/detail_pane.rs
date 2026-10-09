@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui::widget::TaffyTreeExt;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -442,23 +443,20 @@ impl Widget for BodyWell {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let lines = 4.0 * theme.text(TextRole::Code).line_height_px();
-        let node = taffy
-            .new_leaf(Style {
-                flex_grow: 1.0,
-                flex_basis: length(0.0_f32),
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(lines),
-                },
-                ..Default::default()
-            })
-            .expect("a leaf node");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            flex_grow: 1.0,
+            flex_basis: length(0.0_f32),
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+            min_size: taffy::Size {
+                width: length(0.0_f32),
+                height: length(lines),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

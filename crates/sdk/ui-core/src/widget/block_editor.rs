@@ -7647,34 +7647,30 @@ impl Widget for BlockEditor {
             self.replace_button_node = Some(button);
             self.replace_all_node = Some(all);
         }
-        let node = taffy.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                align_items: Some(taffy::AlignItems::Stretch),
-                gap: taffy::Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
-                // The drag handles stand in the editor's own leading column,
-                // so a host leaves no gutter for them and they are never
-                // clipped by the window edge at any text scale.
-                padding: taffy::Rect {
-                    left: length(self.handle_column() as f32),
-                    right: length(0.0_f32),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                ..Default::default()
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::Stretch),
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
             },
-            &layout_children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            // The drag handles stand in the editor's own leading column,
+            // so a host leaves no gutter for them and they are never
+            // clipped by the window edge at any text scale.
+            padding: taffy::Rect {
+                left: length(self.handle_column() as f32),
+                right: length(0.0_f32),
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &layout_children, node_map, self)
     }
 
     #[expect(

@@ -122,7 +122,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     crate::framework_support::send(
         &mut app,
         &winit::event::WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
             phase: winit::event::TouchPhase::Moved,
         },

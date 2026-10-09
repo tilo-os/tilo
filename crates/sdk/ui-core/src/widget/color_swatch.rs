@@ -706,16 +706,9 @@ mod tests {
     }
 
     fn named_press(key: NamedKey) -> WindowEvent {
-        use winit::keyboard::{NativeKeyCode, PhysicalKey};
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.logical_key = Key::Named(key);
-        event.text = None;
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
+        let event = crate::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
@@ -744,14 +737,14 @@ mod tests {
         dispatch(
             &mut picker,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(third.x, third.y),
             },
         );
         dispatch(
             &mut picker,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -817,14 +810,14 @@ mod tests {
         dispatch(
             &mut picker,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
             },
         );
         assert!(dispatch(
             &mut picker,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             }

@@ -864,7 +864,7 @@ mod tests {
     use crate::webview::test_engine::TestEngine;
     use automerge::AutoCommit;
     use std::sync::Arc;
-    use winit::event::{DeviceId, ElementState, WindowEvent};
+    use winit::event::{ElementState, WindowEvent};
 
     #[test]
     fn native_history_operation_waits_for_renderer_ack_and_rejects_focus_change() {
@@ -975,7 +975,7 @@ mod tests {
                     &mut page,
                     &tree,
                     node,
-                    &crate::synthetic_input::key_event(
+                    &crate::synthetic_input::key_input(
                         &winit::keyboard::Key::Character("z".into()),
                         edge,
                     ),
@@ -1714,7 +1714,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1748,7 +1748,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1781,7 +1781,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1808,7 +1808,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,

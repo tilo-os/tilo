@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -1102,24 +1103,14 @@ impl Widget for TypstApp {
             .collect();
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1805,7 +1796,7 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
+    use winit::event::{ElementState, Modifiers, MouseButton};
 
     use automerge::{ROOT, ReadDoc as _};
     use ui::tilo_actions::Action as _;
@@ -1959,21 +1950,16 @@ mod tests {
         }
     }
 
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
     fn cursor(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             position: PhysicalPosition::new(p.x, p.y),
         }
     }
 
     fn press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -2153,31 +2139,22 @@ mod tests {
 
     use crate::compile::DiagKind;
     use winit::event::TouchPhase;
-    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+    use winit::keyboard::ModifiersState;
 
-    /// A character keypress through the real event path. winit's per-platform
-    /// `KeyEventExtra` is `pub(crate)`, so the struct is zeroed and only its
-    /// public fields set — the same trick the toolkit's own widget tests use.
+    /// the same trick the toolkit's own widget tests use.
     fn char_press(c: &str) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(c.into());
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(c.into());
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Character(c.into()),
+            Some(c.into()),
+            ElementState::Pressed,
+        ))
     }
 
     /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
     /// via `x` for the horizontal-pan path.
     fn wheel(x: f32, y: f32) -> WindowEvent {
         WindowEvent::MouseWheel {
-            device_id: device_id(),
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(x, y),
             phase: TouchPhase::Moved,
         }

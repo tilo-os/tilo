@@ -2392,23 +2392,18 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::fs;
-    use winit::event::{DeviceId, ElementState, MouseButton};
-
-    fn synth_device() -> DeviceId {
-        // Same pattern as `permission_prompt::tests` and `slider`.
-        unsafe { std::mem::zeroed() }
-    }
+    use winit::event::{ElementState, MouseButton};
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
 
     fn left_press() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
@@ -3366,7 +3361,7 @@ mod tests {
 
     fn left_release() -> WindowEvent {
         WindowEvent::MouseInput {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         }
@@ -3401,14 +3396,14 @@ mod tests {
     }
 
     fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Named(named),
             ElementState::Pressed,
         )
     }
 
     fn key_char(s: &str) -> WindowEvent {
-        crate::synthetic_input::key_event(
+        crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character(s.into()),
             ElementState::Pressed,
         )
@@ -3442,7 +3437,7 @@ mod tests {
             dispatch(
                 &mut picker,
                 &WindowEvent::MouseWheel {
-                    device_id: synth_device(),
+                    device_id: winit::event::DeviceId::dummy(),
                     delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
                     phase: winit::event::TouchPhase::Moved,
                 },

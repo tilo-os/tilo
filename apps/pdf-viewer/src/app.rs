@@ -14,6 +14,7 @@ use ui::icons::Icon;
 use ui::tokens::TextRole;
 #[cfg(test)]
 use ui::widget::Edits;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash};
@@ -5110,21 +5111,14 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        #[allow(
-            clippy::unwrap_used,
-            reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     #[allow(

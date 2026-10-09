@@ -211,16 +211,6 @@ impl OriginalInvocationData {
         };
         tilo_user_identity::verify_device_cert_at(&certificate, now)
             .map_err(|_| "original invocation certificate expired")?;
-        let tree = state
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.route.cluster_id)
-            .ok_or("original invocation workspace unavailable")?;
         let mut person = state.certified_person(&self.route.cluster_id, &certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
@@ -235,30 +225,30 @@ impl OriginalInvocationData {
             );
         }
         let seconds = now / 1_000_000_000;
-        let actor = person.policy_in(workspace, seconds);
-        let verb = match self.spec.contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &actor,
-                &ResourceRef::Action {
-                    app: self.route.app_id.clone(),
-                    resource: self.request.address.resource.clone(),
-                    action: self.request.address.action.clone(),
-                },
-                verb,
-                seconds,
-            ) != CapDecision::Allow
-        }) {
-            return Err("original invocation caller is no longer authorized".into());
-        }
-        drop(tree);
+        let verb = super::permission_verb(self.spec.contract.permission);
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(&self.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+                let actor = person.policy_in(workspace, seconds);
+                if verb.is_some_and(|verb| {
+                    workspace.decide_at(
+                        &actor,
+                        &ResourceRef::Action {
+                            app: self.route.app_id.clone(),
+                            resource: self.request.address.resource.clone(),
+                            action: self.request.address.action.clone(),
+                        },
+                        verb,
+                        seconds,
+                    ) != CapDecision::Allow
+                }) {
+                    return Err("original invocation caller is no longer authorized");
+                }
+                Ok(())
+            })??;
         Ok(certificate)
     }
 
@@ -317,16 +307,6 @@ impl OriginalInvocationData {
     ) -> Result<tilo_user_identity::DeviceCert, String> {
         let certificate = self.launch_person_certificate(state, room)?;
         let (_, now) = state.checked_policy_time(Some(&self.time))?;
-        let tree = state
-            .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == room)
-            .ok_or("original launch workspace unavailable")?;
         let mut actor = state.certified_person(room, &certificate);
         if let InvocationCaller::Certified {
             foreign_restriction,
@@ -341,16 +321,23 @@ impl OriginalInvocationData {
             );
         }
         let seconds = now / 1_000_000_000;
-        if workspace.decide_at(
-            &actor.policy_in(workspace, seconds),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-            seconds,
-        ) != CapDecision::Allow
-        {
-            return Err("original launch caller cannot delegate application authorship".into());
-        }
-        drop(tree);
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("original launch workspace unavailable")?;
+                if workspace.decide_at(
+                    &actor.policy_in(workspace, seconds),
+                    &ResourceRef::Workspace,
+                    Verb::Admin,
+                    seconds,
+                ) != CapDecision::Allow
+                {
+                    return Err("original launch caller cannot delegate application authorship");
+                }
+                Ok(())
+            })??;
         Ok(certificate)
     }
 
@@ -752,44 +739,35 @@ impl OriginalInvocation {
                     .map_err(|error| error.to_string())?;
             }
         }
-        let tree = state
+        let membership = state
             .membership
-            .as_ref()
-            .ok_or("workspace authority unavailable")?
-            .snapshot()?;
+            .clone()
+            .ok_or("workspace authority unavailable")?;
         let person = self.original_person(&state)?;
         drop(state);
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == self.data.route.cluster_id)
-            .ok_or("original invocation workspace unavailable")?;
         let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
-        let actor = self.original_actor(person, workspace, seconds)?;
-        let verb = match self.data.spec.contract.permission {
-            tilo_actions::PermissionRequirement::None => None,
-            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-        };
-        if verb.is_some_and(|verb| {
-            workspace.decide_at(
-                &actor,
-                &ResourceRef::Action {
-                    app: self.data.route.app_id.clone(),
-                    resource: self.data.request.address.resource.clone(),
-                    action: self.data.request.address.action.clone(),
-                },
-                verb,
-                seconds,
-            ) != CapDecision::Allow
-        }) {
-            return Err("original invocation caller is no longer authorized".into());
-        }
-        drop(tree);
+        let verb = super::permission_verb(self.data.spec.contract.permission);
+        membership.decide_in_room(&self.data.route.cluster_id, |workspace| {
+            let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+            let actor = self.original_actor(person, workspace, seconds)?;
+            if verb.is_some_and(|verb| {
+                workspace.decide_at(
+                    &actor,
+                    &ResourceRef::Action {
+                        app: self.data.route.app_id.clone(),
+                        resource: self.data.request.address.resource.clone(),
+                        action: self.data.request.address.action.clone(),
+                    },
+                    verb,
+                    seconds,
+                ) != CapDecision::Allow
+            }) {
+                return Err("original invocation caller is no longer authorized".to_string());
+            }
+            Ok(())
+        })??;
         self.check_custody()?;
+
         Ok(())
     }
 }

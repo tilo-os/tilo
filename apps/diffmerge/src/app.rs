@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
 
 use taffy::prelude::*;
@@ -784,26 +785,16 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
-        #[allow(
-            clippy::unwrap_used,
-            reason = "content was just created in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[content],
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1461,20 +1452,12 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        use winit::event::{DeviceId, KeyEvent};
-        use winit::keyboard::{KeyLocation, PhysicalKey};
+        use winit::event::DeviceId;
 
         // `KeyEvent` has an opaque platform payload. The public fields below
         // are exactly the ones the widget reads; this mirrors the toolkit's
         // own headless keyboard helpers.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = key;
-        event.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: DeviceId::dummy(),
             event,
