@@ -171,7 +171,7 @@ pub enum AgentModelsEffect {
         plan_timeout_ms: Option<u32>,
     },
     /// Read source context and this model's configured deployment limits.
-    #[effect(row, returns, permission = "read")]
+    #[effect(row, returns, kind = "read")]
     InspectModelRequestLimits { provider: String, model: String },
     /// Make a provider the one agents use unless told otherwise.
     #[effect(row, idempotent, label = "Use by default")]

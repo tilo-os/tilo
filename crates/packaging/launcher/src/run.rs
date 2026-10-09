@@ -2065,9 +2065,7 @@ fn splice_action_authority(
     manifest: &MinimalManifest,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
-    use collab_types::caps::action_authority::{
-        AppActionAuthorityProjection, MAX_PROJECTION_BYTES,
-    };
+    use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
     use std::io::Read as _;
     let Some(path) = opts.action_authority_host_path.as_deref() else {
         return Ok(());
@@ -4816,7 +4814,7 @@ mod debug_output_tests {
 #[cfg(test)]
 mod action_authority_tests {
     use super::*;
-    use collab_types::caps::action_authority::AppActionAuthorityProjection;
+    use collab_types::action_authority::AppActionAuthorityProjection;
     #[test]
     fn action_authority_binding_is_readonly_scoped_and_separate_from_sandbox_grants() {
         let temp = tempfile::tempdir().unwrap();
@@ -4825,16 +4823,14 @@ mod action_authority_tests {
             "[package]\nid = \"so.tilo.store\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"store\"\n",
         )
         .unwrap();
-        let policy = AppActionAuthorityProjection {
-            schema_version: 1,
-            room: "room-a".into(),
-            app_id: manifest.package_id.clone(),
-            person: "person-a".into(),
-            owner: Some("person-a".into()),
-            capabilities: vec![],
-            issued_at_unix_ms: 10_000,
-            valid_until_unix_ms: 13_000,
-        };
+        let policy = AppActionAuthorityProjection::project(
+            &tilo_action_policy::RoomPolicy::new("room-a", "person-a"),
+            &manifest.package_id,
+            "person-a",
+            false,
+            10_000,
+            13_000,
+        );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {
             workspace_id: Some("room-a".into()),
@@ -4872,7 +4868,7 @@ mod action_authority_tests {
         assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());
         std::fs::write(
             opts.action_authority_host_path.as_ref().unwrap(),
-            vec![b' '; collab_types::caps::action_authority::MAX_PROJECTION_BYTES + 1],
+            vec![b' '; collab_types::action_authority::MAX_PROJECTION_BYTES + 1],
         )
         .unwrap();
         assert!(splice_action_authority(&mut vec!["store".into()], &manifest, &opts).is_err());

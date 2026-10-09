@@ -532,7 +532,7 @@ impl PdfMarkup {
     /// Add comment.
     ///
     /// Free on a page, or about an annotation, signed by whoever writes it.
-    #[action(permission = "comment")]
+    #[action(field = "comments")]
     pub fn add_comment(
         &mut self,
         cx: &mut ActionCx,
@@ -573,7 +573,7 @@ impl PdfMarkup {
     /// Reply.
     ///
     /// Adds an answer to the thread, signed by whoever writes it.
-    #[action(item = comments, permission = "comment")]
+    #[action(item = comments, field = "comments")]
     pub fn reply(
         &mut self,
         cx: &mut ActionCx,

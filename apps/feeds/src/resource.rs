@@ -242,7 +242,7 @@ pub enum FeedsEffect {
     #[effect(device_only)]
     ImportOpml,
     /// Export OPML…
-    #[effect(permission = "read", device_only)]
+    #[effect(kind = "read", device_only)]
     ExportOpml,
     /// Reveal tagged articles
     #[effect(view, row, idempotent)]
@@ -251,19 +251,19 @@ pub enum FeedsEffect {
     ///
     /// A reading preference of this person, which follows them to their
     /// other devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ReaderTextLarger,
     /// Decrease reader text size
     ///
     /// A reading preference of this person, which follows them to their
     /// other devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ReaderTextSmaller,
     /// Use reader font
     ///
     /// A reading preference of this person, which follows them to their
     /// other devices.
-    #[effect(permission = "read", idempotent)]
+    #[effect(kind = "read", idempotent)]
     ReaderFont {
         #[param("Reader font", choices = ["sans", "serif", "mono"])]
         font: String,
@@ -272,7 +272,7 @@ pub enum FeedsEffect {
     ///
     /// A reading preference of this person, which follows them to their
     /// other devices.
-    #[effect(permission = "read", idempotent)]
+    #[effect(kind = "read", idempotent)]
     ReaderPaper {
         #[param("Reader paper", choices = ["light", "sepia", "dark"])]
         paper: String,

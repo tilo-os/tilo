@@ -193,13 +193,13 @@ pub enum TerminalEffect {
     ///
     /// Read this participant's actual process lifecycle and startup cause.
     /// What the session shows is read with [`Self::Read`].
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     InspectSession,
     /// Read output
     ///
     /// Read what the session shows: its output (the newest 64 KiB of the
     /// screen and scrollback), title, cursor and where it runs.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Read,
     /// Send text
     ///
@@ -282,24 +282,24 @@ pub enum TerminalEffect {
         name: String,
     },
     /// Copy visible output
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     CopyVisible,
     /// Copy selected output
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     CopySelection,
     /// Select all output
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     SelectAll,
     /// Show oldest output
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     HistoryTop,
     /// Return to live output
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     HistoryLive,
     /// Open link
     ///
     /// Opens a public web link the process printed.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     OpenLink {
         #[param("The link")]
         url: String,

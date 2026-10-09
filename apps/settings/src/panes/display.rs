@@ -108,10 +108,10 @@ pub enum DisplayEffect {
     },
     /// Opt this device into automatic grants to its enrolled online input devices.
     /// The separate Continuity master and Display/input switches must also be on.
-    #[effect(returns, permission = "admin", idempotent)]
+    #[effect(returns, idempotent)]
     SetAutomaticDisplayInput { on: bool },
     /// Inspect the observed displays and their shared arrangement, including offline devices.
-    #[effect(view, returns, permission = "read", label = "Inspect shared displays")]
+    #[effect(view, returns, kind = "read", label = "Inspect shared displays")]
     InspectSharedDisplays,
     /// Include a display in the shared layout. This does not allow remote input.
     #[effect(returns, row, idempotent)]
@@ -153,24 +153,19 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     /// Read the compositor observations, staged configuration and preview transaction.
-    #[effect(
-        view,
-        returns,
-        permission = "read",
-        label = "Inspect display configuration"
-    )]
+    #[effect(view, returns, kind = "read", label = "Inspect display configuration")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
-    #[effect(returns, permission = "admin", label = "Identify displays")]
+    #[effect(returns, label = "Identify displays")]
     IdentifyDisplays,
     /// Preview the staged arrangement; it is kept only when confirmed.
-    #[effect(returns, permission = "admin", label = "Apply display changes")]
+    #[effect(returns, label = "Apply display changes")]
     ApplyDisplayChanges,
     /// Keep the arrangement being previewed.
-    #[effect(returns, permission = "admin", label = "Keep display changes")]
+    #[effect(returns, label = "Keep display changes")]
     KeepDisplayChanges,
     /// Go back to the arrangement before the preview.
-    #[effect(returns, permission = "admin", label = "Revert display changes")]
+    #[effect(returns, label = "Revert display changes")]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
     #[effect(returns, row, label = "Ask again")]

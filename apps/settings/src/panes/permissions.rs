@@ -23,10 +23,11 @@ use crate::i18n::{t, t_args};
 use crate::widgets::{
     El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
 };
-use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use tilo_action_policy::{Grant, Level, Lifetime};
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
@@ -193,9 +194,10 @@ fn kill_label(state: os_actions::KillState, present: bool) -> String {
 }
 
 /// Minimal projection of `state.json`: only the fields this pane reads. Serde
-/// ignores every other workspace field, and each `capabilities` entry is the
-/// real [`CapOverride`] the compositor serialised, so the parse tracks the
-/// enforced shape rather than a copy of it.
+/// ignores every other workspace field; each `sandbox` entry is the real
+/// [`CapOverride`] and each policy grant the real [`Grant`] the compositor
+/// serialised, so the parse tracks the enforced shape rather than a copy of
+/// it.
 #[derive(Deserialize, Default)]
 struct TreeView {
     #[serde(default)]
@@ -207,7 +209,15 @@ struct WsView {
     #[serde(default)]
     name: String,
     #[serde(default)]
-    capabilities: Vec<CapOverride>,
+    sandbox: Vec<CapOverride>,
+    #[serde(default)]
+    policy: PolicyView,
+}
+
+#[derive(Deserialize, Default)]
+struct PolicyView {
+    #[serde(default)]
+    grants: Vec<Grant>,
 }
 
 /// Which tint a capability reads in — kept separate from the rendered `Color`
@@ -263,6 +273,16 @@ fn expiry_label(e: Expiry) -> &'static str {
     }
 }
 
+/// [`expiry_label`] for a grant's lifetime.
+fn lifetime_label(lifetime: &Lifetime) -> &'static str {
+    match lifetime {
+        Lifetime::UntilRevoked => "Always",
+        Lifetime::Until(_) | Lifetime::Task(_) => "Temporary",
+        Lifetime::Session(_) => "Until log out",
+        Lifetime::Once => "Once",
+    }
+}
+
 fn expiry_shown(english: &str) -> String {
     t(match english {
         "Temporary" => "perm-expiry-temp",
@@ -294,7 +314,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
     let expiry = expiry_label(cap.expiry);
     let (kind, detail, tint) = match &cap.scope {
         Scope::FsPath(p) => {
-            let verb = if cap.verb.implies(Verb::Write) {
+            let verb = if cap.access == Access::Write {
                 t("perm-verb-rw")
             } else {
                 t("perm-verb-ro")
@@ -319,24 +339,6 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             };
             ("Network", detail, Tint::Network)
         }
-        // Another app's action this app may use: the consent sheet grants
-        // these; the workspace's own Settings lists them under App actions.
-        Scope::Action {
-            app,
-            resource,
-            action,
-        } => (
-            "App action",
-            t_args(
-                "perm-action-detail",
-                &[
-                    ("action", action.as_str().into()),
-                    ("resource", resource.as_str().into()),
-                    ("app", app.as_str().into()),
-                ],
-            ),
-            Tint::AppAction,
-        ),
         _ => return None,
     };
     Some(CapView {
@@ -344,6 +346,35 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
         detail,
         expiry,
         tint,
+    })
+}
+
+/// Project one grant naming an app into a display capability: another app's
+/// action this app may use, which the consent sheet grants. Denials and
+/// grants that ask are enforcement, not something the app holds.
+fn grant_view(grant: &Grant) -> Option<CapView> {
+    if grant.answer != tilo_action_policy::Answer::Allow {
+        return None;
+    }
+    let action = grant.node.id_at(Level::Action)?;
+    let resource = grant
+        .node
+        .id_at(Level::Resource)
+        .or_else(|| grant.node.id_at(Level::Kind))
+        .unwrap_or_default();
+    let app = grant.node.id_at(Level::App).unwrap_or_default();
+    Some(CapView {
+        kind: "App action",
+        detail: t_args(
+            "perm-action-detail",
+            &[
+                ("action", action.into()),
+                ("resource", resource.into()),
+                ("app", app.into()),
+            ],
+        ),
+        expiry: lifetime_label(&grant.lifetime),
+        tint: Tint::AppAction,
     })
 }
 
@@ -358,11 +389,19 @@ fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
         // Bucket this workspace's app grants by app id.
         let mut by_app: std::collections::BTreeMap<String, Vec<CapView>> =
             std::collections::BTreeMap::new();
-        for cap in &ws.capabilities {
+        for cap in &ws.sandbox {
             let Subject::Principal(Principal::App(app)) = &cap.subject else {
                 continue;
             };
             if let Some(view) = cap_view(cap) {
+                by_app.entry(app.clone()).or_default().push(view);
+            }
+        }
+        for grant in &ws.policy.grants {
+            let tilo_action_policy::Subject::App(app) = &grant.subject else {
+                continue;
+            };
+            if let Some(view) = grant_view(grant) {
                 by_app.entry(app.clone()).or_default().push(view);
             }
         }
@@ -626,7 +665,7 @@ mod tests {
     fn cx() -> PaneCx {
         PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
     }
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use std::collections::HashMap;
 
     /// "Not active" is only said about a ruleset that was read and is empty.
@@ -700,15 +739,15 @@ mod tests {
         let cam = CapOverride::grant(
             Subject::app("so.tilo.camera"),
             Scope::Device("camera".into()),
-            Verb::Read,
+            Access::Read,
         );
         let file = CapOverride::grant(
             Subject::app("so.tilo.camera"),
             Scope::FsPath("/var/workspace/Photos".into()),
-            Verb::Read,
+            Access::Read,
         );
         let caps = serde_json::to_string(&vec![cam, file]).unwrap();
-        format!(r#"{{"workspaces":[{{"name":"Studio","capabilities":{caps}}}]}}"#)
+        format!(r#"{{"workspaces":[{{"name":"Studio","sandbox":{caps}}}]}}"#)
     }
 
     fn build_layout_of(pane: &mut Box<dyn Widget>) {
@@ -750,30 +789,36 @@ mod tests {
                 cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
             };
             assert_eq!(
-                g(Scope::Device("camera".into()), Verb::Read),
+                g(Scope::Device("camera".into()), Access::Read),
                 Some("Camera")
             );
             assert_eq!(
-                g(Scope::Device("microphone".into()), Verb::Read),
+                g(Scope::Device("microphone".into()), Access::Read),
                 Some("Microphone")
             );
             assert_eq!(
-                g(Scope::Device("screencast".into()), Verb::Read),
+                g(Scope::Device("screencast".into()), Access::Read),
                 Some("Screen sharing")
             );
             assert_eq!(
-                g(Scope::Device("remote-desktop".into()), Verb::Write),
+                g(Scope::Device("remote-desktop".into()), Access::Write),
                 Some("Remote control")
             );
-            assert_eq!(g(Scope::NetHost("*".into()), Verb::Write), Some("Network"));
-            let action = cap_view(&CapOverride::grant(
-                Subject::app("so.tilo.shortcuts"),
-                Scope::Action {
-                    app: "so.tilo.agent".into(),
-                    resource: "agent.transform:freeform".into(),
-                    action: "freeform".into(),
-                },
-                Verb::Write,
+            assert_eq!(
+                g(Scope::NetHost("*".into()), Access::Write),
+                Some("Network")
+            );
+            let action = grant_view(&Grant::new(
+                "shortcuts-freeform",
+                tilo_action_policy::Subject::App("so.tilo.shortcuts".into()),
+                tilo_action_policy::TreePath::room("studio")
+                    .app("so.tilo.agent")
+                    .any(Level::Kind)
+                    .resource("agent.transform:freeform")
+                    .action("freeform"),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::person("owner"),
             ))
             .unwrap();
             assert_eq!(action.kind, "App action");
@@ -788,7 +833,7 @@ mod tests {
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),
                 Scope::FsPath("/w".into()),
-                Verb::Write,
+                Access::Write,
             ))
             .unwrap();
             assert!(rw.detail.contains("read & write"));
@@ -798,7 +843,7 @@ mod tests {
                     Subject::app("a"),
                     Scope::Device("camera".into()),
                     Effect::Restrict,
-                    Verb::Read,
+                    Access::Read,
                 ))
                 .is_none()
             );
@@ -878,12 +923,19 @@ mod tests {
 
         // Case `workspace_without_app_grants_is_omitted`.
         {
-            // A workspace whose only capability is room membership (a person
-            // subject) holds no *app* grant and must not render a card.
-            let membership =
-                CapOverride::membership(Subject::person("alice"), "room-1", Verb::Write);
-            let caps = serde_json::to_string(&vec![membership]).unwrap();
-            let json = format!(r#"{{"workspaces":[{{"name":"Empty","capabilities":{caps}}}]}}"#);
+            // A workspace whose only grant names a person holds no *app*
+            // grant and must not render a card.
+            let person = Grant::new(
+                "alice",
+                tilo_action_policy::Subject::person("alice"),
+                tilo_action_policy::TreePath::room("room-1"),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::person("owner"),
+            );
+            let grants = serde_json::to_string(&vec![person]).unwrap();
+            let json =
+                format!(r#"{{"workspaces":[{{"name":"Empty","policy":{{"grants":{grants}}}}}]}}"#);
             assert!(
                 project(&json).expect("valid workspace state").is_empty(),
                 "no app grants → no workspace card"

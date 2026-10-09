@@ -37,7 +37,7 @@ fn owner_bootstrap_current_owner_is_distinct_from_collaborator_refresh() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
-        peer.permissions(cert.device_public_key, now).unwrap().0,
+        peer.permissions(cert.device_public_key, now).unwrap().role,
         Role::Owner
     );
     peer.verify_owner_refresh(&membership, now).unwrap();

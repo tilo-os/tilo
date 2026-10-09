@@ -10678,7 +10678,7 @@ impl ShellOverlayHost {
     )]
     fn may_invite_here(&self) -> bool {
         use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
-        use crate::shell::search::visibility::CapabilityVisibility;
+        use crate::shell::search::visibility::PolicyVisibility;
 
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
@@ -10693,7 +10693,7 @@ impl ShellOverlayHost {
         };
         let actor_id = st.local_user_for_room(&workspace.room);
         let actor = workspace.actor_for_person(&actor_id);
-        CapabilityVisibility::new(workspace, actor).can_see(
+        PolicyVisibility::new(workspace, actor).can_see(
             &ResourceRef::new("actions", "peer.invite.named"),
             &crate::shell::search::ResourceKind::Action,
         )
@@ -16503,7 +16503,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::remove_agent(ws, actor, &agent)
@@ -16513,7 +16513,7 @@ impl ShellOverlayHost {
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let _ = crate::shell::membership::edit_active_workspace_caps(
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
                         &mut chrome.borrow_mut(),
                         move |ws, actor| {
                             tilo_desktop::workspace_settings::apply_revoke(ws, actor, &cap_id)
@@ -20599,7 +20599,7 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     match hit {
         ComposerHit::Submit => {
             let draft = chrome.borrow().ws_grant_draft;
-            let _ = crate::shell::membership::edit_active_workspace_caps(
+            let _ = crate::shell::membership::edit_active_workspace_policy(
                 &mut chrome.borrow_mut(),
                 move |ws, actor| {
                     tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)

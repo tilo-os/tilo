@@ -31,14 +31,10 @@ const PERSON: &str = "quinten";
 
 /// The invitation the agent joined with: write on the word processor.
 fn invited() -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-    PermissionContext::from_capabilities(
-        Actor::agent(AGENT),
-        vec![CapOverride::grant(
-            Subject::agent(AGENT),
-            Scope::App(WORD_PROCESSOR.app_id().to_owned()),
-            Verb::Write,
-        )],
+    ui::permissions::PermissionContext::agent_granted(
+        AGENT,
+        &ui::permissions::TreePath::root().app(WORD_PROCESSOR.app_id()),
+        ui::permissions::KindSet::READ_UNDOABLE,
     )
 }
 

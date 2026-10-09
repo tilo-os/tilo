@@ -164,9 +164,9 @@ pub mod prelude {
         SurfaceCx, TextControl, ViewCx,
     };
     pub use tilo_resource::{
-        self, ActionCx, ActionDecl, Atom, Collection, Counter, Delta, Demand, Edit, Effect, Id,
-        Invoke, Json, Model, Outbox, Params, Path, PermissionRequirement, PlainText, Refusal,
-        Replica, Resource, SearchEntry, Set, Settled, TextEdit, Undoing, resource,
+        self, ActionCx, ActionDecl, ActionKind, Atom, Collection, Counter, Delta, Demand, Edit,
+        Effect, Id, Invoke, Json, Model, Outbox, Params, Path, PlainText, Refusal, Replica,
+        Resource, SearchEntry, Set, Settled, TextEdit, Undoing, resource,
     };
     pub use ui_core::i18n::LabelKey;
 
@@ -180,7 +180,7 @@ pub mod prelude {
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
     pub use ui_core::storage::{Scope, SettingsSchema};
     pub use ui_core::tilo_actions;
-    pub use ui_core::tilo_actions::{ActionError, ActionRegistry, ExecutionLocus};
+    pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
     pub use ui_core::tokens::TextRole;
     pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{

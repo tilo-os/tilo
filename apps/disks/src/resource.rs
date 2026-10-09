@@ -88,46 +88,46 @@ impl Disks {
 #[effect(operation = "disks.device", device_only)]
 pub enum DisksEffect {
     /// Rescan storage devices.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Rescan,
     /// Select.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Select {
         #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
         device: String,
     },
     /// Show detail tab.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ShowTab {
         #[param("overview | smart | partitions")]
         tab: String,
     },
     /// Mount.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Mount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Unmount.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Unmount {
         #[param("Kernel name of the partition")]
         device: String,
     },
     /// Format.
-    #[effect(job, destructive, permission = "admin")]
+    #[effect(job, destructive)]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
     },
     /// Benchmark.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Benchmark {
         #[param("Kernel name of the drive or partition")]
         device: String,
     },
     /// Eject.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Eject {
         #[param("Kernel name of the removable drive")]
         device: String,

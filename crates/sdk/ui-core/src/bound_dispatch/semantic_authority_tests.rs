@@ -37,14 +37,10 @@ fn direct_affordance_policy_uses_live_authority_and_refuses_lost_owned_custody()
                 "a cloned foreign Doc cannot borrow active authority"
             );
             let permissions = binding.permissions.borrow().clone();
-            *binding.permissions.borrow_mut() =
-                crate::permissions::PermissionContext::from_capabilities(
-                    crate::permissions::Actor::person(
-                        Some(crate::permissions::Role::Viewer),
-                        &binding.author.0,
-                    ),
-                    vec![],
-                );
+            *binding.permissions.borrow_mut() = crate::permissions::PermissionContext::member(
+                &binding.author.0,
+                crate::permissions::Role::Viewer,
+            );
             assert!(
                 authorize_current_resource_action(doc, &resource, "rename").is_err(),
                 "revocation is observed at execution"

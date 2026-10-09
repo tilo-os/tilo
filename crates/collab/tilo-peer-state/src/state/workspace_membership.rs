@@ -1,37 +1,26 @@
-use super::{Role, StatePeer, SystemTime};
+use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
-use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
-    decide_capability,
-};
+use collab_types::caps::{Access, CapOverride, Principal, Scope};
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{GrantId, Subject, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
-    /// Check current deny-biased workspace administration for this admitted device.
+    /// Check that this admitted device may grant in the room now.
     ///
     /// # Errors
-    /// Refuses stale membership, non-owner roles, restricted authority or invalid time.
+    /// Refuses stale membership or a person not granted the room's grant action.
     pub fn check_workspace_administration(
         &self,
         device: [u8; 32],
         now: SystemTime,
     ) -> Result<(), String> {
-        let (role, caps, person) = self.permissions(device, now)?;
-        let seconds = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "workspace governance clock is before the Unix epoch")?
-            .as_secs();
-        let actor = Actor::person(Some(role), person).in_room(self.core.room.clone());
-        if role != Role::Owner
-            || decide_capability(
-                &actor,
-                &ResourceRef::Workspace,
-                Verb::Admin,
-                &caps,
-                Some(seconds),
-            ) != CapDecision::Allow
-        {
+        let member = self.permissions(device, now)?;
+        if !member.allows(
+            &roles::governance_action(&self.core.room, roles::governance::GRANT),
+            roles::GOVERNANCE_KIND,
+            now,
+        ) {
             return Err("workspace membership requires current administration authority".into());
         }
         Ok(())
@@ -62,40 +51,39 @@ impl StatePeer {
         }
         self.certificate(&caller.device_public_key, now)?;
         self.check_workspace_administration(caller.device_public_key, now)?;
-        let (_, capabilities, person) = self.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now)?;
         self.require_governance_writer(key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            let mut capability =
-                CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write)
-                    .with_id(format!("app-author:{app}"));
-            capability.granted_by = Some(Principal::Person(person));
-            return self.put_governed_capabilities(&[capability], key, now);
+            let capability = CapOverride::grant(
+                collab_types::caps::Subject::app(app),
+                Scope::Workspace,
+                Access::Write,
+            )
+            .with_id(format!("app-author:{app}"))
+            .granted_by(Principal::Person(member.person));
+            return self.put_governed_sandbox(&[capability], key, now);
         }
         let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
-        let room_scope = Scope::Room(self.core.room.clone());
-        let removals = capabilities
+        let room = member.policy.node();
+        let removals = member
+            .policy
+            .grants
             .iter()
-            .filter(|cap| {
-                cap.subject == subject
+            .filter(|grant| {
+                grant.subject == subject
                     && (matches!(command, WorkspaceMembershipCommand::RemoveAgent { .. })
-                        || cap.scope == room_scope)
+                        || grant.node.is_within(&room))
             })
-            .map(|cap| cap.id.clone())
-            .collect::<Vec<_>>();
+            .map(|grant| grant.id.clone())
+            .collect::<Vec<GrantId>>();
         // Work on a clone: an invalid later addition must not leave a removal
         // applied to the caller's candidate.
         let mut candidate = self.clone();
-        let removed = candidate.remove_governed_capabilities(&removals, key, now)?;
+        let removed = candidate.remove_governed_grants(&removals, key, now)?;
         let added = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
-                let mut capability = CapOverride::membership(
-                    subject,
-                    self.core.room.clone(),
-                    preset.admission_verb(),
-                )
-                .with_id(format!("agent-member:{agent}:{}", preset.id()));
-                capability.granted_by = Some(collab_types::caps::Principal::Person(person));
-                candidate.put_governed_capabilities(&[capability], key, now)?
+                let grants = preset.grants(&self.core.room, agent, &Subject::Person(member.person));
+                candidate.put_governed_grants(&grants, key, now)?
             }
             WorkspaceMembershipCommand::RemoveAgent { .. } => false,
             WorkspaceMembershipCommand::GrantAppAuthorship { .. } => {

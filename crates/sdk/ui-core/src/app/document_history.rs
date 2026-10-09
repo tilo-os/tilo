@@ -1298,21 +1298,21 @@ mod tests {
                 .filter(|descriptor| {
                     descriptor.address.resource == super::super::history_actions::RESOURCE
                 })
-                .map(|descriptor| (descriptor.address.action, descriptor.contract.permission))
+                .map(|descriptor| (descriptor.address.action, descriptor.contract.kind))
                 .collect::<std::collections::BTreeMap<_, _>>();
-            use tilo_actions::PermissionRequirement::{Read, Write};
+            use tilo_actions::ActionKind::{Read, Undoable};
             assert_eq!(
                 history,
                 [
-                    ("history.close", Write),
-                    ("history.compare", Write),
+                    ("history.close", Undoable),
+                    ("history.compare", Undoable),
                     ("history.list", Read),
                     ("history.open", Read),
-                    ("history.restore", Write),
-                    ("history.view_at", Write),
+                    ("history.restore", Undoable),
+                    ("history.view_at", Undoable),
                 ]
                 .into_iter()
-                .map(|(action, permission)| (action.to_owned(), permission))
+                .map(|(action, kind)| (action.to_owned(), kind))
                 .collect(),
                 "the broker gates each History action on the permission it declares"
             );
@@ -1590,13 +1590,10 @@ mod tests {
         app.state.doc.put(ROOT, "title", "v2").unwrap();
         app.state.commit_action(None, None);
         let app_id = crate::collaboration::local_app_id();
-        app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-            crate::permissions::Actor::agent("reader"),
-            vec![crate::permissions::CapOverride::grant(
-                crate::permissions::Subject::agent("reader"),
-                crate::permissions::Scope::App(app_id),
-                crate::permissions::Verb::Read,
-            )],
+        app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+            "reader",
+            &crate::permissions::TreePath::root().app(app_id),
+            crate::permissions::policy::KindSet::READ,
         );
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
         app.init_layout();

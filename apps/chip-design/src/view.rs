@@ -28,22 +28,22 @@ pub enum ChipEffect {
     #[effect(job, cancellable, device_only)]
     ImportFile,
     /// Open the structural operator graph.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     OperatorGraph,
     /// Inspect a structural operator; omit node to clear local selection.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     InspectOperator { node: Option<String> },
     /// Choose an output before invoking the typed connect action.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     SelectOutput { node: String, port: String },
     /// Inspect a reported evidence stage, artifact, or subflow reference.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     InspectEvidence { report: String, item: String },
     /// Open an exactly matched imported subflow; refuses unloaded references.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     OpenEvidenceSubflow { report: String, id: String },
     /// Inspect one report, or return to all reports.
-    #[effect(view, permission = "read")]
+    #[effect(view, kind = "read")]
     Inspect {
         #[param("Report content identity; omit to show all reports")]
         report: Option<String>,

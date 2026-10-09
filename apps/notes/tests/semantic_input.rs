@@ -282,11 +282,9 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
             .is_err()
     );
     let replacement = named(&a, "Page title")[0].clone();
-    *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
-        vec![],
-    )
-    .at_unix_time(100);
+    *f.authority.borrow_mut() =
+        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+            .at_unix_time(100);
     let before = revision(&f, &checkout);
     perform(&mut a, &replacement, &Action::Focus);
     let canonical = a.focused_access_node().unwrap().value;
@@ -322,11 +320,9 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     let component = component(&f, 14, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
     let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
-    *f.authority.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), &f.author.0),
-        vec![],
-    )
-    .at_unix_time(100);
+    *f.authority.borrow_mut() =
+        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+            .at_unix_time(100);
     for route in named(&a, "New note") {
         perform(&mut a, &route, &Action::Activate);
     }

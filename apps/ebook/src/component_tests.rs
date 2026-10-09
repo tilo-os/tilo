@@ -7,7 +7,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::bound_dispatch::BoundActionAddress;
 use ui::headless::FrameHarness;
-use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, UserId};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordStore};
 
@@ -65,9 +65,9 @@ impl Fixture {
                 .open(crate::definition().app_id, WORKSPACE)
                 .unwrap(),
             views: Rc::new(InstanceViewStore::portable(cache, WORKSPACE).unwrap()),
-            authority: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), "reader"),
-                vec![],
+            authority: Rc::new(RefCell::new(PermissionContext::member(
+                "reader",
+                Role::Owner,
             ))),
         }
     }

@@ -56,24 +56,17 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         if self.certificate(&caller.device_public_key, now)? != caller {
             return Err("effect caller is not exact current admitted evidence".into());
         }
-        let (role, caps, person) = self.permissions(caller.device_public_key, now)?;
-        let seconds = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|_| "effect clock precedes Unix epoch")?
-            .as_secs();
-        let actor = Actor::person(Some(role), person).in_room(self.core.room.clone());
-        if decide_capability(
-            &actor,
-            &ResourceRef::Workspace,
-            Verb::Read,
-            &caps,
-            Some(seconds),
-        ) != CapDecision::Allow
-        {
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "effect clock precedes Unix epoch")?;
+        let member = self.permissions(caller.device_public_key, now)?;
+        if !member.allows(
+            &tilo_action_policy::TreePath::room(&self.core.room),
+            tilo_action_policy::ActionKind::Read,
+            now,
+        ) {
             return Err("effect caller cannot currently read this workspace".into());
         }
         let receipt = Self::validate_workspace_effect_receipt_encoding(invocation, redacted)?;

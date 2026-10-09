@@ -38,15 +38,14 @@ use tilo_actions::remote::{
 use uuid::Uuid;
 
 use crate::catalog::{ResourceTarget, find_row};
-use crate::grant::grant_permits;
+use crate::grant::{StepGrant, grant_answer, step_node};
 use crate::path::StepPath;
-use crate::shortcut::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, UnattendedConsent,
-};
+use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
+use tilo_action_policy::Answer;
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
@@ -129,12 +128,6 @@ pub struct RunRequest<'a> {
     pub trigger: RunTrigger,
     /// Values for the shortcut's declared inputs.
     pub inputs: Map<String, Value>,
-    /// Confirmations given in advance that an unattended run may use in
-    /// place of a person: only a step resolving to exactly one of these
-    /// actions proceeds past its confirmation. The host passes the
-    /// shortcut's [`consents`](Shortcut::consents) only to a run their
-    /// giver started.
-    pub consents: Vec<UnattendedConsent>,
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -191,6 +184,10 @@ pub enum StepFailure {
     },
     #[error("the shortcut's grant does not cover `{action}` on `{app_id}`")]
     OutsideGrant { app_id: String, action: String },
+    #[error(
+        "the shortcut's grant asks before `{action}` on `{app_id}`, and nobody is present to answer"
+    )]
+    AsksFirst { app_id: String, action: String },
     #[error("the action is unavailable: {reason}")]
     Unavailable { code: String, reason: String },
     #[error("the action needs confirmation, and nobody is present to give it")]
@@ -292,7 +289,6 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger,
         inputs,
-        consents,
     } = request;
     let mut report = RunReport {
         run,
@@ -324,7 +320,6 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger: report.trigger.clone(),
         inputs,
-        consents,
         vars: BTreeMap::new(),
         outputs: BTreeMap::new(),
         records: Vec::new(),
@@ -356,7 +351,6 @@ struct Runner<'a, H, K> {
     mode: RunMode,
     trigger: String,
     inputs: Map<String, Value>,
-    consents: Vec<UnattendedConsent>,
     vars: BTreeMap<String, Value>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
@@ -608,18 +602,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 reason: "the row offers no action".into(),
             });
         };
-        if !grant_permits(
-            &self.shortcut.grant,
-            app_id,
-            &descriptor.address,
-            &descriptor.resource_kind,
-            descriptor.contract.permission,
-        ) {
-            return Err(StepFailure::OutsideGrant {
-                app_id: app_id.to_string(),
-                action: action.to_string(),
-            });
-        }
+        let granted = self.granted(app_id, action, descriptor)?;
         if let tilo_actions::contract::Availability::Unavailable { code, reason } =
             &descriptor.contract.availability
         {
@@ -640,7 +623,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             }
         })?;
         let confirmation = self
-            .confirmation(step, path, app_id, descriptor, &bound)
+            .confirmation(step, path, app_id, descriptor, &bound, &granted)
             .await?;
         let context = self.context(app_id, &row, descriptor);
         Ok(Prepared {
@@ -671,6 +654,29 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         })
     }
 
+    /// What the shortcut's grant answers for the step: a refusal, or an
+    /// answer the step may proceed under.
+    fn granted(
+        &self,
+        app_id: &str,
+        action: &str,
+        descriptor: &ActionDescriptor,
+    ) -> Result<StepGrant, StepFailure> {
+        let node = step_node(
+            self.caller.room(),
+            app_id,
+            &descriptor.resource_kind,
+            &descriptor.address,
+        );
+        let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind);
+        let (app_id, action) = (app_id.to_string(), action.to_string());
+        match (granted.answer, self.mode) {
+            (Answer::Deny, _) => Err(StepFailure::OutsideGrant { app_id, action }),
+            (Answer::Ask, RunMode::Unattended) => Err(StepFailure::AsksFirst { app_id, action }),
+            _ => Ok(granted),
+        }
+    }
+
     async fn confirmation(
         &self,
         step: &Step,
@@ -678,17 +684,21 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         app_id: &str,
         descriptor: &ActionDescriptor,
         bound: &ActionArgs,
+        granted: &StepGrant,
     ) -> Result<Option<Confirmation>, StepFailure> {
-        let policy = descriptor.contract.advertised_confirmation();
+        let policy = match descriptor.contract.advertised_confirmation() {
+            ConfirmationPolicy::None if granted.answer == Answer::Ask => {
+                ConfirmationPolicy::Confirm
+            }
+            policy => policy,
+        };
         if policy == ConfirmationPolicy::None {
             return Ok(None);
         }
         if self.mode == RunMode::Unattended {
-            if !self
-                .consents
-                .iter()
-                .any(|consent| consent.covers(app_id, &descriptor.address))
-            {
+            // Only a rule that names this exact action consents in advance
+            // for a run nobody is present at.
+            if !granted.names_action {
                 return Err(StepFailure::ConfirmationRequired);
             }
             return Ok(Some(match policy {

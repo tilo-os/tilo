@@ -367,15 +367,16 @@ impl Input {
             std::time::SystemTime::now(),
         )
     }
-    /// The author's current role in the room.
+    /// The author's current standing in the room: the room's policy, and
+    /// the bound on a device not theirs.
     ///
     /// # Errors
     /// The room is fenced or the author is not a member.
-    pub fn role(&self) -> Result<collab_types::Role, String> {
+    pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
         self.scope.connect.owner.with_current(self.room(), |view| {
             view.peer()
                 .permissions(self.author, std::time::SystemTime::now())
-                .map(|(role, _, _)| role)
+                .map(tilo_peer_state::MemberAuthority::standing)
         })
     }
 }

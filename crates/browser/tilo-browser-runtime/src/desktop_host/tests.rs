@@ -114,10 +114,8 @@ fn fixture_with_extra_calculators(
     tree.active = workspace.id;
     tree.workspaces.push(workspace);
     configure(&mut tree);
-    let permissions = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-        vec![],
-    );
+    let permissions =
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Owner);
     let admission = Admission {
         admitted_room: history_document(&tree),
         source_heads: vec![[7; 32]],
@@ -394,10 +392,7 @@ fn workspace_activity_modal_retains_desktop_and_closes_on_access_loss() {
         view: ActivityView::Explore,
     })
     .unwrap();
-    *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(None, "revoked"),
-        vec![],
-    );
+    *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::stranger("revoked");
     root.reconcile();
     assert!(root.activity.is_none());
     assert!(
@@ -4555,10 +4550,7 @@ fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
         .action_target
         .clone()
         .unwrap();
-    *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(None, "outsider"),
-        vec![],
-    );
+    *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::stranger("outsider");
     frame.relayout();
     assert!(
         frame
@@ -6473,10 +6465,8 @@ fn the_placeholder_window_is_drawn_on_the_canvas_as_opening() {
 #[test]
 fn a_member_who_cannot_write_the_room_does_not_speculate() {
     let (mut root, handle, admitted) = open_fixture();
-    *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "author"),
-        vec![],
-    );
+    *handle.permissions.borrow_mut() =
+        ui::permissions::PermissionContext::member("author", ui::permissions::Role::Viewer);
     let room = admitted.workspaces[0].room.to_string();
     invoke_open(&mut root, &room, "so.tilo.notes");
     root.reconcile();

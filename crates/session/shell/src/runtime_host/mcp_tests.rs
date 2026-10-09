@@ -19,7 +19,7 @@ fn fixture() -> (
     let mut workspace = Workspace::new(WorkspaceId(71), "MCP");
     let room = workspace.room.to_string();
     let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-    workspace.owner = Some(actor.clone());
+    workspace.set_owner(actor.clone());
     tree.desktop.workspaces.push(workspace);
     tree.set_active(WorkspaceId(71));
     (
@@ -338,7 +338,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let mut workspace = Workspace::new(WorkspaceId(71), "First connection");
         let room = workspace.room.to_string();
         let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-        workspace.owner = Some(actor.clone());
+        workspace.set_owner(actor.clone());
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());

@@ -167,9 +167,10 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .publish(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let provider = record_provider(&route);
-    let policy = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(collab_types::Role::Owner), "ada").in_room(&room.room),
-        Vec::new(),
+    let policy = ui::permissions::PermissionContext::member_of(
+        &room.room,
+        "ada",
+        ui::permissions::Role::Owner,
     );
     let source_views = source
         .read(|doc| {
@@ -389,9 +390,14 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
         }
         Some(tilo_agent_participant::room_actions::ViewReadPolicy {
             room: self.route.cluster_id.clone(),
-            role: collab_types::Role::Owner,
-            caps: Vec::new(),
-            person: hex::encode(self.user_public_key()),
+            standing: ui::permissions::Standing::person(
+                ui::permissions::policy::RoomPolicy::new(
+                    &self.route.cluster_id,
+                    hex::encode(self.user_public_key()),
+                ),
+                hex::encode(self.user_public_key()),
+            ),
+            sandbox: Vec::new(),
             unix_time: 1,
         })
     }

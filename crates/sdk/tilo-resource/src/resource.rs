@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_actions::{
-    ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, PermissionRequirement,
+    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
+    ExecutionLocus, OperationKind, ParamType,
 };
 
 use crate::action::ActionKind;
@@ -165,15 +165,14 @@ pub trait Resource: Sized + 'static {
         None
     }
 
-    /// The least a participant must be allowed to do for `action` to apply:
-    /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
-    /// reply or a note someone who may only comment can still add. The
-    /// dispatcher a view or surface edits through checks it, and a declared
-    /// action that builds it names the same level with
-    /// [`ActionDecl::requiring`].
-    fn permission(action: &Self::Action) -> PermissionRequirement {
+    /// The one field of the record `action` writes, when it writes only one:
+    /// a reply or a note writes the `comments`, so a grant on that field
+    /// (what someone who may only comment holds) reaches it. `None` by
+    /// default. A declared action that builds it names the same field with
+    /// [`ActionDecl::below_field`].
+    fn field_of(action: &Self::Action) -> Option<&'static str> {
         let _ = action;
-        PermissionRequirement::Write
+        None
     }
 
     /// Publish the bounded audited mutation door. Default resources retain
@@ -191,13 +190,24 @@ pub trait Resource: Sized + 'static {
         false
     }
 
-    /// The least any of the resource's actions needs
-    /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
-    /// group actions are offered under, each invocation then checked
-    /// against what its value needs. Writing by default; `Comment` for a
-    /// resource someone who may only comment can still reply in.
-    fn least_permission() -> PermissionRequirement {
-        PermissionRequirement::Write
+    /// The least any of the resource's actions is ([`kind_of`](Self::kind_of),
+    /// [`field_of`](Self::field_of)): what the generic [`APPLY`] and group
+    /// actions are offered under, each invocation then decided by what its
+    /// value is. An undoable change of the record by default; an undoable
+    /// change of its `comments` for a resource someone who may only comment
+    /// can still reply in.
+    fn least_need() -> ActionNeed {
+        Self::declarations()
+            .iter()
+            .map(|decl| (decl.kind, decl.field))
+            .min_by_key(|(kind, field)| (*kind, field.is_none()))
+            .map_or_else(
+                || tilo_actions::ActionContract::default().need(),
+                |(kind, field)| ActionNeed {
+                    kind,
+                    field: field.map(str::to_owned),
+                },
+            )
     }
 
     /// Mutations offered by name. The generic [`APPLY`] action is always
@@ -776,9 +786,10 @@ pub struct ActionDecl<R: Resource> {
     pub label: String,
     pub description: Option<String>,
     pub params: Vec<ActionParam>,
-    pub permission: PermissionRequirement,
-    /// What the action can do; decides whether the host's undo reverts it.
+    /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
     pub kind: ActionKind,
+    /// The one field it writes, if only one. See [`Resource::field_of`].
+    pub field: Option<&'static str>,
     pub destructive: bool,
     /// What the action answers its caller with, beside the change: the state
     /// it left, as the declaring resource's surface reports it.
@@ -809,8 +820,8 @@ impl<R: Resource> Clone for ActionDecl<R> {
             label: self.label.clone(),
             description: self.description.clone(),
             params: self.params.clone(),
-            permission: self.permission,
             kind: self.kind,
+            field: self.field,
             destructive: self.destructive,
             result: self.result.clone(),
             tags: self.tags.clone(),
@@ -857,8 +868,8 @@ impl<R: Resource> ActionDecl<R> {
             label: label.into(),
             description: None,
             params,
-            permission: PermissionRequirement::Write,
             kind: ActionKind::Undoable,
+            field: None,
             destructive: false,
             result: None,
             tags: Vec::new(),
@@ -910,22 +921,23 @@ impl<R: Resource> ActionDecl<R> {
         self
     }
 
+    /// Set what the action is able to do.
     #[must_use]
-    pub fn requiring(mut self, permission: PermissionRequirement) -> Self {
-        self.permission = permission;
+    pub fn of_kind(mut self, kind: ActionKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Place the action below the one field it writes.
+    #[must_use]
+    pub fn below_field(mut self, field: &'static str) -> Self {
+        self.field = Some(field);
         self
     }
 
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
-        self
-    }
-
-    /// What the action can do (derived by `#[resource]`).
-    #[must_use]
-    pub fn of_kind(mut self, kind: ActionKind) -> Self {
-        self.kind = kind;
         self
     }
 
@@ -1075,11 +1087,14 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
             encoded,
         )
     };
-    let mut spec = spec.requiring(decl.permission);
+    let mut spec = spec.of_kind(decl.kind);
     // A document action is undone by the host's undo; one that reached
     // outside the document is not.
     if decl.kind == ActionKind::Undoable {
         spec = spec.reversible();
+    }
+    if let Some(field) = decl.field {
+        spec = spec.below_field(field);
     }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
@@ -1313,15 +1328,15 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     .reversible()
     // History records the edit it carried, not `apply`.
     .carrying()
-    // Offered to whoever may take the least of its edits; each value needs
-    // what that edit needs.
-    .requiring(R::least_permission())
-    .with_permission_of(|args| {
+    // Offered to whoever may take the least of its edits; each value is
+    // what that edit is.
+    .with_need(R::least_need())
+    .with_need_of(|args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
-            return PermissionRequirement::Write;
+            return tilo_actions::ActionContract::default().need();
         };
         read_apply::<R>(serde_json::Value::Object(value.clone()))
-            .map_or(PermissionRequirement::Write, |action| R::permission(&action))
+            .map_or_else(|_| tilo_actions::ActionContract::default().need(), |action| need_of::<R>(&action))
     })
     // Each value is classified: deleting is destructive, trimming is not, so
     // a destructive value gets the confirmation a declared one would.
@@ -1356,16 +1371,28 @@ pub fn spec_kind(spec: &ActionSpec) -> ActionKind {
     }
 }
 
-/// How much a requirement asks, least first.
-pub(crate) fn permission_rank(requirement: PermissionRequirement) -> u8 {
-    match requirement {
-        PermissionRequirement::None => 0,
-        PermissionRequirement::Read => 1,
-        PermissionRequirement::Comment => 2,
-        PermissionRequirement::Write => 3,
-        PermissionRequirement::Invite => 4,
-        PermissionRequirement::Admin => 5,
+/// What `action` is, for the grants deciding it.
+pub fn need_of<R: Resource>(action: &R::Action) -> ActionNeed {
+    ActionNeed {
+        kind: R::kind_of(action),
+        field: R::field_of(action).map(str::to_owned),
     }
+}
+
+/// What several actions applied as one are: the strongest kind among them,
+/// below a field only when every one writes that same field. Nothing to
+/// apply is an undoable change of the record.
+pub(crate) fn group_need<R: Resource>(actions: &[R::Action]) -> ActionNeed {
+    let mut needs = actions.iter().map(need_of::<R>);
+    let Some(first) = needs.next() else {
+        return tilo_actions::ActionContract::default().need();
+    };
+    needs.fold(first, |group, need| ActionNeed {
+        kind: group.kind.max(need.kind),
+        field: group
+            .field
+            .filter(|field| need.field.as_ref() == Some(field)),
+    })
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
@@ -1393,19 +1420,12 @@ fn group_spec<R: Resource>() -> ActionSpec {
     .programmatic()
     // History records the members, not the group.
     .carrying()
-    // Needs what its most demanding member needs.
-    .requiring(R::least_permission())
-    .with_permission_of(|args| {
-        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
-            PermissionRequirement::Write,
-            |group| {
-                group
-                    .actions
-                    .iter()
-                    .map(R::permission)
-                    .max_by_key(|requirement| permission_rank(*requirement))
-                    .unwrap_or(PermissionRequirement::Write)
-            },
+    // Is what its most demanding member is.
+    .with_need(R::least_need())
+    .with_need_of(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or_else(
+            |_| tilo_actions::ActionContract::default().need(),
+            |group| group_need::<R>(&group.actions),
         )
     })
     // As consequential as its most consequential member.
@@ -1610,7 +1630,8 @@ fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
     };
     bound.kind == declared.kind
         && shape(bound) == shape(declared)
-        && bound.contract.permission == declared.contract.permission
+        && bound.contract.kind == declared.contract.kind
+        && bound.contract.field == declared.contract.field
         && bound.contract.risk == declared.contract.risk
 }
 

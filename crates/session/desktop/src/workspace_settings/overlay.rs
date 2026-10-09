@@ -2305,13 +2305,15 @@ impl WorkspaceSettingsOverlay {
         let (members, grants, app_rules) =
             model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
                 let members = ws.roster().len();
-                let grants = ws
-                    .capabilities
+                let sandbox = ws
+                    .sandbox
                     .iter()
-                    .filter(|cap| {
-                        cap.effect == collab_types::caps::Effect::Grant && !cap.is_room_membership()
-                    })
-                    .count();
+                    .filter(|cap| cap.effect == collab_types::caps::Effect::Grant);
+                let given =
+                    ws.policy.grants.iter().filter(|grant| {
+                        !matches!(grant.subject, tilo_action_policy::Subject::Role(_))
+                    });
+                let grants = sandbox.count().saturating_add(given.count());
                 (members, grants, ws.default_apps.policy.len())
             });
         let stats = [

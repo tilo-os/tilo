@@ -21,7 +21,7 @@ use tilo_relay_protocol::live::LiveAnchor;
 use ui::application::ApplicationDefinition;
 use ui::collaboration::PresencePayload;
 use ui::framework::{AttachedView, ResourceSelection};
-use ui::permissions::{Actor, PermissionContext, Principal, Role};
+use ui::permissions::{PermissionContext, Role, policy};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 use ui::tilo_resource::{Place, ResourceKind};
@@ -167,16 +167,17 @@ impl Replica {
         let kind = catalogue
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
-        let actor = if agent {
-            Actor {
-                role: Some(Role::Editor),
-                key: None,
-                principals: vec![Principal::Agent(participant.to_owned())],
-            }
+        let permissions = if agent {
+            let operator = policy::roles::AgentPreset::Operator.grants(
+                room,
+                participant,
+                &policy::Subject::person(participant),
+            );
+            PermissionContext::member_of(room, participant, Role::Editor)
+                .acting_as(policy::Subject::agent(participant), operator)
         } else {
-            Actor::person(Some(Role::Owner), participant)
+            PermissionContext::member_of(room, participant, Role::Owner)
         };
-        let permissions = PermissionContext::from_capabilities(actor, Vec::new());
         let (checkout, bytes, created) = match seed {
             Seed::New => {
                 let checkout = if definition.keeps_room_record() {
@@ -423,12 +424,17 @@ fn discover_views(
             descriptor.address.resource.as_str() == wanted.id
                 && descriptor.resource_kind == wanted.kind
                 && descriptor.kind == tilo_actions::OperationKind::View
-                && permissions.check(&ui::permissions::PermissionScope::action(
-                    app_id,
-                    descriptor.address.resource.clone(),
-                    descriptor.address.action.clone(),
-                    collab_types::caps::Verb::Read,
-                ))
+                && permissions.check(&ui::permissions::PermissionScope::Action {
+                    node: tilo_actions::action_node(
+                        &ui::permissions::TreePath::root(),
+                        app_id,
+                        &descriptor.resource_kind,
+                        &descriptor.address.resource,
+                        descriptor.contract.field.as_deref(),
+                        &descriptor.address.action,
+                    ),
+                    kind: descriptor.contract.kind,
+                })
         })
         .collect()
 }

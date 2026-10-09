@@ -297,7 +297,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
                     .peer()
                     .permissions(device, SystemTime::now())
                     .ok()
-                    .map(|(role, ..)| role))
+                    .map(|member| member.role))
             })
             .unwrap()
     };
@@ -361,7 +361,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
         "Alice's replica admits Bob's device",
         &|peer, _| {
             peer.permissions(desk.device_public_key, SystemTime::now())
-                .is_ok_and(|(role, ..)| role == collab_types::Role::Editor)
+                .is_ok_and(|member| member.role == collab_types::Role::Editor)
         },
     )
     .await;
@@ -476,7 +476,7 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
             Ok(view
                 .peer()
                 .permissions(laptop.device_public_key, SystemTime::now())
-                .map(|(role, ..)| role))
+                .map(|member| member.role))
         })
         .unwrap();
     assert_eq!(role, Ok(collab_types::Role::Owner));

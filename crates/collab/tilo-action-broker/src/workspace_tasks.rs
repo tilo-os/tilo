@@ -301,7 +301,7 @@ fn action(
         description: Some(if inspect { "Inspect current task coordination and execution policy; no execution result is asserted." } else { "Manual coordination only. Attachments are shared resource references; no agent run, execution, integration or verification is asserted." }.into()),
         operation_kind: if inspect { tilo_actions::OperationKind::View } else { tilo_actions::OperationKind::Document }, params,
         contract: tilo_actions::ActionContract {
-            permission: if inspect { tilo_actions::PermissionRequirement::Read } else { tilo_actions::PermissionRequirement::Write },
+            kind: if inspect { tilo_actions::ActionKind::Read } else { tilo_actions::ActionKind::Undoable },
             result: tilo_actions::ResultSpec::Json { schema: serde_json::json!({"type":"object"}) },
             ..Default::default()
         }, view: None, input: PublishedInput::None,
@@ -466,10 +466,9 @@ mod tests {
 
     #[test]
     fn public_queue_commits_an_admitted_agent_and_retains_a_receipt_without_a_run() {
+        use tilo_action_policy::roles::AgentPreset;
         use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-        use tilo_peer_state::workspace_membership::{
-            AgentMembershipPreset, WorkspaceMembershipCommand,
-        };
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
         use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
         let (_directory, owner, certificate, key) = enrolled_queue_owner();
         let now = std::time::SystemTime::now();
@@ -484,7 +483,7 @@ mod tests {
         };
         let enrolled = membership(WorkspaceMembershipCommand::AddAgent {
             agent: "scribe".into(),
-            preset: AgentMembershipPreset::Contributor,
+            preset: AgentPreset::Contributor,
         });
         owner
             .commit_workspace_membership_command(enrolled.clone(), &certificate, &key, now)
@@ -496,10 +495,7 @@ mod tests {
             .into_iter()
             .find(|row| row.action == "queue-agent-task")
             .unwrap();
-        assert_eq!(
-            published.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(published.contract.kind, tilo_actions::ActionKind::Undoable);
         let mut public = envelope(
             &serde_json::json!({"title":"Inspect chip proof", "assigned_agent":"scribe", "planning":"model"}),
         );
@@ -682,10 +678,7 @@ mod tests {
             .iter()
             .find(|row| row.action == "inspect")
             .unwrap();
-        assert_eq!(
-            inspect_action.contract.permission,
-            tilo_actions::PermissionRequirement::Read
-        );
+        assert_eq!(inspect_action.contract.kind, tilo_actions::ActionKind::Read);
         let mut request = envelope(&serde_json::json!({}));
         request.resource = format!("desktop:{}", task.id);
         request.action = "inspect".into();

@@ -311,11 +311,23 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
 /// Resolve `address` against `resources` without running anything, so a caller
 /// can check what an address currently names before committing to it.
 pub fn resolve<'a>(resources: &'a [Resource], address: &ActionAddress) -> Option<&'a ActionSpec> {
-    fn walk<'a>(r: &'a Resource, address: &ActionAddress) -> Option<&'a ActionSpec> {
+    locate(resources, address).map(|(_, spec)| spec)
+}
+
+/// [`resolve`], with the resource that publishes the action: what a door
+/// needs to place the action in the tree it grants over.
+pub fn locate<'a>(
+    resources: &'a [Resource],
+    address: &ActionAddress,
+) -> Option<(&'a Resource, &'a ActionSpec)> {
+    fn walk<'a>(
+        r: &'a Resource,
+        address: &ActionAddress,
+    ) -> Option<(&'a Resource, &'a ActionSpec)> {
         if r.id.as_str() == address.resource
             && let Some(spec) = r.actions.iter().find(|a| a.id == address.action)
         {
-            return Some(spec);
+            return Some((r, spec));
         }
         r.children.iter().find_map(|c| walk(c, address))
     }

@@ -44,15 +44,10 @@ impl ComponentContextSource for Host {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: Rc::new(RefCell::new(
-                    ui::permissions::PermissionContext::from_capabilities(
-                        ui::permissions::Actor::person(
-                            Some(ui::permissions::Role::Owner),
-                            "author",
-                        ),
-                        vec![],
-                    ),
-                )),
+                permissions: Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+                    "author",
+                    ui::permissions::Role::Owner,
+                ))),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },

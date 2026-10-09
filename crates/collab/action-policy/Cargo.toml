@@ -2,7 +2,7 @@
 name = "tilo-action-policy"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true

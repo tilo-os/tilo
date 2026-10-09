@@ -1,13 +1,12 @@
-//! Op-application enforcement: the `(subject × scope × verb)` capability
-//! layer, proven on the **real** validate/apply path
-//! (`validate_inbound_op` + `ChannelState::apply_and_relay`), not a helper.
+//! Op-application enforcement: the room's grants, proven on the **real**
+//! validate/apply path (`validate_inbound_op` +
+//! `ChannelState::apply_and_relay`), not a helper.
 //!
 //! Headline proof: a `commenter` may add a comment op but an edit op from
 //! the same actor is rejected **at validation** — not applied, not
-//! relayed. Plus the richer layer: an `editor` restricted to
-//! comment-only inside one app has its edit denied (something the
-//! coarse role table alone would allow), and a per-user share extends a
-//! viewer's authority on one artifact.
+//! relayed. Plus finer grants: an `editor` held to comments inside one app
+//! has its edit denied, and a grant to one person on one artifact extends a
+//! viewer's authority there only.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,13 +22,27 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
 
-use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
-    generate_keypair, role_caps, role_permits, sign_event, sign_op, validate_inbound_op,
-    verb_for_opclass,
+    DEFAULT_ROOM, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
+    ValidationError, generate_keypair, op_node, sign_event, sign_op, validate_inbound_op,
 };
+use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles};
+
+fn not_granted(result: Result<(), ValidationError>) -> bool {
+    result.is_err_and(|error| matches!(error, ValidationError::NotGranted(_)))
+}
+
+fn grant(id: &str, subject: Subject, node: TreePath, answer: Answer) -> Grant {
+    Grant::new(
+        id,
+        subject,
+        node,
+        KindSet::UNDOABLE,
+        answer,
+        Subject::Role(Role::Owner),
+    )
+}
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
@@ -160,9 +173,8 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     // An EDIT op (EditMeta) from the SAME actor is rejected at
     // validation: the real validate path returns the role denial...
     let edit = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
-    assert_eq!(
-        validate_inbound_op(&edit, &mut state.clone()),
-        Err(ValidationError::RoleForbidsOpClass),
+    assert!(
+        not_granted(validate_inbound_op(&edit, &mut state.clone())),
         "commenter's edit must be rejected at validation"
     );
 
@@ -171,7 +183,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     let before_log = state.op_log.len();
     let before_seq = state.last_seq_per_author.get(&author_pub).copied();
     let res = state.apply_and_relay(&edit);
-    assert_eq!(res, Err(ValidationError::RoleForbidsOpClass));
+    assert!(not_granted(res));
     assert_eq!(
         state.op_log.len(),
         before_log,
@@ -184,10 +196,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     );
     // A splice (text edit) is likewise rejected.
     let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 2);
-    assert_eq!(
-        state.apply_and_relay(&splice),
-        Err(ValidationError::RoleForbidsOpClass)
-    );
+    assert!(not_granted(state.apply_and_relay(&splice)));
     assert_eq!(
         state.op_log.len(),
         before_log,
@@ -195,139 +204,124 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     );
 }
 
-/// Capability overrides do real work on the apply path: an app-scoped
-/// Restrict narrows an Editor below the role table, a per-resource share
-/// extends a Viewer on exactly one artifact, and nothing rescues Denied.
+/// Finer grants do real work on the apply path: a Deny on one app holds an
+/// Editor to comments there, a grant on one artifact extends a Viewer on
+/// exactly that artifact, and a blocked member stays blocked whatever a
+/// broader grant says.
 #[test]
-fn capability_overrides_narrow_extend_but_never_rescue_on_the_real_path() {
-    // Phase: an app-scoped restriction caps an editor to comment only. The
-    // richer layer does real work: an app-scoped Restrict narrows an Editor
-    // below what the coarse role table allows.
+fn finer_grants_narrow_extend_and_block_on_the_real_path() {
+    // Phase: an editor held to comments inside one app.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
-
-    // Baseline: the coarse role table permits an Editor to splice, and
-    // with no overrides the op applies.
-    assert!(role_permits(
-        Role::Editor,
-        ArtifactKind::Note,
-        OpClass::Splice
-    ));
     let splice_ok = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
     assert!(
         state.clone().apply_and_relay(&splice_ok).is_ok(),
         "unrestricted editor may splice"
     );
 
-    // Mark the artifact as owned by the "finance" app, then restrict the
-    // Editor role to comment-only within that app.
     state.artifact_apps.insert(artifact, "finance".to_string());
-    state.cap_overrides.push(CapOverride::restrict_role_in_app(
-        Role::Editor,
+    let finance = TreePath::root()
+        .push(tilo_action_policy::Level::Room, DEFAULT_ROOM)
+        .app("finance");
+    state.grants.push(grant(
         "finance",
-        Verb::Comment,
+        Subject::Role(Role::Editor),
+        finance.clone(),
+        Answer::Deny,
+    ));
+    state.grants.push(grant(
+        "finance-comments",
+        Subject::Role(Role::Editor),
+        finance
+            .rest()
+            .push(tilo_action_policy::Level::Field, roles::COMMENTS_FIELD),
+        Answer::Allow,
     ));
 
-    // Now a splice inside the finance app is denied by the CAPABILITY
-    // layer (distinct from a pure role denial) on the real path...
     let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
-    assert_eq!(
-        validate_inbound_op(&splice, &mut state.clone()),
-        Err(ValidationError::CapabilityDenied),
-        "app restriction denies the editor's splice"
+    assert!(
+        not_granted(validate_inbound_op(&splice, &mut state.clone())),
+        "the app deny refuses the editor's splice"
     );
-    let res = state.apply_and_relay(&splice);
-    assert_eq!(res, Err(ValidationError::CapabilityDenied));
+    assert!(not_granted(state.apply_and_relay(&splice)));
     assert_eq!(state.op_log.len(), 0, "restricted splice was NOT applied");
 
-    // ...but a comment inside the same app is still allowed (the
-    // restriction caps AT comment, not below it).
     let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
-        "comment is within the restricted cap ceiling"
+        "comments inside the app are still allowed"
     );
     assert_eq!(state.op_log.len(), 1);
 
-    // Phase: a per-resource share grants a viewer comment on one artifact.
-    // A Grant extends a Viewer's authority on ONE artifact without changing
-    // their role.
+    // Phase: a grant on one artifact lets a viewer comment there only.
     let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Viewer);
-
-    // A second artifact the viewer is NOT shared on.
     let other = ArtifactId::new();
     state.artifacts.insert(other, ArtifactKind::Note);
 
-    // By role alone a Viewer cannot comment anywhere.
     let denied = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
-    assert_eq!(
-        validate_inbound_op(&denied, &mut state.clone()),
-        Err(ValidationError::RoleForbidsOpClass),
+    assert!(
+        not_granted(validate_inbound_op(&denied, &mut state.clone())),
         "viewer cannot comment by role alone"
     );
 
-    // Share THIS artifact with the viewer, comment-only.
-    state
-        .cap_overrides
-        .push(CapOverride::share(author_pub, artifact, Verb::Comment));
-
-    // Now a comment on the shared artifact is allowed on the real path...
+    state.grants.push(grant(
+        "share",
+        Subject::Person(hex::encode(author_pub.0)),
+        op_node(
+            DEFAULT_ROOM,
+            None,
+            &artifact.0.to_string(),
+            OpClass::Comment,
+        ),
+        Answer::Allow,
+    ));
     let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
-        "share grants comment on the shared artifact"
+        "the grant allows comments on the shared artifact"
     );
     assert_eq!(state.op_log.len(), 1);
 
-    // ...but the same viewer still cannot comment on a DIFFERENT
-    // artifact (the share is instance-scoped), nor edit the shared one.
     let elsewhere = build_op(other, author_pub, &author_sk, att, OpClass::Comment, 2);
-    assert_eq!(
-        state.apply_and_relay(&elsewhere),
-        Err(ValidationError::RoleForbidsOpClass),
-        "the share does not leak to other artifacts"
+    assert!(
+        not_granted(state.apply_and_relay(&elsewhere)),
+        "the grant does not leak to other artifacts"
     );
     let edit_shared = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
-    assert_eq!(
-        state.apply_and_relay(&edit_shared),
-        Err(ValidationError::RoleForbidsOpClass),
-        "a comment-only share does not grant edit"
+    assert!(
+        not_granted(state.apply_and_relay(&edit_shared)),
+        "a comment grant does not grant edit"
     );
 
-    // Phase: a denied role cannot be rescued by a grant. Denied is an
-    // explicit block: no grant can rescue it.
-    let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Denied);
-
-    // Even a workspace-wide Admin grant to this exact user is inert
-    // against an explicit Denied block.
-    state.cap_overrides.push(CapOverride::new(
-        Subject::User(author_pub),
-        Scope::Workspace,
-        Effect::Grant,
-        Verb::Admin,
+    // Phase: a blocked member is not rescued by a broader grant.
+    let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
+    let person = Subject::Person(hex::encode(author_pub.0));
+    state.grants.push(Grant::new(
+        "blocked",
+        person.clone(),
+        TreePath::room(DEFAULT_ROOM),
+        KindSet::ALL,
+        Answer::Deny,
+        Subject::Role(Role::Owner),
     ));
-
+    state.grants.push(Grant::new(
+        "everything",
+        person,
+        TreePath::root(),
+        KindSet::ALL,
+        Answer::Allow,
+        Subject::Role(Role::Owner),
+    ));
     let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
-    assert_eq!(
-        state.apply_and_relay(&comment),
-        Err(ValidationError::RoleForbidsOpClass),
-        "Denied overrides any inherited or shared grant"
+    assert!(
+        not_granted(state.apply_and_relay(&comment)),
+        "the room-wide block is more specific than the root grant"
     );
     assert_eq!(state.op_log.len(), 0);
 }
 
-// The cap-bundle model is coherent with the coarse role table: for
-// every (role, op-class), role_permits agrees with "role's cap
-// ceiling implies the op's required verb".
-
+/// The role presets decide every op class as their table says.
 #[test]
-fn caps_agree_with_role_table() {
-    let roles = [
-        Role::Owner,
-        Role::Editor,
-        Role::Commenter,
-        Role::Viewer,
-        Role::Denied,
-    ];
+fn role_presets_decide_op_classes() {
     let ops = [
         OpClass::Splice,
         OpClass::Move,
@@ -339,15 +333,22 @@ fn caps_agree_with_role_table() {
         OpClass::Compaction,
         OpClass::Redact,
     ];
-    for role in roles {
+    for role in Role::ALL {
         for op in ops {
-            let table = role_permits(role, ArtifactKind::Note, op);
-            let bundle =
-                role_caps(role).is_some_and(|ceiling| ceiling.implies(verb_for_opclass(op)));
-            assert_eq!(
-                table, bundle,
-                "role_permits and the cap-bundle disagree for {role:?} / {op:?}"
-            );
+            let (state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(role);
+            let signed = build_op(artifact, author_pub, &author_sk, att, op, 1);
+            // A redaction then checks its payload; only the grant decision
+            // matters here.
+            let allowed = !not_granted(validate_inbound_op(&signed, &mut state.clone()));
+            let expected = match role {
+                Role::Owner => true,
+                Role::Editor => {
+                    !matches!(op, OpClass::Govern | OpClass::Compaction | OpClass::Redact)
+                }
+                Role::Commenter => op == OpClass::Comment,
+                Role::Viewer => false,
+            };
+            assert_eq!(allowed, expected, "{role:?} / {op:?}");
         }
     }
 }

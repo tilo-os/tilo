@@ -214,6 +214,17 @@ impl TreePath {
         self.0.is_empty()
     }
 
+    /// This path without the room it starts at, if it starts at one: where
+    /// it applies within its room.
+    #[must_use]
+    pub fn within_room(&self) -> Self {
+        let room = matches!(
+            self.0.first(),
+            Some(Segment::Name(Level::Room, _) | Segment::Any(Level::Room))
+        );
+        Self(self.0.iter().skip(usize::from(room)).cloned().collect())
+    }
+
     /// Whether the path names one node (no open level, no `**`).
     #[must_use]
     pub fn is_concrete(&self) -> bool {
@@ -238,6 +249,34 @@ impl TreePath {
         })
     }
 
+    /// `self` followed by every segment of `rest`.
+    #[must_use]
+    pub fn join(&self, rest: &Self) -> Self {
+        let mut path = self.clone();
+        for segment in &rest.0 {
+            path = match segment {
+                Segment::Rest => path.rest(),
+                segment => {
+                    path.0.push(segment.clone());
+                    path
+                }
+            };
+        }
+        path
+    }
+
+    /// The same path with a leading `room:<from>` renamed to `room:<to>`.
+    #[must_use]
+    pub fn with_room(&self, from: &str, to: &str) -> Self {
+        let mut path = self.clone();
+        if let Some(Segment::Name(Level::Room, id)) = path.0.first_mut()
+            && id == from
+        {
+            to.clone_into(id);
+        }
+        path
+    }
+
     /// The room this path is in.
     #[must_use]
     pub fn room_id(&self) -> Option<&str> {
@@ -249,6 +288,13 @@ impl TreePath {
     #[must_use]
     pub fn covers(&self, path: &Self) -> bool {
         covers(self.trimmed(), &path.0)
+    }
+
+    /// Whether some node lies at or below both `self` and `other`: a grant on
+    /// one can decide an action under the other.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        overlaps(self.trimmed(), other.trimmed())
     }
 
     /// Whether `self` lies at or below `ancestor`.
@@ -291,6 +337,33 @@ fn covers(pattern: &[Segment], path: &[Segment]) -> bool {
         _ => path
             .split_first()
             .is_some_and(|(head, tail)| first.covers(head) && covers(rest, tail)),
+    }
+}
+
+fn overlaps(left: &[Segment], right: &[Segment]) -> bool {
+    let (Some((first, left_rest)), Some((second, right_rest))) =
+        (left.split_first(), right.split_first())
+    else {
+        return true;
+    };
+    match (first, second) {
+        // Any depth either matches nothing or absorbs the other side's next
+        // segment.
+        (Segment::Rest, _) | (_, Segment::Rest) => {
+            overlaps(left_rest, right) || overlaps(left, right_rest)
+        }
+        _ => compatible(first, second) && overlaps(left_rest, right_rest),
+    }
+}
+
+fn compatible(left: &Segment, right: &Segment) -> bool {
+    match (left, right) {
+        (Segment::Name(level, id), Segment::Name(other_level, other_id)) => {
+            level == other_level && id == other_id
+        }
+        (Segment::Name(level, _) | Segment::Any(level), Segment::Any(other_level))
+        | (Segment::Any(level), Segment::Name(other_level, _)) => level == other_level,
+        _ => false,
     }
 }
 

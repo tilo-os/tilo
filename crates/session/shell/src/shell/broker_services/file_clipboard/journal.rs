@@ -67,7 +67,7 @@ impl Folder {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<SecureNearbyDestination, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let path = decode_path(&self.path)?;
         let grant = Grant::open(tree, context.workspace(), &path, true, context.owner())?;
         grant.check(tree, context.workspace(), context.owner())?;
@@ -212,7 +212,7 @@ impl Journal {
         id: &str,
     ) -> Result<Arc<PendingReceipt>, String> {
         context.authorize(if context.is_history_compensation() {
-            Permission::Write
+            Permission::Undoable
         } else {
             Permission::Read
         })?;
@@ -301,7 +301,7 @@ impl Journal {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let directory = self
             .directory()?
             .ok_or("durable clipboard receipt unavailable")?;
@@ -743,7 +743,7 @@ impl PendingReceipt {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         self.resume_moves(tree, context)?;
         let receipt = self
             .receipt
@@ -836,7 +836,7 @@ impl PendingReceipt {
                     .undone = false;
                 Ok(())
             })?;
-            context.authorize(Permission::Write)?;
+            context.authorize(Permission::Undoable)?;
             receipt.destination.open(tree, context)?;
             if receipt.cut {
                 item.parent.open(tree, context)?;
@@ -885,7 +885,7 @@ impl PendingReceipt {
         tree: &WorkspaceTreeHandle,
         context: &FileClipboardContext,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         self.resume_moves(tree, context)?;
         let receipt = self
             .receipt
@@ -1011,7 +1011,7 @@ impl PendingReceipt {
         }
         let root = decode_path(&receipt.destination.path)?;
         let (directory, name, path) = recovery_material(item, &root, &destination, staged, seal)?;
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         receipt.destination.open(tree, context)?;
         if let Some(source) = &source
             && optional_entry(source, original_name)?.is_none()

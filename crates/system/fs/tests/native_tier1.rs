@@ -108,18 +108,20 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     let person = SigningKey::from_bytes(&person_seed)
         .verifying_key()
         .to_bytes();
-    let caps: Vec<collab_types::CapOverride> =
-        [collab_types::Verb::Read, collab_types::Verb::Write]
-            .into_iter()
-            .map(|verb| {
-                collab_types::CapOverride::new(
-                    collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
-                    collab_types::Scope::FsPath("/".into()),
-                    collab_types::Effect::Grant,
-                    verb,
-                )
-            })
-            .collect();
+    let caps: Vec<collab_types::CapOverride> = [
+        collab_types::caps::Access::Read,
+        collab_types::caps::Access::Write,
+    ]
+    .into_iter()
+    .map(|verb| {
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            verb,
+        )
+    })
+    .collect();
     std::fs::write(path, serde_json::to_vec(&caps).unwrap()).unwrap();
 }
 

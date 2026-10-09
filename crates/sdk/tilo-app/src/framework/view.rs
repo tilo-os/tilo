@@ -175,11 +175,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// pane, or with a bound widget for a permission-specific label. Changes
     /// follow the host even when the document and write access stay unchanged.
     /// This controls presentation; the action door remains the authority.
-    pub fn permission_state(
-        &self,
-        requirement: tilo_actions::PermissionRequirement,
-    ) -> LocalState<bool> {
-        self.dispatch.permission_state(requirement)
+    pub fn permission_state(&self, need: tilo_actions::ActionNeed) -> LocalState<bool> {
+        self.dispatch.permission_state(need)
+    }
+
+    /// Whether this participant may govern the room, observed: for an
+    /// owner-only pane with [`Self::switch`].
+    pub fn govern_state(&self) -> LocalState<bool> {
+        self.dispatch.govern_state()
     }
 
     /// The dispatcher of the resource nested in this one at `id`, whose

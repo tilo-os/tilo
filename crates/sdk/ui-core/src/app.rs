@@ -3691,10 +3691,7 @@ pub(crate) mod ordinary_confirmation_tests {
         fn revoke(&self) {
             if let Self::Component(binding, _) = self {
                 *binding.permissions.borrow_mut() =
-                    crate::permissions::PermissionContext::from_capabilities(
-                        crate::permissions::Actor::person(None, "fixture"),
-                        vec![],
-                    );
+                    crate::permissions::PermissionContext::stranger("fixture");
             }
         }
     }
@@ -3895,10 +3892,7 @@ pub(crate) mod ordinary_confirmation_tests {
             }
         }
         fn revoke(&mut self) {
-            let denied = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture"),
-                vec![],
-            );
+            let denied = crate::permissions::PermissionContext::stranger("fixture");
             match self {
                 Self::Native(app) => app.set_permission_ctx(denied),
                 Self::Driver(driver) => driver.set_permission_ctx(denied),

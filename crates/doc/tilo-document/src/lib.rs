@@ -544,17 +544,20 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
-    fn least_permission() -> tilo_resource::PermissionRequirement {
-        tilo_resource::PermissionRequirement::Comment
+    fn least_need() -> tilo_actions::ActionNeed {
+        tilo_actions::ActionNeed {
+            kind: tilo_resource::ActionKind::Undoable,
+            field: Some(tilo_actions::COMMENTS_FIELD.to_owned()),
+        }
     }
 
-    /// A comment or a reply needs only the right to comment.
-    fn permission(action: &RichTextAction) -> tilo_resource::PermissionRequirement {
+    /// A comment or a reply writes only the comments.
+    fn field_of(action: &RichTextAction) -> Option<&'static str> {
         match action {
             RichTextAction::AddComment { .. } | RichTextAction::ReplyToComment { .. } => {
-                tilo_resource::PermissionRequirement::Comment
+                Some(tilo_actions::COMMENTS_FIELD)
             }
-            _ => tilo_resource::PermissionRequirement::Write,
+            _ => None,
         }
     }
 

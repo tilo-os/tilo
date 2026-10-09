@@ -72,16 +72,16 @@
 //! web page's text: the caller reasons about it and never follows it),
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it) and
-//! `permission = "read"` (any participant may invoke
-//! it; an effect needs write access by default, a view read access). Field
+//! `kind = "read"` (an effect that only reads, which whoever may read may
+//! invoke; an effect reaches outside the record by default, a view reads). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
 //! secret the host keeps out of logs, history and confirmations, and
 //! `#[param("…", choices = EXPR)]` names the values it takes when they are a
 //! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
 use tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
-    OperationKind, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionKind, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction,
+    ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -270,7 +270,9 @@ pub struct EffectDecl {
     pub risk: RiskLevel,
     /// Safe to repeat after an uncertain outcome.
     pub idempotent: bool,
-    pub permission: PermissionRequirement,
+    /// What it is able to do: reach outside the record by default, read for
+    /// a view or an effect declared `kind = "read"`.
+    pub action_kind: ActionKind,
     /// Reaches files, hardware or services of the device it runs on: only
     /// the person at that device may invoke it, never a collaborator or a
     /// remote participant.
@@ -385,7 +387,7 @@ impl EffectDecl {
             ActionContract::default()
         };
         spec.contract = ActionContract {
-            permission: self.permission,
+            kind: self.action_kind,
             risk: self.risk,
             confirmation: if matches!(
                 self.risk,
@@ -522,7 +524,7 @@ mod tests {
         /// Rename a thing.
         ///
         /// It keeps its id.
-        #[effect(returns, permission = "read")]
+        #[effect(returns, kind = "read")]
         RenameThing {
             #[param("The thing")]
             thing: String,
@@ -531,7 +533,7 @@ mod tests {
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
         /// Copy a thing's key.
-        #[effect(privileged, permission = "read")]
+        #[effect(privileged, kind = "read")]
         CopyKey { thing: String },
         /// Paint a thing.
         Paint {
@@ -557,7 +559,7 @@ mod tests {
             Some("Rename a thing. It keeps its id.")
         );
         assert_eq!(rename.kind, OperationKind::Effect);
-        assert_eq!(rename.contract.permission, PermissionRequirement::Read);
+        assert_eq!(rename.contract.kind, ActionKind::Read);
         assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
         assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
 
@@ -666,7 +668,7 @@ mod tests {
         );
         let search = &specs[0];
         assert_eq!(search.kind, OperationKind::View);
-        assert_eq!(search.contract.permission, PermissionRequirement::Read);
+        assert_eq!(search.contract.kind, ActionKind::Read);
         assert_eq!(search.contract.risk, RiskLevel::None);
         assert_eq!(search.contract.retry, RetryPolicy::Idempotent);
 
@@ -683,7 +685,7 @@ mod tests {
 
         let connect = Rows::Connect { item: "b".into() }.bound();
         assert_eq!(connect.kind, OperationKind::Effect);
-        assert_eq!(connect.contract.permission, PermissionRequirement::Write);
+        assert_eq!(connect.contract.kind, ActionKind::Outside);
         assert_eq!(connect.contract.retry, RetryPolicy::Idempotent);
         assert_eq!(
             connect.contract.execution,
@@ -706,7 +708,7 @@ mod tests {
         assert!(bound.params().is_empty(), "the row names the thing already");
         assert_eq!(bound.contract.risk, RiskLevel::Privileged);
         assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert_eq!(bound.contract.permission, PermissionRequirement::Read);
+        assert_eq!(bound.contract.kind, ActionKind::Read);
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, "test.effects");
         assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);

@@ -3097,7 +3097,7 @@ mod tests {
         }
         // Phase `room_scoped_authority_admits_only_its_signed_room`.
         {
-            use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+            use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let status = temp.path().join("status.json");
@@ -3118,7 +3118,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
                         Scope::Room("42".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     ),
                     // A Files grant is intentionally insufficient to subscribe
                     // to any room, including unrelated room 43.
@@ -3126,7 +3126,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
                         Scope::FsPath("/".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     ),
                     // Expired room grants must not resurrect a former member
                     // merely because the NAS reloads the signed authority.
@@ -3134,7 +3134,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
                         Scope::Room("43".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     )
                     .expiring(Expiry::AtUnix(0)),
                 ],
@@ -3577,7 +3577,7 @@ mod tests {
     async fn live_authority_refresh_revokes_expires_and_resists_rollback() {
         // Phase `live_authority_refresh_removes_the_last_room_collaborator`.
         {
-            use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
@@ -3596,7 +3596,7 @@ mod tests {
                     Subject::User(collab_types::Ed25519PublicKey(collaborator)),
                     Scope::Room("42".into()),
                     Effect::Grant,
-                    Verb::Read,
+                    Access::Read,
                 )],
                 false,
                 &governor,
@@ -3688,7 +3688,7 @@ mod tests {
         }
         // Phase `authority_refresh_rechecks_expiry_without_a_source_change`.
         {
-            use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+            use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
@@ -3707,7 +3707,7 @@ mod tests {
                         Subject::User(collab_types::Ed25519PublicKey(collaborator)),
                         Scope::Room("42".into()),
                         Effect::Grant,
-                        Verb::Read,
+                        Access::Read,
                     )
                     // It is initially a future deadline, then becomes expired while
                     // both authority files remain byte-for-byte unchanged.
@@ -3798,7 +3798,7 @@ mod tests {
         }
         // Phase `authority_high_water_rejects_rollback_and_missing_cache_after_restart`.
         {
-            use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
@@ -3818,7 +3818,7 @@ mod tests {
                     Subject::User(collab_types::Ed25519PublicKey(collaborator)),
                     Scope::Room("42".into()),
                     Effect::Grant,
-                    Verb::Read,
+                    Access::Read,
                 )],
                 false,
                 &governor,

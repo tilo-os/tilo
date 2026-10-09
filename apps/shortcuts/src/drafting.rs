@@ -138,7 +138,7 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
         other => return Err(format!("the agent answered {other}, not a shortcut")),
     };
     object.insert("id".to_owned(), Value::String("drafted".to_owned()));
-    for authority in ["grant", "triggers", "consents", "saved_by"] {
+    for authority in ["grant", "triggers", "saved_by"] {
         object.remove(authority);
     }
     let mut shortcut: Shortcut = serde_json::from_value(Value::Object(object))
@@ -213,7 +213,7 @@ mod tests {
                  "resource": {"fixed": "notes.folder:inbox"},
                  "args": {"title": {"literal": "Digest"}}}
             ],
-            "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}],
+            "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}],
             "triggers": [{"trigger": "keyboard", "chord": "Super+X"}]
         });
         let drafted = adopt(answer, &saved, &catalog).unwrap();

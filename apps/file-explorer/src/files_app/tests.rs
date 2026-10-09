@@ -1161,7 +1161,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.kind, ActionKind::Undoable);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce
@@ -2412,7 +2412,7 @@ mod command_path_tests {
                 .iter()
                 .find(|action| action.id == "status")
                 .expect("a read-only status action exists in every phase");
-            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
             let ActionInput::Immediate(encoded) = &status.input else {
                 panic!("status uses the app's opaque row payload")
@@ -6128,7 +6128,7 @@ mod recent_resource_tests {
                 "Recent navigation and device history do not mutate shared files"
             );
         }
-        app.set_role(ui::permissions::Role::Denied);
+        app.leave_room();
         for action in ["reveal", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }

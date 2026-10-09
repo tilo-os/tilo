@@ -23,8 +23,8 @@ use ui::tilo_actions::remote::{
     ReceiptStatus,
 };
 use ui::tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
-    InputSpec, InvocationId, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
+    ExecutionLocus, InputSpec, InvocationId, OperationKind, ParamType, ResultSpec,
 };
 use ui::{RemoteActions, RemoteActionsGuard};
 
@@ -38,7 +38,7 @@ fn row(
     kind: &str,
     action: &str,
     params: Vec<ActionParam>,
-    permission: PermissionRequirement,
+    permission: ActionKind,
     result: ResultSpec,
 ) -> CatalogueRow {
     CatalogueRow {
@@ -61,7 +61,7 @@ fn row(
             locus: ExecutionLocus::default(),
             kind: OperationKind::Document,
             contract: ActionContract {
-                permission,
+                kind: permission,
                 result,
                 ..ActionContract::default()
             },
@@ -94,7 +94,7 @@ impl FakeHost {
                 "shortcuts.library",
                 action,
                 params,
-                PermissionRequirement::Write,
+                ActionKind::Undoable,
                 ResultSpec::None,
             )
         };
@@ -114,7 +114,7 @@ impl FakeHost {
                     "notes.folder",
                     "list",
                     Vec::new(),
-                    PermissionRequirement::Read,
+                    ActionKind::Read,
                     ResultSpec::Json {
                         schema: json!({
                             "type": "object",
@@ -133,7 +133,7 @@ impl FakeHost {
                         ActionParam::required("title", ParamType::Text, "Title"),
                         ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
                     ],
-                    PermissionRequirement::Write,
+                    ActionKind::Undoable,
                     ResultSpec::None,
                 ),
                 library("list", Vec::new()),
@@ -202,7 +202,7 @@ impl ActionHost for FakeHost {
                      "resource": {"fixed": INBOX},
                      "args": {"title": {"literal": "Inbox"}, "pinned": {"literal": false}}}
                 ],
-                "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}]
+                "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}]
             })),
             _ => None,
         };
@@ -228,15 +228,17 @@ impl ActionHost for FakeHost {
     }
 }
 
-fn rule(action: &str, verb: collab_types::Verb) -> Value {
-    serde_json::to_value(collab_types::PermissionProfileRule::grant(
-        collab_types::Scope::Action {
-            app: NOTES.into(),
-            resource: INBOX.into(),
+fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
+    serde_json::to_value(
+        shortcuts::grant::Permission {
+            app_id: NOTES.into(),
+            reach: shortcuts::grant::Reach::Resource(INBOX.into()),
             action: action.into(),
-        },
-        verb,
-    ))
+            kind,
+            label: String::new(),
+        }
+        .rule(),
+    )
     .unwrap()
 }
 
@@ -421,8 +423,8 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
                  "args": {"pinned": {"literal": true}, "title": {"input": "who"}}}
             ],
             "grant": [
-                rule("list", collab_types::Verb::Read),
-                rule("create", collab_types::Verb::Write),
+                rule("list", tilo_action_policy::ActionKind::Read),
+                rule("create", tilo_action_policy::ActionKind::Undoable),
             ]
         }})
     );
@@ -442,7 +444,7 @@ fn with_agent() -> FakeHost {
             ActionParam::required("input", ParamType::Text, "Input"),
             ActionParam::required("schema", ParamType::Object, "Schema"),
         ],
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::Json { schema: json!({}) },
     ));
     host
@@ -529,7 +531,7 @@ fn with_saved_note() -> FakeHost {
         "shortcuts.shortcut",
         tilo_automation::SHORTCUT_RUN_ACTION,
         Vec::new(),
-        PermissionRequirement::Write,
+        ActionKind::Undoable,
         ResultSpec::None,
     ));
     host.saved.push(json!({

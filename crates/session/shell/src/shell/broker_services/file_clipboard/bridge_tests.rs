@@ -29,7 +29,7 @@ impl Fixture {
         let signing_root = SigningKey::from_bytes(&[119; 32]);
         let device = SigningKey::from_bytes(&[120; 32]);
         let mut workspace = Workspace::new(WorkspaceId(119), "Clipboard bridge fixture");
-        workspace.owner = Some(
+        workspace.set_owner(
             tilo_action_broker::collab_broker_capnp::principal_id_for_root(
                 signing_root.verifying_key().to_bytes(),
             ),
@@ -448,7 +448,7 @@ fn clipboard_bridge_pastes_exact_tickets_and_observes_retry_without_duplicate_co
             fs::read_dir(&folder).expect("receiving contents").count(),
             1
         );
-        fixture.tree.write().workspaces[0].capabilities.clear();
+        fixture.tree.write().workspaces[0].sandbox.clear();
         let reply = b
             .compensate(Command::Undo { operation })
             .await
@@ -676,7 +676,6 @@ fn clipboard_bridge_cut_restores_exact_receipt_under_current_undo_authority() {
 
 #[test]
 fn clipboard_bridge_current_viewer_can_copy_but_cannot_cut_or_replace_offer() {
-    use crate::shell::state::{CapOverride, Subject, Verb};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -690,12 +689,8 @@ fn clipboard_bridge_current_viewer_can_copy_but_cannot_cut_or_replace_offer() {
         {
             let mut tree = fixture.tree.write();
             let workspace = tree.workspaces.first_mut().expect("fixture workspace");
-            let principal = workspace.owner.take().expect("original owner");
-            workspace.grant_capability(CapOverride::membership(
-                Subject::person(principal),
-                fixture.room.clone(),
-                Verb::Read,
-            ));
+            let principal = workspace.policy.owner.take().expect("original owner");
+            workspace.admit(principal, tilo_action_policy::Role::Viewer);
             drop(tree);
         }
         let offer = connection.publish(ticket.clone(), false).await;

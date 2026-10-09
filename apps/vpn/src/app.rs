@@ -1768,10 +1768,7 @@ mod tests {
             .find(|action| action.id == "connect")
             .unwrap();
         assert_eq!(connect.contract.result, ui::tilo_actions::ResultSpec::Job);
-        assert_eq!(
-            connect.contract.permission,
-            ui::tilo_actions::PermissionRequirement::Admin
-        );
+        assert_eq!(connect.contract.kind, ui::tilo_actions::ActionKind::Outside);
 
         // A connect asked for anyway is refused, and nothing claims a tunnel.
         assert!(

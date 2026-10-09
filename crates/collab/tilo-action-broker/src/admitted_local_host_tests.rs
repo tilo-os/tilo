@@ -493,8 +493,14 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                         .capabilities
                         .foreign
                 );
-                env.membership.write().workspaces[0]
-                    .grant_capability(collab_types::foreign_device::foreign_device_cap(Verb::Read));
+                {
+                    use crate::test_support::Grants as _;
+                    env.membership.write().workspaces[0].deny(
+                        tilo_action_policy::Subject::ForeignDevice,
+                        &tilo_action_policy::TreePath::root(),
+                        tilo_action_policy::KindSet::UNDOABLE,
+                    );
+                }
                 let mut leases = leases.into_iter();
                 assert!(
                     leases.next().unwrap().check().is_err(),

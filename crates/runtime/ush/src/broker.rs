@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::Verb;
+use collab_types::caps::Access;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
 
@@ -296,7 +296,7 @@ fn legacy_launch_args(
         "--cwd".to_string(),
         cwd.display().to_string(),
     ];
-    if policy.permits(cwd, Verb::Write, Some(unix_now())) {
+    if policy.permits(cwd, Access::Write, Some(unix_now())) {
         out.push("--share-cwd".to_string());
     }
     out.push("--".to_string());
@@ -438,7 +438,7 @@ impl BrokerState {
             },
             Request::Revoke { id } => self.revoke(&id),
             Request::Check { path, write } => {
-                let verb = if write { Verb::Write } else { Verb::Read };
+                let verb = if write { Access::Write } else { Access::Read };
                 Response::Check {
                     allowed: self
                         .environment
@@ -829,7 +829,7 @@ impl BrokerState {
                         Effect::Grant => "grant",
                         Effect::Restrict => "restrict",
                     },
-                    c.verb
+                    c.access
                 ),
                 expiry: match c.expiry {
                     Expiry::Never => "never".into(),
@@ -1721,7 +1721,7 @@ mod tests {
         let policy = Policy::new(vec![CapOverride::grant(
             Subject::Principal(Principal::App(crate::RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/var/home/you/src".into()),
-            Verb::Write,
+            Access::Write,
         )]);
         // phase: a trusted directory is shared for the launch
         {

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 pub use tilo_app_package::PackageId;
 use tilo_resource::{Json, JsonSchema, Model, ModelError, resource};
 
@@ -404,7 +404,7 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     Ok(CapOverride::grant(
         Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
         Scope::FsPath(path.to_string_lossy().into_owned()),
-        if write { Verb::Write } else { Verb::Read },
+        if write { Access::Write } else { Access::Read },
     )
     .with_id(grant_id(path))
     .granted_by(Principal::Person("local".to_owned())))
@@ -444,7 +444,7 @@ pub fn host_grant(host: &str) -> Result<CapOverride, String> {
     Ok(CapOverride::grant(
         Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
         Scope::NetHost(host.clone()),
-        Verb::Read,
+        Access::Read,
     )
     .with_id(host_grant_id(&host))
     .granted_by(Principal::Person("local".to_owned())))
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(env.grants.0.len(), 1, "granting again replaces the grant");
         let cap = &env.grants.0[0];
         assert!(is_runtime_grant(cap));
-        assert_eq!(cap.verb, Verb::Read);
+        assert_eq!(cap.access, Access::Read);
         assert_eq!(cap.scope, Scope::FsPath("/var/home/you/src".into()));
 
         for bad in [

@@ -228,7 +228,7 @@ mod tests {
                 action(
                     "rename",
                     tilo_actions::ActionContract {
-                        permission: tilo_actions::PermissionRequirement::Write,
+                        kind: tilo_actions::ActionKind::Undoable,
                         ..tilo_actions::ActionContract::default()
                     },
                 ),

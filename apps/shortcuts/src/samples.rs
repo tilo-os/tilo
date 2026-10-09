@@ -10,8 +10,8 @@ use ui::LocalState;
 use ui::prelude::*;
 use ui::tilo_actions::remote::{CatalogueResource, CatalogueRow};
 use ui::tilo_actions::{
-    ActionAddress, ActionContract, ActionDescriptor, ActionParam, ExecutionLocus, InputSpec,
-    OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
+    InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
 use crate::door::{DoorState, Drafting, Loaded, RunRecord, RunStatus};
@@ -36,9 +36,9 @@ fn resource(id: &str, kind: &str, label: &str) -> CatalogueResource {
     }
 }
 
-fn contract(permission: PermissionRequirement, result: ResultSpec) -> ActionContract {
+fn contract(kind: ActionKind, result: ResultSpec) -> ActionContract {
     ActionContract {
-        permission,
+        kind,
         result,
         ..ActionContract::default()
     }
@@ -92,7 +92,7 @@ pub fn catalog() -> ActionCatalog {
             resource("notes.folder:inbox", "notes.folder", "Inbox"),
             ("list", "List notes"),
             Vec::new(),
-            contract(PermissionRequirement::Read, titles),
+            contract(ActionKind::Read, titles),
         ),
         row(
             NOTES,
@@ -102,7 +102,7 @@ pub fn catalog() -> ActionCatalog {
                 ActionParam::required("title", ParamType::Text, "Title"),
                 ActionParam::required("pinned", ParamType::Boolean, "Pin it"),
             ],
-            contract(PermissionRequirement::Write, ResultSpec::None),
+            contract(ActionKind::Undoable, ResultSpec::None),
         ),
         row(
             MAIL,
@@ -112,7 +112,7 @@ pub fn catalog() -> ActionCatalog {
                 ActionParam::required("to", ParamType::Text, "Recipient"),
                 ActionParam::required("body", ParamType::Text, "Message"),
             ],
-            contract(PermissionRequirement::Write, ResultSpec::None),
+            contract(ActionKind::Undoable, ResultSpec::None),
         ),
         row(
             AGENT_APP_ID,
@@ -120,7 +120,7 @@ pub fn catalog() -> ActionCatalog {
             (AGENT_SUMMARISE_ACTION, "Summarise"),
             vec![ActionParam::required("input", ParamType::Text, "Text")],
             contract(
-                PermissionRequirement::Read,
+                ActionKind::Read,
                 ResultSpec::Json {
                     schema: json!({"type": "string"}),
                 },
@@ -131,7 +131,7 @@ pub fn catalog() -> ActionCatalog {
             resource("shortcuts", "shortcuts.library", "Shortcuts"),
             ("list", "List shortcuts"),
             Vec::new(),
-            contract(PermissionRequirement::Read, ResultSpec::None),
+            contract(ActionKind::Read, ResultSpec::None),
         ),
     ])
 }
@@ -149,10 +149,7 @@ fn staged_catalog() -> ActionCatalog {
             ActionParam::required("input", ParamType::Text, "Text"),
             ActionParam::required("schema", ParamType::Object, "Shape of the answer"),
         ],
-        contract(
-            PermissionRequirement::Read,
-            ResultSpec::Json { schema: json!({}) },
-        ),
+        contract(ActionKind::Read, ResultSpec::Json { schema: json!({}) }),
     ));
     ActionCatalog::new(rows)
 }

@@ -30,8 +30,12 @@ pub mod governance {
     pub const REVOKE: &str = "revoke";
     /// Change the room's settings.
     pub const SETTINGS: &str = "settings";
+    /// Replace the room's history with a checkpoint.
+    pub const COMPACT: &str = "compact";
+    /// Remove an earlier change from the room's history.
+    pub const REDACT: &str = "redact";
 
-    pub const ALL: [&str; 7] = [
+    pub const ALL: [&str; 9] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -39,8 +43,16 @@ pub mod governance {
         GRANT,
         REVOKE,
         SETTINGS,
+        COMPACT,
+        REDACT,
     ];
 }
+
+/// The kind of every governance action. Changing who may do what reaches
+/// beyond the document — it decides what other people see and do — so an
+/// agent's default asks before it, and the wire never lets one through on an
+/// answer that would need asking.
+pub const GOVERNANCE_KIND: crate::ActionKind = crate::ActionKind::Outside;
 
 /// The room's own resource: `room:<id>/kind:tilo.room`.
 #[must_use]
@@ -258,19 +270,117 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
     )
 }
 
-/// What a person may do from a device that is not theirs, in any room: all
-/// content, no governance.
+/// What an agent admitted to a room may do there: the room-level grants it
+/// receives. Never a human workspace role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPreset {
+    Observer,
+    Contributor,
+    Operator,
+    Custom,
+}
+
+impl AgentPreset {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "observer" => Some(Self::Observer),
+            "contributor" => Some(Self::Contributor),
+            "operator" => Some(Self::Operator),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Observer => "observer",
+            Self::Contributor => "contributor",
+            Self::Operator => "operator",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// The grants admitting `agent` to `room` with this preset, given by
+    /// `granted_by`. Ids are `agent-member:<agent>:<preset>[:<n>]`.
+    #[must_use]
+    pub fn grants(self, room: &str, agent: &str, granted_by: &Subject) -> Vec<Grant> {
+        let id = format!("agent-member:{agent}:{}", self.id());
+        let subject = Subject::agent(agent);
+        let grant = |suffix: &str, node: TreePath, kinds: KindSet, answer: Answer| {
+            Grant::new(
+                format!("{id}{suffix}"),
+                subject.clone(),
+                node,
+                kinds,
+                answer,
+                granted_by.clone(),
+            )
+        };
+        let read = grant("", TreePath::room(room), KindSet::READ, Answer::Allow);
+        // An admitted agent takes part in the room; it never governs it.
+        let no_governance = grant(
+            ":no-governance",
+            room_resource(room),
+            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+            Answer::Deny,
+        );
+        match self {
+            Self::Observer | Self::Custom => vec![read, no_governance],
+            Self::Contributor => vec![
+                read,
+                grant(
+                    ":comments",
+                    comments(room),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                ),
+                no_governance,
+            ],
+            Self::Operator => vec![
+                grant(
+                    "",
+                    TreePath::room(room),
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
+                ),
+                grant(
+                    ":outside",
+                    TreePath::room(room),
+                    KindSet::OUTSIDE,
+                    Answer::Ask,
+                ),
+                no_governance,
+            ],
+        }
+    }
+}
+
+/// What a person may do from a device that is not theirs, in any room: read
+/// and change content, ask first before reaching outside it, never govern.
 #[must_use]
 pub fn foreign_device_bound() -> Vec<Grant> {
     let issuer = Subject::ForeignDevice;
-    let mut grants = vec![Grant::new(
-        "foreign-device:content",
-        Subject::ForeignDevice,
-        TreePath::root(),
-        KindSet::ALL,
-        Answer::Allow,
-        issuer.clone(),
-    )];
+    let mut grants = vec![
+        Grant::new(
+            "foreign-device:content",
+            Subject::ForeignDevice,
+            TreePath::root(),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            issuer.clone(),
+        ),
+        Grant::new(
+            "foreign-device:outside",
+            Subject::ForeignDevice,
+            TreePath::root(),
+            KindSet::OUTSIDE,
+            Answer::Ask,
+            issuer.clone(),
+        ),
+    ];
     grants.push(Grant::new(
         "foreign-device:governance",
         Subject::ForeignDevice,

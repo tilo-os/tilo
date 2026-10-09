@@ -13,7 +13,7 @@ pub enum NotesEffect {
     ///
     /// Read the selected and bound page identities, content-free body hashes,
     /// editor focus and caret without selecting a note or changing its body.
-    #[effect(view, returns, permission = "read")]
+    #[effect(view, returns, kind = "read")]
     InspectEditor,
     /// Back
     ///

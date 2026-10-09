@@ -15,21 +15,22 @@ pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTre
 pub use window_hosting::WindowHosting;
 
 pub use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
-    decide_capability,
+    Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
+    Subject, decide_capability,
 };
 pub use collab_types::role::Role as CapRole;
-pub use collab_types::{PermissionProfile, PermissionProfileError};
+pub use tilo_action_policy::Preset;
+pub use tilo_desktop_model::grants::PolicyEdit;
 use tilo_desktop_model::projection;
 pub use tilo_desktop_model::{
     APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
     GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
-    PEER_ID_SALT_SHIFT, PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID,
-    PermissionProfileMutationError, RoomId, SharedSurfaces, Strip, StripId, Tab, TabId, TabRef,
-    TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
-    WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
-    WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
-    compose_id, counter_of, peer_salt_of, role_from_id, role_id,
+    PEER_ID_SALT_SHIFT, PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError,
+    RoomId, SharedSurfaces, Strip, StripId, Tab, TabId, TabRef, TileContent, UserId,
+    WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace, WorkspaceDefaultError,
+    WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask, WorkspaceTaskAuditEvent,
+    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus, compose_id, counter_of,
+    peer_salt_of, role_from_id, role_id,
 };
 pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
@@ -245,10 +246,10 @@ mod identity_fs_tests {
 
             let mut tree = WorkspaceTree::default();
             let mut workspace = Workspace::new(WorkspaceId(1), "Files");
-            workspace.capabilities.push(CapOverride::grant(
+            workspace.sandbox.push(CapOverride::grant(
                 Subject::person(profile.principal_id()),
                 Scope::FsPath("/var/workspace/files".into()),
-                Verb::Write,
+                Access::Write,
             ));
             tree.desktop.workspaces.push(workspace);
             let output = temp.path().join("fs-caps.json");
@@ -266,7 +267,7 @@ mod identity_fs_tests {
                 matches!(
                     capability.subject,
                     Subject::User(key) if key.as_bytes() == &device
-                ) && capability.verb == Verb::Write
+                ) && capability.access == Access::Write
             }));
 
             crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
@@ -303,12 +304,12 @@ mod identity_fs_tests {
             let primary_relay_scope = crate::shell::network::room_topic_id(room_a.room).to_string();
             let secondary_relay_scope =
                 crate::shell::network::room_topic_id(room_b.room).to_string();
-            room_a.capabilities.extend([
+            room_a.sandbox.extend([
                 CapOverride::new(
                     Subject::User(alice),
                     Scope::Room(primary_room_scope),
                     Effect::Grant,
-                    Verb::Read,
+                    Access::Read,
                 ),
                 // A Files share remains Files authority, not an implicit relay
                 // membership on either room.
@@ -316,20 +317,20 @@ mod identity_fs_tests {
                     Subject::User(alice),
                     Scope::FsPath("/var/workspace/a".into()),
                     Effect::Grant,
-                    Verb::Read,
+                    Access::Read,
                 ),
                 CapOverride::new(
                     Subject::User(alice),
                     Scope::Room(room_a.room.to_string()),
                     Effect::Restrict,
-                    Verb::Read,
+                    Access::Read,
                 ),
             ]);
-            room_b.capabilities.push(CapOverride::new(
+            room_b.sandbox.push(CapOverride::new(
                 Subject::User(bob),
                 Scope::Room(secondary_room_scope),
                 Effect::Grant,
-                Verb::Read,
+                Access::Read,
             ));
             let mut tree = WorkspaceTree {
                 desktop: DesktopTree {
@@ -368,7 +369,7 @@ mod identity_fs_tests {
             }));
 
             tree.desktop.workspaces[0]
-                .capabilities
+                .sandbox
                 .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
             tree.export_fs_capabilities();
             crate::shell::persist::wait_for_saves();
@@ -662,8 +663,8 @@ pub enum OwnershipTransferStateError {
     NotGoverned,
     #[error("workspace or current structural owner does not match the signed proposal")]
     WrongWorkspaceOrOwner,
-    #[error("recipient must retain administrator membership until commit")]
-    RecipientNotAdministrator,
+    #[error("recipient must remain a member until commit")]
+    RecipientNotMember,
     #[error("another live ownership-transfer proposal already exists")]
     ProposalAlreadyPending,
     #[error("ownership-transfer proposal is unknown, cancelled, expired, or already consumed")]
@@ -848,6 +849,8 @@ struct FsExportWorkspace {
     /// Only those that persist across a restart; the export never carries
     /// session grants.
     capabilities: Vec<CapOverride>,
+    /// The room's owner and members, whom the relay admits to its topic.
+    members: Vec<UserId>,
 }
 
 /// The filesystem's capability list as of one moment, to be written on the
@@ -949,7 +952,9 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
-        let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(document);
+        let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
+        let sandbox = projection::room_sandbox_of(document);
+        let presets = projection::workspace_presets_of(document);
         let tasks = projection::workspace_tasks_of(document);
         let receipts = projection::workspace_effect_receipts_of(document);
         self.room_docs.insert(room, document.clone());
@@ -964,12 +969,11 @@ impl WorkspaceTree {
             if let Some(name) = name {
                 ws.name = name;
             }
-            if let Some(owner) = owner {
-                ws.owner = Some(owner);
-            }
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
-            ws.capabilities = caps;
-            ws.capabilities.extend(local);
+            ws.policy = policy;
+            ws.presets = presets;
+            ws.sandbox = sandbox;
+            ws.sandbox.extend(local);
             ws.tasks = tasks;
             ws.effect_receipts = receipts;
         }
@@ -1215,7 +1219,8 @@ impl WorkspaceTree {
             RoomAuthority::Person(person) => {
                 self.local_person == Some(person)
                     && self.workspace_in_room(room).is_some_and(|workspace| {
-                        workspace.owner.is_some() && workspace.owner == person_id_of(person)
+                        workspace.owner().is_some()
+                            && workspace.owner().cloned() == person_id_of(person)
                     })
             }
             RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
@@ -1239,7 +1244,7 @@ impl WorkspaceTree {
             return false;
         };
         self.workspace_in_room(room)
-            .is_some_and(|workspace| workspace.owner.as_deref() == Some(person.as_str()))
+            .is_some_and(|workspace| workspace.is_owner(&person))
     }
 
     /// Name the peer `peer_id` (iroh `EndpointId`) `name` in
@@ -1694,7 +1699,7 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         use tilo_peer_state::room::media;
 
         if self.requires_native_owner(room) {
@@ -1705,8 +1710,9 @@ impl WorkspaceTree {
             return false;
         };
         let name = ws.name.clone();
-        let owner = ws.owner.clone();
-        let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let policy = ws.policy.clone();
+        let sandbox = ws.sandbox.clone();
+        let presets = ws.presets.clone();
         let tasks = ws.tasks.clone();
         let effect_receipts = ws.effect_receipts.clone();
         let shortcuts = ws.shortcuts.clone();
@@ -1771,22 +1777,6 @@ impl WorkspaceTree {
             let _ = doc.put(&ROOT, "name", name);
         }
 
-        let current_owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        match &owner {
-            Some(o) if governs && current_owner.as_deref() != Some(o.as_str()) => {
-                let _ = doc.put(&ROOT, "owner", o.clone());
-            }
-            // Never unset in a governed room — `adopt_ownerless_workspaces`
-            // only ever fills the field in.
-            _ => {}
-        }
-
         // Projected by **every** member, unlike governance below: a room
         // a guest can't bring a record — or a window — into isn't shared.
         if let Err(err) = projection::project_room_records(doc, &held) {
@@ -1826,35 +1816,21 @@ impl WorkspaceTree {
             return true;
         }
 
-        let caps_id = match doc.get(&ROOT, "capabilities").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(&ROOT, "capabilities", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, room = %room_str, "room doc: capabilities map");
-                    return false;
-                }
-            },
-        };
-        let live: std::collections::HashSet<&str> = caps.iter().map(|c| c.id.as_str()).collect();
-        let stale: Vec<String> = doc
-            .keys(&caps_id)
-            .filter(|k| !live.contains(k.as_str()))
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&caps_id, key.as_str());
+        // Never unset an owner in a governed room: `adopt_ownerless_workspaces`
+        // only ever fills it in.
+        if policy.owner.is_some()
+            && let Err(error) = projection::project_room_policy(doc, &policy)
+        {
+            tracing::error!(?error, room = %room_str, "room doc: policy");
+            return false;
         }
-        for cap in &caps {
-            let Ok(blob) = serde_json::to_vec(cap) else {
-                continue;
-            };
-            let unchanged = matches!(
-                doc.get(&caps_id, &cap.id).ok().flatten(),
-                Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Bytes(b) if b == &blob)
-            );
-            if !unchanged {
-                let _ = doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
-            }
+        if let Err(error) = projection::project_room_sandbox(doc, &sandbox) {
+            tracing::error!(?error, room = %room_str, "room doc: sandbox");
+            return false;
+        }
+        if let Err(error) = projection::project_workspace_presets(doc, &presets) {
+            tracing::error!(?error, room = %room_str, "room doc: presets");
+            return false;
         }
         Self::project_peer_names(doc, &peer_names);
         Self::project_peer_identities(doc, &peer_identities);
@@ -2059,16 +2035,16 @@ impl WorkspaceTree {
             projection::Reader::Owner(local_salt),
         );
         if self.requires_native_owner(room) {
-            let profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(doc);
+            let presets = projection::workspace_presets_of(doc);
             let mut reprofiled = false;
             if let Some(ws) = self
                 .desktop
                 .workspaces
                 .iter_mut()
                 .find(|ws| ws.room == room)
-                && ws.permission_profiles != profiles
+                && ws.presets != presets
             {
-                ws.permission_profiles = profiles;
+                ws.presets = presets;
                 reprofiled = true;
             }
             self.open_governed_placeholders_here(room) || reprofiled || changed
@@ -2154,24 +2130,16 @@ impl WorkspaceTree {
     }
 
     /// The sender of a batch for `room` as this machine knows it: the
-    /// transport-authenticated origin, and the person and role behind it when
+    /// transport-authenticated origin, and the person behind it when
     /// the network layer has authenticated that person. A sender with no
     /// authenticated person reached the tree through the network gate
-    /// (`peer_room_allows`), which already decided its `Write`.
-    fn room_writer<'a>(
-        &self,
-        room: RoomId,
-        from: &'a PeerOrigin,
-        now: u64,
-    ) -> tilo_peer_state::room::Writer<'a> {
+    /// (`peer_room_allows`), which already decided it may change the room.
+    fn room_writer<'a>(&self, from: &'a PeerOrigin) -> tilo_peer_state::room::Writer<'a> {
         use tilo_peer_state::room::{Standing, Writer};
         let standing = match self.authenticated_persons.get(from) {
             Some(person) => Standing::Member {
                 person: *person,
-                role: person_id_of(*person).and_then(|id| {
-                    self.workspace_in_room(room)
-                        .and_then(|workspace| workspace.role_of_at(&id, now))
-                }),
+                foreign: false,
             },
             None => Standing::TransportAuthorized,
         };
@@ -2263,7 +2231,7 @@ impl WorkspaceTree {
         let now = tilo_clock::unix_now_ns();
         let prior_owner = before.owner.as_deref().or_else(|| {
             self.workspace_in_room(room)
-                .and_then(|workspace| workspace.owner.as_deref())
+                .and_then(|workspace| workspace.owner().map(String::as_str))
         });
         if admitted
             .as_ref()
@@ -2389,7 +2357,7 @@ impl WorkspaceTree {
             RoomAdmission {
                 before,
                 room: &room_id,
-                source: self.room_writer(room, from, now),
+                source: self.room_writer(from),
                 authority: self.room_authority_pin(room, &authority, local_person.as_ref(), from),
                 contents: ContentOwnership::Salted {
                     local_salt: self.local_salt(),
@@ -2430,7 +2398,9 @@ impl WorkspaceTree {
         let media_changed = tilo_peer_state::room::media::governed_value(self.room_docs.get(&room))
             != tilo_peer_state::room::media::governed_value(Some(&candidate));
 
-        let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(&candidate);
+        let (name, mut policy) = tilo_peer_state::room::extract_governed_fields(&candidate);
+        let mut sandbox = projection::room_sandbox_of(&candidate);
+        let presets = projection::workspace_presets_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
         let shortcuts = projection::workspace_shortcuts_of(&candidate);
         let mut schedule_claims = projection::schedule_claims_of(&candidate);
@@ -2474,21 +2444,29 @@ impl WorkspaceTree {
             ws.name = name;
             fields_changed = true;
         }
-        if let Some(owner) = owner
-            && ws.owner.as_deref() != Some(owner.as_str())
-        {
-            ws.owner = Some(owner);
+        // An owner is never unset by a document that does not name one.
+        if policy.owner.is_none() {
+            policy.owner.clone_from(&ws.policy.owner);
+        }
+        // Replaced rather than merged: a revoked grant or capability is
+        // simply absent from the peer's document, so carrying the local
+        // list over would let it survive.
+        policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut current = ws.policy.clone();
+        current.grants.sort_by(|a, b| a.id.cmp(&b.id));
+        if current != policy {
+            ws.policy = policy;
             fields_changed = true;
         }
-        // Replaced rather than merged: a revoked capability is simply
-        // absent from the peer's document, so carrying the local list
-        // over would let it survive.
-        let mut sorted = caps;
-        sorted.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut current = ws.capabilities.clone();
+        sandbox.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut current = ws.sandbox.clone();
         current.sort_by(|a, b| a.id.cmp(&b.id));
-        if serde_json::to_vec(&current).ok() != serde_json::to_vec(&sorted).ok() {
-            ws.capabilities = sorted;
+        if current != sandbox {
+            ws.sandbox = sandbox;
+            fields_changed = true;
+        }
+        if ws.presets != presets {
+            ws.presets = presets;
             fields_changed = true;
         }
         tasks.sort_by(|left, right| left.id.cmp(&right.id));
@@ -2587,16 +2565,29 @@ impl WorkspaceTree {
         }
     }
 
-    /// Turn the room's signed membership authority into the exact numeric
-    /// relay shard it owns.  Files-path grants deliberately do not pass
-    /// through here: filesystem residency is global, while relay admission
-    /// is per room.  A `Workspace` capability is also room authority for its
-    /// containing workspace, so it is projected to that workspace's shard.
-    ///
-    /// The relay authenticates public keys, not display names. A canonical
-    /// hex person id is equivalent to a `Subject::User` in collab-types and
-    /// is converted here; an arbitrary named person cannot be safely made
-    /// into a network principal and is omitted fail-closed.
+    /// A member of the room, as the relay admits them to its exact numeric
+    /// shard. The relay authenticates public keys, not display names: a
+    /// person whose id is not a canonical hex key cannot be made a network
+    /// principal and is omitted fail-closed.
+    fn relay_room_membership(workspace: &FsExportWorkspace, person: &str) -> Option<CapOverride> {
+        let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
+        Some(
+            CapOverride::grant(
+                Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes)),
+                Scope::Room(crate::shell::network::room_topic_id(workspace.room).to_string()),
+                Access::Read,
+            )
+            .with_id(format!("member:{person}")),
+        )
+    }
+
+    /// Turn a room-scoped sandbox capability into the exact numeric relay
+    /// shard it reaches. Files-path grants deliberately do not pass through
+    /// here: filesystem residency is global, while relay admission is per
+    /// room. A `Workspace` capability is also room reach for its containing
+    /// workspace, so it is projected to that workspace's shard. A canonical
+    /// hex person id is converted to its key; any other person is omitted
+    /// fail-closed.
     fn relay_room_capability(
         workspace: &FsExportWorkspace,
         capability: &CapOverride,
@@ -2624,7 +2615,7 @@ impl WorkspaceTree {
                 let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
                 Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes))
             }
-            Subject::Role(_) | Subject::Principal(_) => return None,
+            Subject::Principal(_) => return None,
         };
         let mut projected = capability.clone();
         projected.subject = subject;
@@ -2665,10 +2656,15 @@ impl WorkspaceTree {
                 id: workspace.id,
                 room: workspace.room,
                 capabilities: workspace
-                    .capabilities
+                    .sandbox
                     .iter()
                     .filter(|capability| capability.persists_across_restart())
                     .cloned()
+                    .collect(),
+                members: workspace
+                    .roster()
+                    .into_iter()
+                    .map(|(person, _)| person)
                     .collect(),
             })
             .collect();
@@ -2710,14 +2706,10 @@ impl WorkspaceTree {
                                     .is_ok_and(|fleet| fleet.is_revoked(&device))
                         })
                     });
-            let identity_actor = profile.as_ref().map(|profile| Actor {
-                role: None,
-                key: Some(collab_types::crypto::Ed25519PublicKey::from_bytes(
+            let identity_actor = profile.as_ref().map(|profile| {
+                Actor::signed(collab_types::crypto::Ed25519PublicKey::from_bytes(
                     profile.user_public_key,
-                )),
-                principals: vec![Principal::person_from_key(
-                    collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
-                )],
+                ))
             });
             for capability in workspace
                 .capabilities
@@ -2742,6 +2734,12 @@ impl WorkspaceTree {
                     .capabilities
                     .iter()
                     .filter_map(|capability| Self::relay_room_capability(workspace, capability)),
+            );
+            caps.extend(
+                workspace
+                    .members
+                    .iter()
+                    .filter_map(|person| Self::relay_room_membership(workspace, person)),
             );
         }
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
@@ -2781,29 +2779,21 @@ impl WorkspaceTree {
             .collect();
         let mut adopted = Vec::new();
         for ws in &mut self.desktop.workspaces {
-            if ws.owner.is_none() && !governed_elsewhere.contains(&ws.room) {
+            if ws.owner().is_none() && !governed_elsewhere.contains(&ws.room) {
                 let user = identity_for_room(&ws.room);
+                let before = ws.policy.clone();
                 ws.set_owner(user.clone());
-                adopted.push((ws.id, user));
+                adopted.push((ws.id, user, PolicyEdit::between(&before, &ws.policy)));
             }
         }
-        for (id, user) in &adopted {
+        for (id, user, edit) in &adopted {
             self.doc_set_owner(*id, user);
-            let caps: Vec<CapOverride> = self
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == *id)
-                .map(|w| w.capabilities.clone())
-                .unwrap_or_default();
-            for cap in caps {
-                self.doc_insert_capability(*id, &cap);
-            }
+            self.doc_write_policy(*id, edit);
         }
         if !adopted.is_empty() {
             self.queue_save();
         }
-        adopted.into_iter().map(|(id, _)| id).collect()
+        adopted.into_iter().map(|(id, _, _)| id).collect()
     }
 
     /// Hand every locally-governed workspace still owned by the OS account
@@ -2829,39 +2819,43 @@ impl WorkspaceTree {
             .collect();
         let mut rebound = Vec::new();
         for ws in &mut self.desktop.workspaces {
-            if ws.owner.as_deref() != Some(account) || governed_elsewhere.contains(&ws.room) {
+            if !ws.is_owner(account) || governed_elsewhere.contains(&ws.room) {
                 continue;
             }
             let user = identity_for_room(&ws.room);
             if user == account {
                 continue;
             }
-            for cap in &mut ws.capabilities {
+            let before = ws.policy.clone();
+            let account_subject = tilo_action_policy::Subject::person(account);
+            for grant in &mut ws.policy.grants {
+                if grant.subject == account_subject {
+                    grant.subject = tilo_action_policy::Subject::person(user.clone());
+                }
+            }
+            let mut sandbox_granted = Vec::new();
+            for cap in &mut ws.sandbox {
                 if matches!(&cap.subject, Subject::Principal(Principal::Person(p)) if p == account)
                 {
                     cap.subject = Subject::Principal(Principal::Person(user.clone()));
+                    sandbox_granted.push(cap.id.clone());
                 }
             }
             ws.set_owner(user.clone());
-            rebound.push((ws.id, user));
+            let edit = PolicyEdit {
+                sandbox_granted,
+                ..PolicyEdit::between(&before, &ws.policy)
+            };
+            rebound.push((ws.id, user, edit));
         }
-        for (id, user) in &rebound {
+        for (id, user, edit) in &rebound {
             self.doc_set_owner(*id, user);
-            let caps: Vec<CapOverride> = self
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == *id)
-                .map(|w| w.capabilities.clone())
-                .unwrap_or_default();
-            for cap in caps {
-                self.doc_insert_capability(*id, &cap);
-            }
+            self.doc_write_policy(*id, edit);
         }
         if !rebound.is_empty() {
             self.queue_save();
         }
-        rebound.into_iter().map(|(id, _)| id).collect()
+        rebound.into_iter().map(|(id, _, _)| id).collect()
     }
 
     /// The durable room identity of `workspace_id`. What the launch path
@@ -2909,7 +2903,7 @@ impl WorkspaceTree {
         if ws.room == room {
             return false;
         }
-        ws.room = room;
+        ws.set_room(room);
         let surrendered = if joining {
             ws.surrender_governance()
         } else {
@@ -2947,50 +2941,200 @@ impl WorkspaceTree {
         }
     }
 
-    /// Grant a capability in `workspace_id` on behalf of `grantor`,
-    /// mirroring it to peers and disk — the single production entry
-    /// point for handing out authority. `None` when the grantor lacked
-    /// authority to delegate it.
+    /// Whether this machine may write `workspace_id`'s governance. Refuses
+    /// outright in a room whose governance is written elsewhere, whatever
+    /// the local cache says: a grant nobody else can see is a local
+    /// escalation, honoured here until the room's authority next syncs it
+    /// away.
+    fn may_write_governance(&self, workspace_id: WorkspaceId, actor: &UserId) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                actor = %actor,
+                "governance refused: this machine does not govern the room",
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Apply `changes` to `workspace_id`'s policy as `actor`, all or none,
+    /// mirroring them to peers and disk — the single production entry point
+    /// for handing out or taking back authority.
     ///
-    /// Refuses outright in a room whose governance is written elsewhere,
-    /// whatever the local cache says: a grant nobody else can see is a
-    /// local escalation, honoured by this sandbox until the room's
-    /// authority next syncs it away.
-    ///
-    /// Not symmetric with [`Self::revoke_in_workspace`], which stays
-    /// open — narrowing your own access has to work locally whoever
-    /// governs the room.
+    /// # Errors
+    /// This machine does not govern the room, the workspace is gone, or the
+    /// first change the policy refuses.
+    pub fn govern_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        changes: Vec<tilo_action_policy::Change>,
+    ) -> Result<PolicyEdit, tilo_action_policy::Refusal> {
+        if !self.may_write_governance(workspace_id, actor) {
+            return Err(tilo_action_policy::Refusal::NotPermitted(
+                "this machine does not govern the room".into(),
+            ));
+        }
+        let edit = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .ok_or_else(|| tilo_action_policy::Refusal::NotPermitted("no such workspace".into()))?
+            .govern_all_at(actor, changes, tilo_clock::unix_now())?;
+        self.doc_write_policy(workspace_id, &edit);
+        self.queue_save();
+        Ok(edit)
+    }
+
+    /// Make `person` a member of `workspace_id` holding `role`, as `actor`:
+    /// admitted when they are not a member, their role changed when they
+    /// are. What changed, or `None` when `actor` may not.
+    pub fn admit_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        person: &str,
+        role: CapRole,
+    ) -> Option<PolicyEdit> {
+        let member = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)?
+            .role_of(person)
+            .is_some();
+        let change = if member {
+            tilo_action_policy::Change::SetRole {
+                person: person.to_owned(),
+                role,
+            }
+        } else {
+            tilo_action_policy::Change::AddMember {
+                person: person.to_owned(),
+                role,
+            }
+        };
+        self.govern_in_workspace(workspace_id, actor, vec![change])
+            .ok()
+    }
+
+    /// End `person`'s membership of `workspace_id`, as `actor`. Whether they
+    /// were removed.
+    pub fn remove_from_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        actor: &UserId,
+        person: &str,
+    ) -> bool {
+        self.govern_in_workspace(
+            workspace_id,
+            actor,
+            vec![tilo_action_policy::Change::RemoveMember {
+                person: person.to_owned(),
+            }],
+        )
+        .is_ok_and(|edit| !edit.is_empty())
+    }
+
+    /// Grant `grant` in `workspace_id` on behalf of `grantor`. The id stored,
+    /// or `None` when the grantor lacked the authority to give it.
     pub fn grant_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        grantor: &UserId,
+        grant: tilo_action_policy::Grant,
+    ) -> Option<tilo_action_policy::GrantId> {
+        let id = grant.id.clone();
+        self.govern_in_workspace(
+            workspace_id,
+            grantor,
+            vec![tilo_action_policy::Change::Grant(grant)],
+        )
+        .ok()?;
+        Some(id)
+    }
+
+    /// Revoke the grant `id` in `workspace_id` as `revoker`, mirroring the
+    /// removal to peers and disk — a revoke that only touched the local cache
+    /// left every peer still holding the grant and let a restart bring it
+    /// back.
+    pub fn revoke_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        revoker: &UserId,
+        id: &tilo_action_policy::GrantId,
+    ) -> bool {
+        self.govern_in_workspace(
+            workspace_id,
+            revoker,
+            vec![tilo_action_policy::Change::Revoke(id.clone())],
+        )
+        .is_ok_and(|edit| !edit.is_empty())
+    }
+
+    /// Grant the sandbox capability `cap` in `workspace_id` on behalf of
+    /// `grantor`, mirroring it to peers and disk. The id stored, or `None`
+    /// when the grantor may not grant in the room.
+    pub fn grant_sandbox_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
-        let room = self.room_of(workspace_id)?;
-        if !room.is_nil() && !self.governs_room(room) {
-            tracing::warn!(
-                target: "shell::state",
-                room = %room,
-                grantor = %grantor,
-                "grant refused: this machine does not administer the room",
-            );
+        if !self.may_write_governance(workspace_id, grantor) {
             return None;
         }
-        let stored = self.desktop.grant_in_workspace_at(
-            workspace_id,
-            grantor,
-            cap,
-            tilo_clock::unix_now(),
-        )?;
-        self.doc_insert_capability(workspace_id, &stored);
+        let edit = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?
+            .grant_sandbox_as_at(grantor, cap, tilo_clock::unix_now())
+            .ok()?;
+        let id = edit.sandbox_granted.first().cloned();
+        self.doc_write_policy(workspace_id, &edit);
         self.queue_save();
-        Some(stored.id)
+        id
+    }
+
+    /// Revoke the sandbox capability `id` in `workspace_id` as `revoker`.
+    /// Stays open in a room governed elsewhere: narrowing your own reach has
+    /// to work locally whoever governs the room.
+    pub fn revoke_sandbox_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        revoker: &UserId,
+        id: &str,
+    ) -> bool {
+        let Some(edit) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+            .and_then(|ws| {
+                ws.revoke_sandbox_as_at(revoker, id, tilo_clock::unix_now())
+                    .ok()
+            })
+            .filter(|edit| !edit.is_empty())
+        else {
+            return false;
+        };
+        self.doc_write_policy(workspace_id, &edit);
+        self.queue_save();
+        true
     }
 
     /// Record `person` making `app` an author of `workspace_id`'s space —
     /// what opening an app yourself means — unless it already is one. The
-    /// stored grant, or `None` when nothing was recorded: already an author,
-    /// or `person` lacks the authority, in which case the app opens a viewer.
+    /// stored capability, or `None` when nothing was recorded: already an
+    /// author, or `person` lacks the authority, in which case the app opens
+    /// a viewer.
     pub fn grant_app_authorship(
         &mut self,
         workspace_id: WorkspaceId,
@@ -3002,18 +3146,24 @@ impl WorkspaceTree {
             .workspaces
             .iter()
             .find(|w| w.id == workspace_id)?;
-        let actor = workspace.actor_for_app(app);
-        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
+        if workspace.sandbox_decide_at(
+            &Actor::app(app),
+            &ResourceRef::Workspace,
+            Access::Write,
+            tilo_clock::unix_now(),
+        ) == CapDecision::Allow
+        {
             return None;
         }
-        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
-        let recorded = self.grant_in_workspace(workspace_id, person, grant)?;
+        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Access::Write)
+            .with_id(format!("app-author:{app}"));
+        let recorded = self.grant_sandbox_in_workspace(workspace_id, person, grant)?;
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.desktop
             .workspaces
             .iter()
             .find(|w| w.id == workspace_id)?
-            .capabilities
+            .sandbox
             .iter()
             .find(|cap| cap.id == recorded)
             .cloned()
@@ -3021,9 +3171,9 @@ impl WorkspaceTree {
 
     /// The active workspace after the person at this machine opens `app`.
     ///
-    /// The launch that follows must use this workspace: its capability list
-    /// is what the new process is told, and a workspace launch with no author
-    /// grant opens the app as a viewer.
+    /// The launch that follows must use this workspace: its sandbox is what
+    /// the new process is told, and a workspace launch with no author
+    /// capability opens the app as a viewer.
     pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
         let (id, room) = {
             let workspace = self.desktop.active_workspace()?;
@@ -3034,38 +3184,12 @@ impl WorkspaceTree {
         self.desktop.active_workspace().cloned()
     }
 
-    /// Revoke a capability in `workspace_id`, mirroring the removal to
-    /// peers and disk — a revoke that only touched the local cache left
-    /// every peer still holding the capability and let a restart bring
-    /// it back.
-    pub fn revoke_in_workspace(
-        &mut self,
-        workspace_id: WorkspaceId,
-        revoker: &UserId,
-        cap_id: &str,
-    ) -> bool {
-        let Some(ws) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == workspace_id)
-        else {
-            return false;
-        };
-        if !ws.revoke_as(revoker, cap_id) {
-            return false;
-        }
-        self.doc_revoke_capability(workspace_id, cap_id);
-        self.queue_save();
-        true
-    }
-
     /// Persist an exact, owner-signed ownership offer without changing roles.
     ///
     /// # Errors
     ///
     /// Refuses foreign governance, invalid/expired signatures, a mismatched
-    /// owner/workspace, a non-administrator recipient, replay, or replacement
+    /// owner/workspace, a recipient who is no member, replay, or replacement
     /// of another live proposal.
     pub fn propose_workspace_ownership_transfer(
         &mut self,
@@ -3091,11 +3215,11 @@ impl WorkspaceTree {
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)
             .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
-        if proposal.workspace != ws.room.to_string() || ws.owner.as_ref() != Some(&expected_owner) {
+        if proposal.workspace != ws.room.to_string() || !ws.is_owner(&expected_owner) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
-        if ws.role_of(&recipient) != Some(CapRole::Owner) {
-            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        if ws.role_of(&recipient).is_none() {
+            return Err(OwnershipTransferStateError::RecipientNotMember);
         }
         if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
             || ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY
@@ -3167,7 +3291,7 @@ impl WorkspaceTree {
         if ws.ownership_transfer_cancellations.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
             return Err(OwnershipTransferStateError::HistoryFull);
         }
-        if ws.owner.as_deref() != Some(public_key_user_id(proposal.current_owner).as_str()) {
+        if !ws.is_owner(&public_key_user_id(proposal.current_owner)) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
         cancellation.verify(proposal)?;
@@ -3245,11 +3369,11 @@ impl WorkspaceTree {
         }
         let current_owner = public_key_user_id(audit.proposal.current_owner);
         let recipient = public_key_user_id(audit.proposal.recipient);
-        if ws.owner.as_ref() != Some(&current_owner) {
+        if !ws.is_owner(&current_owner) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
-        if ws.role_of(&recipient) != Some(CapRole::Owner) {
-            return Err(OwnershipTransferStateError::RecipientNotAdministrator);
+        if ws.role_of(&recipient).is_none() {
+            return Err(OwnershipTransferStateError::RecipientNotMember);
         }
         if ws
             .ownership_transfer_audit
@@ -3261,20 +3385,14 @@ impl WorkspaceTree {
         if ws.ownership_transfer_audit.len() >= MAX_OWNERSHIP_TRANSFER_HISTORY {
             return Err(OwnershipTransferStateError::HistoryFull);
         }
-        if !ws.transfer_owner_as(&current_owner, &recipient) {
+        if !ws.transfer_owner_as_at(&current_owner, &recipient, now_unix) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
         ws.pending_ownership_transfer = None;
         ws.ownership_transfer_audit.push(audit);
-        let owner_capability_id = format!("owner-{}", workspace_id.raw());
-        let owner_capability = ws
-            .capabilities
-            .iter()
-            .find(|capability| capability.id == owner_capability_id)
-            .cloned()
-            .ok_or(OwnershipTransferStateError::WrongWorkspaceOrOwner)?;
+        let edit = PolicyEdit::between(&previous.policy, &ws.policy);
         self.doc_set_owner(workspace_id, &recipient);
-        self.doc_insert_capability(workspace_id, &owner_capability);
+        self.doc_write_policy(workspace_id, &edit);
         if let Some(path) = &self.persist_path
             && let Err(error) = crate::shell::persist::save_tree_to(self, path)
         {
@@ -3291,41 +3409,38 @@ impl WorkspaceTree {
         Ok(())
     }
 
-    /// Mirror a capability grant into the automerge doc so peer-sync
-    /// ships it and a restart reloads it. Capabilities live as a **map
-    /// keyed by capability id**, not a list — deleting a map key
-    /// merges concurrently, while deleting list index 3 on two peers
-    /// removes two different capabilities.
-    pub fn doc_insert_capability(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
-        if tilo_desktop_model::desktop_doc::insert_capability(&mut self.doc, workspace_id, cap) {
-            self.commit_room_change();
+    /// Mirror a governance change of `workspace_id` into the automerge doc
+    /// so peer-sync ships it and a restart reloads it. Grants, members and
+    /// sandbox capabilities live as **maps keyed by id**, not lists:
+    /// deleting a map key merges concurrently, while deleting list index 3
+    /// on two peers removes two different grants. Without the mirror a
+    /// revocation would change only the local cache, and a peer would keep
+    /// using what the owner took away.
+    pub fn doc_write_policy(&mut self, workspace_id: WorkspaceId, edit: &PolicyEdit) {
+        if edit.is_empty() {
+            return;
         }
+        for cap in &edit.sandbox_revoked {
+            self.native_runtime
+                .forget_files_home_consent(workspace_id, cap);
+        }
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+        else {
+            return;
+        };
+        edit.write(&mut self.doc, workspace);
+        self.commit_room_change();
     }
 
-    /// Replicate a reusable permission profile as workspace policy. Expanded
-    /// assignments still replicate through `doc_insert_capability`; this map
-    /// lets another administrator inspect and reuse the named definition.
-    pub fn doc_upsert_permission_profile(
-        &mut self,
-        workspace_id: WorkspaceId,
-        profile: &PermissionProfile,
-    ) {
-        if tilo_desktop_model::desktop_doc::upsert_permission_profile(
-            &mut self.doc,
-            workspace_id,
-            profile,
-        ) {
-            self.commit_room_change();
-        }
-    }
-
-    /// Mirror a revocation into the automerge doc — without this a
-    /// revoke would mutate only the local cache, so a peer would keep
-    /// using a capability the owner took away.
-    pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
-        self.native_runtime
-            .forget_files_home_consent(workspace_id, cap_id);
-        if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
+    /// Replicate a named grant set as workspace policy. The grants an
+    /// assignment expands to replicate through [`Self::doc_write_policy`];
+    /// this map lets another governor inspect and reuse the definition.
+    pub fn doc_upsert_preset(&mut self, workspace_id: WorkspaceId, preset: &Preset) {
+        if tilo_desktop_model::desktop_doc::upsert_preset(&mut self.doc, workspace_id, preset) {
             self.commit_room_change();
         }
     }
@@ -3751,26 +3866,13 @@ impl WorkspaceTree {
         let strip_id = StripId::new();
         let home = Workspace {
             id: ws_id,
-            room: RoomId::new(),
             name: "Home".into(),
             strips: vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups: Vec::new(),
             }],
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Workspace::new(ws_id, String::new())
         };
 
         let mut active_strip = HashMap::new();
@@ -3805,7 +3907,6 @@ impl WorkspaceTree {
         // first-run desktop — matches `WindowFrame.tsx`'s behaviour.
         let home = Workspace {
             id: ws_id,
-            room: RoomId::new(),
             name: "Home".into(),
             strips: vec![Strip {
                 id: strip_id,
@@ -3860,18 +3961,7 @@ impl WorkspaceTree {
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
             ],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Workspace::new(ws_id, String::new())
         };
 
         let mut tree = Self {
@@ -3917,29 +4007,17 @@ impl WorkspaceTree {
         // it gets its identity at the same moment it gets its id, not
         // the first time someone tries to share it.
         let room = RoomId::new();
-        let ws = Workspace {
+        let mut ws = Workspace {
             id: ws_id,
-            room,
             name: name.into(),
             strips: vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups: vec![],
             }],
-            collaborators: vec![],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Workspace::new(ws_id, String::new())
         };
+        ws.set_room(room);
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
 
@@ -3985,7 +4063,7 @@ impl WorkspaceTree {
         }
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "From another device");
-        workspace.room = room;
+        workspace.set_room(room);
         self.desktop.workspaces.push(workspace);
         self.continuation_rooms.insert(room);
         self.room_authority.insert(
@@ -4101,11 +4179,11 @@ impl WorkspaceTree {
             if renamed {
                 workspace.name = name.to_string();
             }
-            let owned = governor.is_none() && workspace.owner.is_none();
+            let owned = governor.is_none() && workspace.owner().is_none();
             if owned {
                 workspace.set_owner(person.clone());
             }
-            let person_owns = workspace.owner.as_deref() == Some(person.as_str());
+            let person_owns = workspace.owner().map(String::as_str) == Some(person.as_str());
             // A person pin on a room the person does not own is provisional
             // (a continuation offer's): the directory says who actually
             // governs the room.
@@ -4134,7 +4212,7 @@ impl WorkspaceTree {
         }
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, name);
-        workspace.room = room;
+        workspace.set_room(room);
         // The same person sits at this machine. Without their membership the
         // room exists but every launch from either of their devices is denied.
         // A room someone else owns brings its owner and membership with its
@@ -5768,9 +5846,9 @@ mod automerge_foundation_tests {
             .iter()
             .find(|w| w.id == home)
             .unwrap();
-        assert_eq!(ws.owner.as_deref(), Some(key.as_str()));
-        assert_eq!(ws.role_of_at(&key, 0), Some(CapRole::Owner));
-        assert_eq!(ws.role_of_at(&"quinten".to_string(), 0), None);
+        assert_eq!(ws.owner().map(String::as_str), Some(key.as_str()));
+        assert_eq!(ws.role_of(&key), Some(CapRole::Owner));
+        assert_eq!(ws.role_of("quinten"), None);
         let other = tree
             .desktop
             .workspaces
@@ -5778,7 +5856,7 @@ mod automerge_foundation_tests {
             .find(|w| w.id == joined)
             .unwrap();
         assert_eq!(
-            other.owner.as_deref(),
+            other.owner().map(String::as_str),
             Some("quinten"),
             "a foreign room keeps its owner"
         );
@@ -5794,11 +5872,11 @@ mod automerge_foundation_tests {
             .find(|w| w.id == home)
             .unwrap();
         assert_eq!(
-            mirrored.owner.as_deref(),
+            mirrored.owner().map(String::as_str),
             Some(key.as_str()),
             "the room doc agrees"
         );
-        assert_eq!(mirrored.role_of_at(&key, 0), Some(CapRole::Owner));
+        assert_eq!(mirrored.role_of(&key), Some(CapRole::Owner));
 
         assert!(
             tree.rebind_account_owned_workspaces("quinten", |_| "quinten".to_string())
@@ -6110,7 +6188,7 @@ mod automerge_foundation_tests {
                         .workspaces
                         .iter()
                         .find(|w| w.id == guest_ws)
-                        .and_then(|w| w.owner.clone())
+                        .and_then(|w| w.owner().cloned())
                         .as_deref(),
                     Some("alice"),
                     "the guest must end up with the room's owner, not its own",
@@ -6127,9 +6205,10 @@ mod automerge_foundation_tests {
                         .iter()
                         .find(|w| w.id == guest_ws)
                         .expect("the guest's workspace survives the merge")
-                        .capabilities
+                        .policy
+                        .grants
                         .is_empty(),
-                    "the merge must leave a capability list behind, not wipe it",
+                    "the merge must leave the room's grants behind, not wipe them",
                 );
             }
         }
@@ -6734,13 +6813,13 @@ mod automerge_foundation_tests {
         let ws = host.append_empty_workspace("Design review");
         let room = host.room_of(ws).expect("a fresh workspace mints a room");
         host.adopt_ownerless_workspaces(&ROOM_OWNER.to_string());
-        host.grant_in_workspace(
+        host.grant_sandbox_in_workspace(
             ws,
             &ROOM_OWNER.to_string(),
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath(OWNER_GRANT_PATH.to_string()),
-                Verb::Read,
+                Access::Read,
             )
             .with_id("owners-own-grant"),
         )
@@ -6770,13 +6849,13 @@ mod automerge_foundation_tests {
             ws.set_owner(user.to_string());
         }
         guest
-            .grant_in_workspace(
+            .grant_sandbox_in_workspace(
                 guest_ws,
                 &user.to_string(),
                 CapOverride::grant(
                     Subject::app("rogue"),
                     Scope::FsPath(ROGUE_GRANT_PATH.to_string()),
-                    Verb::Write,
+                    Access::Write,
                 )
                 .with_id("rogue-grant"),
             )
@@ -6801,10 +6880,11 @@ mod automerge_foundation_tests {
             },
             _ => None,
         };
-        let mut caps: Vec<String> = match doc.get(&ROOT, "capabilities").ok().flatten() {
-            Some((_, caps_id)) => doc.keys(&caps_id).collect(),
-            None => Vec::new(),
-        };
+        let mut caps: Vec<String> =
+            match doc.get(&ROOT, projection::ROOM_SANDBOX_KEY).ok().flatten() {
+                Some((_, caps_id)) => doc.keys(&caps_id).collect(),
+                None => Vec::new(),
+            };
         caps.sort();
         (owner, caps)
     }
@@ -7288,7 +7368,7 @@ mod automerge_foundation_tests {
                         .find(|w| w.id == host_ws)
                         .expect("the host keeps its workspace");
                     assert_eq!(
-                        ws.owner.as_deref(),
+                        ws.owner().map(String::as_str),
                         Some(ROOM_OWNER),
                         "round {round} (host projected first: {host_projected_first}): \
                          a guest's projection took ownership of the host's room",
@@ -7302,8 +7382,7 @@ mod automerge_foundation_tests {
                         "round {round}: the guest must not have become an \
                          administrator of the host's room",
                     );
-                    let cap_ids: Vec<&str> =
-                        ws.capabilities.iter().map(|c| c.id.as_str()).collect();
+                    let cap_ids: Vec<&str> = ws.sandbox.iter().map(|c| c.id.as_str()).collect();
                     assert!(
                         cap_ids.contains(&"owners-own-grant"),
                         "round {round}: the owner's own grant was replaced by the \
@@ -7362,7 +7441,7 @@ mod automerge_foundation_tests {
                         .workspaces
                         .iter()
                         .find(|w| w.id == carol_ws)
-                        .and_then(|w| w.owner.clone())
+                        .and_then(|w| w.owner().cloned())
                         .as_deref(),
                     Some(ROOM_OWNER),
                     "round {round}: carol must learn the room's owner from the \
@@ -7383,12 +7462,12 @@ mod automerge_foundation_tests {
                     .find(|w| w.id == carol_ws)
                     .expect("carol keeps her workspace");
                 assert_eq!(
-                    ws.owner.as_deref(),
+                    ws.owner().map(String::as_str),
                     Some(ROOM_OWNER),
                     "round {round}: a guest rewrote another guest's copy of the \
                      room's owner",
                 );
-                let cap_ids: Vec<&str> = ws.capabilities.iter().map(|c| c.id.as_str()).collect();
+                let cap_ids: Vec<&str> = ws.sandbox.iter().map(|c| c.id.as_str()).collect();
                 assert!(
                     !cap_ids.contains(&"rogue-grant"),
                     "round {round}: a guest's grant entered another guest's \
@@ -7438,14 +7517,14 @@ mod automerge_foundation_tests {
                 .find(|w| w.id == guest_ws)
                 .expect("the guest keeps its workspace");
             assert_eq!(
-                ws.owner.as_deref(),
+                ws.owner().map(String::as_str),
                 Some(ROOM_OWNER),
                 "the guest must learn who administers the room it joined",
             );
             assert!(
-                ws.capabilities.iter().any(|c| c.id == "owners-own-grant"),
+                ws.sandbox.iter().any(|c| c.id == "owners-own-grant"),
                 "the guest must learn the room's capabilities; it holds {:?}",
-                ws.capabilities.iter().map(|c| &c.id).collect::<Vec<_>>(),
+                ws.sandbox.iter().map(|c| &c.id).collect::<Vec<_>>(),
             );
             assert!(
                 !ws.may_administer(&ROOM_GUEST.to_string()),
@@ -7486,13 +7565,13 @@ mod automerge_foundation_tests {
                  refusal below is the room's write authority and not ownership",
             );
 
-            let granted = guest.grant_in_workspace(
+            let granted = guest.grant_sandbox_in_workspace(
                 guest_ws,
                 &ROOM_GUEST.to_string(),
                 CapOverride::grant(
                     Subject::app("rogue"),
                     Scope::FsPath(ROGUE_GRANT_PATH.to_string()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             );
             assert!(
@@ -7506,7 +7585,7 @@ mod automerge_foundation_tests {
                     .iter()
                     .find(|w| w.id == guest_ws)
                     .expect("the guest's workspace")
-                    .capabilities
+                    .sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_GRANT_PATH)),
                 "and must record nothing",
@@ -7518,13 +7597,13 @@ mod automerge_foundation_tests {
             let own_ws = own.append_empty_workspace("Mine");
             own.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
             assert!(
-                own.grant_in_workspace(
+                own.grant_sandbox_in_workspace(
                     own_ws,
                     &ROOM_GUEST.to_string(),
                     CapOverride::grant(
                         Subject::app("files"),
                         Scope::FsPath(OWNER_GRANT_PATH.to_string()),
-                        Verb::Read,
+                        Access::Read,
                     ),
                 )
                 .is_some(),
@@ -7752,22 +7831,9 @@ mod active_group_tests {
         };
         let ws = Workspace {
             id: ws_id,
-            room: RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
-            collaborators: vec![],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Workspace::new(ws_id, String::new())
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -8311,7 +8377,6 @@ mod active_workspace_peer_count_tests {
         let strip_id = StripId::new();
         let ws = Workspace {
             id: ws_id,
-            room: RoomId::new(),
             name: "Active".into(),
             strips: vec![Strip {
                 id: strip_id,
@@ -8319,18 +8384,7 @@ mod active_workspace_peer_count_tests {
                 window_groups: vec![],
             }],
             collaborators: collabs,
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+            ..Workspace::new(ws_id, String::new())
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -8572,90 +8626,91 @@ mod next_id_seed_tests {
     }
 }
 #[cfg(test)]
-mod permission_profile_assignment {
+mod preset_assignment {
     use super::*;
-    use collab_types::PermissionProfileRule;
+    use tilo_action_policy::{ActionKind, Answer, KindSet, Lifetime, Rule, TreePath};
 
-    fn profile() -> PermissionProfile {
-        PermissionProfile {
+    fn builds() -> TreePath {
+        TreePath::root().app("org.tilo.Builds")
+    }
+
+    fn approve() -> TreePath {
+        builds()
+            .kind("builds.release")
+            .resource("builds.release")
+            .action("release.approve")
+    }
+
+    fn preset() -> Preset {
+        Preset {
             name: "Release reviewer".into(),
             description: "Read Builds and approve releases".into(),
             rules: vec![
-                PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
-                PermissionProfileRule::grant(
-                    Scope::Action {
-                        app: "org.tilo.Builds".into(),
-                        resource: "builds.release".into(),
-                        action: "release.approve".into(),
-                    },
-                    Verb::Write,
-                ),
+                Rule::new(builds(), KindSet::READ, Answer::Allow),
+                Rule::new(approve(), KindSet::UNDOABLE, Answer::Allow),
             ],
         }
     }
 
     #[test]
-    fn permission_profiles_are_admin_only_and_round_trip_through_the_room() {
-        // Phase `owner_can_save_and_atomically_assign_a_profile`.
+    fn presets_are_governance_only_and_round_trip_through_the_room() {
+        let now = tilo_clock::unix_now();
+        // Phase `owner_can_save_and_atomically_assign_a_preset`.
         {
             let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
             workspace.set_owner("owner");
-            workspace
-                .save_permission_profile_as(&"owner".into(), profile())
-                .unwrap();
+            workspace.save_preset_as_at("owner", preset(), now).unwrap();
             let ids = workspace
-                .assign_permission_profile_as(
-                    &"owner".into(),
+                .assign_preset_as_at(
+                    "owner",
                     "release REVIEWER",
-                    &Subject::person("ada"),
-                    Expiry::Never,
+                    &tilo_action_policy::Subject::person("ada"),
+                    &Lifetime::UntilRevoked,
+                    now,
                 )
                 .unwrap();
             assert_eq!(ids.len(), 2);
-            assert_eq!(workspace.permission_profiles.len(), 1);
-            assert!(workspace.allows(
-                &Actor::person(None, "ada"),
-                &ResourceRef::Action {
-                    app: "org.tilo.Builds".into(),
-                    resource: "builds.release".into(),
-                    action: "release.approve".into(),
-                },
-                Verb::Write,
-            ));
+            assert_eq!(workspace.presets.len(), 1);
+            assert_eq!(
+                workspace.answer_at(
+                    "ada",
+                    &workspace.node().join(&approve()),
+                    ActionKind::Undoable,
+                    now
+                ),
+                Answer::Allow
+            );
         }
 
-        // Phase `non_admin_cannot_save_or_assign_profiles`.
+        // Phase `someone_who_may_not_grant_cannot_save_or_assign_presets`.
         {
             let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
             workspace.set_owner("owner");
-            assert_eq!(
-                workspace.save_permission_profile_as(&"ada".into(), profile()),
-                Err(PermissionProfileMutationError::NotAdministrator)
-            );
-            workspace
-                .save_permission_profile_as(&"owner".into(), profile())
-                .unwrap();
-            let before = workspace.capabilities.clone();
-            assert_eq!(
-                workspace.assign_permission_profile_as(
-                    &"ada".into(),
+            assert!(matches!(
+                workspace.save_preset_as_at("ada", preset(), now),
+                Err(PresetMutationError::Refused(_))
+            ));
+            workspace.save_preset_as_at("owner", preset(), now).unwrap();
+            let before = workspace.policy.clone();
+            assert!(matches!(
+                workspace.assign_preset_as_at(
+                    "ada",
                     "Release reviewer",
-                    &Subject::person("ada"),
-                    Expiry::Never,
+                    &tilo_action_policy::Subject::person("ada"),
+                    &Lifetime::UntilRevoked,
+                    now,
                 ),
-                Err(PermissionProfileMutationError::NotAdministrator)
-            );
-            assert_eq!(workspace.capabilities, before);
+                Err(PresetMutationError::Refused(_))
+            ));
+            assert_eq!(workspace.policy, before);
         }
 
-        // Phase `profile_definitions_round_trip_through_the_room_document`.
+        // Phase `preset_definitions_round_trip_through_the_room_document`.
         {
             let id = WorkspaceId::new();
             let mut workspace = Workspace::new(id, "Demo");
             workspace.set_owner("owner");
-            workspace
-                .save_permission_profile_as(&"owner".into(), profile())
-                .unwrap();
+            workspace.save_preset_as_at("owner", preset(), now).unwrap();
             let mut tree = WorkspaceTree {
                 desktop: DesktopTree {
                     workspaces: vec![workspace],
@@ -8665,12 +8720,9 @@ mod permission_profile_assignment {
                 ..WorkspaceTree::default()
             };
             tree.seed_doc_from_cache();
-            tree.desktop.workspaces[0].permission_profiles.clear();
+            tree.desktop.workspaces[0].presets.clear();
             tree.rebuild_cache_from_doc();
-            assert_eq!(
-                tree.desktop.workspaces[0].permission_profiles,
-                vec![profile()]
-            );
+            assert_eq!(tree.desktop.workspaces[0].presets, vec![preset()]);
         }
     }
 }
@@ -8685,22 +8737,15 @@ mod workspace_tree_lifecycle_tests {
         reason = "the ownership-transfer regression keeps signing, persistence, replay, and rejection checks together"
     )]
     fn ownership_changes_are_signed_durable_and_replay_proof() {
-        // Phase `replacing_owner_removes_the_previous_root_capability`.
+        // Phase `replacing_owner_removes_the_previous_owner`.
         {
             let mut ws = Workspace::new(WorkspaceId(0x5151), "Security review");
             ws.set_owner("alice");
             ws.set_owner("bob");
 
-            assert_eq!(ws.owner.as_deref(), Some("bob"));
-            assert_eq!(ws.role_of(&"bob".to_string()), Some(CapRole::Owner));
-            assert_eq!(ws.role_of(&"alice".to_string()), None);
-            assert_eq!(
-                ws.capabilities
-                    .iter()
-                    .filter(|cap| cap.id == format!("owner-{}", ws.id.raw()))
-                    .count(),
-                1,
-            );
+            assert_eq!(ws.owner().map(String::as_str), Some("bob"));
+            assert_eq!(ws.role_of("bob"), Some(CapRole::Owner));
+            assert_eq!(ws.role_of("alice"), None);
         }
 
         // Phase `ownership_transfer_requires_both_signatures_survives_restart_and_rejects_replay`.
@@ -8719,16 +8764,8 @@ mod workspace_tree_lifecycle_tests {
             let bob = public_key_user_id(bob_public);
             tree.adopt_ownerless_workspaces(&alice);
             let room = tree.room_of(workspace_id).unwrap();
-            tree.grant_in_workspace(
-                workspace_id,
-                &alice,
-                CapOverride::membership(
-                    Subject::Principal(Principal::Person(bob.clone())),
-                    room.to_string(),
-                    Verb::Admin,
-                ),
-            )
-            .expect("owner may promote a collaborator");
+            tree.admit_in_workspace(workspace_id, &alice, &bob, tilo_action_policy::Role::Editor)
+                .expect("owner may promote a collaborator");
             let overlong = collab_types::OwnershipTransferProposalV1::new(
                 room.to_string(),
                 [6; 32],
@@ -8765,40 +8802,13 @@ mod workspace_tree_lifecycle_tests {
                 collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_key).unwrap();
             let audit =
                 collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102).unwrap();
-            let recipient_admin = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == workspace_id)
-                .unwrap()
-                .capabilities
-                .iter()
-                .find(|capability| {
-                    capability.id != format!("owner-{}", workspace_id.raw())
-                        && matches!(
-                            &capability.subject,
-                            Subject::Principal(Principal::Person(person)) if person == &bob
-                        )
-                        && capability.verb.implies(Verb::Admin)
-                })
-                .unwrap()
-                .id
-                .clone();
-            assert!(tree.revoke_in_workspace(workspace_id, &alice, &recipient_admin));
+            assert!(tree.remove_from_workspace(workspace_id, &alice, &bob));
             assert!(matches!(
                 tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102),
-                Err(OwnershipTransferStateError::RecipientNotAdministrator)
+                Err(OwnershipTransferStateError::RecipientNotMember)
             ));
-            tree.grant_in_workspace(
-                workspace_id,
-                &alice,
-                CapOverride::membership(
-                    Subject::person(bob.clone()),
-                    tree.room_of(workspace_id).unwrap().to_string(),
-                    Verb::Admin,
-                ),
-            )
-            .unwrap();
+            tree.admit_in_workspace(workspace_id, &alice, &bob, tilo_action_policy::Role::Editor)
+                .unwrap();
             tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102)
                 .unwrap();
             assert!(matches!(
@@ -8811,7 +8821,7 @@ mod workspace_tree_lifecycle_tests {
                 .iter()
                 .find(|ws| ws.id == workspace_id)
                 .unwrap();
-            assert_eq!(ws.owner.as_ref(), Some(&bob));
+            assert_eq!(ws.owner(), Some(&bob));
             assert_eq!(ws.role_of(&alice), None);
             assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
             assert_eq!(ws.ownership_transfer_audit.len(), 1);
@@ -8833,10 +8843,11 @@ mod workspace_tree_lifecycle_tests {
             let recipient = public_key_user_id(recipient_public);
             tree.adopt_ownerless_workspaces(&owner);
             let room = tree.room_of(workspace_id).unwrap();
-            tree.grant_in_workspace(
+            tree.admit_in_workspace(
                 workspace_id,
                 &owner,
-                CapOverride::membership(Subject::person(recipient), room.to_string(), Verb::Admin),
+                &recipient,
+                tilo_action_policy::Role::Editor,
             )
             .unwrap();
             let proposal = collab_types::OwnershipTransferProposalV1::new(
@@ -9126,15 +9137,21 @@ mod workspace_tree_lifecycle_tests {
             id: WorkspaceId::new(),
             room: RoomId::new(),
             capabilities: Vec::new(),
+            members: Vec::new(),
         };
         let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
+        let reach = || {
+            CapOverride::grant(
+                subject.clone(),
+                Scope::Room(workspace.room.to_string()),
+                Access::Read,
+            )
+        };
         for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
-            let capability =
-                CapOverride::membership(subject.clone(), workspace.room.to_string(), Verb::Read)
-                    .expiring(expiry);
+            let capability = reach().expiring(expiry);
             assert!(WorkspaceTree::relay_room_capability(&workspace, &capability).is_none());
         }
-        let persistent = CapOverride::membership(subject, workspace.room.to_string(), Verb::Read);
+        let persistent = reach();
         assert!(WorkspaceTree::relay_room_capability(&workspace, &persistent).is_some());
     }
 

@@ -2033,7 +2033,6 @@ mod tests {
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
     use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
-    use ui::permissions::PermissionContext;
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2800,9 +2799,10 @@ mod tests {
                 model_timeout: Duration::from_secs(5),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                permissions: PermissionContext::from_capabilities(
-                    ui::permissions::Actor::agent("agent-1"),
-                    vec![],
+                permissions: ui::permissions::PermissionContext::agent_granted_at(
+                    "agent-1",
+                    &[],
+                    ui::permissions::KindSet::READ_UNDOABLE,
                 ),
                 content: tilo_content::ContentStore::memory(),
             },

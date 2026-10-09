@@ -6,6 +6,9 @@
 //! be retried, how it completes, and what it returns.
 
 use serde::{Deserialize, Serialize};
+pub use tilo_action_policy::ActionKind;
+
+use crate::action::OperationKind;
 
 /// Whether an action can be invoked in the resource's current state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,28 +86,58 @@ pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 /// knowing the app.
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
-/// Minimum authority required to see and invoke an action. Capability-denied
-/// actions remain absent; this value lets every allowed catalogue use the same
-/// gate instead of inferring authority inconsistently from `OperationKind`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionRequirement {
-    None,
-    Read,
-    Comment,
-    #[default]
-    Write,
-    Invite,
-    Admin,
+/// What one invocation of an action is, for the grants deciding it: its kind,
+/// and the one field of its resource it writes when it writes only one (a
+/// reply writes the `comments`), which places it below that field in the
+/// tree.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ActionNeed {
+    pub kind: ActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
-impl PermissionRequirement {
-    /// Whether someone admitted for `self` holds what `needed` asks: each
-    /// level holds every one before it, as each role holds the roles below.
-    #[must_use]
-    pub const fn covers(self, needed: Self) -> bool {
-        self as u8 >= needed as u8
+/// The node of the action `action` on the resource `resource` (of kind
+/// `resource_kind`) the app `app` publishes, below `base` (a room, or the
+/// root for a path relative to one), and below the one `field` it writes if
+/// any: where every door decides it.
+#[must_use]
+pub fn action_node(
+    base: &tilo_action_policy::TreePath,
+    app: &str,
+    resource_kind: &str,
+    resource: &str,
+    field: Option<&str>,
+    action: &str,
+) -> tilo_action_policy::TreePath {
+    let node = base.clone().app(app).kind(resource_kind).resource(resource);
+    match field {
+        Some(field) => node.field(field),
+        None => node,
     }
+    .action(action)
+}
+
+impl ActionNeed {
+    /// An action of `kind` on the resource as a whole.
+    #[must_use]
+    pub const fn of(kind: ActionKind) -> Self {
+        Self { kind, field: None }
+    }
+
+    /// An undoable change of the resource's comments: what someone who may
+    /// only comment may do.
+    #[must_use]
+    pub fn comments() -> Self {
+        Self {
+            kind: ActionKind::Undoable,
+            field: Some(tilo_action_policy::roles::COMMENTS_FIELD.to_owned()),
+        }
+    }
+}
+
+const fn undoable() -> ActionKind {
+    ActionKind::Undoable
 }
 
 /// Confirmation required after argument binding and immediately before run.
@@ -217,8 +250,16 @@ pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
 pub struct ActionContract {
     #[serde(default)]
     pub availability: Availability,
-    #[serde(default)]
-    pub permission: PermissionRequirement,
+    /// What the action is able to do: read, change only the document, or
+    /// reach outside it. Grants are given by kind, so every door decides by
+    /// this and the action's place in the published tree.
+    #[serde(default = "undoable")]
+    pub kind: ActionKind,
+    /// The one field of its resource the action writes, when it writes only
+    /// one: the action sits below that field in the tree, so a grant on the
+    /// field (commenting is writing `comments`) reaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
     #[serde(default)]
     pub risk: RiskLevel,
     #[serde(default)]
@@ -239,7 +280,8 @@ impl Default for ActionContract {
     fn default() -> Self {
         Self {
             availability: Availability::Available,
-            permission: PermissionRequirement::Write,
+            kind: ActionKind::Undoable,
+            field: None,
             risk: RiskLevel::Low,
             confirmation: ConfirmationPolicy::None,
             retry: RetryPolicy::AtMostOnce,
@@ -252,13 +294,36 @@ impl Default for ActionContract {
 }
 
 impl ActionContract {
+    /// What an invocation needs when its value does not say otherwise.
+    #[must_use]
+    pub fn need(&self) -> ActionNeed {
+        ActionNeed {
+            kind: self.kind,
+            field: self.field.clone(),
+        }
+    }
+
     /// Safe defaults for a presentation-only operation.
     pub fn view() -> Self {
         Self {
             risk: RiskLevel::None,
-            permission: PermissionRequirement::Read,
+            kind: ActionKind::Read,
             retry: RetryPolicy::Idempotent,
             ..Self::default()
+        }
+    }
+
+    /// The defaults for an operation of `operation`'s kind: a view reads, a
+    /// document operation changes only the document, an effect reaches
+    /// outside it.
+    pub fn for_operation(operation: OperationKind) -> Self {
+        match operation {
+            OperationKind::View => Self::view(),
+            OperationKind::Document => Self::default(),
+            OperationKind::Effect => Self {
+                kind: ActionKind::Outside,
+                ..Self::default()
+            },
         }
     }
 
@@ -353,17 +418,6 @@ impl ActionContract {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_permission_level_covers_the_levels_below_it() {
-        use super::PermissionRequirement as P;
-        assert!(P::Write.covers(P::Read));
-        assert!(P::Write.covers(P::Write));
-        assert!(!P::Read.covers(P::Write));
-        assert!(!P::Comment.covers(P::Write));
-        assert!(P::Read.covers(P::None));
-        assert!(P::Admin.covers(P::Invite));
-    }
-
     use super::*;
 
     /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a

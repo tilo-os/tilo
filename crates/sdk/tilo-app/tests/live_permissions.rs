@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilo_app::widget::TaffyTreeExt;
 
 use tilo_app::framework::{Participant, resource_kind};
-use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+use tilo_app::permissions::{KindSet, PermissionContext, TreePath, policy};
 use tilo_app::prelude::*;
 
 use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
@@ -34,13 +34,13 @@ impl Memo {
     }
 
     /// Remark on the memo: someone who may only comment may.
-    #[action(permission = "comment")]
+    #[action(field = "comments")]
     pub fn remark(&mut self, cx: &mut ActionCx, remark: String) {
         self.remarks.push(cx.id(), remark);
     }
 
-    /// Configure the memo as its owner.
-    #[action(permission = "admin")]
+    /// Configure the memo.
+    #[action]
     pub fn configure(&mut self, title: String) {
         self.title = title;
     }
@@ -61,7 +61,7 @@ impl ResourceApp for MemoApp {
     const TITLE: &'static str = "Memo";
 
     fn view(cx: &mut ViewCx<Memo>) -> Element {
-        let admin = cx.permission_state(PermissionRequirement::Admin);
+        let admin = cx.govern_state();
         let owner_panel = cx.switch(&admin, |cx, allowed| {
             if *allowed {
                 Box::new(
@@ -107,8 +107,8 @@ fn permission_bound_panes_follow_revocation_without_document_or_write_changes() 
     let dispatcher = PROBE_DISPATCHER
         .with(|probe| probe.borrow().clone())
         .unwrap();
-    let admin = dispatcher.permission_state(PermissionRequirement::Admin);
-    let comment = dispatcher.permission_state(PermissionRequirement::Comment);
+    let admin = dispatcher.govern_state();
+    let comment = dispatcher.permission_state(ActionNeed::comments());
     assert!(admin.get());
     assert!(
         app.harness()
@@ -131,7 +131,6 @@ fn permission_bound_panes_follow_revocation_without_document_or_write_changes() 
             .semantic_owner_instance("no-owner-panel")
             .is_some()
     );
-    assert!(app.invoke(Memo::CONFIGURE.with("Denied")).is_err());
     assert_eq!(
         app.state(),
         unchanged,
@@ -140,6 +139,7 @@ fn permission_bound_panes_follow_revocation_without_document_or_write_changes() 
 
     app.set_role(tilo_app::Role::Viewer);
     assert!(!comment.get());
+    assert!(app.invoke(Memo::CONFIGURE.with("Denied")).is_err());
     app.set_role(tilo_app::Role::Commenter);
     assert!(
         comment.get(),
@@ -309,8 +309,8 @@ fn a_commenter_may_take_the_actions_that_need_only_commenting() {
     let line = Memo::ADD_LINE.with("typed").build(0).unwrap();
     assert!(dispatcher.may_apply(&remark));
     assert!(!dispatcher.may_apply(&line));
-    assert!(dispatcher.may(PermissionRequirement::Comment));
-    assert!(!dispatcher.may(PermissionRequirement::Write));
+    assert!(dispatcher.may(&ActionNeed::comments()));
+    assert!(!dispatcher.may(&ActionNeed::of(ActionKind::Undoable)));
 
     // A viewer may do neither.
     app.set_role(tilo_app::Role::Viewer);
@@ -345,13 +345,13 @@ fn a_commenters_typed_edit_needs_what_its_value_needs() {
 
     // Through a participant without a window, by the same rule.
     let snapshot = app.read_document(|doc| doc.clone().save());
-    let commenting = PermissionContext::from_capabilities(
-        Actor::agent("scribe"),
-        vec![CapOverride::grant(
-            Subject::agent("scribe"),
-            Scope::App(MemoApp::ID.to_owned()),
-            Verb::Comment,
-        )],
+    let commenting = PermissionContext::agent_granted(
+        "scribe",
+        &TreePath::root()
+            .app(MemoApp::ID)
+            .rest()
+            .field(policy::roles::COMMENTS_FIELD),
+        KindSet::READ_UNDOABLE,
     );
     let mut participant =
         Participant::from_snapshot(resource_kind::<MemoApp>(), &snapshot, "scribe", commenting)

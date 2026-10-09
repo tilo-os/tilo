@@ -19,14 +19,13 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_actions::params::ActionParam;
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
-use crate::grant::grant_permits;
+use crate::grant::{grant_answer, step_node};
 use crate::path::StepPath;
-use crate::shortcut::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, UnattendedConsent,
-};
+use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
 use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
+use tilo_action_policy::Answer;
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -87,12 +86,6 @@ pub enum CheckErrorKind {
     UnresolvableShortcut,
     #[error("the shortcut would run itself: {}", chain.join(" → "))]
     Recursion { chain: Vec<String> },
-    #[error("consent to `{action}` on `{resource}` of `{app_id}` matches no step")]
-    UnusedConsent {
-        app_id: String,
-        resource: String,
-        action: String,
-    },
 }
 
 /// Looks up other saved shortcuts by id, so the checker can follow a chain
@@ -141,50 +134,12 @@ pub fn check(
     if let Some(output) = &shortcut.output {
         checker.value(output, &scope, &StepPath::output());
     }
-    checker.errors.extend(unused_consents(shortcut));
     checker.errors.extend(recursion(shortcut, resolver));
     if checker.errors.is_empty() {
         Ok(())
     } else {
         Err(checker.errors)
     }
-}
-
-/// Consents no step could use: each must name the application and action of
-/// an invocation, and its resource when that invocation names one exactly.
-fn unused_consents(shortcut: &Shortcut) -> Vec<CheckError> {
-    fn reaches(steps: &[Step], consent: &UnattendedConsent) -> bool {
-        steps.iter().any(|step| match &step.kind {
-            StepKind::Invoke {
-                action, resource, ..
-            } => {
-                (action.app.as_str(), action.action.as_str())
-                    == (consent.app_id.as_str(), consent.action.as_str())
-                    && match resource {
-                        Selector::Fixed(id) => *id == consent.resource,
-                        Selector::FromBinding(_) | Selector::FirstOfKind(_) => true,
-                    }
-            }
-            StepKind::If {
-                then, otherwise, ..
-            } => reaches(then, consent) || reaches(otherwise, consent),
-            StepKind::ForEach { body, .. } => reaches(body, consent),
-            StepKind::SetVar { .. } | StepKind::Ask { .. } | StepKind::Ai { .. } => false,
-        })
-    }
-    shortcut
-        .consents
-        .iter()
-        .filter(|consent| !reaches(&shortcut.steps, consent))
-        .map(|consent| CheckError {
-            path: StepPath::root(),
-            kind: CheckErrorKind::UnusedConsent {
-                app_id: consent.app_id.clone(),
-                resource: consent.resource.clone(),
-                action: consent.action.clone(),
-            },
-        })
-        .collect()
 }
 
 /// A step's value, as later steps may refer to it: its type, and the schema
@@ -470,13 +425,10 @@ impl Checker<'_> {
             );
             return unknown;
         };
-        if !grant_permits(
-            &self.shortcut.grant,
-            app_id,
-            &descriptor.address,
-            &descriptor.resource_kind,
-            descriptor.contract.permission,
-        ) {
+        let node = step_node(None, app_id, &descriptor.resource_kind, &descriptor.address);
+        if grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind).answer
+            == Answer::Deny
+        {
             self.fail(
                 path,
                 CheckErrorKind::OutsideGrant {

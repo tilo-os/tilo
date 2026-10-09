@@ -30,7 +30,7 @@ struct ColdPair {
 fn room_tree(room: RoomId, identity: &[u8; 32]) -> WorkspaceTree {
     let mut tree = WorkspaceTree::bootstrap_default();
     let workspace = &mut tree.desktop.workspaces[0];
-    workspace.room = room;
+    workspace.set_room(room);
     workspace.set_owner(crate::shell::collab_broker_capnp::principal_id_for_root(
         *identity,
     ));

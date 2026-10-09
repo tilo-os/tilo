@@ -11,7 +11,7 @@ use crate::history_source::{
     AuthorDirectory, CompareError, HistoryComparison, HistorySource, committed_heads,
     compare_entries,
 };
-use crate::permissions::{PermissionContext, PermissionScope, Verb};
+use crate::permissions::{ActionKind, PermissionContext, PermissionScope};
 use crate::record::{RecordId, RecordOpenError};
 use crate::widget::{HistoryEntry, HistoryEntryId};
 
@@ -180,7 +180,7 @@ impl HistoryTarget {
                     .permissions
                     .try_borrow()
                     .map_err(|_| HistoryError::Unavailable)?
-                    .check(&PermissionScope::app(&binding.app_id, Verb::Write));
+                    .check(&PermissionScope::app(&binding.app_id, ActionKind::Undoable));
                 if !allowed {
                     return Err(HistoryError::Denied);
                 }
@@ -198,7 +198,7 @@ impl HistoryTarget {
                 }
                 if !context
                     .permissions
-                    .check(&PermissionScope::app(app_id, Verb::Write))
+                    .check(&PermissionScope::app(app_id, ActionKind::Undoable))
                 {
                     return Err(HistoryError::Denied);
                 }
@@ -221,7 +221,7 @@ impl HistoryTarget {
                     .permissions
                     .try_borrow()
                     .map_err(|_| HistoryError::Unavailable)?
-                    .check(&PermissionScope::app(&binding.app_id, Verb::Read));
+                    .check(&PermissionScope::app(&binding.app_id, ActionKind::Read));
                 if !allowed {
                     return Err(HistoryError::Denied);
                 }
@@ -241,7 +241,7 @@ impl HistoryTarget {
                 }
                 if !context
                     .permissions
-                    .check(&PermissionScope::app(app_id, Verb::Read))
+                    .check(&PermissionScope::app(app_id, ActionKind::Read))
                 {
                     return Err(HistoryError::Denied);
                 }
@@ -492,7 +492,7 @@ mod tests {
     use automerge::{ROOT, ReadDoc, transaction::CommitOptions};
 
     use super::*;
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
+    use crate::permissions::{TreePath, policy};
 
     fn document(value: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -502,13 +502,10 @@ mod tests {
     }
 
     fn read_only(app_id: &str) -> PermissionContext {
-        PermissionContext::from_capabilities(
-            Actor::agent("reader"),
-            vec![CapOverride::grant(
-                Subject::agent("reader"),
-                Scope::App(app_id.into()),
-                Verb::Read,
-            )],
+        PermissionContext::agent_granted(
+            "reader",
+            &TreePath::root().app(app_id),
+            policy::KindSet::READ,
         )
     }
 

@@ -6,7 +6,7 @@
 
 use tilo_app::collaboration::DocumentMutation;
 use tilo_app::framework::{AttachedView, definition};
-use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+use tilo_app::permissions::{KindSet, PermissionContext, TreePath};
 use tilo_app::prelude::*;
 use tilo_app::record::RecordCheckout;
 
@@ -15,13 +15,10 @@ use crate::kinds::{Tally, TallyApp};
 const AGENT: &str = "scribe";
 
 fn writer() -> PermissionContext {
-    PermissionContext::from_capabilities(
-        Actor::agent(AGENT),
-        vec![CapOverride::grant(
-            Subject::agent(AGENT),
-            Scope::App(TallyApp::ID.to_owned()),
-            Verb::Write,
-        )],
+    PermissionContext::agent_granted(
+        AGENT,
+        &TreePath::root().app(TallyApp::ID),
+        KindSet::READ_UNDOABLE,
     )
 }
 
@@ -74,14 +71,8 @@ fn an_agent_acts_through_the_view_and_the_window_sees_it() {
 #[test]
 fn the_view_refuses_what_the_participant_may_not_do() {
     let app = TestApp::<TallyApp>::new().unwrap();
-    let reader = PermissionContext::from_capabilities(
-        Actor::agent(AGENT),
-        vec![CapOverride::grant(
-            Subject::agent(AGENT),
-            Scope::App(TallyApp::ID.to_owned()),
-            Verb::Read,
-        )],
-    );
+    let reader =
+        PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
     let mut view = attached(&app, reader);
     let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
     assert!(view.invoke(&bump, &serde_json::Map::new(), false).is_err());

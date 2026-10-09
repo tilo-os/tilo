@@ -92,6 +92,6 @@ pub enum SlidesEffect {
     /// The deck as text: each slide's number, layout and {#id}, its title
     /// (# line), body and other elements each ending in its {#id}, then its
     /// speaker notes.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Read,
 }

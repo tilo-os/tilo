@@ -24,41 +24,31 @@ pub enum VpnEffect {
     ///
     /// Pick a `.conf` file; `NetworkManager` keeps its keys and only the
     /// profile's name joins the shared fleet.
-    #[effect(
-        label = "Import WireGuard profile",
-        job,
-        cancellable,
-        permission = "admin"
-    )]
+    #[effect(label = "Import WireGuard profile", job, cancellable)]
     ImportWireguard,
     /// Import `OpenVPN` profile.
     ///
     /// Pick a `.ovpn` file; `NetworkManager` keeps its credentials and only
     /// the profile's name joins the shared fleet.
-    #[effect(
-        label = "Import OpenVPN profile",
-        job,
-        cancellable,
-        permission = "admin"
-    )]
+    #[effect(label = "Import OpenVPN profile", job, cancellable)]
     ImportOpenvpn,
     /// Set up on this device.
     ///
     /// Import the exact provider file of a shared profile into this device's
     /// `NetworkManager`.
-    #[effect(job, cancellable, permission = "admin")]
+    #[effect(job, cancellable)]
     ProvisionLocal {
         #[param("Id of the saved profile")]
         connection: String,
     },
     /// Connect.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Connect {
         #[param("Id of the saved profile")]
         connection: String,
     },
     /// Disconnect.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     Disconnect {
         #[param("Id of the saved profile")]
         connection: String,
@@ -67,7 +57,7 @@ pub enum VpnEffect {
     ///
     /// Delete the profile from this device's `NetworkManager`, then from the
     /// shared fleet.
-    #[effect(job, destructive, permission = "admin")]
+    #[effect(job, destructive)]
     DeleteConnection {
         #[param("Id of the saved profile")]
         connection: String,
@@ -75,7 +65,7 @@ pub enum VpnEffect {
     /// Route all traffic over Tor.
     ///
     /// Start or stop this device's Tor service.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     ToggleTorGlobal,
 }
 

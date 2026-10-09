@@ -17,6 +17,7 @@ path = "src/lib.rs"
 # Pure data and logic with no I/O, no runtime and no UI dependency.
 
 [dependencies]
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 serde.workspace = true

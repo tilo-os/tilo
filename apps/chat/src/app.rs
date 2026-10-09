@@ -1435,12 +1435,8 @@ impl ChatApp {
     /// has granted nothing, so its attachments cannot be opened.
     #[doc(hidden)]
     pub fn shot_permission(scenario: &str) -> Option<ui::permissions::PermissionContext> {
-        (scenario == "no-access").then(|| {
-            ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(None, crate::model::ME),
-                Vec::new(),
-            )
-        })
+        (scenario == "no-access")
+            .then(|| ui::permissions::PermissionContext::stranger(crate::model::ME))
     }
 
     /// Whether `scenario` stages something on the rows a first frame placed

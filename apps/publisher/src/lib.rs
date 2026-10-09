@@ -154,12 +154,12 @@ struct Pane {
 #[effect(operation = "so.tilo.publisher.key", device_only)]
 pub enum KeyEffect {
     /// Create publisher key.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CreateKey,
     /// Copy namespace proof.
     CopyProof,
     /// Copy key for CI.
-    #[effect(privileged, permission = "admin")]
+    #[effect(privileged)]
     CopySecret,
     /// Apply for namespaces.
     #[effect(job)]

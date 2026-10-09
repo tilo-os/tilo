@@ -580,7 +580,6 @@ fn hosted_directory_equivalent_notification_before_sync_preserves_offered_revisi
 
 #[test]
 fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_restore() {
-    use crate::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -591,16 +590,11 @@ fn hosted_directory_permission_expiry_or_failure_inside_notification_cannot_rest
         let failed = Arc::new(AtomicBool::new(false));
         let sample_time = time.clone();
         let sample_failed = failed.clone();
-        app.permission_ctx = PermissionContext::from_capabilities(
-            Actor::person(None, "fixture-user"),
-            vec![
-                CapOverride::grant(
-                    Subject::person("fixture-user"),
-                    Scope::Workspace,
-                    Verb::Admin,
-                )
-                .with_expiry(110),
-            ],
+        app.permission_ctx = crate::permissions::PermissionContext::granted(
+            "fixture-user",
+            &crate::permissions::TreePath::root(),
+            crate::permissions::policy::KindSet::ALL,
+            Some(110),
         )
         .at_unix_time(100)
         .with_policy_time_sampler(Arc::new(move || {

@@ -135,9 +135,6 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
         CheckErrorKind::Recursion { .. } => {
             String::from("This shortcut would end up running itself")
         }
-        CheckErrorKind::UnusedConsent { .. } => {
-            String::from("A saved permission matches none of the steps")
-        }
     }
 }
 

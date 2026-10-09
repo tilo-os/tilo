@@ -4,9 +4,7 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
-use tilo_actions::{
-    ActionContract, ExecutionMode, OperationKind, PermissionRequirement, ResultSpec,
-};
+use tilo_actions::{ActionContract, ExecutionMode, OperationKind, ResultSpec};
 
 fn schema() -> &'static serde_json::Value {
     static VALUE: OnceLock<serde_json::Value> = OnceLock::new();
@@ -112,7 +110,7 @@ fn changed_contract_resource_and_closed_payload_are_refused() {
         let mut resource = resource();
         match change {
             0 => resource.actions[0].kind = OperationKind::View,
-            1 => resource.actions[0].contract.permission = PermissionRequirement::Write,
+            1 => resource.actions[0].contract.kind = tilo_actions::ActionKind::Undoable,
             2 => {
                 resource.actions[0].contract.execution =
                     ExecutionMode::Background { cancellable: false }

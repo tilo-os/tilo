@@ -7,7 +7,6 @@
 //! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
 //! in a window inside an existing X11/Wayland session.
 
-pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;

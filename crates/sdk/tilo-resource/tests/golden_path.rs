@@ -69,7 +69,7 @@ impl Board {
     }
 
     /// Clear every card.
-    #[action(destructive, permission = "admin")]
+    #[action(destructive, field = "cards")]
     pub fn clear(&mut self) {
         self.cards = Collection::new();
     }
@@ -161,7 +161,7 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert_eq!(rename.params.first().unwrap().name, "title");
         let clear = decls.last().unwrap();
         assert!(clear.destructive);
-        assert_eq!(clear.permission, tilo_actions::PermissionRequirement::Admin);
+        assert_eq!(clear.field, Some("cards"));
 
         // The published tree is what the palette, agents and scripts see.
         let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());

@@ -2364,9 +2364,10 @@ pub fn launch_workspace_agent(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     let agent_id = agent_id.trim();
-    if workspace
-        .role_of_agent(agent_id)
-        .is_none_or(|role| role == crate::shell::state::CapRole::Denied)
+    if !workspace
+        .agent_members()
+        .iter()
+        .any(|(agent, _)| agent == agent_id)
     {
         return Err(LaunchError::AgentNotAdmitted {
             agent_id: agent_id.to_string(),
@@ -2940,7 +2941,7 @@ pub(crate) fn queue_package_target_in_workspace(
                     });
                 }
                 let capabilities = workspace
-                    .capabilities
+                    .sandbox
                     .into_iter()
                     .filter(|capability| capability.subject == Subject::app(&package_id))
                     .collect();
@@ -3131,14 +3132,12 @@ fn native_launch_capabilities(
     access: NativeAppOpenAccess,
 ) -> Workspace {
     if access == NativeAppOpenAccess::Viewer {
-        workspace
-            .capabilities
-            .push(collab_types::caps::CapOverride::new(
-                Subject::app(package),
-                collab_types::caps::Scope::Workspace,
-                collab_types::caps::Effect::Restrict,
-                collab_types::caps::Verb::Read,
-            ));
+        workspace.sandbox.push(collab_types::caps::CapOverride::new(
+            Subject::app(package),
+            collab_types::caps::Scope::Workspace,
+            collab_types::caps::Effect::Restrict,
+            collab_types::caps::Access::Read,
+        ));
     }
     workspace
 }
@@ -3158,9 +3157,10 @@ fn native_app_open_access(
             return Err("native app opening certificate is no longer admitted".into());
         }
         let now = std::time::SystemTime::now();
-        let (role, caps, person) = view
+        let member = view
             .peer()
             .permissions(certificate.device_public_key, now)?;
+        let sandbox = view.peer().governed_sandbox()?;
         let administrator = view
             .peer()
             .check_workspace_administration(certificate.device_public_key, now)
@@ -3176,19 +3176,19 @@ fn native_app_open_access(
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .map_err(|_| "native app opening clock is before the Unix epoch")?
             .as_secs();
-        let person =
-            collab_types::caps::Actor::person(Some(role), person).in_room(room.to_string());
-        let application = collab_types::caps::Actor::app(package).in_room(room.to_string());
-        let writes = |actor: &collab_types::caps::Actor| {
-            collab_types::caps::decide_capability(
-                actor,
-                &collab_types::caps::ResourceRef::Workspace,
-                collab_types::caps::Verb::Write,
-                &caps,
-                Some(seconds),
-            ) == collab_types::caps::CapDecision::Allow
-        };
-        if writes(&person) && writes(&application) {
+        let person_writes = member.allows(
+            &member.policy.node().app(package),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        );
+        let application_writes = collab_types::caps::decide_capability(
+            &collab_types::caps::Actor::app(package).in_room(room.to_string()),
+            &collab_types::caps::ResourceRef::Workspace,
+            collab_types::caps::Access::Write,
+            &sandbox,
+            Some(seconds),
+        ) == collab_types::caps::CapDecision::Allow;
+        if person_writes && application_writes {
             return Ok(NativeAppOpenAccess::Author);
         }
         Ok(if administrator {
@@ -3225,7 +3225,7 @@ fn queue_prepared_launch(
         super::launch_readiness::inherit(move || {
             let outcome = prepare().and_then(|workspace| {
                 let app_capabilities = workspace
-                    .capabilities
+                    .sandbox
                     .into_iter()
                     .filter(|capability| capability.subject == Subject::app(&package_id))
                     .collect();
@@ -3271,7 +3271,7 @@ pub fn launch_document_in_workspace(
     workspace: &Workspace,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
-    set_workspace_capabilities(workspace.capabilities.clone());
+    set_workspace_capabilities(workspace.sandbox.clone());
     launch_with_document(package_id, workspace.room, document)
 }
 
@@ -3296,7 +3296,7 @@ pub(crate) fn launch_resolved_in_workspace(
         None,
         None,
         None,
-        Some(workspace.capabilities.clone()),
+        Some(workspace.sandbox.clone()),
     )
     .map(|_| ())
 }
@@ -3332,12 +3332,7 @@ pub fn launch_uri_in_workspace(
     workspace: &Workspace,
     uri: &str,
 ) -> Result<InstalledApp, LaunchError> {
-    launch_uri_in_room(
-        package_id,
-        workspace.room,
-        workspace.capabilities.clone(),
-        uri,
-    )
+    launch_uri_in_room(package_id, workspace.room, workspace.sandbox.clone(), uri)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -6049,7 +6044,11 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", tmp.path());
-            let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
+            let caps = vec![fs_grant(
+                "../../etc/x",
+                "/var/workspace/books",
+                Access::Read,
+            )];
             let escaped = write_capabilities_file("../../etc/x", &caps);
             let slashed = write_capabilities_file("a/b", &caps);
             env.remove("XDG_RUNTIME_DIR");
@@ -6211,7 +6210,7 @@ mod tests {
         launched_apps_are_matched_back_by_app_id();
     }
 
-    use crate::shell::state::{Scope, Verb};
+    use crate::shell::state::{Access, Scope};
 
     fn test_app(package_id: &str) -> InstalledApp {
         InstalledApp {
@@ -6229,7 +6228,7 @@ mod tests {
         }
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
@@ -6238,14 +6237,14 @@ mod tests {
     fn published_capabilities_are_filtered_bound_read_only_and_revoked() {
         fn published_capabilities_are_filtered_to_the_launching_app() {
             set_workspace_capabilities(vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
                 // A person's share is a capability in the same list but not
                 // an app grant, and must not travel.
                 CapOverride::grant(
                     Subject::person("alice"),
                     Scope::FsPath("/var/workspace/private".into()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             ]);
             let mine = capabilities_for_app("so.tilo.books");
@@ -6273,8 +6272,8 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", tmp.path());
             set_workspace_capabilities(vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
-                fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
+                fs_grant("so.tilo.other", "/var/workspace/secrets", Access::Write),
             ]);
 
             let caps = capabilities_for_app("so.tilo.books");
@@ -6321,7 +6320,7 @@ mod tests {
             let granted = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
+                Access::Read,
             )];
             let path = write_capabilities_file("so.tilo.books", &granted)
                 .unwrap()
@@ -6336,7 +6335,7 @@ mod tests {
             );
             let other = write_capabilities_file(
                 "so.tilo.books",
-                &[fs_grant("so.tilo.books", "/another-room", Verb::Write)],
+                &[fs_grant("so.tilo.books", "/another-room", Access::Write)],
             )
             .unwrap()
             .unwrap();

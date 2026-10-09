@@ -815,7 +815,7 @@ pub(crate) fn activate_bound_search(
         .borrow()
         .check(&crate::permissions::PermissionScope::app(
             &binding.app_id,
-            collab_types::caps::Verb::Read,
+            crate::permissions::ActionKind::Read,
         ))
     {
         return Ok(());
@@ -1106,96 +1106,35 @@ pub(crate) fn discover_cached_bound_resources(
 }
 
 /// Action-scoped authority shared by native and headless legacy hosts: the
-/// action `action` on the resource `resource_id`.
+/// action `action` on `resource` (allowed, or asking first).
 pub(crate) fn permits_local_action(
     permissions: &PermissionContext,
     app_id: &str,
-    resource_id: &str,
-    action: &tilo_actions::ActionSpec,
-) -> bool {
-    permits_local_invocation(
-        permissions,
-        app_id,
-        resource_id,
-        action,
-        action.contract.permission,
-    )
-}
-
-/// [`permits_local_action`] for one invocation: what its arguments ask.
-pub(crate) fn permits_local_value(
-    permissions: &PermissionContext,
-    app_id: &str,
-    resource_id: &str,
+    resource: &tilo_actions::Resource,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
 ) -> bool {
-    let requirement = match typed {
-        Some(arguments) => action.permission_for_json(arguments),
-        None => action.permission_for_argument(argument),
-    };
-    permits_local_invocation(permissions, app_id, resource_id, action, requirement)
+    permissions.permits_invocation(app_id, resource, action, typed, argument)
 }
 
-fn permits_local_invocation(
-    permissions: &PermissionContext,
-    app_id: &str,
-    resource_id: &str,
-    action: &tilo_actions::ActionSpec,
-    requirement: tilo_actions::PermissionRequirement,
-) -> bool {
-    use crate::permissions::Verb;
-    use tilo_actions::PermissionRequirement as Requirement;
-    let verb = match requirement {
-        Requirement::None => return true,
-        Requirement::Read => Verb::Read,
-        Requirement::Comment => Verb::Comment,
-        Requirement::Write => Verb::Write,
-        Requirement::Invite => Verb::Invite,
-        Requirement::Admin => Verb::Admin,
-    };
-    permissions.check(&crate::permissions::PermissionScope::action(
-        app_id,
-        resource_id,
-        &action.id,
-        verb,
-    ))
-}
-
-/// May the component's participant take this one invocation of `action`:
-/// what its arguments ask, under the same resource scope the published tree is
-/// filtered by.
+/// May the component's participant take this one invocation of `action` on
+/// `resource`: what its value asks, under the same scope the published tree
+/// is filtered by.
 fn permits_invocation(
     binding: &CallbackBinding,
-    resource_id: &str,
+    resource: &tilo_actions::Resource,
     action: &tilo_actions::ActionSpec,
     typed: Option<&serde_json::Map<String, serde_json::Value>>,
     argument: Option<&str>,
 ) -> bool {
-    use crate::permissions::Verb;
-    use tilo_actions::PermissionRequirement as Requirement;
-    let requirement = match typed {
-        Some(arguments) => action.permission_for_json(arguments),
-        None => action.permission_for_argument(argument),
-    };
-    let verb = match requirement {
-        Requirement::None => return true,
-        Requirement::Read => Verb::Read,
-        Requirement::Comment => Verb::Comment,
-        Requirement::Write => Verb::Write,
-        Requirement::Invite => Verb::Invite,
-        Requirement::Admin => Verb::Admin,
-    };
-    binding
-        .permissions
-        .borrow()
-        .check(&crate::permissions::PermissionScope::action(
-            &binding.app_id,
-            resource_id,
-            &action.id,
-            verb,
-        ))
+    binding.permissions.borrow().permits_invocation(
+        &binding.app_id,
+        resource,
+        action,
+        typed,
+        argument,
+    )
 }
 
 /// The refusal of an invocation the participant may not take.
@@ -1208,36 +1147,12 @@ pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorErr
 
 pub(crate) fn filter_resource(
     binding: &CallbackBinding,
-    mut resource: tilo_actions::Resource,
+    resource: tilo_actions::Resource,
 ) -> Option<tilo_actions::Resource> {
-    let resource_id = resource.id.as_str().to_owned();
-    resource.actions.retain(|action| {
-        use crate::permissions::Verb;
-        use tilo_actions::PermissionRequirement as Requirement;
-        let verb = match action.contract.permission {
-            Requirement::None => return true,
-            Requirement::Read => Verb::Read,
-            Requirement::Comment => Verb::Comment,
-            Requirement::Write => Verb::Write,
-            Requirement::Invite => Verb::Invite,
-            Requirement::Admin => Verb::Admin,
-        };
-        binding
-            .permissions
-            .borrow()
-            .check(&crate::permissions::PermissionScope::action(
-                &binding.app_id,
-                &resource_id,
-                &action.id,
-                verb,
-            ))
-    });
-    resource.children = resource
-        .children
-        .into_iter()
-        .filter_map(|child| filter_resource(binding, child))
-        .collect();
-    (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
+    binding
+        .permissions
+        .borrow()
+        .permitted_resource(&binding.app_id, resource)
 }
 
 /// Read-only traversal releases each checked document borrow before descending
@@ -2313,15 +2228,12 @@ pub(crate) fn invoke_resource_action(
                     }
                     // The tree offers an action under the least it needs;
                     // this invocation needs what its value asks.
-                    if !permits_invocation(binding, &target.address.address.resource, spec, arguments.as_ref(), argument) {
+                    if !permits_invocation(binding, resource, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
-                        match arguments.as_ref() {
-                            Some(arguments) => spec.permission_for_json(arguments),
-                            None => spec.permission_for_argument(argument),
-                        },
+                        spec.need_for(arguments.as_ref(), argument).kind,
                     )?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
@@ -4686,7 +4598,7 @@ fn authorize_legacy_owner(
     authority: &crate::permissions::PermissionContext,
     author: &UserId,
 ) -> Result<String, String> {
-    use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
+    use crate::permissions::{Access, ActionKind, Principal};
     owner.validate().map_err(|error| error.to_string())?;
     let (store, checkout) = owner.store_checkout();
     let (_, app, _) = store
@@ -4700,15 +4612,18 @@ fn authorize_legacy_owner(
             .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
     if !mapped
         || app.is_empty()
-        || current.decide(&ResourceRef::App(app.clone()), Verb::Write) != CapDecision::Allow
+        || !current.check(&crate::permissions::PermissionScope::app(
+            app.clone(),
+            ActionKind::Undoable,
+        ))
     {
         return Err("You do not have permission to edit this document.".into());
     }
     if let Some(path) = checkout.id.file_path()
-        && current.decide(
-            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Write,
-        ) != CapDecision::Allow
+        && !current.check(&crate::permissions::PermissionScope::path(
+            path.to_string_lossy().into_owned(),
+            Access::Write,
+        ))
     {
         return Err("You do not have permission to edit this file.".into());
     }

@@ -391,7 +391,7 @@ mod owner_commit_tests {
             crate::test_support::WorkspaceId(72),
             "Actual owner barrier",
         );
-        workspace.room = uuid::Uuid::parse_str(owner.peer().room()).unwrap().into();
+        workspace.set_room(uuid::Uuid::parse_str(owner.peer().room()).unwrap().into());
         workspace.set_owner(principal_id_for_root(
             owner.peer().authority().user_public_key,
         ));
@@ -949,16 +949,17 @@ mod owner_commit_tests {
                 let doc = peer
                     .admitted_room()
                     .ok_or("admitted owner governance unavailable")?;
-                let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(doc);
+                let (name, policy) = tilo_peer_state::room::extract_governed_fields(doc);
                 let mut workspace = tilo_desktop_model::Workspace::new(
                     tilo_desktop_model::WorkspaceId(72),
                     name.unwrap_or_else(|| "Owner room".into()),
                 );
-                workspace.room = uuid::Uuid::parse_str(peer.room())
-                    .map_err(|e| e.to_string())?
-                    .into();
-                workspace.owner = owner;
-                workspace.capabilities = caps;
+                workspace.set_room(
+                    uuid::Uuid::parse_str(peer.room())
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                );
+                workspace.policy = policy;
                 let mut tree = tilo_desktop_model::DesktopTree::default();
                 tree.workspaces.push(workspace);
                 read(&tree);
@@ -2040,7 +2041,7 @@ mod owner_commit_tests {
         let contract = tilo_actions::ActionContract::default();
         let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"context":context,
             "actor":actor,"contract":contract,"app_id":f.route.app_id,
-            "resource":format!("app.{}", f.route.app_id),"action":"open"});
+            "resource":format!("app.{}", f.route.app_id),"resource_kind":"app","action":"open"});
         let update = tilo_actions::InvocationUpdate::Succeeded {
             invocation: key.invocation,
             output: tilo_actions::ActionOutput::default(),

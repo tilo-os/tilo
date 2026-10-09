@@ -1,5 +1,5 @@
 //! Bounded, default-deny typed state mutations without argument-risk admission.
-use tilo_actions::{ActionArgs, ActionSpec, EncodedAction, ExecutionLocus, PermissionRequirement};
+use tilo_actions::{ActionArgs, ActionNeed, ActionSpec, EncodedAction, ExecutionLocus};
 
 use crate::Resource;
 
@@ -71,11 +71,12 @@ pub(crate) fn apply_spec<R: Resource>() -> ActionSpec {
     .programmatic()
     .reversible()
     .carrying()
-    .requiring(R::least_permission())
-    .with_permission_of(|args| {
-        build_action::<R>(&args.to_json()).map_or(PermissionRequirement::Write, |action| {
-            R::permission(&action)
-        })
+    .with_need(R::least_need())
+    .with_need_of(|args| {
+        build_action::<R>(&args.to_json()).map_or_else(
+            |_| tilo_actions::ActionContract::default().need(),
+            |action| crate::resource::need_of::<R>(&action),
+        )
     })
 }
 
@@ -95,19 +96,15 @@ pub(crate) fn group_spec<R: Resource>() -> ActionSpec {
     .programmatic()
     .carrying()
     .reversible()
-    .requiring(R::least_permission())
-    .with_permission_of(group_permission::<R>)
+    .with_need(R::least_need())
+    .with_need_of(group_need::<R>)
 }
 
-fn group_permission<R: Resource>(args: &ActionArgs) -> PermissionRequirement {
-    build_group::<R>(&args.to_json()).map_or(PermissionRequirement::Write, |group| {
-        group
-            .actions
-            .iter()
-            .map(R::permission)
-            .max_by_key(|permission| crate::resource::permission_rank(*permission))
-            .unwrap_or(PermissionRequirement::Write)
-    })
+fn group_need<R: Resource>(args: &ActionArgs) -> ActionNeed {
+    build_group::<R>(&args.to_json()).map_or_else(
+        |_| tilo_actions::ActionContract::default().need(),
+        |group| crate::resource::group_need::<R>(&group.actions),
+    )
 }
 
 #[cfg(test)]

@@ -4191,7 +4191,9 @@ mod tests {
         }
         // Phase `the_capability_file_round_trips_and_is_enforced`.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
             use fs::Access;
 
             let who = [0x0A; 32];
@@ -4199,7 +4201,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(who)),
                 Scope::FsPath("/w/docs".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             )];
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("caps.json");

@@ -251,7 +251,7 @@ fn start_child(fixture: &Fixture, protected_path: PathBuf) {
     .expect("the actual Files manifest");
     let plan = launcher::capabilities::CapabilityPlan::for_app(
         APP,
-        &fixture.tree.read().workspaces[0].capabilities,
+        &fixture.tree.read().workspaces[0].sandbox,
         None,
     );
     assert_eq!(plan.rw_paths, vec![fixture.directory.path().to_path_buf()]);

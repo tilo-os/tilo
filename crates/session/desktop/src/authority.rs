@@ -5,13 +5,11 @@
 
 use std::collections::HashMap;
 
-use collab_types::PermissionProfile;
-use collab_types::caps::{Actor, CapDecision, CapOverride, Expiry, ResourceRef, Subject, Verb};
+use collab_types::caps::{Access, Actor, CapDecision, CapOverride, ResourceRef};
 use collab_types::role::Role as CapRole;
+use tilo_action_policy::{ActionKind, Answer, Grant, KindSet, TreePath, roles};
 use tilo_clock::unix_now;
-use tilo_desktop_model::{
-    AppId, Capability, PermissionProfileMutationError, UserId, Workspace, WorkspaceDefaultError,
-};
+use tilo_desktop_model::{AppId, Capability, UserId, Workspace, WorkspaceDefaultError};
 
 /// The model's authority questions answered at this machine's clock.
 pub trait WorkspaceAuthority {
@@ -31,62 +29,34 @@ pub trait WorkspaceAuthority {
     fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
     fn has_app_grants(&self) -> bool;
     fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
+    /// Whether `actor` reaches the sandboxed `resource` for `access`.
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision;
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool;
+    /// Record the sandbox capability `cap`, as `grantor`, who must be
+    /// allowed to grant in the room. The capability's id.
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
-    /// See [`Workspace::save_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_at`].
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::save_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::save_permission_profile_as_actor_at`].
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_at`].
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
-    /// See [`Workspace::assign_permission_profile_as_actor_at`].
-    ///
-    /// # Errors
-    ///
-    /// As [`Workspace::assign_permission_profile_as_actor_at`].
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError>;
+    /// Drop the sandbox capability or grant with id `id`, as `revoker`, who
+    /// must be allowed to revoke in the room.
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
+    /// Whether `user` may grant in the room.
     fn may_administer(&self, user: &UserId) -> bool;
+    /// Whether `user` is allowed, without asking first, an action of `kind`
+    /// at `relative`, a path below the room.
+    fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
     fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
+    /// The sandbox actor a person is in this room.
     fn actor_for_person(&self, user: &UserId) -> Actor;
+    /// The sandbox actor an app's code is in this room.
+    fn actor_for_app(&self, app_id: &str) -> Actor;
+    /// The sandbox actor an agent is in this room.
+    fn actor_for_agent(&self, agent: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
-    fn agent_members(&self) -> Vec<(String, CapRole)>;
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
+    /// Agents admitted to the room, with the kinds of action their room
+    /// grants allow.
+    fn agent_members(&self) -> Vec<(String, KindSet)>;
+    /// The grants naming one person each that reach `node`.
+    fn shares_of(&self, node: &TreePath) -> Vec<&Grant>;
 }
 
 impl WorkspaceAuthority for Workspace {
@@ -111,72 +81,49 @@ impl WorkspaceAuthority for Workspace {
     fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
         self.app_grant_ids_at(app_id, unix_now())
     }
-    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        self.decide_at(actor, resource, verb, unix_now())
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> CapDecision {
+        self.sandbox_decide_at(actor, resource, access, unix_now())
     }
-    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.allows_at(actor, resource, verb, unix_now())
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, access: Access) -> bool {
+        self.decide(actor, resource, access) == CapDecision::Allow
     }
     fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        self.grant_as_at(grantor, cap, unix_now())
-    }
-    fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_at(actor, profile, unix_now())
-    }
-    fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor_at(actor, profile, unix_now())
-    }
-    fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_at(actor, profile_name, subject, expiry, unix_now())
-    }
-    fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: &Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor_at(actor, profile_name, subject, expiry, unix_now())
+        self.grant_sandbox_as_at(grantor, cap, unix_now())
+            .ok()?
+            .sandbox_granted
+            .pop()
     }
     fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.revoke_as_at(revoker, id, unix_now())
+        !crate::workspace_settings::apply_revoke(self, revoker, id).is_empty()
     }
     fn may_administer(&self, user: &UserId) -> bool {
-        self.may_administer_at(user, unix_now())
+        self.may_govern_at(user, roles::governance::GRANT, unix_now())
+    }
+    fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool {
+        self.answer_at(user, &self.node().join(relative), kind, unix_now()) == Answer::Allow
     }
     fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
         self.transfer_owner_as_at(current_owner, new_owner, unix_now())
     }
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        self.role_of_at(user, unix_now())
+        Workspace::role_of(self, user).filter(|_| !self.is_blocked(user))
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        self.actor_for_person_at(user, unix_now())
+        Actor::person(user.clone()).in_room(self.room.to_string())
+    }
+    fn actor_for_app(&self, app_id: &str) -> Actor {
+        Actor::app(app_id).in_room(self.room.to_string())
+    }
+    fn actor_for_agent(&self, agent: &str) -> Actor {
+        Actor::agent(agent).in_room(self.room.to_string())
     }
     fn roster(&self) -> Vec<(UserId, CapRole)> {
-        self.roster_at(unix_now())
+        Workspace::roster(self)
     }
-    fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, unix_now())
-    }
-    fn agent_members(&self) -> Vec<(String, CapRole)> {
+    fn agent_members(&self) -> Vec<(String, KindSet)> {
         self.agent_members_at(unix_now())
     }
-    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        self.shares_of_at(resource, unix_now())
+    fn shares_of(&self, node: &TreePath) -> Vec<&Grant> {
+        self.shares_of_at(node, unix_now())
     }
 }

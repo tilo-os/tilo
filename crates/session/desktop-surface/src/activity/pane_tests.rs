@@ -22,7 +22,7 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
     use ui::widget::op_class_is_revertible;
 
@@ -209,7 +209,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath("/home/quinten/notes".to_string()),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("the owner may grant in their own room");
@@ -219,7 +219,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("terminal"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -648,7 +648,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/later".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in their own room");
@@ -756,7 +756,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/new-result".into()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .unwrap();
@@ -1507,7 +1507,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("browser"),
                 Scope::NetHost("research.example".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant in the second room too");
@@ -1663,7 +1663,7 @@ mod tests {
         let last_week = CapOverride::grant(
             Subject::app("files"),
             Scope::FsPath("/home/quinten/last-week".to_string()),
-            Verb::Read,
+            Access::Read,
         );
         let cap_id = {
             let workspace = tree
@@ -1672,9 +1672,12 @@ mod tests {
                 .iter_mut()
                 .find(|workspace| workspace.id == ws_id)
                 .expect("active workspace");
-            workspace
-                .grant_as_at(&user, last_week, tilo_clock::unix_now())
-                .expect("owner may grant")
+            assert!(workspace.may_govern_at(
+                &user,
+                tilo_action_policy::roles::governance::GRANT,
+                tilo_clock::unix_now()
+            ));
+            workspace.grant_sandbox(last_week)
         };
         let stored = tree
             .desktop
@@ -1682,12 +1685,12 @@ mod tests {
             .iter()
             .find(|workspace| workspace.id == ws_id)
             .expect("active workspace")
-            .capabilities
+            .sandbox
             .iter()
             .find(|capability| capability.id == cap_id)
             .cloned()
             .expect("stored grant");
-        assert!(tilo_desktop_model::desktop_doc::insert_capability(
+        assert!(tilo_desktop_model::desktop_doc::insert_sandbox(
             &mut tree.doc,
             ws_id,
             &stored
@@ -1701,7 +1704,7 @@ mod tests {
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath("/home/quinten/today".to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("owner may grant");
@@ -2151,7 +2154,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("files"),
                     Scope::FsPath(format!("/tmp/bound/{i}")),
-                    Verb::Read,
+                    Access::Read,
                 ),
             )
             .expect("owner may grant");

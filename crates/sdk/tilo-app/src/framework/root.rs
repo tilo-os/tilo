@@ -134,7 +134,7 @@ fn open_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
@@ -157,7 +157,7 @@ fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
         Vec::new(),
         move |_| encoded.clone(),
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description("Show this item.")
 }
 
@@ -211,7 +211,7 @@ fn read_spec() -> tilo_actions::ActionSpec {
             })
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Read)
+    .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content.",
     );

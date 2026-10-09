@@ -1063,7 +1063,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
                 .iter()
                 .find(|slot| slot.room == room)
                 .expect("the enrolled owner must project its real room")
-                .capabilities
+                .sandbox
                 .clone(),
         )
     };
@@ -1078,7 +1078,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             .iter()
             .find(|slot| slot.room == room)
             .unwrap()
-            .capabilities,
+            .sandbox,
         capabilities,
         "a document checkpoint does not withdraw accepted filesystem grants",
     );

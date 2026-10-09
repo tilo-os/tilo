@@ -18,7 +18,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::launch::LaunchError;
-use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 #[cfg(test)]
@@ -468,9 +468,9 @@ impl InProcessApps {
             views: Rc::clone(&views),
             device_id: self.device_id.clone(),
             instance_id: tab,
-            permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), &self.author.0),
-                vec![],
+            permissions: Rc::new(RefCell::new(PermissionContext::member(
+                &self.author.0,
+                Role::Owner,
             ))),
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),

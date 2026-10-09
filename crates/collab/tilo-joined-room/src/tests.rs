@@ -63,7 +63,6 @@ fn admit_test_agent(joined: &Enrolled, agent: &str) {
 }
 
 fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let key = SigningKey::from_bytes(&[61; 32]);
     let messages = joined
         .owner
@@ -71,17 +70,23 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
             let before = view.peer().clone();
             let mut candidate = before.clone();
             if admitted {
-                candidate.put_governed_capabilities(
-                    &[
-                        CapOverride::grant(Subject::agent(agent), Scope::Workspace, Verb::Write)
-                            .with_id(format!("test-agent-{agent}")),
-                    ],
+                candidate.put_governed_grants(
+                    &[tilo_action_policy::Grant::new(
+                        format!("test-agent-{agent}"),
+                        tilo_action_policy::Subject::agent(agent),
+                        tilo_action_policy::TreePath::room(candidate.room()),
+                        tilo_action_policy::KindSet::READ_UNDOABLE,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person("governor"),
+                    )],
                     &key,
                     joined.now,
                 )?;
             } else {
-                candidate.remove_governed_capabilities(
-                    &[format!("test-agent-{agent}")],
+                candidate.remove_governed_grants(
+                    &[tilo_action_policy::GrantId::new(format!(
+                        "test-agent-{agent}"
+                    ))],
                     &key,
                     joined.now,
                 )?;
@@ -1026,12 +1031,14 @@ fn removed_agent_cannot_receive_a_direction_for_its_retained_run() {
     joined
         .owner
         .with_current(joined.room, |view| {
-            let (_, _, caps) = tilo_peer_state::room::extract_governed_fields(
+            let (_, policy) = tilo_peer_state::room::extract_governed_fields(
                 view.peer().admitted_room().unwrap(),
             );
             assert!(
-                caps.iter()
-                    .all(|cap| cap.subject != collab_types::caps::Subject::agent("scribe")),
+                policy
+                    .grants
+                    .iter()
+                    .all(|grant| grant.subject != tilo_action_policy::Subject::agent("scribe")),
                 "the signed removal must actually remove the agent"
             );
             Ok(())
@@ -1210,7 +1217,7 @@ fn manual_task_owner_replay_restart_and_attachment_are_canonical() {
             Ok(view
                 .peer()
                 .permissions(view.device().device_public_key, joined.now)?
-                .2)
+                .person)
         })
         .unwrap();
     assert_eq!(task.created_by, author);

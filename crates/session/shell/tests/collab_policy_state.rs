@@ -315,7 +315,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
         let denied = redact(&f, &target, Role::Editor, 2);
         assert!(matches!(
             validate_inbound_op(&denied, &mut f.state),
-            Err(ValidationError::RoleForbidsOpClass)
+            Err(ValidationError::NotGranted(_))
         ));
 
         let accepted = redact(&f, &target, Role::Owner, 10);
@@ -435,7 +435,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
         );
         assert!(matches!(
             validate_inbound_op(&editor_compaction, &mut f.state),
-            Err(ValidationError::RoleForbidsOpClass)
+            Err(ValidationError::NotGranted(_))
         ));
         let owner_compaction = signed_op(
             &f.owner_sk,

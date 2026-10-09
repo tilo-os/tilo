@@ -201,24 +201,15 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
         use crate::permissions::*;
         for case in ["expiry", "replacement", "actor"] {
             let mut driver = review_driver();
-            driver.set_permission_ctx(grant(
-                LOCAL_USER,
-                Scope::App(RESTORABLE.app_id.into()),
-                Expiry::AtUnix(150),
-            ));
+            driver.set_permission_ctx(grant(LOCAL_USER, RESTORABLE.app_id, Some(150)));
             driver.click_named("history-restore").unwrap();
             let before = driver.state_mut().doc.base_heads();
             match case {
                 "expiry" => NOW.set(200),
-                "replacement" => driver.set_permission_ctx(PermissionContext::from_capabilities(
-                    Actor::person(None, LOCAL_USER),
-                    vec![],
-                )),
-                _ => driver.set_permission_ctx(grant(
-                    "another-person",
-                    Scope::App(RESTORABLE.app_id.into()),
-                    Expiry::Never,
-                )),
+                "replacement" => driver.set_permission_ctx(
+                    crate::permissions::PermissionContext::stranger(LOCAL_USER),
+                ),
+                _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
             }
             let confirm = driver
                 .a11y_node_named("Restore version")
@@ -358,20 +349,15 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(!driver.poll_frame().unwrap());
 }
-fn grant(
-    actor: &str,
-    scope: crate::permissions::Scope,
-    expiry: crate::permissions::Expiry,
-) -> crate::permissions::PermissionContext {
+fn grant(actor: &str, app: &str, until: Option<u64>) -> crate::permissions::PermissionContext {
     use crate::permissions::*;
-    let mut cap = CapOverride::new(
-        Subject::Principal(Principal::Person(actor.into())),
-        scope,
-        Effect::Grant,
-        Verb::Write,
-    );
-    cap.expiry = expiry;
-    PermissionContext::from_capabilities(Actor::person(None, actor), vec![cap]).at_unix_time(100)
+    PermissionContext::granted(
+        actor,
+        &TreePath::root().app(app),
+        policy::KindSet::ALL,
+        until,
+    )
+    .at_unix_time(100)
 }
 
 #[derive(Default)]
@@ -976,10 +962,7 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
         );
         fixture
             .driver
-            .set_permission_ctx(PermissionContext::from_capabilities(
-                Actor::person(None, LOCAL_USER),
-                vec![],
-            ));
+            .set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
         assert!(
             fixture
                 .driver
@@ -1388,12 +1371,12 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
             state.commit_action(None, None);
             let mut driver = Driver::new(state, Box::new(tile), (900, 650));
             let principal = Subject::Principal(Principal::Person(LOCAL_USER.into()));
-            let mut capabilities = vec![CapOverride::new(
-                principal.clone(),
-                Scope::App(RESTORABLE.app_id.into()),
-                Effect::Grant,
-                Verb::Write,
-            )];
+            let mut permissions = PermissionContext::granted(
+                LOCAL_USER,
+                &TreePath::root().app(RESTORABLE.app_id),
+                policy::KindSet::ALL,
+                None,
+            );
             let extra = match case {
                 "file matching path" => Some(Scope::FsPath(path.to_string_lossy().into_owned())),
                 "file foreign path" => Some(Scope::FsPath(
@@ -1407,17 +1390,14 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 _ => None,
             };
             if let Some(scope) = extra {
-                capabilities.push(CapOverride::new(
+                permissions = permissions.granting(CapOverride::new(
                     principal,
                     scope,
                     Effect::Grant,
-                    Verb::Write,
+                    Access::Write,
                 ));
             }
-            driver.set_permission_ctx(PermissionContext::from_capabilities(
-                Actor::person(None, LOCAL_USER),
-                capabilities,
-            ));
+            driver.set_permission_ctx(permissions);
             let before = store
                 .with_history(&checkout.id, |doc, history| {
                     (doc.base_heads(), history.revision())
@@ -1654,10 +1634,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 .unwrap(),
             before + 1
         );
-        driver.set_permission_ctx(PermissionContext::from_capabilities(
-            Actor::person(None, LOCAL_USER),
-            vec![],
-        ));
+        driver.set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
         assert!(
             driver
                 .perform_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()))

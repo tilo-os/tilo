@@ -366,7 +366,9 @@ impl NativeWorkspaceOwner {
         if !peer.has_governance() {
             return Err("native enrollment is missing real admitted governance".into());
         }
-        let (role, _, _) = peer.permissions(enrollment.local_device().device_public_key, now)?;
+        let role = peer
+            .permissions(enrollment.local_device().device_public_key, now)?
+            .role;
         // A device of the governing person is the room's owner whatever its
         // invitation granted: the owner holds its room like any member.
         let expected =

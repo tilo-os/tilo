@@ -924,7 +924,7 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
 #[test]
 #[serial_test::serial(process_env)]
 fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
-    use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
+    use crate::shell::state::{Access, CapOverride, Effect, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     /// Lets background fs-authority publication settle before the wrapped
@@ -975,10 +975,10 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
             Subject::User(collab_types::Ed25519PublicKey::from_bytes([201; 32])),
             Scope::Workspace,
             Effect::Grant,
-            Verb::Read,
+            Access::Read,
         );
         old.id = "old-room-only".into();
-        native.desktop.workspaces[0].capabilities.push(old);
+        native.desktop.workspaces[0].sandbox.push(old);
     }
     let owner = open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();

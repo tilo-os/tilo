@@ -8,7 +8,6 @@ use registry_server::applications::{self, NetworkProofs};
 use registry_types::application::{ApplicationStatus, StoredApplication};
 use ui::framework::EffectAnswer;
 use ui::prelude::*;
-use ui::tilo_actions::PermissionRequirement;
 
 mod packages;
 pub use packages::PackageReview;
@@ -29,13 +28,13 @@ pub struct Draft {
 #[resource(kind = "so.tilo.registry-review", label = "Registry review")]
 impl Draft {
     /// Set the name attributed to a decision.
-    #[action(permission = "admin")]
+    #[action]
     pub fn set_reviewer(&mut self, #[param("Reviewer name")] reviewer: String) {
         self.reviewer = reviewer;
     }
 
     /// Write feedback to return with a rejected application.
-    #[action(permission = "admin")]
+    #[action]
     pub fn set_feedback(&mut self, #[param("Feedback")] feedback: String) {
         self.feedback = feedback;
     }
@@ -46,16 +45,16 @@ impl Draft {
 #[effect(operation = "so.tilo.registry-review.effects", device_only)]
 pub enum Review {
     /// Refresh the pending publisher applications.
-    #[effect(job, returns, permission = "admin")]
+    #[effect(job, returns)]
     Refresh,
     /// Inspect a publisher's application, including its exact review identifier.
-    #[effect(returns, permission = "admin")]
+    #[effect(returns)]
     Inspect {
         #[param("Publisher public key")]
         publisher: String,
     },
     /// Approve the inspected namespaces after checking their ownership proofs again.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged)]
     Approve {
         #[param("Publisher public key")]
         publisher: String,
@@ -65,7 +64,7 @@ pub enum Review {
         reviewer: String,
     },
     /// Reject the inspected application and return feedback to its publisher.
-    #[effect(job, privileged, permission = "admin")]
+    #[effect(job, privileged)]
     Reject {
         #[param("Publisher public key")]
         publisher: String,
@@ -77,7 +76,7 @@ pub enum Review {
         reason: String,
     },
     /// Show another page of the pending queue.
-    #[effect(returns, permission = "admin")]
+    #[effect(returns)]
     Page {
         #[param("Zero-based page number")]
         page: usize,
@@ -483,7 +482,7 @@ impl ResourceApp for App {
         let navigation = cx.local(NavPane::Overview);
         install(cx, directory.clone(), &pane, &navigation);
         packages::install(cx, directory, &pane, &navigation);
-        let admin = cx.permission_state(PermissionRequirement::Admin);
+        let admin = cx.govern_state();
         cx.switch(&admin, move |cx, allowed| {
             if !*allowed {
                 return Box::new(Text::new("review-owner-required").with_id("review-locked"));

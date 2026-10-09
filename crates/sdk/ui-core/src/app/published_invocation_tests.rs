@@ -29,17 +29,11 @@ fn deliver_remote(app: &mut App, request: &crate::invocation_scope::PublishedInv
 fn original_remote_grant(
     now: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> crate::permissions::PermissionContext {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
-    crate::permissions::PermissionContext::from_capabilities(
-        Actor::person(None, "remote:original"),
-        vec![
-            CapOverride::grant(
-                Subject::person("remote:original"),
-                Scope::App("test.counter".into()),
-                crate::permissions::Verb::Write,
-            )
-            .with_expiry(100),
-        ],
+    crate::permissions::PermissionContext::granted(
+        "remote:original",
+        &crate::permissions::TreePath::root().app("test.counter"),
+        crate::permissions::policy::KindSet::ALL,
+        Some(100),
     )
     .with_policy_time_sampler(std::sync::Arc::new(move || {
         Ok(now.load(std::sync::atomic::Ordering::Acquire))
@@ -92,7 +86,7 @@ fn original_remote_authorizer_with_spec(
                 grant
                     .check(&crate::permissions::PermissionScope::app(
                         "test.counter",
-                        crate::permissions::Verb::Write,
+                        crate::permissions::ActionKind::Undoable,
                     ))
                     .then_some(())
                     .ok_or_else(|| "original remote grant expired".into())
@@ -116,7 +110,7 @@ fn published_authorization_delayed_original_remote_grant_denies_before_document_
     let grant = original_remote_grant(time.clone());
     assert!(grant.check(&crate::permissions::PermissionScope::app(
         "test.counter",
-        crate::permissions::Verb::Write
+        crate::permissions::ActionKind::Undoable
     )));
     let request = remote_request(851, "bump");
     let mut app = app();
@@ -330,7 +324,6 @@ fn owned_count(store: &crate::record::RecordStore, checkout: &crate::RecordCheck
 
 #[test]
 fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_progress() {
-    use crate::permissions::{Actor, CapOverride, Scope, Subject};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -356,16 +349,11 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                 200
             };
             let now = sampled.clone();
-            let permission = crate::permissions::PermissionContext::from_capabilities(
-                Actor::person(None, &request.actor),
-                vec![
-                    CapOverride::grant(
-                        Subject::person(&request.actor),
-                        Scope::App("test.counter".into()),
-                        crate::permissions::Verb::Write,
-                    )
-                    .with_expiry(expiry),
-                ],
+            let permission = crate::permissions::PermissionContext::granted(
+                &request.actor,
+                &crate::permissions::TreePath::root().app("test.counter"),
+                crate::permissions::policy::KindSet::ALL,
+                Some(expiry),
             )
             .with_policy_time_sampler(Arc::new(move || Ok(now.load(Ordering::Acquire))));
             crate::invocation_scope::PublishedInvocationLease::new(
@@ -379,7 +367,7 @@ fn causal_scope_actual_concurrent_jobs_keep_distinct_callers_and_valid_jobs_prog
                     permission
                         .check(&crate::permissions::PermissionScope::app(
                             "test.counter",
-                            crate::permissions::Verb::Write,
+                            crate::permissions::ActionKind::Undoable,
                         ))
                         .then_some(())
                         .ok_or_else(|| "original grant expired".into())
@@ -528,7 +516,7 @@ fn published_authorization_original_spec_missing_or_changed_never_mutates_actual
         let mut spec = original_counter_spec("bump");
         match case {
             1 => spec.kind = tilo_actions::OperationKind::Effect,
-            2 => spec.contract.permission = tilo_actions::PermissionRequirement::Read,
+            2 => spec.contract.kind = tilo_actions::ActionKind::Read,
             3 => spec.params.push(tilo_actions::ActionParam::optional(
                 "extra",
                 tilo_actions::ParamType::Text,

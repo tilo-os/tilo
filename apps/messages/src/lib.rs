@@ -93,7 +93,7 @@ pub enum MessagesEffect {
         job,
         cancellable,
         idempotent,
-        permission = "read",
+        kind = "read",
         label = "messages-refresh-history"
     )]
     ReadHistory { choice: String },

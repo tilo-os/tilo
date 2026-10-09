@@ -119,6 +119,32 @@ impl RoomPolicy {
         }
     }
 
+    /// A room with no owner yet and the role presets in place.
+    #[must_use]
+    pub fn unowned(room: impl Into<String>, presets_by: &Subject) -> Self {
+        let room = room.into();
+        let grants = roles::room_role_grants(&room, presets_by);
+        Self {
+            room,
+            owner: None,
+            members: BTreeMap::new(),
+            grants,
+        }
+    }
+
+    /// Move the policy to another room id: every grant on this room's nodes
+    /// now names `room`. Grants on other rooms are untouched.
+    pub fn rehome(&mut self, room: impl Into<String>) {
+        let room = room.into();
+        if room == self.room {
+            return;
+        }
+        for grant in &mut self.grants {
+            grant.node = grant.node.with_room(&self.room, &room);
+        }
+        self.room = room;
+    }
+
     #[must_use]
     pub fn node(&self) -> TreePath {
         TreePath::room(&self.room)
@@ -136,6 +162,47 @@ impl RoomPolicy {
             return Some(Role::Owner);
         }
         self.members.get(person).copied()
+    }
+
+    /// Whether `person` is blocked: their own grants deny every kind on the
+    /// whole room. A blocked member stays on record (history keeps naming
+    /// them) but holds nothing; the owner is never blocked.
+    #[must_use]
+    pub fn is_blocked(&self, person: &str) -> bool {
+        if self.is_owner(person) {
+            return false;
+        }
+        let subject = Subject::Person(person.to_owned());
+        let room = self.node();
+        self.grants.iter().any(|grant| {
+            grant.subject == subject
+                && grant.node == room
+                && grant.answer == Answer::Deny
+                && grant.kinds == crate::KindSet::ALL
+        })
+    }
+
+    /// The role `person` acts with: their role, unless they are blocked.
+    #[must_use]
+    pub fn active_role(&self, person: &str) -> Option<Role> {
+        if self.is_blocked(person) {
+            None
+        } else {
+            self.role_of(person)
+        }
+    }
+
+    /// The grant that blocks `person`, given by `granted_by`.
+    #[must_use]
+    pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
+        Grant::new(
+            format!("block:{person}"),
+            Subject::Person(person.to_owned()),
+            self.node(),
+            crate::KindSet::ALL,
+            Answer::Deny,
+            granted_by,
+        )
     }
 
     #[must_use]
@@ -191,7 +258,7 @@ impl RoomPolicy {
         approved: bool,
     ) -> Result<(), Refusal> {
         let node = roles::governance_action(&self.room, action);
-        let verdict = actor.decide(&node, ActionKind::Undoable, cx);
+        let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
         match verdict.answer {
             Answer::Allow => Ok(()),
             Answer::Ask if approved => Ok(()),
@@ -255,8 +322,37 @@ impl RoomPolicy {
                 self.grants
                     .retain(|grant| grant.subject != Subject::Person(person.clone()));
             }
-            Change::Grant(grant) => self.grants.push(grant),
+            Change::Grant(mut grant) => {
+                grant.granted_by = Subject::Person(actor_person.to_owned());
+                self.grants.push(grant);
+            }
             Change::Revoke(id) => self.grants.retain(|grant| grant.id != id),
+        }
+        Ok(())
+    }
+
+    /// Whether `grant` gives no more than `actor` holds on its node, for each
+    /// kind it covers. A Deny never exceeds.
+    ///
+    /// # Errors
+    /// [`Refusal::AboveActorGrant`] for the first kind it exceeds.
+    pub fn check_within(
+        actor: &Authority<'_>,
+        grant: &Grant,
+        cx: &Context<'_>,
+    ) -> Result<(), Refusal> {
+        if grant.answer == Answer::Deny {
+            return Ok(());
+        }
+        for kind in grant.kinds.iter() {
+            let held = actor.decide(&grant.node, kind, cx).answer;
+            if held < grant.answer {
+                return Err(Refusal::AboveActorGrant {
+                    kind,
+                    held,
+                    wanted: grant.answer,
+                });
+            }
         }
         Ok(())
     }
@@ -300,19 +396,7 @@ impl RoomPolicy {
                 if self.grants.iter().any(|held| held.id == grant.id) {
                     return Err(Refusal::DuplicateGrant(grant.id.clone()));
                 }
-                if grant.answer > Answer::Deny {
-                    for kind in grant.kinds.iter() {
-                        let held = actor.decide(&grant.node, kind, cx).answer;
-                        if held < grant.answer {
-                            return Err(Refusal::AboveActorGrant {
-                                kind,
-                                held,
-                                wanted: grant.answer,
-                            });
-                        }
-                    }
-                }
-                Ok(())
+                Self::check_within(actor, grant, cx)
             }
             Change::Revoke(id) => {
                 if self.grants.iter().any(|grant| &grant.id == id) {

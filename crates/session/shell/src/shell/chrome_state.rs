@@ -1410,7 +1410,7 @@ impl ChromeState {
                 if let Some(active_room) = tree
                     .desktop
                     .active_workspace()
-                    .filter(|workspace| workspace.owner.is_none())
+                    .filter(|workspace| workspace.owner().is_none())
                     .map(|workspace| workspace.room)
                 {
                     tree.adopt_ownerless_workspaces_with(|room| {
@@ -4065,9 +4065,9 @@ mod provisioned_identity_tests {
             .iter()
             .find(|w| w.room == room)
             .expect("workspace");
-        assert_eq!(workspace.owner.as_deref(), Some(person.as_str()));
-        assert_eq!(workspace.role_of_at(&person, 0), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of_at(&"quickuser".to_string(), 0), None);
+        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
+        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of("quickuser"), None);
         drop(tree);
         drop(state);
         assert_eq!(

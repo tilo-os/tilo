@@ -26,7 +26,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
+    Access, Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject,
     decide_capability,
 };
 
@@ -138,7 +138,7 @@ impl HostPolicy {
         decide_capability(
             &Actor::app(app_id),
             &ResourceRef::Device(HOST_SHELL_DEVICE.to_string()),
-            Verb::Write,
+            Access::Write,
             &self.capabilities,
             now,
         ) == CapDecision::Allow
@@ -153,7 +153,7 @@ impl HostPolicy {
             CapOverride::grant(
                 Subject::Principal(Principal::App(app_id.to_string())),
                 Scope::Device(HOST_SHELL_DEVICE.to_string()),
-                Verb::Write,
+                Access::Write,
             )
             .with_id(id.clone())
             .granted_by(Principal::Person("local".to_string())),
@@ -589,7 +589,7 @@ mod tests {
                 )),
                 collab_types::caps::Scope::Device(HOST_SHELL_DEVICE.into()),
                 collab_types::caps::Effect::Restrict,
-                collab_types::caps::Verb::Read,
+                collab_types::caps::Access::Read,
             ));
         assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
 

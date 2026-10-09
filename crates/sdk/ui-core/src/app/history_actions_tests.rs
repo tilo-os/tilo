@@ -75,13 +75,10 @@ fn entries(listing: &Value) -> Vec<String> {
 
 fn reader(app: &mut App) {
     let app_id = crate::collaboration::local_app_id();
-    app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::agent("reader"),
-        vec![crate::permissions::CapOverride::grant(
-            crate::permissions::Subject::agent("reader"),
-            crate::permissions::Scope::App(app_id),
-            crate::permissions::Verb::Read,
-        )],
+    app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+        "reader",
+        &crate::permissions::TreePath::root().app(app_id),
+        crate::permissions::policy::KindSet::READ,
     );
 }
 
@@ -241,12 +238,12 @@ fn published_catalogue_declares_write_so_the_broker_withholds_it() {
     assert_eq!(history.len(), 6);
     for descriptor in history {
         let expected = if matches!(descriptor.address.action.as_str(), OPEN | LIST) {
-            tilo_actions::PermissionRequirement::Read
+            tilo_actions::ActionKind::Read
         } else {
-            tilo_actions::PermissionRequirement::Write
+            tilo_actions::ActionKind::Undoable
         };
         assert_eq!(
-            descriptor.contract.permission, expected,
+            descriptor.contract.kind, expected,
             "{}",
             descriptor.address.action
         );

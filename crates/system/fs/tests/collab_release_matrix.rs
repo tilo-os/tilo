@@ -667,19 +667,19 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Write,
+            collab_types::caps::Access::Write,
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
-            collab_types::Verb::Read,
+            collab_types::caps::Access::Read,
         ),
     ];
     std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
@@ -950,25 +950,25 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
         std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
@@ -1119,19 +1119,19 @@ macro_rules! run_nas_replica_lifecycle_scenario {
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Write,
+                collab_types::caps::Access::Write,
             ),
             collab_types::CapOverride::new(
                 collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
                 collab_types::Scope::FsPath("/".into()),
                 collab_types::Effect::Grant,
-                collab_types::Verb::Read,
+                collab_types::caps::Access::Read,
             ),
         ];
         std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();

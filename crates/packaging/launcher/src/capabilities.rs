@@ -17,8 +17,8 @@
 //!
 //! | Scope | Verb | Effect on the sandbox |
 //! |---|---|---|
-//! | [`Scope::FsPath`] | [`Verb::Read`] | `--ro-bind-try <p> <p>` + a Landlock read rule |
-//! | [`Scope::FsPath`] | [`Verb::Write`] | `--bind-try <p> <p>` + a Landlock read/write rule |
+//! | [`Scope::FsPath`] | [`Access::Read`] | `--ro-bind-try <p> <p>` + a Landlock read rule |
+//! | [`Scope::FsPath`] | [`Access::Write`] | `--bind-try <p> <p>` + a Landlock read/write rule |
 //! | [`Scope::Device`] `"camera"` | any | the host's `/dev/video*` nodes are bound |
 //! | [`Scope::Device`] `"microphone"` | any | the `PipeWire` socket + `/dev/snd` are bound |
 //! | [`Scope::Device`] `"screencast"` | any | nothing — brokered by the portal, not a bind |
@@ -41,7 +41,7 @@
 //!
 //! [`Participation`] answers "may this app originate changes at all?"
 //! — read as a capability, not a mode an app opts into. No new
-//! vocabulary needed: a workspace-scoped `Restrict` at `Verb::Read`
+//! vocabulary needed: a workspace-scoped `Restrict` at `Access::Read`
 //! already reads "see everything, change nothing" through the same
 //! [`decide_capability`] every other decision goes through.
 //!
@@ -61,7 +61,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, Verb, decide_capability,
+    Access, Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
 };
 
 /// How an app may take part in the space it is launched into. Resolved
@@ -194,8 +194,8 @@ impl CapabilityPlan {
             match &cap.scope {
                 Scope::FsPath(raw) => {
                     let resource = ResourceRef::FsPath(raw.clone());
-                    let writable = allows(&actor, &resource, Verb::Write, caps, now);
-                    let readable = writable || allows(&actor, &resource, Verb::Read, caps, now);
+                    let writable = allows(&actor, &resource, Access::Write, caps, now);
+                    let readable = writable || allows(&actor, &resource, Access::Read, caps, now);
                     if !readable {
                         continue;
                     }
@@ -215,7 +215,7 @@ impl CapabilityPlan {
                     if !allows(
                         &actor,
                         &ResourceRef::Device(device.clone()),
-                        Verb::Read,
+                        Access::Read,
                         caps,
                         now,
                     ) {
@@ -236,7 +236,7 @@ impl CapabilityPlan {
                     if !allows(
                         &actor,
                         &ResourceRef::NetHost(host.clone()),
-                        Verb::Read,
+                        Access::Read,
                         caps,
                         now,
                     ) {
@@ -289,10 +289,10 @@ impl CapabilityPlan {
 /// grant here.
 fn participation_for(actor: &Actor, caps: &[CapOverride], now: Option<u64>) -> Participation {
     let resource = ResourceRef::Workspace;
-    if allows(actor, &resource, Verb::Write, caps, now) {
+    if allows(actor, &resource, Access::Write, caps, now) {
         return Participation::Author;
     }
-    if allows(actor, &resource, Verb::Read, caps, now) {
+    if allows(actor, &resource, Access::Read, caps, now) {
         return Participation::ReadOnly;
     }
     Participation::Unscoped
@@ -301,7 +301,7 @@ fn participation_for(actor: &Actor, caps: &[CapOverride], now: Option<u64>) -> P
 fn allows(
     actor: &Actor,
     resource: &ResourceRef,
-    verb: Verb,
+    verb: Access,
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> bool {
@@ -430,7 +430,7 @@ mod tests {
         }
     }
 
-    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+    fn fs_grant(app: &str, path: &str, verb: Access) -> CapOverride {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
@@ -446,8 +446,12 @@ mod tests {
         // Phase `read_capability_plans_a_read_only_path_only`.
         {
             let caps = vec![
-                CapOverride::grant(Subject::app("so.tilo.books"), Scope::Workspace, Verb::Write),
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
+                CapOverride::grant(
+                    Subject::app("so.tilo.books"),
+                    Scope::Workspace,
+                    Access::Write,
+                ),
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Read),
             ];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
@@ -462,7 +466,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Write,
+                Access::Write,
             )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
@@ -474,7 +478,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.other",
                 "/var/workspace/secrets",
-                Verb::Write,
+                Access::Write,
             )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1000), fake_device_paths);
@@ -487,7 +491,7 @@ mod tests {
         // Phase `expired_capability_is_not_planned`.
         {
             let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write)
                     .expiring(Expiry::AtUnix(500)),
             ];
             let plan =
@@ -502,12 +506,12 @@ mod tests {
         // Phase `restriction_removes_a_granted_path`.
         {
             let caps = vec![
-                fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write),
+                fs_grant("so.tilo.books", "/var/workspace/books", Access::Write),
                 CapOverride::new(
                     Subject::app("so.tilo.books"),
                     Scope::FsPath("/var/workspace/books".to_string()),
                     Effect::Restrict,
-                    Verb::Read,
+                    Access::Read,
                 ),
             ];
             let plan =
@@ -527,7 +531,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
                 Scope::Device("camera".to_string()),
-                Verb::Read,
+                Access::Read,
             )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
@@ -546,7 +550,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.meet"),
                 Scope::Device("screencast".to_string()),
-                Verb::Read,
+                Access::Read,
             )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.meet", &caps, Some(1), fake_device_paths);
@@ -561,7 +565,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.mail"),
                 Scope::NetHost("mail.example.com".to_string()),
-                Verb::Write,
+                Access::Write,
             )];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1), fake_device_paths);
@@ -581,7 +585,7 @@ mod tests {
                 CapOverride::grant(
                     Subject::app("so.tilo.mail"),
                     Scope::NetHost(host.to_string()),
-                    Verb::Write,
+                    Access::Write,
                 )
             };
             let caps = vec![
@@ -604,11 +608,11 @@ mod tests {
         // Phase `relative_root_and_lexical_escape_paths_are_refused`.
         {
             let caps = vec![
-                fs_grant("so.tilo.books", "relative/path", Verb::Write),
-                fs_grant("so.tilo.books", "/", Verb::Write),
-                fs_grant("so.tilo.books", "//", Verb::Write),
-                fs_grant("so.tilo.books", "/tmp/..", Verb::Write),
-                fs_grant("so.tilo.books", "/var/./workspace", Verb::Write),
+                fs_grant("so.tilo.books", "relative/path", Access::Write),
+                fs_grant("so.tilo.books", "/", Access::Write),
+                fs_grant("so.tilo.books", "//", Access::Write),
+                fs_grant("so.tilo.books", "/tmp/..", Access::Write),
+                fs_grant("so.tilo.books", "/var/./workspace", Access::Write),
             ];
             let plan =
                 CapabilityPlan::for_app_with("so.tilo.books", &caps, Some(1), fake_device_paths);
@@ -639,23 +643,23 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Read,
+                Access::Read,
             )];
             std::fs::write(&path, serde_json::to_vec(&caps).unwrap()).unwrap();
             assert_eq!(load_capability_file(&path), caps);
         }
     }
 
-    /// A workspace-scoped `Restrict` at `Verb::Read`: "see everything
+    /// A workspace-scoped `Restrict` at `Access::Read`: "see everything
     /// here, change nothing". The existing vocabulary, not a new one.
     fn read_only_participation(app: &str) -> Vec<CapOverride> {
         vec![
-            CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Read),
+            CapOverride::grant(Subject::app(app), Scope::Workspace, Access::Read),
             CapOverride::new(
                 Subject::app(app),
                 Scope::Workspace,
                 Effect::Restrict,
-                Verb::Read,
+                Access::Read,
             ),
         ]
     }
@@ -684,7 +688,7 @@ mod tests {
             let caps = vec![CapOverride::grant(
                 Subject::app("so.tilo.editor"),
                 Scope::Workspace,
-                Verb::Write,
+                Access::Write,
             )];
             let plan = CapabilityPlan::for_app_with(
                 "so.tilo.editor",
@@ -702,7 +706,7 @@ mod tests {
             let caps = vec![fs_grant(
                 "so.tilo.books",
                 "/var/workspace/books",
-                Verb::Write,
+                Access::Write,
             )];
             let plan = CapabilityPlan::for_app_with(
                 "so.tilo.books",
@@ -727,7 +731,7 @@ mod tests {
             caps.push(fs_grant(
                 "so.tilo.viewer",
                 "/var/workspace/shared",
-                Verb::Write,
+                Access::Write,
             ));
             let plan = CapabilityPlan::for_app_with(
                 "so.tilo.viewer",

@@ -160,7 +160,7 @@ impl Firewall {
 #[effect(operation = "firewall.effect", device_only)]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
-    #[effect(job, permission = "admin")]
+    #[effect(job)]
     ApplyConfig,
     /// Retry firewalld connection.
     #[effect(job)]

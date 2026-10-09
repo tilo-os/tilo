@@ -18,7 +18,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::state::WorkspaceAuthority as _;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -416,57 +415,47 @@ pub fn spawn_with_agent_actions(
         shell::shell::state::WorkspaceId(1),
         "Agent integration room",
     );
-    workspace.room = shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap();
+    workspace.set_room(shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap());
     workspace.set_owner(principal.clone());
-    workspace
-        .grant_as(
-            &principal,
-            ui::permissions::CapOverride::membership(
-                ui::permissions::Subject::agent("scribe"),
-                workspace.room.to_string(),
-                ui::permissions::Verb::Write,
-            ),
+    let owner = tilo_action_policy::Subject::person(principal);
+    // Operators answer in the room's documents.
+    workspace.admit_agent_preset(
+        "scribe",
+        tilo_action_policy::roles::AgentPreset::Operator,
+        &owner,
+    );
+    let everything = |id: String, agent: &str, node: tilo_action_policy::TreePath| {
+        tilo_action_policy::Grant::new(
+            id,
+            tilo_action_policy::Subject::agent(agent),
+            node,
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            owner.clone(),
         )
-        .expect("the harness owner admits the test agent");
-    workspace
-        .grant_as(
-            &principal,
-            ui::permissions::CapOverride::grant(
-                ui::permissions::Subject::agent("scribe"),
-                ui::permissions::Scope::ResourceType(collab_types::ArtifactKind::Note),
-                ui::permissions::Verb::Write,
-            ),
-        )
-        .expect("the harness owner lets the test agent answer in documents");
+    };
     for (app, resource, action) in actions {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent("scribe"),
-                    ui::permissions::Scope::Action {
-                        app: (*app).to_string(),
-                        resource: (*resource).to_string(),
-                        action: (*action).to_string(),
-                    },
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner grants a reviewed test action");
+        let node = workspace
+            .node()
+            .app(*app)
+            .rest()
+            .resource(*resource)
+            .rest()
+            .action(*action);
+        workspace.grant(everything(
+            format!("reviewed:{app}:{resource}:{action}"),
+            "scribe",
+            node,
+        ));
     }
     // App fixtures use the same agent-only endpoint as Scribe. Device
     // enrollment, room membership, and exact app authority remain separate.
     for host in ["quinten", "photos", "files"] {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::membership(
-                    ui::permissions::Subject::agent(host),
-                    workspace.room.to_string(),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner admits an app fixture");
+        workspace.admit_agent_preset(
+            host,
+            tilo_action_policy::roles::AgentPreset::Operator,
+            &owner,
+        );
     }
     // Integration fixtures exercise the canonical routes and the dev.tilo test
     // routes. Grant each observed route explicitly: the production capability
@@ -478,16 +467,8 @@ pub fn spawn_with_agent_actions(
         ("photos", "so.tilo.photos"),
         ("files", "so.tilo.file-explorer"),
     ] {
-        workspace
-            .grant_as(
-                &principal,
-                ui::permissions::CapOverride::grant(
-                    ui::permissions::Subject::agent(host),
-                    ui::permissions::Scope::App(app.to_string()),
-                    ui::permissions::Verb::Write,
-                ),
-            )
-            .expect("the harness owner grants an app fixture its own surface");
+        let node = workspace.node().app(app);
+        workspace.grant(everything(format!("fixture:{host}:{app}"), host, node));
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);

@@ -255,13 +255,13 @@ mod tests {
 
     #[test]
     fn room_administration_never_substitutes_for_files_authorization() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         let person = [41; 32];
         let mut grant = CapOverride {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
             scope: Scope::Room("existing-room".into()),
-            verb: Verb::Admin,
+            access: Access::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,
             granted_by: None,
@@ -275,16 +275,16 @@ mod tests {
 
     #[test]
     fn normal_files_scope_authorizes_namespace_without_host_root_grant() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         let person = [41; 32];
         let read = CapOverride::grant(
             Subject::User(Ed25519PublicKey(person)),
             Scope::FsPath("/var/workspace".into()),
-            Verb::Read,
+            Access::Read,
         );
         assert!(require_files_access(person, std::slice::from_ref(&read)).is_err());
         let mut write = read.clone();
-        write.verb = Verb::Write;
+        write.access = Access::Write;
         require_files_access(person, std::slice::from_ref(&write))
             .expect("normal Edit files includes Read without Admin");
         let mut ui_person = write.clone();
@@ -310,7 +310,7 @@ mod tests {
         write.expiry = Expiry::Never;
         write.scope = Scope::FsPath("/var".into());
         write.effect = Effect::Restrict;
-        write.verb = Verb::Read;
+        write.access = Access::Read;
         restricted.push(write);
         assert!(require_files_access(person, &restricted).is_err());
     }
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn certified_saved_workspace_check_requires_exact_signed_files_access() {
-        use collab_types::{CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Expiry, Scope, Subject};
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let temp = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(temp.path().join("identity"));
@@ -373,7 +373,7 @@ mod tests {
             id: String::default(),
             subject: Subject::User(Ed25519PublicKey(person)),
             scope: Scope::FsPath("/var/workspace".into()),
-            verb: Verb::Write,
+            access: Access::Write,
             effect: Effect::Grant,
             expiry: Expiry::Never,
             granted_by: None,

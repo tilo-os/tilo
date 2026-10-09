@@ -330,10 +330,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let as_role = |role| {
             ui::framework::testing::dispatcher::<crate::PdfMarkup>(APP_ID).with_permissions(
                 ui::permissions::LivePermissions::fixed(
-                    ui::permissions::PermissionContext::from_capabilities(
-                        ui::permissions::Actor::person(Some(role), "participant"),
-                        Vec::new(),
-                    ),
+                    ui::permissions::PermissionContext::member("participant", role),
                 ),
             )
         };

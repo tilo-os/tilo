@@ -181,12 +181,10 @@ fn mounted_fixture(author: &str) -> MountedFixture {
         checkout,
         reveal: None,
     };
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        author,
+        ui::permissions::Role::Owner,
+    )));
     let context = HostContext::prepare(
         crate::definition(),
         HostContextInputs {
@@ -249,10 +247,8 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
 }
 
 fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
-    *fixture.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
-        ui::permissions::Actor::person(Some(role), "maintainer"),
-        vec![],
-    );
+    *fixture.permissions.borrow_mut() =
+        ui::permissions::PermissionContext::member("maintainer", role);
 }
 
 #[test]

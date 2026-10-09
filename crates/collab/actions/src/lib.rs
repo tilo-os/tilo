@@ -109,9 +109,9 @@ pub use context::{
     ParticipantId,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
-    ExecutionMode, LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec,
-    RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
+    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, ConfirmationPolicy,
+    DOCUMENT_READ_TAG, ExecutionMode, LOCAL_DEVICE_ONLY, PROGRAMMATIC_TAG, ResultSpec, RetryPolicy,
+    RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use entry::{
@@ -130,7 +130,7 @@ pub use interaction::{
     InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
     MAX_LABEL_BYTES, SemanticInteraction,
 };
-pub use key::{ActionKey, ActionKind};
+pub use key::ActionKey;
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
@@ -158,6 +158,10 @@ pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
+/// The field a resource's comments live in: an action that only comments
+/// is placed below it ([`ActionContract::field`]), where someone who may only
+/// comment is granted changes.
+pub use tilo_action_policy::roles::COMMENTS_FIELD;
 
 #[cfg(test)]
 mod tests {

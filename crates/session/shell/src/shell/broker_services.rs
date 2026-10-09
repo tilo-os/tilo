@@ -1,6 +1,5 @@
 #![allow(refining_impl_trait)]
 //! Adapters from the shared broker to the native session's existing services.
-use super::state::WorkspaceAuthority as _;
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]
 mod airdrop_transfer;
@@ -612,7 +611,7 @@ impl NativeLauncher {
             return;
         };
         drop(tree);
-        workspace.capabilities.push(stored);
+        workspace.grant_sandbox(stored);
     }
 }
 
@@ -703,7 +702,7 @@ impl LauncherServices for NativeLauncher {
                 super::launcher::launch_uri_in_room(
                     app,
                     workspace.room,
-                    workspace.capabilities.clone(),
+                    workspace.sandbox.clone(),
                     &record.uri(),
                 )
             }
@@ -1031,7 +1030,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .find(|workspace| workspace.room == room)
             .map(|workspace| {
                 tilo_actions::door::survey(&[
-                    tilo_desktop::workspace_settings::permission_profile_resource_with_access(
+                    tilo_desktop::workspace_settings::governance_resource_with_access(
                         workspace, true,
                     ),
                 ])
@@ -1040,6 +1039,12 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
         let actor = request.actor;
+        // Governing a room is a person's own act: an agent, an app or a
+        // device that is not theirs never governs it.
+        let person = actor
+            .direct_person()
+            .ok_or_else(|| "only a person governs a workspace".to_string())?
+            .to_owned();
         let elsewhere = self.governor_elsewhere(request.room);
         let mut tree = self.0.write();
         let workspace_index = tree
@@ -1053,21 +1058,8 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             .workspaces
             .get(workspace_index)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = if let Some(app) = actor.id().strip_prefix("app:") {
-            super::state::Actor::app(app).in_room(workspace.room.to_string())
-        } else if actor.is_agent() {
-            workspace.actor_for_agent(
-                actor
-                    .id()
-                    .strip_prefix("agent:")
-                    .unwrap_or_else(|| actor.id()),
-            )
-        } else {
-            workspace.actor_for_person(&actor.id().to_string())
-        };
-        let surface = tilo_desktop::workspace_settings::permission_profile_resource_with_access(
-            workspace, true,
-        );
+        let surface =
+            tilo_desktop::workspace_settings::governance_resource_with_access(workspace, true);
         let resource = find_resource(&surface, request.resource)
             .ok_or_else(|| "unknown workspace governance resource".to_string())?;
         let spec = resource
@@ -1083,30 +1075,19 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         {
             return Err("explicit confirmation is required".into());
         }
-        // The resource the action is invoked on, as the catalogue checked it.
-        if workspace.decide(
-            &caller,
-            &super::state::ResourceRef::Action {
-                app: super::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
-                resource: resource.id.as_str().to_owned(),
-                action: request.action.into(),
-            },
-            super::state::Verb::Admin,
-        ) != super::state::CapDecision::Allow
-        {
-            return Err("the caller is not allowed to manage permission profiles".into());
+        let operation = decode_governance_operation(spec, request.argument)?;
+        if !workspace.may_govern_at(&person, operation.action_id(), tilo_clock::unix_now()) {
+            return Err("the caller is not allowed to govern this workspace".into());
         }
-        let operation = decode_permission_profile_operation(spec, request.argument)?;
         if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room) {
             drop(tree);
             return govern_elsewhere(network, room, operation);
         }
         let workspace_id = workspace.id;
-        apply_permission_profile_operation(
+        super::workspace_governance::apply_governance_operation(
             &mut tree,
-            workspace_index,
             workspace_id,
-            &caller,
+            &person,
             operation,
         )?;
         let context = tilo_actions::ActionContext::for_resource(
@@ -1132,39 +1113,49 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
 }
 
-/// Have the governor of `room` apply a permission-profile `operation` as a
-/// desktop command from this device.
+/// Have the governor of `room` apply a governance `operation` as a desktop
+/// command from this device.
 fn govern_elsewhere(
     network: &super::network::ShellNetwork,
     room: super::state::RoomId,
-    operation: tilo_desktop::workspace_settings::PermissionProfileOperation,
+    operation: tilo_desktop::workspace_settings::GovernanceOperation,
 ) -> Result<(), String> {
-    use tilo_desktop::workspace_settings::PermissionProfileOperation as Operation;
+    use tilo_desktop::workspace_settings::GovernanceOperation as Operation;
     use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
     let command = match operation {
-        Operation::Save {
+        Operation::Grant { .. } | Operation::Revoke { .. } => {
+            return Err("grants in this workspace are given on the device that governs it".into());
+        }
+        Operation::SavePreset {
             name,
             description,
             rules,
-        } => DesktopCommand::SavePermissionProfile {
-            profile_json: serde_json::to_string(&collab_types::PermissionProfile {
+        } => DesktopCommand::SavePreset {
+            preset_json: serde_json::to_string(&tilo_action_policy::Preset {
                 name,
                 description,
                 rules,
             })
             .map_err(|error| error.to_string())?,
         },
-        Operation::Assign {
-            profile,
-            subject_kind,
+        Operation::AssignPreset {
+            preset,
             subject,
             expires_unix,
-        } => DesktopCommand::AssignPermissionProfile {
-            profile,
-            subject_kind,
-            subject,
-            expires_unix,
-        },
+        } => {
+            let (subject_kind, subject) = match subject {
+                tilo_action_policy::Subject::Person(id) => ("person", id),
+                tilo_action_policy::Subject::App(id) => ("app", id),
+                tilo_action_policy::Subject::Agent(id) => ("agent", id),
+                _ => return Err("a grant set is assigned to a person, an app or an agent".into()),
+            };
+            DesktopCommand::AssignPreset {
+                preset,
+                subject_kind: subject_kind.into(),
+                subject,
+                expires_unix,
+            }
+        }
         Operation::GrantAppAction {
             app,
             target_app,
@@ -1227,11 +1218,11 @@ fn find_resource<'a>(
 }
 
 /// Decode a workspace governance invocation's typed `argument` into the
-/// permission-profile operation `spec` encodes.
-fn decode_permission_profile_operation(
+/// operation `spec` encodes.
+fn decode_governance_operation(
     spec: &tilo_actions::ActionSpec,
     argument: Option<&str>,
-) -> Result<tilo_desktop::workspace_settings::PermissionProfileOperation, String> {
+) -> Result<tilo_desktop::workspace_settings::GovernanceOperation, String> {
     let json = argument
         .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
         .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
@@ -1246,89 +1237,11 @@ fn decode_permission_profile_operation(
             String::from_utf8_lossy(&encoded.payload)
         ));
     }
-    if encoded.type_id != tilo_desktop::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+    if encoded.type_id != tilo_desktop::workspace_settings::GOVERNANCE_ACTION_TYPE {
         return Err("workspace governance action encoded an unexpected operation".into());
     }
     serde_json::from_slice(&encoded.payload)
         .map_err(|error| format!("invalid workspace governance operation: {error}"))
-}
-
-/// Apply a permission-profile operation as `caller` to one workspace and
-/// mirror it into the room document.
-fn apply_permission_profile_operation(
-    tree: &mut super::state::WorkspaceTree,
-    workspace_index: usize,
-    workspace_id: super::state::WorkspaceId,
-    caller: &super::state::Actor,
-    operation: tilo_desktop::workspace_settings::PermissionProfileOperation,
-) -> Result<(), String> {
-    match operation {
-        tilo_desktop::workspace_settings::PermissionProfileOperation::Save {
-            name,
-            description,
-            rules,
-        } => {
-            let profile = collab_types::PermissionProfile {
-                name,
-                description,
-                rules,
-            };
-            tree.desktop
-                .workspaces
-                .get_mut(workspace_index)
-                .ok_or("the application workspace is no longer hosted")?
-                .save_permission_profile_as_actor(caller, profile.clone())
-                .map_err(|error| error.to_string())?;
-            tree.doc_upsert_permission_profile(workspace_id, &profile);
-        }
-        tilo_desktop::workspace_settings::PermissionProfileOperation::Assign {
-            profile,
-            subject_kind,
-            subject,
-            expires_unix,
-        } => {
-            let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
-                "person" => collab_types::Subject::person(subject.trim()),
-                "app" => collab_types::Subject::app(subject.trim()),
-                "agent" => collab_types::Subject::agent(subject.trim()),
-                _ => return Err("subject_kind must be person, app, or agent".into()),
-            };
-            let expiry = (expires_unix > 0)
-                .then_some(expires_unix)
-                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-            let workspace = tree
-                .desktop
-                .workspaces
-                .get_mut(workspace_index)
-                .ok_or("the application workspace is no longer hosted")?;
-            let ids = workspace
-                .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
-                .map_err(|error| error.to_string())?;
-            let capabilities = workspace
-                .capabilities
-                .iter()
-                .filter(|capability| ids.contains(&capability.id))
-                .cloned()
-                .collect::<Vec<_>>();
-            for capability in capabilities {
-                tree.doc_insert_capability(workspace_id, &capability);
-            }
-        }
-        operation @ (tilo_desktop::workspace_settings::PermissionProfileOperation::GrantAppAction {
-            ..
-        }
-        | tilo_desktop::workspace_settings::PermissionProfileOperation::RevokeAppAction {
-            ..
-        }) => {
-            super::workspace_governance::apply_app_action_operation(
-                tree,
-                workspace_id,
-                caller,
-                &operation,
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// Grants people give applications for other apps' actions, recorded in the
@@ -1343,13 +1256,18 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .iter()
             .find(|workspace| workspace.room.to_string() == room)
             .is_some_and(|workspace| {
-                tree.governs_room(workspace.room) && workspace.may_administer(&person.to_string())
+                tree.governs_room(workspace.room)
+                    && workspace.may_govern_at(
+                        person,
+                        tilo_action_policy::roles::governance::GRANT,
+                        tilo_clock::unix_now(),
+                    )
             })
     }
     fn record(
         &self,
         request: &tilo_action_broker::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
+        grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> Option<String> {
         let mut tree = self.0.write();
@@ -1359,7 +1277,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .iter()
             .find(|workspace| workspace.room.to_string() == request.room)?
             .id;
-        let id = tree.grant_in_workspace(workspace_id, &request.person, capability)?;
+        let id = tree.grant_in_workspace(workspace_id, &request.person, grant)?;
         let label = |app: &str| {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
@@ -1381,9 +1299,9 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
         tree.queue_save();
         drop(tree);
-        Some(id)
+        Some(id.as_str().to_owned())
     }
-    fn revoke(&self, room: &str, capability: &str) {
+    fn revoke(&self, room: &str, grant: &str) {
         let mut tree = self.0.write();
         let Some(workspace) = tree
             .desktop
@@ -1394,8 +1312,15 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             return;
         };
         let workspace_id = workspace.id;
-        if workspace.revoke_capability(capability) {
-            tree.doc_revoke_capability(workspace_id, capability);
+        let grant = tilo_action_policy::GrantId::new(grant);
+        if workspace.revoke_grant(&grant) {
+            tree.doc_write_policy(
+                workspace_id,
+                &super::state::PolicyEdit {
+                    revoked: vec![grant],
+                    ..super::state::PolicyEdit::default()
+                },
+            );
             tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
             tree.queue_save();
         }
@@ -2178,7 +2103,7 @@ mod tests {
     #[test]
     fn an_owner_opening_an_app_grants_it_authorship_once() {
         use super::super::state::WorkspaceExt as _;
-        use collab_types::caps::{ResourceRef, Verb};
+        use collab_types::caps::{Access, ResourceRef};
         let mut tree = crate::shell::state::WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(7),
@@ -2193,19 +2118,19 @@ mod tests {
         let mut stranger_copy = workspace.clone();
         launcher.grant_authorship("stranger", app, &mut stranger_copy);
         let actor = stranger_copy.actor_for_app(app);
-        assert!(!stranger_copy.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+        assert!(!stranger_copy.allows(&actor, &ResourceRef::Workspace, Access::Write));
 
         let mut launch_copy = workspace.clone();
         launcher.grant_authorship("owner", app, &mut launch_copy);
         let actor = launch_copy.actor_for_app(app);
-        assert!(launch_copy.allows(&actor, &ResourceRef::Workspace, Verb::Write));
-        let stored = handle.read().desktop.workspaces[0].capabilities.len();
+        assert!(launch_copy.allows(&actor, &ResourceRef::Workspace, Access::Write));
+        let stored = handle.read().desktop.workspaces[0].sandbox.len();
 
         let mut again = handle.read().desktop.workspaces[0].clone();
         launcher.grant_authorship("owner", app, &mut again);
         drop(launcher);
         assert_eq!(
-            handle.read().desktop.workspaces[0].capabilities.len(),
+            handle.read().desktop.workspaces[0].sandbox.len(),
             stored,
             "granted once"
         );
@@ -2216,7 +2141,7 @@ mod tests {
     #[test]
     fn the_person_here_authors_an_app_they_open() {
         use super::super::state::WorkspaceExt as _;
-        use collab_types::caps::{ResourceRef, Verb};
+        use collab_types::caps::{Access, ResourceRef};
         let mut tree = crate::shell::state::WorkspaceTree::default();
         let person = crate::shell::state::local_user_id();
         let mut workspace =
@@ -2229,15 +2154,11 @@ mod tests {
             .workspace_after_opening_app("so.tilo.word-processor")
             .expect("active workspace");
         let actor = opened.actor_for_app("so.tilo.word-processor");
-        assert!(opened.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+        assert!(opened.allows(&actor, &ResourceRef::Workspace, Access::Write));
         let again = tree
             .workspace_after_opening_app("so.tilo.word-processor")
             .expect("still active");
-        assert_eq!(
-            again.capabilities.len(),
-            opened.capabilities.len(),
-            "granted once"
-        );
+        assert_eq!(again.sandbox.len(), opened.sandbox.len(), "granted once");
     }
 
     /// The shell stages content through the scope of the application that
@@ -2282,7 +2203,11 @@ mod tests {
             std::fs::read(&staged).expect("staged bytes"),
             b"a photograph"
         );
-        assert!(!workspace.app_capabilities("so.tilo.photos").is_empty());
+        assert!(
+            !workspace
+                .app_capabilities_at("so.tilo.photos", tilo_clock::unix_now())
+                .is_empty()
+        );
 
         let elsewhere = scope("room-2");
         for caller in [Some(&elsewhere), None] {

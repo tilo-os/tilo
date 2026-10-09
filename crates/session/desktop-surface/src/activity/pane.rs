@@ -32,7 +32,7 @@ use ui::time::{Duration, Instant, SystemTime};
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::OpClass;
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -8733,18 +8733,31 @@ impl PatchCounts {
     fn record(&mut self, p: &automerge::Patch) {
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
-            (automerge::PatchAction::PutMap { key, value, .. }, "capabilities") => {
-                let _ = key;
-                if let Value::Scalar(s) = &value.0
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    self.grants.push(describe_capability(&cap));
-                } else {
-                    self.grants.push(t("activity-capability-unknown"));
-                }
+            (
+                automerge::PatchAction::PutMap { key, value, .. },
+                map @ ("grants" | "sandbox" | "members"),
+            ) => {
+                let described = match (&value.0, map) {
+                    (Value::Scalar(s), _) => match s.as_ref() {
+                        ScalarValue::Bytes(blob) => match map {
+                            "grants" => serde_json::from_slice::<tilo_action_policy::Grant>(blob)
+                                .ok()
+                                .map(|grant| describe_grant(&grant)),
+                            "sandbox" => serde_json::from_slice::<CapOverride>(blob)
+                                .ok()
+                                .map(|cap| describe_capability(&cap)),
+                            _ => serde_json::from_slice::<tilo_action_policy::Role>(blob)
+                                .ok()
+                                .map(|role| describe_member(key, role)),
+                        },
+                        _ => None,
+                    },
+                    (Value::Object(_), _) => None,
+                };
+                self.grants
+                    .push(described.unwrap_or_else(|| t("activity-capability-unknown")));
             }
-            (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
+            (automerge::PatchAction::DeleteMap { .. }, "grants" | "sandbox" | "members") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
             // A room's `contents` map: a window is an entry of a group's
@@ -9010,14 +9023,88 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
     }
 }
 
-/// A capability in one short phrase: what, over what, to whom.
+/// A grant in one short phrase: its answer, for which kinds of action, on
+/// what, to whom.
+fn describe_grant(grant: &tilo_action_policy::Grant) -> String {
+    use tilo_action_policy::{ActionKind, Answer};
+    let answer = match grant.answer {
+        Answer::Allow => "allow",
+        Answer::Ask => "ask",
+        Answer::Deny => "deny",
+    };
+    let kinds = grant.kinds;
+    let kinds = match (
+        kinds.contains(ActionKind::Read),
+        kinds.contains(ActionKind::Undoable),
+        kinds.contains(ActionKind::Outside),
+    ) {
+        (true, true, true) => "all",
+        (true, true, false) => "read-undoable",
+        (true, false, true) => "read-outside",
+        (false, true, true) => "undoable-outside",
+        (true, false, false) => "read",
+        (false, true, false) => "undoable",
+        (false, false, true) => "outside",
+        (false, false, false) => "none",
+    };
+    t_args(
+        "activity-grant",
+        &[
+            ("answer", answer.into()),
+            ("kinds", kinds.into()),
+            (
+                "node",
+                tilo_action_policy::describe_node(&grant.node, &tilo_action_policy::Ids).into(),
+            ),
+            ("subject", describe_grantee(&grant.subject).into()),
+        ],
+    )
+}
+
+fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
+    use tilo_action_policy::Subject as Grantee;
+    match subject {
+        Grantee::Person(id) => short(id),
+        Grantee::Role(role) => t_args(
+            "activity-capability-role",
+            &[("role", role_key(*role).into())],
+        ),
+        Grantee::Agent(agent) => t_args("activity-capability-agent", &[("agent", agent.into())]),
+        Grantee::Task(task) => t_args("activity-grant-task", &[("task", short(task).into())]),
+        Grantee::Shortcut(shortcut) => {
+            t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
+        }
+        Grantee::App(app) => app.clone(),
+        Grantee::ForeignDevice => t("activity-grant-foreign-device"),
+    }
+}
+
+/// The catalogue selector of a role.
+fn role_key(role: tilo_action_policy::Role) -> &'static str {
+    match role {
+        tilo_action_policy::Role::Owner => "owner",
+        tilo_action_policy::Role::Editor => "editor",
+        tilo_action_policy::Role::Commenter => "commenter",
+        tilo_action_policy::Role::Viewer => "viewer",
+    }
+}
+
+/// A member admitted to the room, or their role changed.
+fn describe_member(person: &str, role: tilo_action_policy::Role) -> String {
+    t_args(
+        "activity-member",
+        &[
+            ("person", short(person).into()),
+            ("role", role_key(role).into()),
+        ],
+    )
+}
+
+/// A sandbox capability in one short phrase: what, over what, to whom.
 fn describe_capability(cap: &CapOverride) -> String {
-    let verb = match cap.verb {
-        Verb::Read => "read",
-        Verb::Comment => "comment",
-        Verb::Write => "write",
-        Verb::Invite => "invite",
-        Verb::Admin => "admin",
+    let verb = match cap.access {
+        Access::Read => "read",
+        Access::Write => "write",
     };
     let effect = match cap.effect {
         Effect::Grant => "grant",
@@ -9037,50 +9124,17 @@ fn describe_capability(cap: &CapOverride) -> String {
 fn describe_scope(scope: &Scope) -> String {
     match scope {
         Scope::Workspace | Scope::Room(_) => t("activity-capability-this-workspace"),
-        Scope::App(a) => a.clone(),
-        Scope::ResourceType(k) => t_args(
-            "activity-capability-every-type",
-            &[("kind", format!("{k:?}").into())],
-        ),
-        Scope::ResourceInstance(_) => t("activity-capability-one-artifact"),
         Scope::FsPath(p) => p.clone(),
         // Record authority intentionally has no path: it follows the file
         // across rename/move and the stable id is not useful activity copy.
         Scope::FsRecord(_) => t("activity-capability-one-shared-file"),
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => t_args("activity-capability-network", &[("host", h.into())]),
-        Scope::Action {
-            app,
-            resource,
-            action,
-        } => format!("{app}:{resource}:{action}"),
-        Scope::ActionOnKind { app, kind, action } => t_args(
-            "activity-capability-action-on-kind",
-            &[
-                ("app", app.into()),
-                ("kind", kind.into()),
-                ("action", action.into()),
-            ],
-        ),
     }
 }
 
 fn describe_subject(subject: &Subject) -> String {
     match subject {
-        Subject::Role(role) => t_args(
-            "activity-capability-role",
-            &[(
-                "role",
-                match role {
-                    collab_types::role::Role::Owner => "owner",
-                    collab_types::role::Role::Editor => "editor",
-                    collab_types::role::Role::Commenter => "commenter",
-                    collab_types::role::Role::Viewer => "viewer",
-                    collab_types::role::Role::Denied => "denied",
-                }
-                .into(),
-            )],
-        ),
         Subject::User(_) => t("activity-capability-a-person"),
         Subject::Principal(p) => describe_principal(p),
     }

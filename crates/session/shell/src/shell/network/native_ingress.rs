@@ -183,18 +183,18 @@ impl ShellNetwork {
                 // The relay authenticated the author; the room's governance
                 // says what it may write. The broker checks the signature,
                 // the role and the channel's gate before any app sees it.
-                match input.role() {
-                    Ok(role) if role != collab_types::Role::Denied => self.handle_document_message(
+                match input.standing() {
+                    Ok(author) => self.handle_document_message(
                         *peer,
                         app_id.clone(),
                         cluster_id.clone(),
                         record_id.clone(),
-                        role,
+                        author,
                         input.retained(),
                         (**envelope).clone(),
                     ),
-                    Ok(_) | Err(_) => {
-                        tracing::debug!(room = %room, "sealed write from a device without a role");
+                    Err(_) => {
+                        tracing::debug!(room = %room, "sealed write from a device without standing");
                     }
                 }
                 true
@@ -318,13 +318,15 @@ impl ShellNetwork {
             if *peer == self.local_peer_hash || cluster_id != &input.room().to_string() {
                 return;
             }
-            let Ok(role) = input.role() else { return };
+            let Ok(author) = input.standing() else {
+                return;
+            };
             self.handle_document_message(
                 *peer,
                 app_id.clone(),
                 cluster_id.clone(),
                 record_id.clone(),
-                role,
+                author,
                 input.retained(),
                 (**envelope).clone(),
             );

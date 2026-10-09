@@ -104,13 +104,11 @@ fn can_restore(app: &mut App) -> bool {
 }
 
 fn read_only_record_authority() -> crate::permissions::PermissionContext {
-    crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "fixture-user"),
-        vec![crate::permissions::CapOverride::grant(
-            crate::permissions::Subject::person("fixture-user"),
-            crate::permissions::Scope::App("so.tilo.binding-probe".into()),
-            crate::permissions::Verb::Read,
-        )],
+    crate::permissions::PermissionContext::granted(
+        "fixture-user",
+        &crate::permissions::TreePath::root().app("so.tilo.binding-probe"),
+        crate::permissions::policy::KindSet::READ,
+        None,
     )
     .at_unix_time(100)
 }

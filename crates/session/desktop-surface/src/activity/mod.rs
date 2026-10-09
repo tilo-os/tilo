@@ -166,7 +166,7 @@ pub trait ActivityHost {
     fn app_display_name(&self, _app: &str) -> Option<String> {
         None
     }
-    fn agent_members(&self, _workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, _workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         Vec::new()
     }
     fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {

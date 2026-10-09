@@ -28,7 +28,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
 
-use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
@@ -64,20 +64,38 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
 }
 
 pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
-pub const PERMISSION_PROFILE_ACTION_TYPE: &str = "tilo.workspace.permission-profile.v1";
+pub const GOVERNANCE_ACTION_TYPE: &str = "tilo.room.governance.v1";
 
+/// One of the room's governance actions, as its published door builds it.
+/// Every one is decided at the room's own resource
+/// ([`tilo_desktop_model::governance_of`]) and rechecked by the host that
+/// governs the room before it writes anything.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum PermissionProfileOperation {
-    Save {
+pub enum GovernanceOperation {
+    /// Give `subject` `answer` for actions of `kinds` at `node`, a path below
+    /// the room, for `lifetime` (until revoked when absent).
+    Grant {
+        subject: tilo_action_policy::Subject,
+        node: tilo_action_policy::TreePath,
+        kinds: tilo_action_policy::KindSet,
+        answer: tilo_action_policy::Answer,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lifetime: Option<tilo_action_policy::Lifetime>,
+    },
+    /// Take back the grant `grant`.
+    Revoke { grant: String },
+    /// Save a named grant set: rules over paths below the room.
+    SavePreset {
         name: String,
         description: String,
-        rules: Vec<collab_types::PermissionProfileRule>,
+        rules: Vec<tilo_action_policy::Rule>,
     },
-    Assign {
-        profile: String,
-        subject_kind: String,
-        subject: String,
+    /// Give `subject` the grants of the named set, until `expires_unix` when
+    /// it is not zero.
+    AssignPreset {
+        preset: String,
+        subject: tilo_action_policy::Subject,
         expires_unix: u64,
     },
     /// Let application `app` use `action` on `target_app`'s resource
@@ -100,129 +118,395 @@ pub enum PermissionProfileOperation {
     },
 }
 
-pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
+pub use tilo_desktop_model::{
+    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
+    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, REVOKE_ACTION_ID,
+};
 
-/// Whether `action` is one of the workspace's governance actions, which
-/// the workspace itself runs rather than an application.
+impl GovernanceOperation {
+    /// The governance action this operation is.
+    #[must_use]
+    pub fn action_id(&self) -> &'static str {
+        match self {
+            Self::Grant { .. } => GRANT_ACTION_ID,
+            Self::Revoke { .. } => REVOKE_ACTION_ID,
+            Self::SavePreset { .. } => PRESET_SAVE_ACTION_ID,
+            Self::AssignPreset { .. } => PRESET_ASSIGN_ACTION_ID,
+            Self::GrantAppAction { .. } => APP_ACTION_GRANT_ACTION_ID,
+            Self::RevokeAppAction { .. } => APP_ACTION_REVOKE_ACTION_ID,
+        }
+    }
+}
+
+/// What applying a [`GovernanceOperation`] wrote, for the host to mirror into
+/// the room document.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GovernanceApplied {
+    pub edit: tilo_desktop_model::grants::PolicyEdit,
+    /// The grant set saved, when the operation saved one.
+    pub preset: Option<tilo_action_policy::Preset>,
+}
+
+/// The node an app-action grant names: `action` on `target_app`'s resource
+/// `resource`, wherever in the app that resource sits, and nothing else of
+/// `target_app`.
+#[must_use]
+pub fn app_action_node(
+    target_app: &str,
+    resource: &str,
+    action: &str,
+) -> tilo_action_policy::TreePath {
+    tilo_action_policy::TreePath::root()
+        .app(target_app)
+        .rest()
+        .resource(resource)
+        .rest()
+        .action(action)
+}
+
+/// Apply `operation` to `ws` as `actor` at `now` (Unix seconds). The room's
+/// policy decides: the actor must hold the governance action and may hand
+/// out no more than they hold.
+///
+/// # Errors
+/// Why the operation was refused, worded for the person; nothing is applied
+/// then.
+pub fn apply_governance(
+    ws: &mut Workspace,
+    actor: &str,
+    operation: GovernanceOperation,
+    now: u64,
+) -> Result<GovernanceApplied, String> {
+    use tilo_action_policy::{Change, Grant, GrantId, Lifetime, Subject};
+    let changes = match operation {
+        GovernanceOperation::Grant {
+            subject,
+            node,
+            kinds,
+            answer,
+            lifetime,
+        } => vec![Change::Grant(
+            Grant::new(
+                format!("grant:{}", uuid::Uuid::new_v4()),
+                subject,
+                ws.node().join(&node),
+                kinds,
+                answer,
+                Subject::person(actor),
+            )
+            .with_lifetime(lifetime.unwrap_or(Lifetime::UntilRevoked)),
+        )],
+        GovernanceOperation::Revoke { grant } => vec![Change::Revoke(GrantId::new(grant))],
+        GovernanceOperation::SavePreset {
+            name,
+            description,
+            rules,
+        } => {
+            let preset = tilo_action_policy::Preset {
+                name,
+                description,
+                rules,
+            };
+            ws.save_preset_as_at(actor, preset.clone(), now)
+                .map_err(|error| error.to_string())?;
+            return Ok(GovernanceApplied {
+                preset: Some(preset),
+                ..GovernanceApplied::default()
+            });
+        }
+        GovernanceOperation::AssignPreset {
+            preset,
+            subject,
+            expires_unix,
+        } => {
+            let lifetime = if expires_unix == 0 {
+                Lifetime::UntilRevoked
+            } else {
+                Lifetime::Until(expires_unix.saturating_mul(1000))
+            };
+            let granted = ws
+                .assign_preset_as_at(actor, &preset, &subject, &lifetime, now)
+                .map_err(|error| error.to_string())?;
+            return Ok(GovernanceApplied {
+                edit: tilo_desktop_model::grants::PolicyEdit {
+                    granted,
+                    ..Default::default()
+                },
+                preset: None,
+            });
+        }
+        operation @ (GovernanceOperation::GrantAppAction { .. }
+        | GovernanceOperation::RevokeAppAction { .. }) => app_action_changes(ws, actor, operation)?,
+    };
+    let edit = ws
+        .govern_all_at(actor, changes, now)
+        .map_err(|refusal| refusal.to_string())?;
+    Ok(GovernanceApplied { edit, preset: None })
+}
+
+/// The policy changes an app-action grant or revocation makes in `ws`.
+fn app_action_changes(
+    ws: &Workspace,
+    actor: &str,
+    operation: GovernanceOperation,
+) -> Result<Vec<tilo_action_policy::Change>, String> {
+    use tilo_action_policy::{Change, Grant, KindSet, Lifetime, Subject};
+    Ok(match operation {
+        GovernanceOperation::GrantAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+            lifetime,
+        } => {
+            let (app, target_app, resource, action) =
+                app_action_target(&app, &target_app, &resource, &action)?;
+            if target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID {
+                return Err("governing the workspace is granted to people, not apps".into());
+            }
+            let lifetime = match lifetime.trim().to_ascii_lowercase().as_str() {
+                "session" => Lifetime::Session(tilo_desktop_model::session_id().to_owned()),
+                "always" => Lifetime::UntilRevoked,
+                _ => return Err("lifetime must be session or always".into()),
+            };
+            // Enough for any action that at most changes the room undoably:
+            // an outside effect still asks.
+            vec![Change::Grant(
+                Grant::new(
+                    format!("app-action:{}", uuid::Uuid::new_v4()),
+                    Subject::App(app.to_owned()),
+                    ws.node()
+                        .join(&app_action_node(target_app, resource, action)),
+                    KindSet::READ_UNDOABLE,
+                    tilo_action_policy::Answer::Allow,
+                    Subject::person(actor),
+                )
+                .with_lifetime(lifetime),
+            )]
+        }
+        GovernanceOperation::RevokeAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+        } => {
+            let (app, target_app, resource, action) =
+                app_action_target(&app, &target_app, &resource, &action)?;
+            let subject = Subject::App(app.to_owned());
+            let node = ws
+                .node()
+                .join(&app_action_node(target_app, resource, action));
+            ws.policy
+                .grants
+                .iter()
+                .filter(|grant| grant.subject == subject && grant.node == node)
+                .map(|grant| Change::Revoke(grant.id.clone()))
+                .collect()
+        }
+        GovernanceOperation::Grant { .. }
+        | GovernanceOperation::Revoke { .. }
+        | GovernanceOperation::SavePreset { .. }
+        | GovernanceOperation::AssignPreset { .. } => {
+            return Err("not an app-action grant".into());
+        }
+    })
+}
+
+fn app_action_target<'a>(
+    app: &'a str,
+    target_app: &'a str,
+    resource: &'a str,
+    action: &'a str,
+) -> Result<(&'a str, &'a str, &'a str, &'a str), String> {
+    let named = (
+        app.trim(),
+        target_app.trim(),
+        resource.trim(),
+        action.trim(),
+    );
+    if named.0.is_empty() || named.1.is_empty() || named.2.is_empty() || named.3.is_empty() {
+        return Err(
+            "name the application, the other application, its resource and the action".into(),
+        );
+    }
+    Ok(named)
+}
+
+/// Whether `action` is one of the room's governance actions, which the
+/// workspace itself runs rather than an application.
 #[must_use]
 pub fn is_governance_action(action: &str) -> bool {
-    matches!(
-        action,
-        tilo_desktop_model::PROFILE_SAVE_ACTION_ID
-            | tilo_desktop_model::PROFILE_ASSIGN_ACTION_ID
-            | APP_ACTION_GRANT_ACTION_ID
-            | APP_ACTION_REVOKE_ACTION_ID
+    tilo_desktop_model::governance_of(action).is_some()
+}
+
+fn encoded_governance_operation(operation: &GovernanceOperation) -> tilo_actions::EncodedAction {
+    tilo_actions::EncodedAction::encode_operation(GOVERNANCE_ACTION_TYPE, operation).unwrap_or_else(
+        |error| tilo_actions::EncodedAction {
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            payload: error.to_string().into_bytes(),
+        },
     )
 }
 
-fn encoded_profile_operation(
-    operation: &PermissionProfileOperation,
-) -> tilo_actions::EncodedAction {
-    tilo_actions::EncodedAction::encode_operation(PERMISSION_PROFILE_ACTION_TYPE, operation)
-        .unwrap_or_else(|error| tilo_actions::EncodedAction {
-            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-            payload: error.to_string().into_bytes(),
-        })
+/// The JSON a value of `T` decodes from, for an argument a governance action
+/// takes whole.
+fn decoded<T: serde::de::DeserializeOwned>(
+    arguments: &tilo_actions::ActionArgs,
+    name: &str,
+) -> Option<T> {
+    serde_json::from_value(arguments.to_json().get(name)?.clone()).ok()
 }
 
-/// Searchable and agent-addressable governance surface for reusable roles.
-/// Profile resources are workspace state; assigning one writes capabilities,
-/// which remain the only values consulted by enforcement.
-pub fn permission_profile_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
-    permission_profile_resource_with_access(ws, ws.may_administer(local_user))
+/// The room's governance surface: granting, revoking, named grant sets and
+/// letting one app use another's action, published on the room's own
+/// resource so searches, agents and scripts reach them like any action.
+pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
+    governance_resource_with_access(
+        ws,
+        ws.may_govern_at(
+            local_user,
+            tilo_action_policy::roles::governance::GRANT,
+            tilo_clock::unix_now(),
+        ),
+    )
 }
 
-/// Build the profile surface after an external authority boundary (the broker)
-/// has established that its caller may inspect candidate governance actions.
-/// Each action still carries `PermissionRequirement::Admin` and is rechecked
-/// immediately before mutation.
+/// Build the governance surface after an external authority boundary (the
+/// broker) has established that its caller may inspect governance actions.
+/// Each action is rechecked immediately before it writes.
 #[expect(
     clippy::too_many_lines,
     reason = "a declarative resource description listing every governance action"
 )]
-pub fn permission_profile_resource_with_access(
-    ws: &Workspace,
-    can_administer: bool,
-) -> tilo_actions::Resource {
+pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo_actions::Resource {
     use tilo_actions::{
-        ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-        PermissionRequirement, RiskLevel,
+        ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType, RiskLevel,
     };
 
     let mut root = tilo_actions::Resource::new(
         tilo_desktop_model::governance_resource_id(&ws.room),
-        "workspace.permissions",
+        tilo_action_policy::roles::ROOM_KIND,
         t_args(
             "workspace-settings-roles-resource",
             &[("workspace", ws.name.clone().into())],
         ),
     );
-    if !can_administer {
+    if !can_govern {
         return root;
     }
     let contract = ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: tilo_action_policy::roles::GOVERNANCE_KIND,
         risk: RiskLevel::Privileged,
         confirmation: ConfirmationPolicy::Confirm,
         tags: vec!["workspace".into(), "permissions".into(), "roles".into()],
         ..ActionContract::default()
     };
+    let subject_param = || {
+        ActionParam::required_owned(
+            "subject",
+            ParamType::Object,
+            "Who: {\"person\": id}, {\"agent\": id}, {\"app\": package id} or {\"role\": \"viewer\"|\"commenter\"|\"editor\"}",
+        )
+    };
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
-            "profile.save",
+            GRANT_ACTION_ID,
+            t("workspace-settings-grant"),
+            t("workspace-settings-grant-placeholder"),
+            OperationKind::Effect,
+            GOVERNANCE_ACTION_TYPE,
+            vec![
+                subject_param(),
+                ActionParam::required_owned(
+                    "node",
+                    ParamType::Text,
+                    "Where, below the room: \"app:so.tilo.notes\", \"app:so.tilo.mail/**/action:send\", or \"\" for the whole room",
+                ),
+                ActionParam::required_owned(
+                    "kinds",
+                    ParamType::Array,
+                    "Which kinds of action: \"read\", \"undoable\", \"outside\"",
+                ),
+                ActionParam::required_owned("answer", ParamType::Text, "allow, ask or deny")
+                    .with_choices(["allow", "ask", "deny"]),
+            ],
+            |arguments| {
+                let (Some(subject), Some(node), Some(kinds), Some(answer)) = (
+                    decoded(arguments, "subject"),
+                    arguments
+                        .text("node")
+                        .and_then(|node| node.parse::<tilo_action_policy::TreePath>().ok()),
+                    decoded(arguments, "kinds"),
+                    decoded(arguments, "answer"),
+                ) else {
+                    return tilo_actions::EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"the grant does not name a subject, a node, kinds and an answer"
+                            .to_vec(),
+                    };
+                };
+                encoded_governance_operation(&GovernanceOperation::Grant {
+                    subject,
+                    node,
+                    kinds,
+                    answer,
+                    lifetime: None,
+                })
+            },
+        )
+        .with_description(t("workspace-settings-grant-description"))
+        .with_contract(contract.clone()),
+    );
+    root.actions.push(
+        tilo_actions::ActionSpec::typed_operation(
+            REVOKE_ACTION_ID,
+            t("workspace-settings-revoke"),
+            t("workspace-settings-revoke-placeholder"),
+            OperationKind::Effect,
+            GOVERNANCE_ACTION_TYPE,
+            vec![ActionParam::required_owned(
+                "grant",
+                ParamType::Text,
+                "The id of the grant to take back",
+            )],
+            |arguments| {
+                encoded_governance_operation(&GovernanceOperation::Revoke {
+                    grant: arguments.text("grant").unwrap_or_default().to_string(),
+                })
+            },
+        )
+        .with_description(t("workspace-settings-revoke-description"))
+        .with_contract(contract.clone()),
+    );
+    root.actions.push(
+        tilo_actions::ActionSpec::typed_operation(
+            PRESET_SAVE_ACTION_ID,
             t("workspace-settings-role-save"),
             t("workspace-settings-role-save-placeholder"),
             OperationKind::Effect,
-            PERMISSION_PROFILE_ACTION_TYPE,
+            GOVERNANCE_ACTION_TYPE,
             vec![
-                ActionParam::required_owned("name", ParamType::Text, "Unique role name"),
+                ActionParam::required_owned("name", ParamType::Text, "Unique grant set name"),
                 ActionParam::optional_owned(
                     "description",
                     ParamType::Text,
-                    "What this role is for",
+                    "What this grant set is for",
                 ),
                 ActionParam::required_owned(
                     "rules",
                     ParamType::Array,
-                    "Least-privilege rules. Scope examples: {\"App\":\"so.tilo.notes\"}, {\"Action\":{\"app\":\"so.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
+                    "Rules: {\"node\": path below the room, \"kinds\": [\"read\"|\"undoable\"|\"outside\"], \"answer\": \"allow\"|\"ask\"|\"deny\"}",
                 )
-                .with_schema(serde_json::json!({
-                    "minItems": 1,
-                    "maxItems": 128,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "scope": {
-                                "oneOf": [
-                                    {"const": "Workspace"},
-                                    {"type": "object", "required": ["App"], "properties": {"App": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["Action"], "properties": {"Action": {"type": "object", "required": ["app", "resource", "action"], "properties": {"app": {"type": "string"}, "resource": {"type": "string"}, "action": {"type": "string"}}, "additionalProperties": false}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["FsPath"], "properties": {"FsPath": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["FsRecord"], "properties": {"FsRecord": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["ResourceType"], "properties": {"ResourceType": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["ResourceInstance"], "properties": {"ResourceInstance": {"type": "string"}}, "additionalProperties": false},
-                                    {"type": "object", "required": ["Room"], "properties": {"Room": {"type": "string"}}, "additionalProperties": false}
-                                ]
-                            },
-                            "effect": {"enum": ["Grant", "Restrict"]},
-                            "verb": {"enum": ["Read", "Comment", "Write", "Invite", "Admin"]}
-                        },
-                        "required": ["scope", "effect", "verb"],
-                        "additionalProperties": false
-                    }
-                })),
+                .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128})),
             ],
             |arguments| {
-                let rules = serde_json::from_value(serde_json::Value::Array(
-                    arguments.array("rules").unwrap_or_default().to_vec(),
-                ));
-                let Ok(rules) = rules else {
+                let Some(rules) = decoded(arguments, "rules") else {
                     return tilo_actions::EncodedAction {
                         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"permission rules do not match a supported scope".to_vec(),
+                        payload: b"grant set rules do not match the rule shape".to_vec(),
                     };
                 };
-                encoded_profile_operation(&PermissionProfileOperation::Save {
+                encoded_governance_operation(&GovernanceOperation::SavePreset {
                     name: arguments.text("name").unwrap_or_default().to_string(),
                     description: arguments
                         .text("description")
@@ -235,45 +519,51 @@ pub fn permission_profile_resource_with_access(
         .with_description(t("workspace-settings-role-save-description"))
         .with_contract(contract.clone()),
     );
-
+    let preset_names: Vec<String> = ws
+        .presets
+        .iter()
+        .map(|preset| preset.name.clone())
+        .collect();
+    let mut assign_params = vec![
+        ActionParam::required_owned(
+            "preset",
+            ParamType::Text,
+            "Exact name of a saved grant set, including one created by an earlier step",
+        ),
+        subject_param(),
+        ActionParam::optional_owned(
+            "expires_unix",
+            ParamType::Integer,
+            "Unix expiry; omit for a durable assignment",
+        ),
+    ];
+    if !preset_names.is_empty()
+        && let Some(preset) = assign_params.first_mut()
+    {
+        *preset = preset.clone().with_choices(preset_names);
+    }
     root.actions.push(
         tilo_actions::ActionSpec::typed_operation(
-            "profile.assign",
+            PRESET_ASSIGN_ACTION_ID,
             t("workspace-settings-role-assign"),
             t("workspace-settings-role-assign-placeholder"),
             OperationKind::Effect,
-            PERMISSION_PROFILE_ACTION_TYPE,
-            vec![
-                ActionParam::required_owned(
-                    "profile",
-                    ParamType::Text,
-                    "Exact name of an existing role, including one created by an earlier step",
-                ),
-                ActionParam::required_owned(
-                    "subject",
-                    ParamType::Text,
-                    "Stable person, app, or agent identity",
-                ),
-                ActionParam::required_owned("subject_kind", ParamType::Text, "Identity namespace")
-                    .with_choices(["person", "app", "agent"]),
-                ActionParam::optional_owned(
-                    "expires_unix",
-                    ParamType::Integer,
-                    "Unix expiry; omit for a durable assignment",
-                ),
-            ],
+            GOVERNANCE_ACTION_TYPE,
+            assign_params,
             |arguments| {
+                let Some(subject) = decoded(arguments, "subject") else {
+                    return tilo_actions::EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"the assignment does not name a subject".to_vec(),
+                    };
+                };
                 let expires_unix = arguments
                     .integer("expires_unix")
                     .and_then(|value| u64::try_from(value).ok())
                     .unwrap_or_default();
-                encoded_profile_operation(&PermissionProfileOperation::Assign {
-                    profile: arguments.text("profile").unwrap_or_default().to_string(),
-                    subject_kind: arguments
-                        .text("subject_kind")
-                        .unwrap_or_default()
-                        .to_string(),
-                    subject: arguments.text("subject").unwrap_or_default().to_string(),
+                encoded_governance_operation(&GovernanceOperation::AssignPreset {
+                    preset: arguments.text("preset").unwrap_or_default().to_string(),
+                    subject,
                     expires_unix,
                 })
             },
@@ -313,10 +603,10 @@ pub fn permission_profile_resource_with_access(
             t("workspace-settings-app-action-grant"),
             t("workspace-settings-app-action-placeholder"),
             OperationKind::Effect,
-            PERMISSION_PROFILE_ACTION_TYPE,
+            GOVERNANCE_ACTION_TYPE,
             grant_params,
             |arguments| {
-                encoded_profile_operation(&PermissionProfileOperation::GrantAppAction {
+                encoded_governance_operation(&GovernanceOperation::GrantAppAction {
                     app: arguments.text("app").unwrap_or_default().to_string(),
                     target_app: arguments.text("target_app").unwrap_or_default().to_string(),
                     resource: arguments.text("resource").unwrap_or_default().to_string(),
@@ -334,10 +624,10 @@ pub fn permission_profile_resource_with_access(
             t("workspace-settings-app-action-revoke"),
             t("workspace-settings-app-action-placeholder"),
             OperationKind::Effect,
-            PERMISSION_PROFILE_ACTION_TYPE,
+            GOVERNANCE_ACTION_TYPE,
             app_action_params(),
             |arguments| {
-                encoded_profile_operation(&PermissionProfileOperation::RevokeAppAction {
+                encoded_governance_operation(&GovernanceOperation::RevokeAppAction {
                     app: arguments.text("app").unwrap_or_default().to_string(),
                     target_app: arguments.text("target_app").unwrap_or_default().to_string(),
                     resource: arguments.text("resource").unwrap_or_default().to_string(),
@@ -346,74 +636,8 @@ pub fn permission_profile_resource_with_access(
             },
         )
         .with_description(t("workspace-settings-app-action-revoke-description"))
-        .with_contract(contract.clone()),
+        .with_contract(contract),
     );
-
-    for profile in &ws.permission_profiles {
-        let profile_name = profile.name.clone();
-        let mut resource = tilo_actions::Resource::new(
-            tilo_desktop_model::permission_profile_resource_id(&ws.room, &profile_name),
-            "workspace.permission-profile",
-            profile.name.clone(),
-        );
-        resource.actions.push(
-            tilo_actions::ActionSpec::typed_operation(
-                "profile.assign",
-                t_args(
-                    "workspace-settings-role-assign-named",
-                    &[("role", profile.name.clone().into())],
-                ),
-                t("workspace-settings-role-assign-named-placeholder"),
-                OperationKind::Effect,
-                PERMISSION_PROFILE_ACTION_TYPE,
-                vec![
-                    ActionParam::required_owned(
-                        "profile",
-                        ParamType::Text,
-                        "Exact saved role name",
-                    )
-                    .with_choices([profile.name.clone()]),
-                    ActionParam::required_owned(
-                        "subject",
-                        ParamType::Text,
-                        "Stable person, app, or agent identity",
-                    ),
-                    ActionParam::required_owned(
-                        "subject_kind",
-                        ParamType::Text,
-                        "Identity namespace",
-                    )
-                    .with_choices(["person", "app", "agent"]),
-                    ActionParam::optional_owned(
-                        "expires_unix",
-                        ParamType::Integer,
-                        "Unix expiry; omit for a durable assignment",
-                    ),
-                ],
-                move |arguments| {
-                    let expires_unix = arguments
-                        .integer("expires_unix")
-                        .and_then(|value| u64::try_from(value).ok())
-                        .unwrap_or_default();
-                    encoded_profile_operation(&PermissionProfileOperation::Assign {
-                        profile: arguments
-                            .text("profile")
-                            .unwrap_or(&profile_name)
-                            .to_string(),
-                        subject_kind: arguments
-                            .text("subject_kind")
-                            .unwrap_or_default()
-                            .to_string(),
-                        subject: arguments.text("subject").unwrap_or_default().to_string(),
-                        expires_unix,
-                    })
-                },
-            )
-            .with_description(profile.description.clone())
-            .with_contract(contract.clone()),
-        );
-        root.children.push(resource);
-    }
     root
 }
 
@@ -454,7 +678,7 @@ pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_
             &[("workspace", ws.name.clone().into())],
         ),
     );
-    if ws.owner.as_ref() == Some(local_user) {
+    if ws.owner() == Some(local_user) {
         resource.actions.push(ownership_proposal_action());
     }
     if let Some(pending) = &ws.pending_ownership_transfer {
@@ -462,7 +686,7 @@ pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_
         if public_key_member_id(pending.recipient) == *local_user {
             resource.actions.push(ownership_accept_action(&digest));
         }
-        if ws.owner.as_ref() == Some(local_user) {
+        if ws.owner() == Some(local_user) {
             resource.actions.push(ownership_cancel_action(&digest));
         }
     }
@@ -471,8 +695,8 @@ pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_
 
 fn ownership_proposal_action() -> tilo_actions::ActionSpec {
     use tilo_actions::{
-        ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-        PermissionRequirement, RiskLevel,
+        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
+        RiskLevel,
     };
 
     tilo_actions::ActionSpec::typed_operation(
@@ -506,7 +730,7 @@ fn ownership_proposal_action() -> tilo_actions::ActionSpec {
     )
     .with_description(t("workspace-settings-ownership-propose-description"))
     .with_contract(ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk: RiskLevel::Privileged,
         confirmation: ConfirmationPolicy::Confirm,
         tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
@@ -515,9 +739,7 @@ fn ownership_proposal_action() -> tilo_actions::ActionSpec {
 }
 
 fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{
-        ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
-    };
+    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
 
     let operation = OwnershipTransferOperation::Accept {
         proposal_digest: digest.to_string(),
@@ -539,7 +761,7 @@ fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
     })
     .with_description(t("workspace-settings-ownership-accept-description"))
     .with_contract(ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk: RiskLevel::Privileged,
         confirmation: ConfirmationPolicy::Phrase {
             phrase: t("workspace-settings-ownership-accept-phrase"),
@@ -550,9 +772,7 @@ fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
 }
 
 fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{
-        ActionContract, ConfirmationPolicy, OperationKind, PermissionRequirement, RiskLevel,
-    };
+    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
 
     let operation = OwnershipTransferOperation::Cancel {
         proposal_digest: digest.to_string(),
@@ -574,7 +794,7 @@ fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
     })
     .with_description(t("workspace-settings-ownership-cancel-description"))
     .with_contract(ActionContract {
-        permission: PermissionRequirement::Admin,
+        kind: ActionKind::Outside,
         risk: RiskLevel::Low,
         confirmation: ConfirmationPolicy::Confirm,
         reversible: false,
@@ -1454,7 +1674,6 @@ pub fn role_label(role: CapRole) -> String {
         CapRole::Editor => "workspace-settings-role-editor",
         CapRole::Commenter => "workspace-settings-role-commenter",
         CapRole::Viewer => "workspace-settings-role-viewer",
-        CapRole::Denied => "workspace-settings-role-blocked",
     })
 }
 
@@ -1467,7 +1686,6 @@ pub fn role_capability_preview(role: CapRole) -> String {
         CapRole::Editor => "workspace-settings-role-editor-preview",
         CapRole::Commenter => "workspace-settings-role-commenter-preview",
         CapRole::Viewer => "workspace-settings-role-viewer-preview",
-        CapRole::Denied => "workspace-settings-role-blocked-preview",
     })
 }
 
@@ -1495,10 +1713,9 @@ fn scope_object_label(scope: &Scope, apps: &dyn AppDirectory) -> String {
     scope_phrase(scope, true, apps)
 }
 
-fn scope_phrase(scope: &Scope, object: bool, apps: &dyn AppDirectory) -> String {
+fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String {
     let (key, args): (&str, Vec<(&str, ui::i18n::ArgValue)>) = match scope {
         Scope::Workspace | Scope::Room(_) => ("workspace-settings-scope-workspace", Vec::new()),
-        Scope::App(app) => ("workspace-settings-scope-app", vec![("app", app.into())]),
         Scope::FsPath(path) => fs_scope_phrase(path),
         Scope::FsRecord(record) => (
             "workspace-settings-scope-record",
@@ -1510,40 +1727,6 @@ fn scope_phrase(scope: &Scope, object: bool, apps: &dyn AppDirectory) -> String 
         },
         Scope::NetHost(host) if host == "*" => ("workspace-settings-scope-any-host", Vec::new()),
         Scope::NetHost(host) => ("workspace-settings-scope-host", vec![("host", host.into())]),
-        Scope::Action {
-            app,
-            resource,
-            action,
-        } => {
-            let name = app_display_name(apps, app);
-            (
-                "workspace-settings-scope-action",
-                vec![
-                    ("action", action.into()),
-                    ("resource", resource.into()),
-                    ("app", name.into()),
-                ],
-            )
-        }
-        Scope::ActionOnKind { app, kind, action } => {
-            let name = app_display_name(apps, app);
-            (
-                "workspace-settings-scope-action-on-kind",
-                vec![
-                    ("action", action.into()),
-                    ("kind", kind.into()),
-                    ("app", name.into()),
-                ],
-            )
-        }
-        Scope::ResourceType(kind) => (
-            "workspace-settings-scope-resource-type",
-            vec![("kind", artifact_kind_selector(*kind).into())],
-        ),
-        Scope::ResourceInstance(id) => (
-            "workspace-settings-scope-resource-instance",
-            vec![("id", short_id(&id.0.to_string()).into())],
-        ),
     };
     if object {
         t_args(&format!("{key}-object"), &args)
@@ -1574,19 +1757,6 @@ fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, ui::i18n::Ar
     }
 }
 
-/// The selector the scope messages branch on, so each language inflects
-/// "every note" / "every board" for itself.
-fn artifact_kind_selector(kind: collab_types::role::ArtifactKind) -> &'static str {
-    use collab_types::role::ArtifactKind;
-    match kind {
-        ArtifactKind::Note => "note",
-        ArtifactKind::File => "file",
-        ArtifactKind::Cluster => "cluster",
-        ArtifactKind::Kanban => "kanban",
-        ArtifactKind::ChatLog => "chat-log",
-    }
-}
-
 /// Shorten a long opaque identifier for display — person ids are
 /// 64-char hex keys, too much to show in full on a row.
 pub fn short_id(id: &str) -> String {
@@ -1601,27 +1771,66 @@ pub fn short_id(id: &str) -> String {
 /// rather than concatenated — "verb · scope" would read "View · the
 /// microphone" instead of "Use the microphone".
 pub fn capability_allows(cap: &CapOverride, apps: &dyn AppDirectory) -> String {
-    let key = match (&cap.scope, cap.verb) {
-        (Scope::Device(_), Verb::Write | Verb::Admin) => "workspace-settings-allows-control",
-        (Scope::Device(_), _) => "workspace-settings-allows-use",
+    let key = match (&cap.scope, cap.access) {
+        (Scope::Device(_), Access::Write) => "workspace-settings-allows-control",
+        (Scope::Device(_), Access::Read) => "workspace-settings-allows-use",
         (Scope::NetHost(_), _) => "workspace-settings-allows-reach",
-        (Scope::Action { .. } | Scope::ActionOnKind { .. }, _) => "workspace-settings-allows-run",
-        (_, Verb::Admin) => "workspace-settings-allows-administer",
-        (_, Verb::Write) => "workspace-settings-allows-edit",
-        (_, Verb::Comment) => "workspace-settings-allows-comment",
-        // Inviting names the scope on its own rather than as an object.
-        (_, Verb::Invite) => {
-            return t_args(
-                "workspace-settings-allows-invite",
-                &[("what", scope_label(&cap.scope, apps).into())],
-            );
-        }
-        (_, Verb::Read) => "workspace-settings-allows-view",
+        (_, Access::Write) => "workspace-settings-allows-edit",
+        (_, Access::Read) => "workspace-settings-allows-view",
     };
     t_args(
         key,
         &[("what", scope_object_label(&cap.scope, apps).into())],
     )
+}
+
+/// One line saying what a grant answers, for what, where: "Allowed: reading
+/// and undoable changes in Notes".
+pub fn grant_allows(grant: &tilo_action_policy::Grant, apps: &dyn AppDirectory) -> String {
+    t_args(
+        match grant.answer {
+            tilo_action_policy::Answer::Allow => "workspace-settings-grant-allows",
+            tilo_action_policy::Answer::Ask => "workspace-settings-grant-asks",
+            tilo_action_policy::Answer::Deny => "workspace-settings-grant-denies",
+        },
+        &[
+            ("kinds", kinds_phrase(grant.kinds).into()),
+            ("where", node_phrase(&grant.node, apps).into()),
+        ],
+    )
+}
+
+/// The kinds of action a grant covers, in words.
+fn kinds_phrase(kinds: tilo_action_policy::KindSet) -> String {
+    use tilo_action_policy::ActionKind;
+    let words: Vec<String> = ActionKind::ALL
+        .into_iter()
+        .filter(|kind| kinds.contains(*kind))
+        .map(|kind| {
+            t(match kind {
+                ActionKind::Read => "workspace-settings-kind-read",
+                ActionKind::Undoable => "workspace-settings-kind-undoable",
+                ActionKind::Outside => "workspace-settings-kind-outside",
+            })
+        })
+        .collect();
+    words.join(", ")
+}
+
+/// Where a grant applies, named the way people know the room's parts: the
+/// app by its name, then the rest of the path.
+pub fn node_phrase(node: &tilo_action_policy::TreePath, apps: &dyn AppDirectory) -> String {
+    struct Named<'a>(&'a dyn AppDirectory);
+    impl tilo_action_policy::Labels for Named<'_> {
+        fn label(&self, level: tilo_action_policy::Level, id: &str) -> Option<String> {
+            (level == tilo_action_policy::Level::App).then(|| app_display_name(self.0, id))
+        }
+    }
+    let below_room = node.within_room();
+    if below_room.is_root() {
+        return t("workspace-settings-scope-workspace");
+    }
+    tilo_action_policy::describe_node(&below_room, &Named(apps))
 }
 
 pub fn expiry_label(expiry: Expiry) -> String {
@@ -1659,6 +1868,44 @@ pub fn granted_by_label(cap: &CapOverride, ws: &Workspace, local_user: &str) -> 
             &[("id", short_id(id).into())],
         ),
     })
+}
+
+/// How long a grant lives, as the composer's lifetimes name it.
+pub fn lifetime_label(lifetime: &tilo_action_policy::Lifetime) -> String {
+    use tilo_action_policy::Lifetime;
+    t(match lifetime {
+        Lifetime::Once => "workspace-settings-expiry-once",
+        Lifetime::Session(_) | Lifetime::Task(_) => "workspace-settings-expiry-session",
+        Lifetime::Until(_) => "workspace-settings-expiry-until",
+        Lifetime::UntilRevoked => "workspace-settings-expiry-always",
+    })
+}
+
+/// Who gave a grant, as a user-facing phrase; the viewer is "you".
+pub fn grant_given_by_label(
+    grant: &tilo_action_policy::Grant,
+    ws: &Workspace,
+    local_user: &str,
+) -> Option<String> {
+    use tilo_action_policy::Subject as Who;
+    match &grant.granted_by {
+        Who::Person(id) | Who::Agent(id) if id == local_user => {
+            Some(t("workspace-settings-granted-by-you"))
+        }
+        Who::Person(id) => Some(t_args(
+            "workspace-settings-granted-by-person",
+            &[("id", member_name_or_short_id(ws, id).into())],
+        )),
+        Who::App(id) => Some(t_args(
+            "workspace-settings-granted-by-app",
+            &[("app", id.into())],
+        )),
+        Who::Agent(id) => Some(t_args(
+            "workspace-settings-granted-by-agent",
+            &[("id", member_name_or_short_id(ws, id).into())],
+        )),
+        Who::Role(_) | Who::Task(_) | Who::Shortcut(_) | Who::ForeignDevice => None,
+    }
 }
 
 // Grant composer
@@ -1700,12 +1947,24 @@ pub struct GrantSubject {
 }
 
 impl GrantSubject {
+    /// Who a sandbox capability for this subject is held by.
     pub fn to_subject(&self) -> Option<Subject> {
         match self.kind {
             SubjectKind::App | SubjectKind::AppAction => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
             SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
             // A role-wide grant is a policy decision, not a per-workspace click.
+            SubjectKind::Role | SubjectKind::Other => None,
+        }
+    }
+
+    /// Who a grant of the room's tree for this subject names.
+    pub fn to_grantee(&self) -> Option<tilo_action_policy::Subject> {
+        use tilo_action_policy::Subject as Who;
+        match self.kind {
+            SubjectKind::App | SubjectKind::AppAction => Some(Who::App(self.id.clone())),
+            SubjectKind::Member => Some(Who::Person(self.id.clone())),
+            SubjectKind::Agent => Some(Who::Agent(self.id.clone())),
             SubjectKind::Role | SubjectKind::Other => None,
         }
     }
@@ -1741,7 +2000,7 @@ pub struct GrantChoice {
     /// Catalogue key of the picker's label.
     label_key: &'static str,
     target: GrantTarget,
-    verb: Verb,
+    access: Access,
 }
 
 impl GrantChoice {
@@ -1754,51 +2013,51 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     GrantChoice {
         label_key: "workspace-settings-grant-camera",
         target: GrantTarget::Device("camera"),
-        verb: Verb::Read,
+        access: Access::Read,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-microphone",
         target: GrantTarget::Device("microphone"),
-        verb: Verb::Read,
+        access: Access::Read,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-screencast",
         target: GrantTarget::Device("screencast"),
-        verb: Verb::Read,
+        access: Access::Read,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-remote-control",
         target: GrantTarget::Device("remote-desktop"),
-        verb: Verb::Write,
+        access: Access::Write,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-network",
         target: GrantTarget::AnyHost,
-        verb: Verb::Read,
+        access: Access::Read,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-read-files",
         target: GrantTarget::WorkspaceFiles,
-        verb: Verb::Read,
+        access: Access::Read,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-edit-files",
         target: GrantTarget::WorkspaceFiles,
-        verb: Verb::Write,
+        access: Access::Write,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-create-roles",
         target: GrantTarget::GovernanceAction {
-            action: tilo_desktop_model::PROFILE_SAVE_ACTION_ID,
+            action: tilo_desktop_model::PRESET_SAVE_ACTION_ID,
         },
-        verb: Verb::Admin,
+        access: Access::Write,
     },
     GrantChoice {
         label_key: "workspace-settings-grant-assign-roles",
         target: GrantTarget::GovernanceAction {
-            action: tilo_desktop_model::PROFILE_ASSIGN_ACTION_ID,
+            action: tilo_desktop_model::PRESET_ASSIGN_ACTION_ID,
         },
-        verb: Verb::Admin,
+        access: Access::Write,
     },
 ];
 
@@ -1808,7 +2067,7 @@ static GRANT_CHOICES: &[GrantChoice] = &[
 const FALLBACK_CHOICE: GrantChoice = GrantChoice {
     label_key: "workspace-settings-grant-edit-files",
     target: GrantTarget::WorkspaceFiles,
-    verb: Verb::Write,
+    access: Access::Write,
 };
 
 /// The path workspace files are projected at. A capability scoped here
@@ -1882,7 +2141,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         .collect();
 
     out.extend(
-        ws.agent_members()
+        ws.agent_members_at(tilo_clock::unix_now())
             .into_iter()
             .map(|(agent, _)| GrantSubject {
                 kind: SubjectKind::Agent,
@@ -1898,8 +2157,13 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
             }
         }
     }
-    for cap in &ws.capabilities {
+    for cap in &ws.sandbox {
         if let Subject::Principal(Principal::App(app)) = &cap.subject {
+            apps.push(app.clone());
+        }
+    }
+    for grant in &ws.policy.grants {
+        if let tilo_action_policy::Subject::App(app) = &grant.subject {
             apps.push(app.clone());
         }
     }
@@ -1912,29 +2176,62 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     out
 }
 
-/// Build the capability `draft` currently names against `ws`, or `None`
-/// when the draft has no addressable subject (an empty workspace) or
-/// names a subject this panel cannot mint for.
-pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverride> {
+/// What the composer's draft writes: a sandbox capability (files, devices,
+/// the network) or a grant of the room's tree (its governance actions).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DraftGrant {
+    Sandbox(CapOverride),
+    Grant(tilo_action_policy::Grant),
+}
+
+/// What `draft` currently names against `ws`, or `None` when the draft has
+/// no addressable subject (an empty workspace) or names a subject this panel
+/// cannot grant to.
+pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant> {
     let subjects = grant_subjects(ws);
     if subjects.is_empty() {
         return None;
     }
     let idx = draft.subject_index.checked_rem(subjects.len()).unwrap_or(0);
     let subject_entry = subjects.get(idx)?;
-    let subject = subject_entry.to_subject()?;
     let choice = draft.choice();
     let scope = match choice.target {
         GrantTarget::Device(d) => Scope::Device(d.to_string()),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
-        GrantTarget::GovernanceAction { action } => Scope::Action {
-            app: tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID.to_string(),
-            resource: tilo_desktop_model::governance_resource_id(&ws.room),
-            action: action.to_string(),
-        },
+        GrantTarget::GovernanceAction { action } => {
+            let lifetime = match draft.expiry {
+                Expiry::AfterUse => tilo_action_policy::Lifetime::Once,
+                Expiry::EndOfSession => tilo_action_policy::Lifetime::Session(
+                    tilo_desktop_model::session_id().to_owned(),
+                ),
+                Expiry::AtUnix(at) => tilo_action_policy::Lifetime::Until(at.saturating_mul(1000)),
+                Expiry::Never => tilo_action_policy::Lifetime::UntilRevoked,
+            };
+            return Some(DraftGrant::Grant(
+                tilo_action_policy::Grant::new(
+                    format!("grant:{}", uuid::Uuid::new_v4()),
+                    subject_entry.to_grantee()?,
+                    tilo_actions::action_node(
+                        &ws.node(),
+                        tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
+                        tilo_action_policy::roles::ROOM_KIND,
+                        &tilo_desktop_model::governance_resource_id(&ws.room),
+                        None,
+                        action,
+                    ),
+                    tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Subject::Person(String::new()),
+                )
+                .with_lifetime(lifetime),
+            ));
+        }
     };
-    Some(CapOverride::grant(subject, scope, choice.verb).expiring(draft.expiry))
+    let subject = subject_entry.to_subject()?;
+    Some(DraftGrant::Sandbox(
+        CapOverride::grant(subject, scope, choice.access).expiring(draft.expiry),
+    ))
 }
 
 /// The subject a draft currently names, for rendering the picker.
@@ -1952,66 +2249,44 @@ pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject>
 /// What a panel mutation changed, so the caller can mirror it into the
 /// room document and to disk. Empty means either the actor lacked
 /// authority, or there was nothing to change.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CapEdit {
-    pub revoked: Vec<String>,
-    pub granted: Vec<String>,
-}
+pub use tilo_desktop_model::grants::PolicyEdit;
 
-impl CapEdit {
-    pub fn is_empty(&self) -> bool {
-        self.revoked.is_empty() && self.granted.is_empty()
-    }
-}
-
-/// Grant the capability `draft` names, as `actor`. Routes through
-/// [`Workspace::grant_as`], the same authority check the portal and
-/// replica validator use — not a UI-side copy of it.
-pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> CapEdit {
-    let Some(cap) = draft_capability(ws, draft) else {
-        return CapEdit::default();
-    };
-    match ws.grant_as(actor, cap) {
-        Some(id) => CapEdit {
-            revoked: Vec::new(),
-            granted: vec![id],
-        },
-        None => CapEdit::default(),
-    }
-}
-
-/// Revoke the capability with id `cap_id`, as `actor`. Routes through
-/// [`Workspace::revoke_as`].
-pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, cap_id: &str) -> CapEdit {
-    if ws.revoke_as(actor, cap_id) {
-        CapEdit {
-            revoked: vec![cap_id.to_string()],
-            granted: Vec::new(),
+/// Grant what `draft` names, as `actor`, through the room's governance:
+/// the same check every door and the room's host make.
+pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> PolicyEdit {
+    let now = tilo_clock::unix_now();
+    match draft_capability(ws, draft) {
+        Some(DraftGrant::Sandbox(cap)) => ws.grant_sandbox_as_at(actor, cap, now),
+        Some(DraftGrant::Grant(grant)) => {
+            ws.govern_all_at(actor, vec![tilo_action_policy::Change::Grant(grant)], now)
         }
-    } else {
-        CapEdit::default()
+        None => return PolicyEdit::default(),
     }
+    .unwrap_or_default()
 }
 
-/// The roles a member's role chip cycles through. `Denied` is not in
-/// the cycle — that's what Revoke expresses, not an accidental click.
+/// Revoke the grant or sandbox capability with id `id`, as `actor`.
+pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> PolicyEdit {
+    let now = tilo_clock::unix_now();
+    if ws.sandbox.iter().any(|cap| cap.id == id) {
+        return ws.revoke_sandbox_as_at(actor, id, now).unwrap_or_default();
+    }
+    ws.govern_all_at(
+        actor,
+        vec![tilo_action_policy::Change::Revoke(
+            tilo_action_policy::GrantId::new(id),
+        )],
+        now,
+    )
+    .unwrap_or_default()
+}
+
+/// The roles a member's role chip cycles through. Owner is not in the
+/// cycle: ownership is a transfer ceremony, not a chip click.
 const ROLE_CYCLE: [CapRole; 3] = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
 
-/// Inverse of the mapping [`Workspace::role_of`] reads.
-fn role_verb(role: CapRole) -> Option<Verb> {
-    match role {
-        // Ownership is a structural governance transfer, not a role-chip
-        // mutation. Until that ceremony is signed and replicated end-to-end,
-        // this panel must never manufacture a second apparent owner.
-        CapRole::Owner | CapRole::Denied => None,
-        CapRole::Editor => Some(Verb::Write),
-        CapRole::Commenter => Some(Verb::Comment),
-        CapRole::Viewer => Some(Verb::Read),
-    }
-}
-
 pub fn next_role(role: CapRole) -> CapRole {
-    if matches!(role, CapRole::Owner | CapRole::Denied) {
+    if role == CapRole::Owner {
         return CapRole::Viewer;
     }
     let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
@@ -2022,105 +2297,88 @@ pub fn next_role(role: CapRole) -> CapRole {
     ROLE_CYCLE.get(next).copied().unwrap_or(CapRole::Viewer)
 }
 
-fn membership_ids(ws: &Workspace, member: &UserId) -> Vec<String> {
-    ws.capabilities
+/// Move `member` to `role`, as `actor`, through the room's governance. The
+/// owner's role is structural and nobody changes their own.
+pub fn set_member_role(
+    ws: &mut Workspace,
+    actor: &UserId,
+    member: &UserId,
+    role: CapRole,
+) -> PolicyEdit {
+    if role == CapRole::Owner || actor == member || ws.is_owner(member) {
+        return PolicyEdit::default();
+    }
+    let change = if ws.policy.members.contains_key(member) {
+        tilo_action_policy::Change::SetRole {
+            person: member.clone(),
+            role,
+        }
+    } else {
+        tilo_action_policy::Change::AddMember {
+            person: member.clone(),
+            role,
+        }
+    };
+    ws.govern_all_at(actor, vec![change], tilo_clock::unix_now())
+        .unwrap_or_default()
+}
+
+/// Remove `member` and every grant naming them, as `actor`.
+pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> PolicyEdit {
+    // The owner is the room's root of trust; removing them would leave a
+    // room nobody governs.
+    if ws.is_owner(member) || actor == member {
+        return PolicyEdit::default();
+    }
+    let now = tilo_clock::unix_now();
+    let Ok(mut edit) = ws.govern_all_at(
+        actor,
+        vec![tilo_action_policy::Change::RemoveMember {
+            person: member.clone(),
+        }],
+        now,
+    ) else {
+        return PolicyEdit::default();
+    };
+    // What the sandbox let them reach goes too.
+    let held: Vec<String> = ws
+        .sandbox
         .iter()
-        .filter(|cap| cap.is_room_membership() && subject_is_person(&cap.subject, member))
+        .filter(|cap| subject_is_person(&cap.subject, member))
         .map(|cap| cap.id.clone())
-        .collect()
+        .collect();
+    for id in held {
+        if let Ok(revoked) = ws.revoke_sandbox_as_at(actor, &id, now) {
+            edit = edit.and(revoked);
+        }
+    }
+    // Off the roster too, but only if the removal happened.
+    if !edit.is_empty() {
+        ws.collaborators.retain(|c| c.id != member.as_str());
+    }
+    edit
 }
 
 fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
     match subject {
         Subject::Principal(Principal::Person(id)) => id == user,
         Subject::User(key) => Principal::person_from_key(*key).id() == user.as_str(),
-        _ => false,
+        Subject::Principal(_) => false,
     }
 }
 
-/// Move `member` to `role`, as `actor`. Lowering a role retires the
-/// existing membership capabilities first — grants keep the strongest
-/// of two over the same scope.
-pub fn set_member_role(
-    ws: &mut Workspace,
-    actor: &UserId,
-    member: &UserId,
-    role: CapRole,
-) -> CapEdit {
-    let Some(verb) = role_verb(role) else {
-        return CapEdit::default();
-    };
-    if !ws.may_administer(actor) || actor == member {
-        return CapEdit::default();
-    }
-    // The owner's role is structural, not a capability — nothing to rewrite.
-    if ws.owner.as_deref() == Some(member.as_str()) {
-        return CapEdit::default();
-    }
-    let mut edit = CapEdit::default();
-    for id in membership_ids(ws, member) {
-        // Authority was proven once above. Mutate atomically from that
-        // snapshot: re-checking after each removal lets a delegated admin
-        // remove its own authority midway and strands a half-written edit.
-        if ws.revoke_capability(&id) {
-            edit.revoked.push(id);
-        }
-    }
-    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb)
-        .granted_by(Principal::Person(actor.clone()));
-    edit.granted.push(ws.grant_capability(cap));
-    edit
-}
-
-/// Remove `member` and every capability they hold, as `actor`.
-pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> CapEdit {
-    // The owner is the workspace's root of trust; removing them would
-    // leave a room no one can administer.
-    if ws.owner.as_deref() == Some(member.as_str()) || actor == member || !ws.may_administer(actor)
-    {
-        return CapEdit::default();
-    }
-    let ids: Vec<String> = ws
-        .capabilities
+/// Revoke every grant naming `agent`, as `actor`.
+pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEdit {
+    let subject = tilo_action_policy::Subject::agent(agent);
+    let revokes = ws
+        .policy
+        .grants
         .iter()
-        .filter(|cap| subject_is_person(&cap.subject, member))
-        .map(|cap| cap.id.clone())
+        .filter(|grant| grant.subject == subject)
+        .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
         .collect();
-    let mut edit = CapEdit::default();
-    for id in ids {
-        if ws.revoke_capability(&id) {
-            edit.revoked.push(id);
-        }
-    }
-    // Off the roster too, but only if a revoke actually happened.
-    if !edit.revoked.is_empty() {
-        ws.collaborators.retain(|c| c.id != member.as_str());
-    }
-    edit
-}
-
-fn subject_is_agent(subject: &Subject, agent: &str) -> bool {
-    matches!(subject, Subject::Principal(Principal::Agent(id)) if id == agent)
-}
-
-/// Revoke every room and resource capability held by `agent`.
-pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> CapEdit {
-    if !ws.may_administer(actor) {
-        return CapEdit::default();
-    }
-    let ids: Vec<String> = ws
-        .capabilities
-        .iter()
-        .filter(|cap| subject_is_agent(&cap.subject, agent))
-        .map(|cap| cap.id.clone())
-        .collect();
-    let mut edit = CapEdit::default();
-    for id in ids {
-        if ws.revoke_capability(&id) {
-            edit.revoked.push(id);
-        }
-    }
-    edit
+    ws.govern_all_at(actor, revokes, tilo_clock::unix_now())
+        .unwrap_or_default()
 }
 
 // Members pane
@@ -2146,11 +2404,12 @@ pub struct MemberRow {
 #[derive(Clone, Debug)]
 pub struct AgentRow {
     pub agent: String,
-    pub role: CapRole,
+    /// The kinds of action its room grants allow.
+    pub kinds: tilo_action_policy::KindSet,
     pub grant_count: usize,
     /// A human-readable summary of the *scoped* authority, not a role.
     /// Agents never inherit their admission capability as ambient access.
-    pub preset: AgentAuthorityPreset,
+    pub preset: AgentPreset,
     /// Set when the agent is a service member: a cloud or relay identity
     /// admitted to the room's encrypted channels with a stated purpose.
     pub service: Option<ServiceMember>,
@@ -2160,169 +2419,97 @@ pub struct AgentRow {
     pub remove_rect: Rect,
 }
 
-/// A named starting point for an agent's capability review.
-///
-/// These are deliberately not `CapRole`s. A person can inherit a room role;
-/// an agent cannot. A preset says which explicit, resource-scoped grants to
-/// review, and is useful before there are any such grants at all.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AgentAuthorityPreset {
-    /// Inspect selected material only.
-    Observer,
-    /// Work on selected files/documents, with no system access implied.
-    Contributor,
-    /// Invoke selected, explicitly approved app actions.
-    Operator,
-    /// The current grants do not match a safe built-in bundle.
-    #[default]
-    Custom,
+/// A named starting point for an agent in the room: the grants it receives
+/// when admitted. Deliberately not a person's role.
+pub use tilo_action_policy::roles::AgentPreset;
+
+/// The preset's name, for the Agents pane.
+pub fn agent_preset_label(preset: AgentPreset) -> String {
+    t(match preset {
+        AgentPreset::Observer => "workspace-settings-preset-observer",
+        AgentPreset::Contributor => "workspace-settings-preset-contributor",
+        AgentPreset::Operator => "workspace-settings-preset-operator",
+        AgentPreset::Custom => "workspace-settings-preset-custom",
+    })
 }
 
-impl AgentAuthorityPreset {
-    /// Stable id, recorded in the admission capability's id and accepted
-    /// by [`Self::parse`].
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Observer => "observer",
-            Self::Contributor => "contributor",
-            Self::Operator => "operator",
-            Self::Custom => "custom",
-        }
-    }
-
-    pub fn label(self) -> String {
-        t(match self {
-            Self::Observer => "workspace-settings-preset-observer",
-            Self::Contributor => "workspace-settings-preset-contributor",
-            Self::Operator => "workspace-settings-preset-operator",
-            Self::Custom => "workspace-settings-preset-custom",
-        })
-    }
-
-    /// Plain-language preview shown before the user grants a surface.
-    pub fn review_hint(self) -> String {
-        t(match self {
-            Self::Observer => "workspace-settings-preset-observer-hint",
-            Self::Contributor => "workspace-settings-preset-contributor-hint",
-            Self::Operator => "workspace-settings-preset-operator-hint",
-            Self::Custom => "workspace-settings-preset-custom-hint",
-        })
-    }
-
-    /// The admission marker used for an initial, permission-free setup. It
-    /// does not confer this verb on arbitrary resources: `actor_for_agent`
-    /// intentionally carries no role.
-    pub const fn admission_verb(self) -> Verb {
-        match self {
-            Self::Observer | Self::Custom => Verb::Read,
-            Self::Contributor => Verb::Comment,
-            Self::Operator => Verb::Write,
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "observer" | "read" => Some(Self::Observer),
-            "contributor" | "contribute" => Some(Self::Contributor),
-            "operator" | "operate" => Some(Self::Operator),
-            "custom" => Some(Self::Custom),
-            _ => None,
-        }
-    }
+/// Plain-language preview shown before the user admits an agent.
+pub fn agent_preset_hint(preset: AgentPreset) -> String {
+    t(match preset {
+        AgentPreset::Observer => "workspace-settings-preset-observer-hint",
+        AgentPreset::Contributor => "workspace-settings-preset-contributor-hint",
+        AgentPreset::Operator => "workspace-settings-preset-operator-hint",
+        AgentPreset::Custom => "workspace-settings-preset-custom-hint",
+    })
 }
 
-/// Infer the review bundle from live *scoped* grants. Device, network,
-/// workspace-wide, and administrative grants intentionally fall into Custom:
-/// they need a conscious per-permission review, never a reassuring preset.
-pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentAuthorityPreset {
-    let mut has_scope = false;
-    let mut all_actions = true;
-    let mut all_read = true;
-    for cap in &ws.capabilities {
-        if cap.effect != Effect::Grant
-            || !cap.is_live_at(Some(tilo_clock::unix_now()))
-            || cap.is_room_membership()
-            || !subject_is_agent(&cap.subject, agent)
-        {
-            continue;
-        }
-        has_scope = true;
-        if matches!(
-            &cap.scope,
-            Scope::Workspace | Scope::Device(_) | Scope::NetHost(_)
-        ) || matches!(cap.verb, Verb::Admin | Verb::Invite)
-        {
-            return AgentAuthorityPreset::Custom;
-        }
-        all_actions &= matches!(&cap.scope, Scope::Action { .. });
-        all_read &= cap.verb == Verb::Read;
+/// The preset `agent` was admitted with, from the ids of its room grants.
+/// Anything broad or sensitive it holds beside them (the whole room, an
+/// outside effect, a device, the network) makes it custom: that needs a
+/// conscious review, never a reassuring preset.
+pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
+    use tilo_action_policy::ActionKind;
+    let prefix = format!("agent-member:{agent}:");
+    let subject = tilo_action_policy::Subject::agent(agent);
+    let room = ws.node();
+    let broad_grant = ws.policy.grants.iter().any(|grant| {
+        grant.subject == subject
+            && !grant.id.as_str().starts_with(&prefix)
+            && grant.answer != tilo_action_policy::Answer::Deny
+            && (grant.node.covers(&room) || grant.kinds.contains(ActionKind::Outside))
+    });
+    let broad_sandbox = ws.sandbox.iter().any(|cap| {
+        cap.effect == Effect::Grant
+            && matches!(&cap.subject, Subject::Principal(Principal::Agent(id)) if id == agent)
+            && matches!(
+                cap.scope,
+                Scope::Workspace | Scope::Device(_) | Scope::NetHost(_)
+            )
+    });
+    if broad_grant || broad_sandbox {
+        return AgentPreset::Custom;
     }
-    if !has_scope {
-        // The admission record carries a stable setup intent, while the
-        // absence of scopes still means no effective authority. Older rooms
-        // used an unsuffixed id, so retain a conservative role-derived
-        // fallback for them.
-        return agent_admission_preset(ws, agent).unwrap_or_else(|| {
-            match ws.role_of_agent(agent) {
-                Some(CapRole::Viewer) => AgentAuthorityPreset::Observer,
-                Some(CapRole::Commenter) => AgentAuthorityPreset::Contributor,
-                Some(CapRole::Editor) => AgentAuthorityPreset::Operator,
-                _ => AgentAuthorityPreset::Custom,
-            }
-        });
-    }
-    if all_actions {
-        return AgentAuthorityPreset::Operator;
-    }
-    if all_read {
-        AgentAuthorityPreset::Observer
-    } else {
-        AgentAuthorityPreset::Contributor
-    }
-}
-
-fn agent_admission_preset(ws: &Workspace, agent: &str) -> Option<AgentAuthorityPreset> {
-    ws.capabilities
+    ws.policy
+        .grants
         .iter()
-        .find(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, agent))
-        .and_then(|cap| cap.id.rsplit(':').next())
-        .and_then(AgentAuthorityPreset::parse)
+        .filter_map(|grant| grant.id.as_str().strip_prefix(&prefix))
+        .map(|rest| rest.split(':').next().unwrap_or_default())
+        .find_map(AgentPreset::parse)
+        .unwrap_or(AgentPreset::Custom)
 }
 
-/// Admit a named agent without manufacturing ambient authority. The caller
-/// still has to grant each file, action, device, or network surface through
-/// the normal capability review.
+/// Admit a named agent with the grants of `preset`, replacing the ones it
+/// was admitted with before, as `actor`.
 pub fn admit_agent(
     ws: &mut Workspace,
     actor: &UserId,
     agent: impl AsRef<str>,
-    preset: AgentAuthorityPreset,
-) -> CapEdit {
+    preset: AgentPreset,
+) -> PolicyEdit {
     let agent = agent.as_ref().trim().to_ascii_lowercase();
-    if agent.is_empty() || !ws.may_administer(actor) {
-        return CapEdit::default();
+    if agent.is_empty() {
+        return PolicyEdit::default();
     }
-    let existing: Vec<_> = ws
-        .capabilities
+    let prefix = format!("agent-member:{agent}:");
+    let mut changes: Vec<tilo_action_policy::Change> = ws
+        .policy
+        .grants
         .iter()
-        .filter(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, &agent))
-        .map(|cap| cap.id.clone())
+        .filter(|grant| grant.id.as_str().starts_with(&prefix))
+        .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
         .collect();
-    let mut edit = CapEdit::default();
-    for id in existing {
-        if ws.revoke_capability(&id) {
-            edit.revoked.push(id);
-        }
-    }
-    let cap = CapOverride::membership(
-        Subject::agent(agent.clone()),
-        ws.room.to_string(),
-        preset.admission_verb(),
-    )
-    .with_id(format!("agent-member:{agent}:{}", preset.id()))
-    .granted_by(Principal::Person(actor.clone()));
-    edit.granted.push(ws.grant_capability(cap));
-    edit
+    changes.extend(
+        preset
+            .grants(
+                &ws.policy.room,
+                &agent,
+                &tilo_action_policy::Subject::Person(actor.clone()),
+            )
+            .into_iter()
+            .map(tilo_action_policy::Change::Grant),
+    );
+    ws.govern_all_at(actor, changes, tilo_clock::unix_now())
+        .unwrap_or_default()
 }
 
 /// Geometry for the always-visible entry point into the guided setup.
@@ -2337,7 +2524,7 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
 
 /// Stable, policy-backed rows for the Agents pane.
 pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
-    let mut agents = ws.agent_members();
+    let mut agents = ws.agent_members_at(tilo_clock::unix_now());
     agents.sort_by(|a, b| a.0.cmp(&b.0));
     let mut rows = Vec::new();
     let mut cursor_y = pane_rect.y0
@@ -2346,7 +2533,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
         + PANE_INTRO_GAP
         + AGENT_ONBOARDING_HEIGHT
         + SECTION_HEADER_HEIGHT;
-    for (agent, role) in agents {
+    for (agent, kinds) in agents {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
             cursor_y,
@@ -2374,20 +2561,19 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             remove_rect.x0 - 12.0,
             row_rect.center().y + REVOKE_HEIGHT / 2.0,
         );
+        let subject = tilo_action_policy::Subject::agent(agent.clone());
+        let admission = format!("agent-member:{agent}:");
         let grant_count = ws
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .filter(|cap| {
-                cap.effect == Effect::Grant
-                    && !cap.is_room_membership()
-                    && subject_is_agent(&cap.subject, &agent)
-            })
+            .filter(|grant| grant.subject == subject && !grant.id.as_str().starts_with(&admission))
             .count();
         let preset = agent_authority_preset(ws, &agent);
         let service = service_purpose(ws, &agent, tilo_clock::unix_now());
         rows.push(AgentRow {
             agent,
-            role,
+            kinds,
             grant_count,
             preset,
             service,
@@ -2406,7 +2592,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
 /// which moves a row when a role change rewrites its capability.
 fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
     let mut rows = ws.roster();
-    let owner = ws.owner.clone();
+    let owner = ws.owner().cloned();
     rows.sort_by(|a, b| {
         let a_owner = Some(&a.0) == owner.as_ref();
         let b_owner = Some(&b.0) == owner.as_ref();
@@ -2446,15 +2632,13 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
             remove_rect.x0 - 12.0,
             row_rect.center().y + REVOKE_HEIGHT / 2.0,
         );
-        let is_workspace_owner = ws.owner.as_deref() == Some(user.as_str());
+        let is_workspace_owner = ws.is_owner(&user);
+        let person = tilo_action_policy::Subject::Person(user.clone());
         let grant_count = ws
-            .capabilities
+            .policy
+            .grants
             .iter()
-            .filter(|cap| {
-                cap.effect == Effect::Grant
-                    && !cap.is_room_membership()
-                    && subject_is_person(&cap.subject, &user)
-            })
+            .filter(|grant| grant.subject == person)
             .count();
         rows.push(MemberRow {
             user,
@@ -2720,7 +2904,6 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
     draw_member_role_chip(
         &mut PaintCtx::new(scene, *transform, text_renderer, theme),
         row.role_rect,
-        row.role,
         &displayed_role,
         row.is_workspace_owner,
         can_manage_row,
@@ -2757,7 +2940,6 @@ fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
 fn draw_member_role_chip(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    role: CapRole,
     label: &str,
     structural_owner: bool,
     interactive: bool,
@@ -2768,9 +2950,7 @@ fn draw_member_role_chip(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let role_interactive = interactive;
-    let chip_tint = if role == CapRole::Denied {
-        colors.semantic.danger
-    } else if structural_owner {
+    let chip_tint = if structural_owner {
         colors.semantic.success
     } else {
         colors.intent.inverted
@@ -2929,11 +3109,13 @@ pub fn draw_agents_pane(
 
 /// One line on what a service member may do in the room and for how long.
 fn service_member_detail(service: &ServiceMember) -> String {
-    let access = match service.verb {
-        Verb::Admin => "admin",
-        Verb::Write | Verb::Invite => "write",
-        Verb::Comment => "comment",
-        Verb::Read => "read",
+    use tilo_action_policy::ActionKind;
+    let access = if service.kinds.contains(ActionKind::Outside) {
+        "admin"
+    } else if service.kinds.contains(ActionKind::Undoable) {
+        "write"
+    } else {
+        "read"
     };
     let device = hex::encode(service.device.as_bytes().get(..4).unwrap_or_default());
     let until = service.expires_at.map_or_else(
@@ -3023,7 +3205,7 @@ fn draw_agent_row(
         None,
         &title_style,
     );
-    let admission = agent_admission_label(row.role);
+    let admission = agent_admission_label(row.kinds);
     let detail = if let Some(service) = &row.service {
         service_member_detail(service)
     } else {
@@ -3031,7 +3213,7 @@ fn draw_agent_row(
             "workspace-settings-agent-detail",
             &[
                 ("admission", admission.into()),
-                ("profile", row.preset.label().into()),
+                ("profile", agent_preset_label(row.preset).into()),
                 ("count", row.grant_count.into()),
             ],
         )
@@ -3074,13 +3256,26 @@ fn draw_agent_row(
     );
 }
 
-fn agent_admission_label(role: CapRole) -> String {
-    t(match role {
-        CapRole::Owner => "workspace-settings-admission-admin",
-        CapRole::Editor => "workspace-settings-admission-write",
-        CapRole::Commenter => "workspace-settings-admission-comment",
-        CapRole::Viewer => "workspace-settings-admission-read",
-        CapRole::Denied => "workspace-settings-role-blocked",
+/// What an agent's room grants let it do, as the people panel labels it:
+/// the role a person with the same reach would hold.
+pub fn agent_kinds_label(kinds: tilo_action_policy::KindSet) -> String {
+    role_label(
+        if kinds.contains(tilo_action_policy::ActionKind::Undoable) {
+            CapRole::Editor
+        } else {
+            CapRole::Viewer
+        },
+    )
+}
+
+fn agent_admission_label(kinds: tilo_action_policy::KindSet) -> String {
+    use tilo_action_policy::ActionKind;
+    t(if kinds.contains(ActionKind::Outside) {
+        "workspace-settings-admission-admin"
+    } else if kinds.contains(ActionKind::Undoable) {
+        "workspace-settings-admission-write"
+    } else {
+        "workspace-settings-admission-read"
     })
 }
 
@@ -3504,14 +3699,26 @@ pub struct PermissionsPaneLayout {
     pub overflow: usize,
 }
 
-/// The section a capability is listed in: its subject's, except that an
-/// app granted another app's action is listed under App actions.
-fn classify_capability(cap: &CapOverride) -> GrantSubject {
-    let mut subject = classify_subject(&cap.subject);
-    if subject.kind == SubjectKind::App && matches!(cap.scope, Scope::Action { .. }) {
-        subject.kind = SubjectKind::AppAction;
+/// One entry the Permissions pane lists: a sandbox capability an app holds,
+/// or a grant of the room's tree.
+#[derive(Clone, Copy, Debug)]
+enum Listed<'a> {
+    Sandbox(&'a CapOverride),
+    Grant(&'a tilo_action_policy::Grant),
+}
+
+impl Listed<'_> {
+    fn id(&self) -> &str {
+        match self {
+            Self::Sandbox(cap) => &cap.id,
+            Self::Grant(grant) => grant.id.as_str(),
+        }
     }
-    subject
+}
+
+/// The section a sandbox capability is listed in: its subject's.
+fn classify_capability(cap: &CapOverride) -> GrantSubject {
+    classify_subject(&cap.subject)
 }
 
 fn classify_subject(subject: &Subject) -> GrantSubject {
@@ -3527,13 +3734,6 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
         Subject::User(key) => GrantSubject {
             kind: SubjectKind::Member,
             id: Principal::person_from_key(*key).id().to_string(),
-        },
-        Subject::Role(role) => GrantSubject {
-            kind: SubjectKind::Role,
-            id: t_args(
-                "workspace-settings-subject-role",
-                &[("role", role_label(*role).into())],
-            ),
         },
         Subject::Principal(Principal::Agent(id)) => GrantSubject {
             kind: SubjectKind::Agent,
@@ -3556,28 +3756,78 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
     }
 }
 
-/// The capabilities the Permissions pane lists, grouped by subject
-/// kind, then subject, then capability id. A *person's* room-membership
-/// capability is excluded — the Members tab renders that as a role —
-/// but a room/workspace-scoped grant held by an app or agent stays
-/// listed here, or it would be revocable from neither tab.
-fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
-    let mut out: Vec<(GrantSubject, &CapOverride)> = ws
-        .capabilities
+/// The section a grant is listed in: its subject's, except that an app
+/// granted another app's action is listed under App actions.
+fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
+    use tilo_action_policy::Subject as Who;
+    let names_action = grant
+        .node
+        .id_at(tilo_action_policy::Level::Action)
+        .is_some();
+    match &grant.subject {
+        Who::App(id) => GrantSubject {
+            kind: if names_action {
+                SubjectKind::AppAction
+            } else {
+                SubjectKind::App
+            },
+            id: id.clone(),
+        },
+        Who::Person(id) => GrantSubject {
+            kind: SubjectKind::Member,
+            id: id.clone(),
+        },
+        Who::Agent(id) => GrantSubject {
+            kind: SubjectKind::Agent,
+            id: id.clone(),
+        },
+        Who::Role(role) => GrantSubject {
+            kind: SubjectKind::Role,
+            id: t_args(
+                "workspace-settings-subject-role",
+                &[("role", role_label(*role).into())],
+            ),
+        },
+        Who::Task(id) | Who::Shortcut(id) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: short_id(id),
+        },
+        Who::ForeignDevice => GrantSubject {
+            kind: SubjectKind::Other,
+            id: t("workspace-settings-subject-foreign-device"),
+        },
+    }
+}
+
+/// What the Permissions pane lists, grouped by subject kind, then subject,
+/// then id: every sandbox capability granted, and every grant but the
+/// role presets (the People tab is roles) and an agent's admission (the
+/// Agents tab), or it would be revocable from neither tab.
+fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
+    let mut out: Vec<(GrantSubject, Listed<'_>)> = ws
+        .sandbox
         .iter()
-        .filter(|cap| {
-            let membership_has_own_roster = cap.is_room_membership()
-                && (cap.subject_is_person()
-                    || matches!(cap.subject, Subject::Principal(Principal::Agent(_))));
-            cap.effect == Effect::Grant && !membership_has_own_roster
-        })
-        .map(|cap| (classify_capability(cap), cap))
+        .filter(|cap| cap.effect == Effect::Grant)
+        .map(|cap| (classify_capability(cap), Listed::Sandbox(cap)))
         .collect();
+    out.extend(
+        ws.policy
+            .grants
+            .iter()
+            .filter(|grant| {
+                let preset = matches!(grant.subject, tilo_action_policy::Subject::Role(_))
+                    && grant.id.as_str().starts_with("role:");
+                let admission = matches!(grant.subject, tilo_action_policy::Subject::Agent(_))
+                    && grant.id.as_str().starts_with("agent-member:");
+                !preset && !admission
+            })
+            .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
+    );
     out.sort_by(|a, b| {
         a.0.kind
             .cmp(&b.0.kind)
             .then_with(|| a.0.id.cmp(&b.0.id))
-            .then_with(|| a.1.id.cmp(&b.1.id))
+            .then_with(|| a.1.id().cmp(b.1.id()))
     });
     out
 }
@@ -3752,7 +4002,7 @@ fn layout_capability_rows(
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
     let mut placed = 0usize;
-    for (subject, cap) in &entries {
+    for (subject, entry) in &entries {
         let needs_header = last_kind != Some(subject.kind);
         let header_h = if needs_header {
             SECTION_HEADER_HEIGHT
@@ -3775,13 +4025,25 @@ fn layout_capability_rows(
             row_rect.x1 - 12.0,
             row_rect.center().y + REVOKE_HEIGHT / 2.0,
         );
+        let (allows, expiry, granted_by) = match entry {
+            Listed::Sandbox(cap) => (
+                capability_allows(cap, apps),
+                expiry_label(cap.expiry),
+                granted_by_label(cap, ws, local_user),
+            ),
+            Listed::Grant(grant) => (
+                grant_allows(grant, apps),
+                lifetime_label(&grant.lifetime),
+                grant_given_by_label(grant, ws, local_user),
+            ),
+        };
         layout.rows.push(PermissionRow {
-            cap_id: cap.id.clone(),
+            cap_id: entry.id().to_owned(),
             subject: subject.clone(),
             title: subject.display(ws, local_user, apps),
-            allows: capability_allows(cap, apps),
-            expiry: expiry_label(cap.expiry),
-            granted_by: granted_by_label(cap, ws, local_user),
+            allows,
+            expiry,
+            granted_by,
             row_rect,
             revoke_rect,
         });
@@ -4020,7 +4282,7 @@ fn draw_permission_composer(
             permission_profiles_rect(pane_rect),
             &t_args(
                 "workspace-settings-saved-roles",
-                &[("count", subject_draft.0.permission_profiles.len().into())],
+                &[("count", subject_draft.0.presets.len().into())],
             ),
         )
         .disabled(!is_owner),
@@ -4413,7 +4675,7 @@ mod members_pane_tests {
     //! rewrites the membership capability that `role_of` reads back.
 
     use super::*;
-    use collab_types::caps::Verb;
+    use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet, roles};
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
@@ -4422,11 +4684,27 @@ mod members_pane_tests {
     fn ws_with_two_members() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
         ws.set_owner(OWNER);
-        let cap =
-            CapOverride::membership(Subject::person(PEER), ws.id.raw().to_string(), Verb::Read);
-        ws.grant_as(&OWNER.to_string(), cap)
-            .expect("owner may grant membership");
+        assert!(
+            !set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Viewer
+            )
+            .is_empty(),
+            "owner may admit a member"
+        );
         ws
+    }
+
+    /// Whether `who` may change the room's content now.
+    fn may_write(ws: &Workspace, who: &str) -> bool {
+        ws.answer_at(
+            who,
+            &ws.node(),
+            ActionKind::Undoable,
+            tilo_clock::unix_now(),
+        ) == Answer::Allow
     }
 
     #[test]
@@ -4460,7 +4738,7 @@ mod members_pane_tests {
         // Phase `owner_can_promote_a_member_and_role_of_agrees`.
         {
             let mut ws = ws_with_two_members();
-            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             let edit = set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
@@ -4469,22 +4747,15 @@ mod members_pane_tests {
             );
             assert!(!edit.is_empty());
             assert_eq!(
-                ws.role_of(&PEER.to_string()),
+                ws.role_of(PEER),
                 Some(CapRole::Editor),
                 "the role the panel shows must be the role the model decides with"
             );
-            assert!(ws.allows(
-                &ws.actor_for_person(&PEER.to_string()),
-                &collab_types::caps::ResourceRef::Workspace,
-                Verb::Write
-            ));
+            assert!(may_write(&ws, PEER));
         }
 
         // Phase `owner_can_demote_a_member`.
         {
-            // `grant_capability` keeps the strongest of two grants, so the
-            // old membership must be retired first or `role_of` keeps
-            // answering the higher role.
             let mut ws = ws_with_two_members();
             set_member_role(
                 &mut ws,
@@ -4492,20 +4763,16 @@ mod members_pane_tests {
                 &PEER.to_string(),
                 CapRole::Editor,
             );
-            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Editor));
+            assert_eq!(ws.role_of(PEER), Some(CapRole::Editor));
             set_member_role(
                 &mut ws,
                 &OWNER.to_string(),
                 &PEER.to_string(),
                 CapRole::Viewer,
             );
-            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert!(
-                !ws.allows(
-                    &ws.actor_for_person(&PEER.to_string()),
-                    &collab_types::caps::ResourceRef::Workspace,
-                    Verb::Write
-                ),
+                !may_write(&ws, PEER),
                 "a demoted member must stop being able to write, not merely stop reading as Editor"
             );
         }
@@ -4523,7 +4790,7 @@ mod members_pane_tests {
                 edit.is_empty(),
                 "a viewer must not be able to promote itself"
             );
-            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
         }
 
         // Phase `the_recorded_owner_role_is_structural`.
@@ -4536,7 +4803,7 @@ mod members_pane_tests {
                 CapRole::Viewer,
             );
             assert!(edit.is_empty());
-            assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+            assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
         }
 
         // Phase `role_chip_cycles_through_the_positive_roles`.
@@ -4545,7 +4812,6 @@ mod members_pane_tests {
             assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
             assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
             assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
-            assert_eq!(next_role(CapRole::Denied), CapRole::Viewer);
         }
 
         // Phase `role_control_cannot_create_or_transfer_ownership`.
@@ -4558,18 +4824,24 @@ mod members_pane_tests {
                 CapRole::Owner,
             );
             assert!(edit.is_empty());
-            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
-            assert_eq!(ws.owner.as_deref(), Some(OWNER));
+            assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
+            assert_eq!(ws.owner().map(String::as_str), Some(OWNER));
         }
 
         // Phase `delegated_admin_cannot_partially_demote_or_remove_itself`.
         {
             let mut ws = ws_with_two_members();
-            let admin =
-                CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Admin);
-            ws.grant_as(&OWNER.to_string(), admin)
+            let admin = Grant::new(
+                "peer-administers",
+                tilo_action_policy::Subject::person(PEER),
+                roles::room_resource(&ws.policy.room),
+                KindSet::ALL,
+                Answer::Allow,
+                tilo_action_policy::Subject::person(OWNER),
+            );
+            ws.govern_as_at(OWNER, Change::Grant(admin), tilo_clock::unix_now())
                 .expect("owner delegates administration");
-            let before = ws.capabilities.clone();
+            let before = ws.policy.clone();
 
             assert!(
                 set_member_role(
@@ -4581,7 +4853,7 @@ mod members_pane_tests {
                 .is_empty()
             );
             assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
-            assert_eq!(ws.capabilities, before);
+            assert_eq!(ws.policy, before);
             assert!(ws.may_administer(&PEER.to_string()));
         }
     }
@@ -4600,22 +4872,34 @@ mod members_pane_tests {
                 let cap = CapOverride::grant(
                     Subject::person(PEER),
                     Scope::FsPath("/var/workspace".into()),
-                    Verb::Write,
+                    Access::Write,
                 );
                 ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+                let notes = Grant::new(
+                    "peer-notes",
+                    tilo_action_policy::Subject::person(PEER),
+                    ws.node().app("so.tilo.notes"),
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
+                    tilo_action_policy::Subject::person(OWNER),
+                );
+                ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+                    .expect("owner shares an app");
                 assert_eq!(
                     members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count,
                     1
                 );
 
                 let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
-                assert_eq!(edit.revoked.len(), 2, "membership + the file grant");
-                assert_eq!(ws.role_of(&PEER.to_string()), None);
+                assert_eq!(edit.members, vec![PEER.to_string()]);
+                assert_eq!(edit.revoked.len(), 1, "the app grant");
+                assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
+                assert_eq!(ws.role_of(PEER), None);
                 assert!(
                     !ws.allows(
                         &ws.actor_for_person(&PEER.to_string()),
                         &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
-                        Verb::Write
+                        Access::Write
                     ),
                     "removing a member must revoke what they held, not just hide them"
                 );
@@ -4626,7 +4910,7 @@ mod members_pane_tests {
                 let mut ws = ws_with_two_members();
                 let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
                 assert!(edit.is_empty());
-                assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+                assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
             }
         }
 
@@ -4640,11 +4924,7 @@ mod members_pane_tests {
                 let recipient = hex::encode(recipient_public.as_bytes());
                 let mut ws = Workspace::new(WorkspaceId(91), "Research");
                 ws.set_owner(owner.clone());
-                ws.grant_capability(CapOverride::membership(
-                    Subject::person(recipient.clone()),
-                    ws.room.to_string(),
-                    Verb::Admin,
-                ));
+                ws.admit(recipient.clone(), CapRole::Editor);
                 ws.pending_ownership_transfer = Some(
                     collab_types::OwnershipTransferProposalV1::new(
                         ws.room.to_string(),
@@ -4683,7 +4963,6 @@ mod members_pane_tests {
                         .unwrap()
                         .contains("offered you ownership")
                 );
-                assert_eq!(role_verb(CapRole::Owner), None);
             }
 
             // Phase `ownership_status_prefers_a_known_person_name_to_a_key`.
@@ -4720,58 +4999,49 @@ mod members_pane_tests {
     }
 
     #[test]
-    fn permission_profiles_publish_typed_admin_actions() {
+    fn governance_publishes_typed_room_actions() {
         let mut ws = Workspace::new(WorkspaceId(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
-        ws.save_permission_profile_as(
+        ws.save_preset_as_at(
             &owner,
-            collab_types::PermissionProfile {
-                name: "Release reviewer".into(),
-                description: "Read Builds and approve releases".into(),
-                rules: vec![collab_types::PermissionProfileRule::grant(
-                    Scope::Action {
-                        app: "org.tilo.Builds".into(),
-                        resource: "builds.release".into(),
-                        action: "release.approve".into(),
-                    },
-                    Verb::Write,
+            tilo_action_policy::Preset::new(
+                "Release reviewer",
+                "Read Builds and approve releases",
+                vec![tilo_action_policy::Rule::new(
+                    tilo_action_policy::TreePath::root()
+                        .app("org.tilo.Builds")
+                        .rest()
+                        .action("release.approve"),
+                    KindSet::ALL,
+                    Answer::Allow,
                 )],
-            },
+            ),
+            tilo_clock::unix_now(),
         )
         .unwrap();
 
-        let resource = permission_profile_resource(&ws, &owner);
+        let resource = governance_resource(&ws, &owner);
+        assert_eq!(resource.kind, roles::ROOM_KIND);
         let save = resource
             .actions
             .iter()
-            .find(|action| action.id == "profile.save")
+            .find(|action| action.id == PRESET_SAVE_ACTION_ID)
             .unwrap();
-        assert_eq!(
-            save.contract.permission,
-            tilo_actions::PermissionRequirement::Admin
-        );
+        assert_eq!(save.contract.kind, roles::GOVERNANCE_KIND);
         let rules = save
             .params()
             .iter()
             .find(|parameter| parameter.name == "rules")
             .expect("agent-visible rules parameter");
         assert_eq!(rules.ty, tilo_actions::ParamType::Array);
-        assert!(
-            rules.schema.is_some(),
-            "rule wire shapes must be discoverable"
-        );
         let arguments = serde_json::json!({
             "name": "Notes opener",
             "description": "Can open notes but cannot edit them",
             "rules": [{
-                "scope": {"Action": {
-                    "app": "so.tilo.notes",
-                    "resource": "notes.page:1",
-                    "action": "note.open"
-                }},
-                "effect": "Grant",
-                "verb": "Read"
+                "node": "app:so.tilo.notes/**/action:note.open",
+                "kinds": ["read"],
+                "answer": "allow"
             }]
         })
         .as_object()
@@ -4780,34 +5050,40 @@ mod members_pane_tests {
         let encoded = save
             .build_json(&arguments)
             .expect("typed agent arguments bind");
-        let operation: PermissionProfileOperation =
-            serde_json::from_slice(&encoded.payload).expect("typed profile operation");
+        let operation: GovernanceOperation =
+            serde_json::from_slice(&encoded.payload).expect("typed governance operation");
         assert!(matches!(
             operation,
-            PermissionProfileOperation::Save { rules, .. }
-                if rules == vec![collab_types::PermissionProfileRule::grant(
-                    Scope::Action {
-                        app: "so.tilo.notes".into(),
-                        resource: "notes.page:1".into(),
-                        action: "note.open".into(),
-                    },
-                    Verb::Read,
+            GovernanceOperation::SavePreset { rules, .. }
+                if rules == vec![tilo_action_policy::Rule::new(
+                    tilo_action_policy::TreePath::root()
+                        .app("so.tilo.notes")
+                        .rest()
+                        .action("note.open"),
+                    KindSet::READ,
+                    Answer::Allow,
                 )]
         ));
-        let _profile = resource.children.first().expect("saved role resource");
         let assign = resource
             .actions
             .iter()
-            .find(|action| action.id == "profile.assign")
+            .find(|action| action.id == PRESET_ASSIGN_ACTION_ID)
             .unwrap();
         assert_eq!(assign.kind, tilo_actions::OperationKind::Effect);
         assert_eq!(
             assign.operation_type.as_deref(),
-            Some(PERMISSION_PROFILE_ACTION_TYPE)
+            Some(GOVERNANCE_ACTION_TYPE)
+        );
+        assert!(
+            assign.params().first().is_some_and(|preset| preset
+                .choices
+                .iter()
+                .any(|choice| choice.as_ref() == "Release reviewer")),
+            "the saved grant sets are offered by name"
         );
 
         let viewer = "viewer".to_string();
-        assert!(permission_profile_resource(&ws, &viewer).actions.is_empty());
+        assert!(governance_resource(&ws, &viewer).actions.is_empty());
     }
 
     #[test]
@@ -4872,7 +5148,7 @@ mod agents_pane_tests {
     use super::*;
     /// Whoever is looking at the pane; never a grantor in these fixtures.
     const VIEWER: &str = "viewer-user";
-    use collab_types::caps::{ResourceRef, Verb};
+    use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet};
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
@@ -4881,21 +5157,32 @@ mod agents_pane_tests {
     fn ws_with_agent() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(17), "agents-test");
         ws.set_owner(OWNER);
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::membership(Subject::agent(AGENT), ws.room.to_string(), Verb::Read),
-        )
-        .expect("owner admits agent");
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::agent(AGENT),
-                Scope::App("so.tilo.notes".into()),
-                Verb::Write,
-            ),
-        )
-        .expect("owner grants scoped access");
+        assert!(
+            !admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer).is_empty(),
+            "owner admits agent"
+        );
+        let notes = Grant::new(
+            "scribe-notes",
+            tilo_action_policy::Subject::agent(AGENT),
+            ws.node().app("so.tilo.notes"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            tilo_action_policy::Subject::person(OWNER),
+        );
+        ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+            .expect("owner grants scoped access");
         ws
+    }
+
+    /// What `agent` may do on its own at the app `app`.
+    fn agent_answer(ws: &Workspace, app: &str, kind: ActionKind) -> Answer {
+        ws.subject_authority(tilo_action_policy::Subject::agent(AGENT))
+            .decide(
+                &ws.node().app(app),
+                kind,
+                &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+            )
+            .answer
     }
 
     #[test]
@@ -4916,12 +5203,12 @@ mod agents_pane_tests {
                 let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
                 assert_eq!(rows.len(), 1);
                 assert_eq!(rows[0].agent, AGENT);
-                assert_eq!(rows[0].role, CapRole::Viewer);
+                assert_eq!(rows[0].kinds, KindSet::READ);
                 assert_eq!(
                     rows[0].grant_count, 1,
                     "membership is not an extra permission"
                 );
-                assert_eq!(rows[0].preset, AgentAuthorityPreset::Contributor);
+                assert_eq!(rows[0].preset, AgentPreset::Observer);
                 assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
             }
 
@@ -4929,40 +5216,37 @@ mod agents_pane_tests {
             {
                 let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
                 ws.set_owner(OWNER);
-                let edit = admit_agent(
-                    &mut ws,
-                    &OWNER.to_string(),
-                    AGENT,
-                    AgentAuthorityPreset::Observer,
-                );
-                assert_eq!(edit.granted.len(), 1);
-                assert_eq!(ws.role_of_agent(AGENT), Some(CapRole::Viewer));
-                assert!(
-                    !ws.allows(
-                        &ws.actor_for_agent(AGENT),
-                        &ResourceRef::App("so.tilo.notes".into()),
-                        Verb::Read,
-                    ),
-                    "admission must never turn the Observer label into ambient app access"
+                let edit = admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer);
+                assert_eq!(
+                    edit.granted.len(),
+                    2,
+                    "reading the room, and no governing it"
                 );
                 assert_eq!(
-                    agent_authority_preset(&ws, AGENT),
-                    AgentAuthorityPreset::Observer
+                    ws.agent_members_at(tilo_clock::unix_now()),
+                    vec![(AGENT.to_string(), KindSet::READ)]
                 );
+                assert_eq!(
+                    agent_answer(&ws, "so.tilo.notes", ActionKind::Read),
+                    Answer::Allow
+                );
+                assert_eq!(
+                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                    Answer::Deny,
+                    "an Observer reads; it never changes anything"
+                );
+                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
 
                 ws.grant_as(
                     &OWNER.to_string(),
                     CapOverride::grant(
                         Subject::agent(AGENT),
                         Scope::FsPath("/var/workspace/brief.md".into()),
-                        Verb::Read,
+                        Access::Read,
                     ),
                 )
                 .expect("owner grants one selected file");
-                assert_eq!(
-                    agent_authority_preset(&ws, AGENT),
-                    AgentAuthorityPreset::Observer
-                );
+                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
             }
 
             // Phase `sensitive_or_broad_agent_grants_are_never_hidden_behind_a_preset`.
@@ -4973,14 +5257,11 @@ mod agents_pane_tests {
                     CapOverride::grant(
                         Subject::agent(AGENT),
                         Scope::NetHost("*".into()),
-                        Verb::Read,
+                        Access::Read,
                     ),
                 )
                 .expect("owner grants network access for the test");
-                assert_eq!(
-                    agent_authority_preset(&ws, AGENT),
-                    AgentAuthorityPreset::Custom
-                );
+                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Custom);
             }
 
             // Phase `agent_onboarding_and_review_geometry_are_separate_from_revocation`.
@@ -5001,18 +5282,14 @@ mod agents_pane_tests {
             // Phase `admission_does_not_become_ambient_human_role_authority`.
             {
                 let ws = ws_with_agent();
-                assert!(ws.allows(
-                    &ws.actor_for_agent(AGENT),
-                    &ResourceRef::App("so.tilo.notes".into()),
-                    Verb::Write,
-                ));
-                assert!(
-                    !ws.allows(
-                        &ws.actor_for_agent(AGENT),
-                        &ResourceRef::App("so.tilo.sheets".into()),
-                        Verb::Write,
-                    ),
-                    "an Editor admission pass must not become ambient human-role authority",
+                assert_eq!(
+                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                    Answer::Allow
+                );
+                assert_eq!(
+                    agent_answer(&ws, "so.tilo.sheets", ActionKind::Undoable),
+                    Answer::Deny,
+                    "an admission must not become ambient human-role authority",
                 );
             }
 
@@ -5020,21 +5297,20 @@ mod agents_pane_tests {
             {
                 let mut ws = ws_with_agent();
                 let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-                assert_eq!(edit.revoked.len(), 2);
-                assert!(ws.agent_members().is_empty());
-                assert!(!ws.allows(
-                    &ws.actor_for_agent(AGENT),
-                    &ResourceRef::App("so.tilo.notes".into()),
-                    Verb::Write,
-                ));
+                assert_eq!(edit.revoked.len(), 3, "its admission and its app grant");
+                assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
+                assert_eq!(
+                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                    Answer::Deny
+                );
             }
 
             // Phase `non_owner_cannot_remove_an_agent`.
             {
                 let mut ws = ws_with_agent();
-                let before = ws.capabilities.clone();
+                let before = ws.policy.clone();
                 assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
-                assert_eq!(ws.capabilities, before);
+                assert_eq!(ws.policy, before);
             }
 
             // Phase `admitted_agent_is_a_first_class_permission_subject`.
@@ -5049,8 +5325,10 @@ mod agents_pane_tests {
                     subject_index: index,
                     ..GrantDraft::default()
                 };
-                let cap = draft_capability(&ws, &draft).expect("agent grant can be composed");
-                assert!(subject_is_agent(&cap.subject, AGENT));
+                let Some(DraftGrant::Sandbox(cap)) = draft_capability(&ws, &draft) else {
+                    panic!("agent grant can be composed");
+                };
+                assert_eq!(cap.subject, Subject::agent(AGENT));
             }
 
             // Phase `agent_membership_is_not_duplicated_in_permissions`.
@@ -5089,6 +5367,11 @@ mod permissions_pane_tests {
     use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceId};
 
     const OWNER: &str = "owner-user";
+
+    /// The sandbox actor the app `app` is in `ws`.
+    fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
+        collab_types::caps::Actor::app(app).in_room(ws.room.to_string())
+    }
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::from(3), "perm-test");
@@ -5131,7 +5414,7 @@ mod permissions_pane_tests {
                     &CapOverride::grant(
                         Subject::Principal(Principal::App("files".to_string())),
                         Scope::FsRecord(record.to_string()),
-                        Verb::Read,
+                        Access::Read,
                     ),
                     &NoAppDirectory
                 ),
@@ -5193,17 +5476,21 @@ mod permissions_pane_tests {
                 CapOverride::grant(
                     Subject::person("peer-user"),
                     Scope::FsPath("/var/workspace".into()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             )
             .expect("owner grants");
-            ws.grant_as(
-                &OWNER.to_string(),
-                CapOverride::grant(
-                    Subject::Role(CapRole::Editor),
-                    Scope::Device("camera".into()),
-                    Verb::Read,
-                ),
+            ws.govern_as_at(
+                OWNER,
+                tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                    "editors-camera-app",
+                    tilo_action_policy::Subject::Role(CapRole::Editor),
+                    ws.node().app("so.tilo.camera"),
+                    tilo_action_policy::KindSet::READ,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Subject::person(OWNER),
+                )),
+                tilo_clock::unix_now(),
             )
             .expect("owner grants");
             // This assertion is about grouping every subject kind, so give
@@ -5243,7 +5530,7 @@ mod permissions_pane_tests {
                 CapOverride::grant(
                     Subject::person(bea.clone()),
                     Scope::FsPath("/var/workspace".into()),
-                    Verb::Write,
+                    Access::Write,
                 ),
             )
             .expect("owner grants");
@@ -5273,7 +5560,7 @@ mod permissions_pane_tests {
                 CapOverride::grant(
                     Subject::app("terminal"),
                     Scope::FsPath("/var/workspace".into()),
-                    Verb::Write,
+                    Access::Write,
                 )
                 .expiring(Expiry::EndOfSession),
             )
@@ -5294,11 +5581,9 @@ mod permissions_pane_tests {
         // projected at (HIG §4). Swept over every scope kind, not just the
         // two the panel shows today, so a new scope can't reintroduce the leak.
         {
-            use collab_types::role::ArtifactKind;
             let scopes = vec![
                 Scope::Workspace,
                 Scope::Room("r".into()),
-                Scope::App("firefox".into()),
                 Scope::FsPath(WORKSPACE_FILES_PATH.into()),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
@@ -5306,20 +5591,9 @@ mod permissions_pane_tests {
                 Scope::Device("camera".into()),
                 Scope::NetHost("*".into()),
                 Scope::NetHost("example.com".into()),
-                Scope::Action {
-                    app: "notes".into(),
-                    resource: "notes.page:1".into(),
-                    action: "export".into(),
-                },
-                Scope::ResourceType(ArtifactKind::Note),
+                Scope::FsRecord("b0d4e23f-c7cb-4ded-a427-b32cf9da9341".into()),
             ];
-            let verbs = [
-                Verb::Read,
-                Verb::Write,
-                Verb::Admin,
-                Verb::Comment,
-                Verb::Invite,
-            ];
+            let verbs = [Access::Read, Access::Write];
             for scope in &scopes {
                 for verb in verbs {
                     let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
@@ -5350,12 +5624,12 @@ mod permissions_pane_tests {
             let root = CapOverride::grant(
                 Subject::app("a"),
                 Scope::FsPath(WORKSPACE_FILES_PATH.into()),
-                Verb::Write,
+                Access::Write,
             );
             let sub = CapOverride::grant(
                 Subject::app("a"),
                 Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
-                Verb::Write,
+                Access::Write,
             );
             assert_eq!(
                 capability_allows(&root, &NoAppDirectory),
@@ -5417,18 +5691,18 @@ mod permissions_pane_tests {
                     draft.cycle_choice();
                 }
                 assert!(!ws.allows(
-                    &ws.actor_for_app("firefox"),
+                    &app_actor(&ws, "firefox"),
                     &ResourceRef::Device("microphone".into()),
-                    Verb::Read
+                    Access::Read
                 ));
 
                 let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
-                assert_eq!(edit.granted.len(), 1);
+                assert_eq!(edit.sandbox_granted.len(), 1);
                 assert!(
                     ws.allows(
-                        &ws.actor_for_app("firefox"),
+                        &app_actor(&ws, "firefox"),
                         &ResourceRef::Device("microphone".into()),
-                        Verb::Read
+                        Access::Read
                     ),
                     "the granted capability must start working, not merely start rendering"
                 );
@@ -5450,9 +5724,9 @@ mod permissions_pane_tests {
                     draft.cycle_choice();
                 }
                 let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
-                let id = &edit.granted[0];
+                let id = &edit.sandbox_granted[0];
                 let cap = ws
-                    .capabilities
+                    .sandbox
                     .iter()
                     .find(|c| &c.id == id)
                     .expect("stored capability");
@@ -5480,7 +5754,7 @@ mod permissions_pane_tests {
                 }
                 apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
                 let camera = ws
-                    .capabilities
+                    .sandbox
                     .iter()
                     .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
                     .collect::<Vec<_>>();
@@ -5516,10 +5790,10 @@ mod permissions_pane_tests {
                     choice_index: 0,
                     expiry: Expiry::Never,
                 };
-                let before = ws.capabilities.len();
+                let before = ws.sandbox.len();
                 let edit = apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft);
                 assert!(edit.is_empty(), "grant_as must refuse a non-administrator");
-                assert_eq!(ws.capabilities.len(), before);
+                assert_eq!(ws.sandbox.len(), before);
             }
 
             // Phase `every_offered_capability_produces_a_scope_an_enforcement_point_reads`.
@@ -5533,33 +5807,52 @@ mod permissions_pane_tests {
                         choice_index: i,
                         expiry: Expiry::Never,
                     };
-                    let cap = draft_capability(&ws, &draft).expect("every choice resolves");
-                    assert_eq!(cap.effect, Effect::Grant);
-                    let resource = match &cap.scope {
-                        Scope::Device(d) => ResourceRef::Device(d.clone()),
-                        Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
-                        Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                        Scope::Workspace => ResourceRef::Workspace,
-                        Scope::Action {
-                            app,
-                            resource,
-                            action,
-                        } => ResourceRef::Action {
-                            app: app.clone(),
-                            resource: resource.clone(),
-                            action: action.clone(),
-                        },
-                        other => panic!("unexpected scope in the grant table: {other:?}"),
-                    };
                     let mut probe = ws.clone();
-                    probe
-                        .grant_as(&OWNER.to_string(), cap.clone())
-                        .expect("owner grants");
-                    assert!(
-                        probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
-                        "granting {:?} must make the decision function allow it",
-                        choice.label()
-                    );
+                    match draft_capability(&ws, &draft).expect("every choice resolves") {
+                        DraftGrant::Sandbox(cap) => {
+                            assert_eq!(cap.effect, Effect::Grant);
+                            let resource = match &cap.scope {
+                                Scope::Device(d) => ResourceRef::Device(d.clone()),
+                                Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                                Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
+                                Scope::Workspace => ResourceRef::Workspace,
+                                other => panic!("unexpected scope in the grant table: {other:?}"),
+                            };
+                            probe
+                                .grant_as(&OWNER.to_string(), cap.clone())
+                                .expect("owner grants");
+                            assert!(
+                                probe.allows(&app_actor(&probe, "firefox"), &resource, cap.access),
+                                "granting {:?} must make the decision function allow it",
+                                choice.label()
+                            );
+                        }
+                        DraftGrant::Grant(grant) => {
+                            let node = grant.node.clone();
+                            probe
+                                .govern_as_at(
+                                    OWNER,
+                                    tilo_action_policy::Change::Grant(grant),
+                                    tilo_clock::unix_now(),
+                                )
+                                .expect("owner grants");
+                            assert_eq!(
+                                probe
+                                    .subject_authority(tilo_action_policy::Subject::App(
+                                        "firefox".into()
+                                    ))
+                                    .decide(
+                                        &node,
+                                        tilo_action_policy::roles::GOVERNANCE_KIND,
+                                        &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                                    )
+                                    .answer,
+                                tilo_action_policy::Answer::Allow,
+                                "granting {:?} must make the decision function allow it",
+                                choice.label()
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -5572,7 +5865,11 @@ mod permissions_pane_tests {
                 let id = ws
                     .grant_as(
                         &OWNER.to_string(),
-                        CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
+                        CapOverride::grant(
+                            Subject::app("firefox"),
+                            Scope::Workspace,
+                            Access::Write,
+                        ),
                     )
                     .expect("owner grants");
                 let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -5582,17 +5879,17 @@ mod permissions_pane_tests {
                     .find(|r| r.cap_id == id)
                     .expect("the workspace-scoped app grant has a row");
                 assert_eq!(row.subject.kind, SubjectKind::App);
-                assert_eq!(row.allows, "Administer this workspace");
+                assert_eq!(row.allows, "Edit this workspace");
                 assert_eq!(
                     apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
-                        .revoked
+                        .sandbox_revoked
                         .len(),
                     1
                 );
                 assert!(!ws.allows(
-                    &ws.actor_for_app("firefox"),
+                    &app_actor(&ws, "firefox"),
                     &ResourceRef::Workspace,
-                    Verb::Admin
+                    Access::Write
                 ));
             }
 
@@ -5606,12 +5903,12 @@ mod permissions_pane_tests {
                     .find(|r| r.allows.contains("camera"))
                     .expect("camera row");
                 let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id);
-                assert_eq!(edit.revoked, vec![camera_row.cap_id.clone()]);
+                assert_eq!(edit.sandbox_revoked, vec![camera_row.cap_id.clone()]);
                 assert!(
                     !ws.allows(
-                        &ws.actor_for_app("firefox"),
+                        &app_actor(&ws, "firefox"),
                         &ResourceRef::Device("camera".into()),
-                        Verb::Read
+                        Access::Read
                     ),
                     "the revoked capability must stop working, not merely stop rendering"
                 );
@@ -5639,7 +5936,7 @@ mod permissions_pane_tests {
                 let mut ws = ws_with_grants();
                 let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
                 assert!(edit.is_empty());
-                assert_eq!(ws.capabilities.len(), 3, "owner membership + two grants");
+                assert_eq!(ws.sandbox.len(), 2, "the two grants");
             }
         }
     }
@@ -5741,7 +6038,7 @@ mod permissions_pane_tests {
                         CapOverride::grant(
                             Subject::app(format!("app-{i}")),
                             Scope::Device("camera".into()),
-                            Verb::Read,
+                            Access::Read,
                         ),
                     )
                     .expect("owner grants");
@@ -5854,13 +6151,17 @@ mod roster_order_tests {
         // roster order; the pane's order must not shift with it.
         let mut ws = Workspace::new(WorkspaceId::from(5), "order");
         ws.set_owner("host");
-        let room = ws.id.raw().to_string();
         for person in ["ada", "bo", "cy"] {
-            ws.grant_as(
-                &"host".to_string(),
-                CapOverride::membership(Subject::person(person), room.clone(), Verb::Read),
-            )
-            .expect("owner may grant");
+            assert!(
+                !set_member_role(
+                    &mut ws,
+                    &"host".to_string(),
+                    &person.to_string(),
+                    CapRole::Viewer
+                )
+                .is_empty(),
+                "owner may admit"
+            );
         }
         let pane = Rect::new(0.0, 0.0, 640.0, 600.0);
         let before: Vec<UserId> = members_pane_rows(&ws, pane)

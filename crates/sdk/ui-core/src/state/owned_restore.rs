@@ -185,7 +185,7 @@ fn check_restore_authority(
     app_id: &str,
     record: Option<&crate::record::RecordId>,
 ) -> Result<(), RestoreRefusal> {
-    use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
+    use crate::permissions::{Access, ActionKind, Principal};
     // The installed solo-workspace principal is the runner's existing
     // local-author mapping. Other contexts must name the actual author.
     let mapped = current.actor().principals.contains(&author.principal())
@@ -194,15 +194,18 @@ fn check_restore_authority(
             .principals
             .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
     if !mapped
-        || current.decide(&ResourceRef::App(app_id.to_owned()), Verb::Write) != CapDecision::Allow
+        || !current.check(&crate::permissions::PermissionScope::app(
+            app_id.to_owned(),
+            ActionKind::Undoable,
+        ))
     {
         return Err(RestoreRefusal::App);
     }
     if let Some(path) = record.and_then(crate::record::RecordId::file_path)
-        && current.decide(
-            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Write,
-        ) != CapDecision::Allow
+        && !current.check(&crate::permissions::PermissionScope::path(
+            path.to_string_lossy().into_owned(),
+            Access::Write,
+        ))
     {
         return Err(RestoreRefusal::File);
     }

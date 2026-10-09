@@ -174,25 +174,25 @@ pub enum GitClientEffect {
     ///
     /// Between unified and side-by-side: a preference of this person, which
     /// follows them to their other devices.
-    #[effect(permission = "read", device_only = false)]
+    #[effect(kind = "read", device_only = false)]
     DiffLayout,
     /// Turn syntax highlighting on or off
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(permission = "read", device_only = false)]
+    #[effect(kind = "read", device_only = false)]
     SyntaxHighlight,
     /// Show or hide whitespace
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(permission = "read", device_only = false)]
+    #[effect(kind = "read", device_only = false)]
     ShowWhitespace,
     /// Wrap long lines or stop wrapping them
     ///
     /// A preference of this person, which follows them to their other
     /// devices.
-    #[effect(permission = "read", device_only = false)]
+    #[effect(kind = "read", device_only = false)]
     WrapLines,
 }
 

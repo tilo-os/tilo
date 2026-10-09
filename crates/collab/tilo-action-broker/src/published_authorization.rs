@@ -2,55 +2,63 @@
 //! workspace policy must allow the action *and* the document artifact of the
 //! route record it acts on, so a person restricted on one record cannot act
 //! on it through an action they may otherwise use.
-use collab_types::caps::{CapDecision, ResourceRef, Verb};
+use tilo_action_policy::{Answer, roles};
+use tilo_desktop_model::Workspace;
 
 use crate::collab_broker_capnp::{PublishedAction, PublishedSurface};
-use crate::policy::WorkspacePolicy;
 
 /// Spelling of the package-primary record (route record `""`).
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";
 const MAX_RECORD_ID_BYTES: usize = 128;
 
-/// Authorize `person` (from a device held to the foreign-device cap when
-/// `capped`) for `action` on `surface` at policy time `now`.
+/// Whether `answer` lets an invocation run: allowed; or asking first when the
+/// person acts themselves (`direct`), their own gesture being the answer.
+/// Someone acting for them, or a device not theirs, does not get past an ask.
+#[must_use]
+pub fn permits(answer: Answer, direct: bool) -> bool {
+    match answer {
+        Answer::Allow => true,
+        Answer::Ask => direct,
+        Answer::Deny => false,
+    }
+}
+
+/// Authorize `person` (from a device held to the foreign-device bound when
+/// `capped`) for `action` on `surface` at policy time `now`: the room's
+/// grants must allow the action where it is published *and* a change of the
+/// route record it acts on.
 ///
 /// # Errors
 ///
 /// Returns the refusal text when the route record is reserved or malformed,
-/// or when the policy denies the action or the record.
-pub fn authorize_person_published<W: WorkspacePolicy>(
-    workspace: &W,
+/// or when the grants refuse the action or the record.
+pub fn authorize_person_published(
+    workspace: &Workspace,
     now: u64,
     person: &str,
     capped: bool,
     surface: &PublishedSurface,
     action: &PublishedAction,
 ) -> Result<(), String> {
-    let record = &surface.route.record_id;
-    canonical_record(record)?;
-    let Some(verb) = verb(action.contract.permission) else {
-        return Ok(());
-    };
-    let actor = workspace.actor_for_person_on_device_at(&person.to_string(), capped, now);
-    let objects = [
-        ResourceRef::Action {
-            app: surface.app_id.clone(),
-            resource: action.resource.clone(),
-            action: action.action.clone(),
-        },
-        ResourceRef::Artifact {
-            app: Some(surface.app_id.clone()),
-            kind: collab_types::ArtifactKind::Note,
-            instance: collab_types::document_artifact_id(
-                &surface.app_id,
-                &surface.route.cluster_id,
-                record,
-            ),
-        },
+    let record = canonical_record(&surface.route.record_id)?;
+    let bound = roles::foreign_device_bound();
+    let authority = workspace.person_authority_on(person, capped, &bound);
+    let cx = tilo_desktop_model::context_at(now);
+    let kind = action.contract.kind;
+    let nodes = [
+        tilo_actions::action_node(
+            &workspace.node(),
+            &surface.app_id,
+            &action.resource_kind,
+            &action.resource,
+            action.contract.field.as_deref(),
+            &action.action,
+        ),
+        collab_types::validator::document_node(&workspace.policy.room, &surface.app_id, &record),
     ];
-    if objects
+    if nodes
         .iter()
-        .all(|object| workspace.decide_at(&actor, object, verb, now) == CapDecision::Allow)
+        .all(|node| permits(authority.decide(node, kind, &cx).answer, !capped))
     {
         Ok(())
     } else {
@@ -77,24 +85,12 @@ fn canonical_record(route_record: &str) -> Result<String, String> {
     Ok(route_record.into())
 }
 
-fn verb(permission: tilo_actions::PermissionRequirement) -> Option<Verb> {
-    use tilo_actions::PermissionRequirement as P;
-    match permission {
-        P::None => None,
-        P::Read => Some(Verb::Read),
-        P::Comment => Some(Verb::Comment),
-        P::Write => Some(Verb::Write),
-        P::Invite => Some(Verb::Invite),
-        P::Admin => Some(Verb::Admin),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId};
-    use collab_types::caps::{CapOverride, Effect, Scope, Subject};
+    use tilo_action_policy::{Grant, KindSet, Lifetime, Role, Subject};
 
     const OWNER: &str = "owner-person";
     const ROOM: &str = "room-7";
@@ -132,14 +128,17 @@ mod tests {
     }
 
     #[test]
-    fn a_capped_device_holds_the_person_to_the_foreign_device_cap() {
+    fn a_capped_device_holds_the_person_to_the_foreign_device_bound() {
         let w = workspace();
-        let mut rename = action("rename");
-        rename.contract.permission = tilo_actions::PermissionRequirement::Admin;
+        let mut send = action("send");
+        send.contract.kind = tilo_actions::ActionKind::Outside;
         let typing = action("type-text");
-        let s = surface("rec-1", vec![rename.clone(), typing.clone()]);
-        assert!(authorize_person_published(&w, 10, OWNER, false, &s, &rename).is_ok());
-        assert!(authorize_person_published(&w, 10, OWNER, true, &s, &rename).is_err());
+        let s = surface("rec-1", vec![send.clone(), typing.clone()]);
+        assert!(authorize_person_published(&w, 10, OWNER, false, &s, &send).is_ok());
+        assert!(
+            authorize_person_published(&w, 10, OWNER, true, &s, &send).is_err(),
+            "reaching outside asks first on a device that is not theirs"
+        );
         assert!(authorize_person_published(&w, 10, OWNER, true, &s, &typing).is_ok());
     }
 
@@ -147,23 +146,43 @@ mod tests {
     fn a_person_is_checked_on_the_route_record_too() {
         let mut w = workspace();
         let member = "member-person";
-        w.grant_capability(CapOverride::membership(
-            Subject::person(member),
-            w.room.to_string(),
-            Verb::Write,
-        ));
+        w.admit(member, Role::Editor);
         let typing = action("type-text");
         let s = surface("rec-1", vec![typing.clone()]);
         assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_ok());
-        w.grant_capability(CapOverride::new(
+        w.grant(Grant::new(
+            "rec-1-read-only",
             Subject::person(member),
-            Scope::ResourceInstance(collab_types::document_artifact_id(WRITER, ROOM, "rec-1")),
-            Effect::Restrict,
-            Verb::Read,
+            collab_types::validator::document_node(&w.policy.room, WRITER, "rec-1"),
+            KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Deny,
+            Subject::person(OWNER),
         ));
         assert!(authorize_person_published(&w, 10, member, false, &s, &typing).is_err());
         let s2 = surface("rec-2", vec![typing.clone()]);
         assert!(authorize_person_published(&w, 10, member, false, &s2, &typing).is_ok());
+    }
+
+    #[test]
+    fn a_grant_lapses_at_the_policy_time_it_is_decided_at() {
+        let mut w = workspace();
+        let member = "member-person";
+        w.admit(member, Role::Viewer);
+        w.grant(
+            Grant::new(
+                "app-for-a-while",
+                Subject::person(member),
+                w.node().app(WRITER),
+                KindSet::UNDOABLE,
+                tilo_action_policy::Answer::Allow,
+                Subject::person(OWNER),
+            )
+            .with_lifetime(Lifetime::Until(100_000)),
+        );
+        let typing = action("type-text");
+        let s = surface("rec-1", vec![typing.clone()]);
+        assert!(authorize_person_published(&w, 50, member, false, &s, &typing).is_ok());
+        assert!(authorize_person_published(&w, 100, member, false, &s, &typing).is_err());
     }
 
     #[test]

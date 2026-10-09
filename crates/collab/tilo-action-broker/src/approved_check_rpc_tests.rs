@@ -19,7 +19,7 @@ async fn approved_check_rpc_requires_exact_retained_target_and_accepted_id() {
             });
             descriptor.operation_kind = tilo_actions::OperationKind::Effect;
             descriptor.contract = tilo_actions::ActionContract {
-                permission: tilo_actions::PermissionRequirement::Write,
+                kind: tilo_actions::ActionKind::Undoable,
                 result: tilo_actions::ResultSpec::Job,
                 execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                 ..Default::default()
@@ -191,7 +191,7 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
             descriptor.semantic_identity = Some(runtime_collab::ExportedResourceSemanticIdentity { kind: descriptor.resource_kind.clone(), key: descriptor.resource.clone() });
         descriptor.operation_kind = tilo_actions::OperationKind::Effect;
         descriptor.contract = tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             execution: tilo_actions::ExecutionMode::Background { cancellable: true },
             result: tilo_actions::ResultSpec::Job,
             ..Default::default()

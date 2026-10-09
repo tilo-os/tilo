@@ -22,49 +22,49 @@ use crate::workspace::Workspace;
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
     /// Search maps.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Search {
         #[param("Place, address, or category, e.g. museum near me")]
         query: String,
     },
     /// Use my location.
-    #[effect(job, device_only, permission = "read")]
+    #[effect(job, device_only, kind = "read")]
     Locate,
     /// Show traffic.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     ToggleTraffic,
     /// Open place.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenPlace {
         #[param("The place's id")]
         place: String,
     },
     /// Get directions.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Directions {
         #[param("The place's id")]
         place: String,
     },
     /// Open point of interest.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     OpenPoi {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Get directions to point of interest.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     PoiDirections {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Delete offline area.
-    #[effect(destructive, device_only, permission = "read")]
+    #[effect(destructive, device_only, kind = "read")]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
     },
     /// Clear offline areas.
-    #[effect(destructive, device_only, permission = "read")]
+    #[effect(destructive, device_only, kind = "read")]
     ClearOfflineAreas,
 }
 

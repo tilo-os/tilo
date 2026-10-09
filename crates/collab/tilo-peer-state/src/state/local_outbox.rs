@@ -2,8 +2,8 @@
 //! Nothing here admits remote historical wire data or commits an owner's storage.
 use super::{
     AdmissionError, ArtifactKind, BTreeMap, ChannelState, Document, DocumentAdmission,
-    DocumentMutation, Duration, Ed25519PublicKey, NeighbourMsg, OpClass, ReadDoc, Role, Route,
-    SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
+    DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpClass, ReadDoc,
+    Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, room,
 };
 
 /// A channel key holder's renewal of a sealed write: the encryption and

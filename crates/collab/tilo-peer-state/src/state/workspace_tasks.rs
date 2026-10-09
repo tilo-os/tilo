@@ -1,8 +1,8 @@
-use super::{Role, StatePeer, SystemTime};
+use super::{StatePeer, SystemTime};
 use crate::workspace_task::{
     AdmittedTaskActor, AppliedTaskCommand, WorkspaceTaskAuthority, WorkspaceTaskCommand,
 };
-use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+use tilo_action_policy::{ActionKind, TreePath};
 
 impl StatePeer {
     /// Apply one typed task command against the current admitted room document.
@@ -40,42 +40,25 @@ impl StatePeer {
             .room_doc
             .as_deref()
             .ok_or("workspace task room document is absent")?;
-        let (_, owner, caps) = crate::room::extract_governed_fields(room);
-        let agent_role = |agent: &str| {
-            let mut workspace = tilo_desktop_model::Workspace::new(
-                tilo_desktop_model::WorkspaceId(1),
-                "task authority",
-            );
-            workspace.owner.clone_from(&owner);
-            workspace.capabilities.clone_from(&caps);
-            workspace.role_of_agent_in_room_at(agent, &self.core.room, seconds)
-        };
+        let policy = tilo_desktop_model::projection::room_policy_of(room, &self.core.room);
+        let owner = policy.owner.clone();
+        let agent_member = |agent: &str| super::agent_is_member(&policy, agent, now);
         if let Some(agent) = command
             .agent()
             .map(str::to_owned)
             .or(direction_agent(command, room)?)
-            && agent_role(&agent).is_none_or(|role| role == Role::Denied)
+            && !agent_member(&agent)
         {
             return Err("workspace task agent is not a current room member".into());
         }
         let actor = match authority {
             WorkspaceTaskAuthority::Person { caller } => {
-                let (role, caps, person) = self.permissions(caller.device_public_key, now)?;
-                let actor =
-                    Actor::person(Some(role), person.clone()).in_room(self.core.room.clone());
-                if !matches!(role, Role::Owner | Role::Editor)
-                    || decide_capability(
-                        &actor,
-                        &ResourceRef::Workspace,
-                        Verb::Write,
-                        &caps,
-                        Some(seconds),
-                    ) != CapDecision::Allow
-                {
+                let member = self.permissions(caller.device_public_key, now)?;
+                if !member.allows(&TreePath::room(&self.core.room), ActionKind::Undoable, now) {
                     return Err("workspace task person lacks write authority".into());
                 }
                 AdmittedTaskActor::Person {
-                    id: person,
+                    id: member.person,
                     device: caller.device_public_key,
                 }
             }
@@ -92,7 +75,7 @@ impl StatePeer {
             WorkspaceTaskAuthority::Agent { attestor, agent_id } => {
                 if (!attestor.capabilities.can_act_as_host
                     && attestor.device_public_key != self.core.authority.device_public_key)
-                    || agent_role(agent_id).is_none_or(|role| role == Role::Denied)
+                    || !agent_member(agent_id)
                 {
                     return Err("workspace task agent lacks current host attestation".into());
                 }
@@ -152,8 +135,8 @@ fn direction_agent(
 mod tests {
     use super::*;
     use crate::{SeedState, seed_room};
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ed25519_dalek::SigningKey;
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     use tilo_desktop_model::{WorkspaceTaskRoute, WorkspaceTaskStatus};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     use web_time::Duration;
@@ -202,16 +185,53 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.put_governed_capabilities(
-            &[
-                CapOverride::grant(Subject::agent("scribe"), Scope::Workspace, Verb::Write)
-                    .with_id("agent-scribe"),
-            ],
-            &governor_key,
+        peer.put_governed_grants(&[agent_grant("agent-scribe", ROOM)], &governor_key, now)
+            .unwrap();
+        (peer, governor, other, now)
+    }
+
+    fn agent_grant(id: &str, room: &str) -> Grant {
+        Grant::new(
+            id,
+            Subject::agent("scribe"),
+            TreePath::room(room),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person("governor"),
+        )
+    }
+
+    /// Make the other person an editor who may only read the room.
+    fn read_only_member(peer: &mut StatePeer, other: &DeviceCert, now: SystemTime) {
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let mut doc = peer.core.room_doc.clone().unwrap();
+        let before = doc.get_heads();
+        let members = automerge::ReadDoc::get(&*doc, automerge::ROOT, "members")
+            .unwrap()
+            .unwrap()
+            .1;
+        crate::state::put_member(
+            &mut doc,
+            &members,
+            other.user_public_key,
+            collab_types::Role::Editor,
+        )
+        .unwrap();
+        doc.commit();
+        peer.apply_governance_doc(doc, &before, &key, now).unwrap();
+        peer.put_governed_grants(
+            &[Grant::new(
+                "read-only-member",
+                Subject::person(hex::encode(other.user_public_key)),
+                TreePath::room(ROOM),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            &key,
             now,
         )
         .unwrap();
-        (peer, governor, other, now)
     }
 
     #[test]
@@ -227,17 +247,18 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.put_governed_capabilities(
-            &[CapOverride::membership(
-                Subject::agent("scribe"),
-                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                Verb::Write,
+        assert!(
+            peer.put_governed_grants(
+                &[agent_grant(
+                    "other-room-agent",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                )],
+                &key,
+                now,
             )
-            .with_id("other-room-agent")],
-            &key,
-            now,
-        )
-        .unwrap();
+            .is_err(),
+            "a grant on another room is not this room's policy"
+        );
         let command = WorkspaceTaskCommand::Queue {
             title: "Keep room boundaries".into(),
             assigned_agent: "scribe".into(),
@@ -257,15 +278,8 @@ mod tests {
             .is_err()
         );
         assert_eq!(peer.durable().unwrap(), before);
-        peer.put_governed_capabilities(
-            &[
-                CapOverride::membership(Subject::agent("scribe"), ROOM, Verb::Read)
-                    .with_id("actual-room-agent"),
-            ],
-            &key,
-            now,
-        )
-        .unwrap();
+        peer.put_governed_grants(&[agent_grant("actual-room-agent", ROOM)], &key, now)
+            .unwrap();
         assert!(
             peer.apply_workspace_task_command(
                 uuid::Uuid::from_u128(1),
@@ -533,21 +547,13 @@ mod tests {
 
     #[test]
     fn manual_creation_keeps_current_membership_write_admission() {
-        let (mut peer, governor, _, now) = peer();
-        let restriction = CapOverride::new(
-            Subject::Role(Role::Owner),
-            Scope::Workspace,
-            collab_types::caps::Effect::Restrict,
-            Verb::Read,
-        )
-        .with_id("read-only-owner");
-        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
-            .unwrap();
+        let (mut peer, _, other, now) = peer();
+        read_only_member(&mut peer, &other, now);
         let before = peer.durable().unwrap();
         let result = peer.apply_workspace_task_command(
             uuid::Uuid::from_u128(81),
             [81; 32],
-            &WorkspaceTaskAuthority::Person { caller: governor },
+            &WorkspaceTaskAuthority::Person { caller: other },
             &WorkspaceTaskCommand::CreateManual {
                 title: "Review mapped tile".into(),
                 resource: None,
@@ -568,22 +574,14 @@ mod tests {
     }
 
     #[test]
-    fn current_owner_with_read_restriction_cannot_queue_a_task() {
-        let (mut peer, governor, _, now) = peer();
-        let restriction = CapOverride::new(
-            Subject::Role(Role::Owner),
-            Scope::Workspace,
-            collab_types::caps::Effect::Restrict,
-            Verb::Read,
-        )
-        .with_id("read-only-owner");
-        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
-            .unwrap();
+    fn current_member_with_read_restriction_cannot_queue_a_task() {
+        let (mut peer, _, other, now) = peer();
+        read_only_member(&mut peer, &other, now);
         let before = peer.durable().unwrap();
         let result = peer.apply_workspace_task_command(
             uuid::Uuid::from_u128(1),
             [1; 32],
-            &WorkspaceTaskAuthority::Person { caller: governor },
+            &WorkspaceTaskAuthority::Person { caller: other },
             &WorkspaceTaskCommand::Queue {
                 title: "Must not execute".into(),
                 assigned_agent: "scribe".into(),

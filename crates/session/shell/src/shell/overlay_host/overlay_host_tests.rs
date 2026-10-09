@@ -2832,8 +2832,8 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     let chrome = ChromeState::new(tree);
     assert_eq!(
         chrome.borrow().tree().desktop.workspaces[0]
-            .owner
-            .as_deref(),
+            .owner()
+            .map(String::as_str),
         Some("quickuser"),
         "before setup the session acts as the account"
     );
@@ -2894,8 +2894,8 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .iter()
         .find(|w| w.room == room)
         .expect("home");
-    assert_eq!(home.role_of_at(&principal, 0), Some(CapRole::Owner));
-    assert_eq!(home.role_of_at(&"quickuser".to_string(), 0), None);
+    assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
+    assert_eq!(home.role_of("quickuser"), None);
     assert_eq!(state.local_user_id, principal);
 }
 

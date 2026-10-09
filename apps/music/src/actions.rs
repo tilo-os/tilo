@@ -336,11 +336,11 @@ pub enum MusicEffect {
 
     /// Search the remote catalogue
     /// Results join the canonical search index after the worker answers.
-    #[effect(job, device_only, permission = "read")]
+    #[effect(job, device_only, kind = "read")]
     Search { query: String },
     /// Inspect playback
     /// Device-local transport observations, with no account or credential data.
-    #[effect(row, device_only, returns, idempotent, permission = "read")]
+    #[effect(row, device_only, returns, idempotent, kind = "read")]
     PlaybackStatus,
     /// Open audio file
     ///
@@ -1377,7 +1377,7 @@ mod tests {
     use crate::app::MusicApp;
     use crate::model::{Library, Playlist};
     use automerge::AutoCommit;
-    use tilo_actions::PermissionRequirement;
+    use tilo_actions::ActionKind;
     use tilo_actions::{
         ActionRegistry, ArgValue, ExecutionMode, OperationKind, ParamType, ResultSpec,
     };
@@ -1620,17 +1620,17 @@ mod tests {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
             for flat in tilo_actions::flatten(&resources) {
-                let permission = flat.action.contract.permission;
+                let permission = flat.action.contract.kind;
                 match flat.action.kind {
                     OperationKind::Document => assert_eq!(
                         permission,
-                        PermissionRequirement::Write,
+                        ActionKind::Undoable,
                         "{} must require write permission",
                         flat.key
                     ),
                     OperationKind::View => assert_eq!(
                         permission,
-                        PermissionRequirement::Read,
+                        ActionKind::Read,
                         "{} must require read permission",
                         flat.key
                     ),
@@ -1661,7 +1661,7 @@ mod tests {
                     .find(|action| action.id == "open")
                     .expect("canonical open action");
                 assert_eq!(open.kind, OperationKind::View);
-                assert_eq!(open.contract.permission, PermissionRequirement::Read);
+                assert_eq!(open.contract.kind, ActionKind::Read);
                 let encoded = spec_encoding_of(open);
                 assert_eq!(
                     MusicEffect::from_payload(&encoded.payload).expect("effect decodes"),
@@ -1816,11 +1816,7 @@ mod tests {
             ] {
                 let action = on.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
-                assert_eq!(
-                    action.contract.permission,
-                    PermissionRequirement::Write,
-                    "{id}"
-                );
+                assert_eq!(action.contract.kind, ActionKind::Undoable, "{id}");
                 assert!(
                     !action.contract.reversible,
                     "local device effects cannot claim an executable undo: {id}"

@@ -77,7 +77,7 @@ mod schema;
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", permission = "read")]`.
+/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", kind = "read")]`.
 /// A `device_only` effect reaches the files, hardware or services of the
 /// device it runs on: only the person at that device may invoke it. In a
 /// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts
@@ -1173,7 +1173,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Action options: `label = "..."`, `destructive` (people confirm it, through
 /// any door), `housekeeping` (a change about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
-/// step), `permission = "..."`.
+/// step), `field = "..."` (an action that writes only that field is placed
+/// below it, so a grant on the field reaches it: someone who may only
+/// comment may add to the `comments`).
 ///
 /// Resource options: `label`, `params = module` (the parameter module's
 /// name), `initialize = path` (`fn() -> Self`, the deterministic genesis),

@@ -82,8 +82,8 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, RedactedMarker, ResourceRef, SignedOp,
-    ValidationError, Verb, role_permits, validate_admitted_inbound_op,
+    ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
+    validate_admitted_inbound_op,
 };
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
@@ -91,6 +91,9 @@ use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
     context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -100,9 +103,7 @@ use crate::collab_broker::{
 };
 use crate::collab_outbound::PeerPublisher;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
-use collab_types::foreign_device::{cap_applies, foreign_device_role, on_foreign_device};
 use collab_types::{Principal, Role as CapRole};
-#[cfg(test)]
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::WorkspaceTaskStatus;
 
@@ -520,7 +521,8 @@ fn cap_applies_in(
     let governs = authority
         .zip(uuid::Uuid::parse_str(room).ok())
         .is_some_and(|(authority, room)| authority.governs(room, device));
-    cap_applies(foreign, governs)
+    // A foreign device is held to the bound only in a room it does not govern.
+    foreign && !governs
 }
 
 /// [`cap_applies_in`] for `cert`'s device.
@@ -563,6 +565,9 @@ pub struct BrokerActor {
     is_agent: bool,
     /// A person acting from a foreign device in a room it does not govern.
     capped: bool,
+    /// The person an agent acts for, when one delegated it: the agent then
+    /// may do only what both may.
+    for_person: Option<String>,
 }
 
 impl BrokerActor {
@@ -572,6 +577,7 @@ impl BrokerActor {
             id: id.into(),
             is_agent: false,
             capped: false,
+            for_person: None,
         }
     }
 
@@ -581,7 +587,15 @@ impl BrokerActor {
             id: id.into(),
             is_agent: true,
             capped: false,
+            for_person: None,
         }
+    }
+
+    /// The same agent, acting for `person`.
+    #[must_use]
+    pub fn for_person(mut self, person: impl Into<String>) -> Self {
+        self.for_person = Some(person.into());
+        self
     }
 
     /// The policy principal id (`agent:`-prefixed for an agent).
@@ -595,44 +609,108 @@ impl BrokerActor {
         self.is_agent
     }
 
-    /// Who this actor is to `workspace`'s capability policy at `now`. An
-    /// application (`app:<package id>`) holds no role there: only what the
-    /// workspace grants that application.
-    pub(crate) fn policy_in(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
+    /// The grant subject this actor is when it is not a person.
+    fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
-            return Actor::app(app).in_room(workspace.room.to_string());
+            return Some(Subject::App(app.to_owned()));
         }
-        if self.is_agent {
-            workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
-        } else {
-            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
-                workspace,
-                &self.id,
-                self.capped,
-                now,
-            )
+        self.is_agent
+            .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
+    }
+
+    /// What this actor may do in `workspace`: a person's own authority (held
+    /// to `foreign_bound` from a device not theirs); an agent's bounded by
+    /// the person it acts for; an application, or an agent nobody delegated,
+    /// only what the room grants it.
+    pub(crate) fn authority_in<'w>(
+        &self,
+        workspace: &'w tilo_desktop_model::Workspace,
+        foreign_bound: &'w [Grant],
+    ) -> Authority<'w> {
+        match (self.delegate(), &self.for_person) {
+            (None, _) => workspace.person_authority_on(&self.id, self.capped, foreign_bound),
+            (Some(delegate), Some(person)) => workspace.delegated_authority(person, delegate, &[]),
+            (Some(delegate), None) => workspace.subject_authority(delegate),
         }
+    }
+
+    /// Whether this actor is a person acting from their own device: the one
+    /// whose own gesture answers a grant that asks first.
+    pub(crate) fn direct(&self) -> bool {
+        self.delegate().is_none() && !self.capped
+    }
+
+    /// The person this actor is, when a person acts from their own device:
+    /// the only actor a host lets govern a room.
+    #[must_use]
+    pub fn direct_person(&self) -> Option<&str> {
+        self.direct().then_some(self.id.as_str())
+    }
+
+    /// The answer for an action of `kind` at `node` in `workspace` at `now`.
+    pub(crate) fn answer_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> Answer {
+        let bound = roles::foreign_device_bound();
+        self.authority_in(workspace, &bound)
+            .decide(node, kind, &tilo_desktop_model::context_at(now))
+            .answer
+    }
+
+    /// Whether this actor may take an action of `kind` at `node` in
+    /// `workspace` at `now`. See [`crate::published_authorization::permits`].
+    pub(crate) fn may_in(
+        &self,
+        workspace: &tilo_desktop_model::Workspace,
+        node: &TreePath,
+        kind: ActionKind,
+        now: u64,
+    ) -> bool {
+        crate::published_authorization::permits(
+            self.answer_in(workspace, node, kind, now),
+            self.direct(),
+        )
+    }
+
+    /// Whether this actor takes part in `workspace` at `now`: it may at
+    /// least read the room.
+    pub(crate) fn reads_in(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> bool {
+        self.answer_in(workspace, &workspace.node(), ActionKind::Read, now) != Answer::Deny
     }
 }
 
-/// `actor`, held to `workspace`'s foreign-device cap when `capped`.
-fn capped_if(
-    actor: Actor,
-    capped: bool,
+/// The node of `action` published by `app` in `workspace`.
+pub(crate) fn published_node(
     workspace: &tilo_desktop_model::Workspace,
-    now: u64,
-) -> Actor {
-    if capped {
-        on_foreign_device(actor, &workspace.capabilities, now)
-    } else {
-        actor
-    }
+    app: &str,
+    action: &PublishedAction,
+) -> TreePath {
+    tilo_actions::action_node(
+        &workspace.node(),
+        app,
+        &action.resource_kind,
+        &action.resource,
+        action.contract.field.as_deref(),
+        &action.action,
+    )
+}
+
+/// The node of opening the application `app` in `workspace`: launching it is
+/// an action of the app itself.
+pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
+    workspace.node().app(app)
 }
 
 impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
         match &self.agent_id {
-            Some(agent) => BrokerActor::agent(format!("agent:{agent}")),
+            Some(agent) => {
+                BrokerActor::agent(format!("agent:{agent}")).for_person(self.principal_id.clone())
+            }
             None => BrokerActor {
                 capped: self.verified.capped,
                 ..BrokerActor::person(self.principal_id.clone())
@@ -674,13 +752,53 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(verified.capped || restricted)
     }
 
-    fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
-        let room = workspace.room.to_string();
-        if let Some(agent) = &self.agent_id {
-            return Actor::agent(agent).in_room(room);
+    /// Run `decide` with what this identity may do in `room` (its person
+    /// room, or a workspace in `tree`).
+    /// [`Self::with_authority`] over the committed authority of
+    /// `membership`, borrowed for the one decision.
+    fn with_current_authority<T>(
+        &self,
+        membership: Option<&WorkspaceTreeHandle>,
+        room: &str,
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> Result<T, String> {
+        match membership {
+            Some(membership) => membership
+                .decide_in_tree(|tree| self.with_authority(Some(tree), room, decide))
+                .and_then(std::convert::identity),
+            None => self.with_authority(None, room, decide),
         }
-        let person = Actor::person(Some(self.role), self.principal_id.clone()).in_room(room);
-        capped_if(person, self.verified.capped, workspace, now)
+    }
+
+    fn with_authority<T>(
+        &self,
+        tree: Option<&DesktopTree>,
+        room: &str,
+        decide: impl FnOnce(&Authority<'_>) -> T,
+    ) -> Result<T, String> {
+        let bound = roles::foreign_device_bound();
+        if self.agent_id.is_none() && self.verified.owns_person_room(room) {
+            // The person room's devices are its owner's; a foreign one is
+            // held to the foreign-device bound there as anywhere.
+            let policy = RoomPolicy::new(room, self.principal_id.clone());
+            let authority = Authority::person(policy.party(&self.principal_id));
+            let authority = if self.verified.capped {
+                authority.bounded_by(tilo_action_policy::Party::new(
+                    vec![Subject::ForeignDevice],
+                    &bound,
+                ))
+            } else {
+                authority
+            };
+            return Ok(decide(&authority));
+        }
+        let workspace = tree
+            .ok_or("the identity has no workspace authority")?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .ok_or("the identity's workspace is no longer hosted")?;
+        Ok(decide(&self.broker_actor().authority_in(workspace, &bound)))
     }
 }
 
@@ -700,19 +818,6 @@ fn confirmation_satisfied(
             Some(Confirmation::Phrase(phrase)),
         ) => phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected,
         _ => false,
-    }
-}
-
-/// The capability verb an action's declared permission requires, if any.
-/// The one mapping every admission and catalogue check uses.
-fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
-    match requirement {
-        tilo_actions::PermissionRequirement::None => None,
-        tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
@@ -752,11 +857,7 @@ fn admit_verified_join_at(
     // acting as the room's owner — a foreign device with the foreign-device
     // cap's role, there as in any room. Any other room id is a workspace.
     if verified.owns_person_room(&route.cluster_id) {
-        let role = if verified.capped {
-            foreign_device_role(CapRole::Owner, &[], now)
-        } else {
-            CapRole::Owner
-        };
+        let role = CapRole::Owner;
         return Ok(AdmittedJoinIdentity {
             host_scope: None,
             worker_registration: None,
@@ -770,15 +871,12 @@ fn admit_verified_join_at(
     }
     let workspace = workspace
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let mut role = workspace
-        .role_of_at(&principal_id, now)
-        .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
-    if verified.capped {
-        role = foreign_device_role(role, &workspace.capabilities, now);
+    // Taking part is being allowed to read the room now: as a member, or
+    // by a grant for a while.
+    if !BrokerActor::person(principal_id.clone()).reads_in(workspace, now) {
+        return Err("certified collaboration identity is not a workspace member".into());
     }
-    if role == CapRole::Denied {
-        return Err("certified collaboration identity is blocked in this workspace".into());
-    }
+    let role = workspace.role_of(&principal_id).unwrap_or(CapRole::Viewer);
     Ok(AdmittedJoinIdentity {
         host_scope: None,
         worker_registration: None,
@@ -821,21 +919,17 @@ fn admit_agent_delegation_at(
     let workspace =
         workspace.ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
     if admitted.verified.capped
-        || (workspace.owner.as_ref() != Some(&admitted.principal_id)
-            && workspace.decide_at(
-                &workspace.actor_for_person_at(&admitted.principal_id, now),
-                &ResourceRef::Workspace,
-                Verb::Admin,
-                now,
-            ) != CapDecision::Allow)
+        || !workspace.may_govern_at(&admitted.principal_id, roles::governance::GRANT, now)
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
-    let role = workspace
-        .role_of_agent_at(agent_id, now)
-        .filter(|role| *role != CapRole::Denied)
-        .ok_or_else(|| "the requested agent is not an active workspace member".to_string())?;
-    admitted.role = role;
+    if !workspace
+        .agent_members_at(now)
+        .iter()
+        .any(|(agent, _)| agent == agent_id)
+    {
+        return Err("the requested agent is not an active workspace member".into());
+    }
     admitted.agent_id = Some(agent_id.to_string());
     admitted.display_handle = Some(agent_id.to_string());
     Ok(())
@@ -1752,6 +1846,11 @@ impl CapnpBrokerState {
             .get("resource")
             .and_then(serde_json::Value::as_str)
             .ok_or("journal resource invalid")?;
+        let resource_kind = record
+            .intent
+            .get("resource_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("journal resource kind invalid")?;
         let action = record
             .intent
             .get("action")
@@ -1759,10 +1858,8 @@ impl CapnpBrokerState {
             .ok_or("journal action invalid")?;
         self.authorize_invocation_permission(
             &caller.room,
-            app,
-            resource,
-            action,
-            contract.permission,
+            (app, resource_kind, resource, action),
+            &contract.need(),
             &current.broker_actor(),
             now,
         )
@@ -4314,9 +4411,6 @@ impl CapnpBrokerState {
         app_id: &str,
         questions: &[DirectoryQuestion<'_>],
     ) -> Result<Vec<bool>, capnp::Error> {
-        if questions.iter().all(|question| question.verb.is_none()) {
-            return Ok(vec![true; questions.len()]);
-        }
         let now = self.policy_now_ns().map_err(capnp::Error::failed)? / 1_000_000_000;
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("the action broker has no workspace authority".into())
@@ -4325,23 +4419,21 @@ impl CapnpBrokerState {
             .decide_in_room(cluster_id, |workspace| {
                 let workspace = workspace
                     .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-                let caller = actor.policy_in(workspace, now);
                 Ok::<Vec<bool>, String>(
                     questions
                         .iter()
                         .map(|question| {
-                            question.verb.is_none_or(|verb| {
-                                workspace.decide_at(
-                                    &caller,
-                                    &ResourceRef::Action {
-                                        app: app_id.to_string(),
-                                        resource: question.resource.to_string(),
-                                        action: question.action.to_string(),
-                                    },
-                                    verb,
-                                    now,
-                                ) == CapDecision::Allow
-                            })
+                            let node = tilo_actions::action_node(
+                                &workspace.node(),
+                                app_id,
+                                question.resource_kind,
+                                question.resource,
+                                question.field,
+                                question.action,
+                            );
+                            // Listed when the actor may take it, or would be
+                            // asked first.
+                            actor.answer_in(workspace, &node, question.kind, now) != Answer::Deny
                         })
                         .collect(),
                 )
@@ -4422,31 +4514,32 @@ impl CapnpBrokerState {
         let (published, applications) = membership.decide_in_room(cluster_id, |workspace| {
             let workspace = workspace
                 .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-            let caller = actor.policy_in(workspace, now);
-            let allows = |resource: &ResourceRef, verb: Verb| {
-                workspace.decide_at(&caller, resource, verb, now) == CapDecision::Allow
-            };
             let published = published
                 .into_iter()
                 .map(|mut surface| {
+                    // Listed when the actor may take it, or would be asked
+                    // first.
                     surface.actions.retain(|action| {
-                        permission_verb(action.contract.permission).is_none_or(|verb| {
-                            allows(
-                                &ResourceRef::Action {
-                                    app: surface.app_id.clone(),
-                                    resource: action.resource.clone(),
-                                    action: action.action.clone(),
-                                },
-                                verb,
-                            )
-                        })
+                        actor.answer_in(
+                            workspace,
+                            &published_node(workspace, &surface.app_id, action),
+                            action.contract.kind,
+                            now,
+                        ) != Answer::Deny
                     });
                     surface
                 })
                 .collect::<Vec<_>>();
             let applications = applications
                 .into_iter()
-                .filter(|app| allows(&ResourceRef::App(app.package_id.clone()), Verb::Write))
+                .filter(|app| {
+                    actor.may_in(
+                        workspace,
+                        &app_node(workspace, &app.package_id),
+                        ActionKind::Undoable,
+                        now,
+                    )
+                })
                 .collect::<Vec<_>>();
             Ok::<_, String>((published, applications))
         })??;
@@ -4933,10 +5026,13 @@ impl CapnpBrokerState {
                 let workspace = workspace.ok_or("workspace no longer hosted")?;
                 durable_local_invocation::authorize_action_in(
                     workspace,
-                    &offered.0.app_id,
-                    &offered.1.resource,
-                    &offered.1.action,
-                    offered.1.contract.permission,
+                    (
+                        &offered.0.app_id,
+                        &offered.1.resource_kind,
+                        &offered.1.resource,
+                        &offered.1.action,
+                    ),
+                    &offered.1.contract.need(),
                     actor,
                     now,
                 )?;
@@ -5056,8 +5152,8 @@ impl CapnpBrokerState {
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
-                "resource": offered.1.resource, "action": offered.1.action,
-                "revision": revision });
+                "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
+                "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
                 context.before_admission(self, journal.host(), peer_id, &offered, &sender)?;
             }
@@ -6019,58 +6115,26 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
-        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
-            // The person room's devices hold the role their admission gave
-            // them (owner, or a foreign device's cap); there is no workspace
-            // policy to narrow it further.
-            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
-                return Err(capnp::Error::failed(
-                    "this device may not perform this document action in the person room".into(),
-                ));
-            }
-            return Ok(AuthorizedDocumentRoute {
-                artifact: envelope.artifact,
-                channel,
-                payload,
-            });
-        }
-        let membership = self.membership.as_ref().ok_or_else(|| {
-            capnp::Error::failed("certified session lost its membership authority".into())
-        })?;
-        let allowed = membership
-            .decide_in_room(&route.cluster_id, |workspace| {
-                let workspace = workspace.ok_or_else(|| {
-                    "certified document workspace is no longer available".to_string()
-                })?;
-                let mut role = match &admitted.agent_id {
-                    Some(agent) => workspace.role_of_agent_at(agent, now),
-                    None => workspace.role_of_at(&admitted.principal_id, now),
-                }
-                .ok_or_else(|| "current document membership expired".to_string())?;
-                if admitted.verified.capped {
-                    role = foreign_device_role(role, &workspace.capabilities, now);
-                }
-                let mut current = admitted.clone();
-                current.role = role;
-                let actor = current
-                    .policy_actor(workspace, now)
-                    .with_principal(Principal::App(route.app_id.clone()));
-                let resource = ResourceRef::Artifact {
-                    app: Some(route.app_id.clone()),
-                    kind: ArtifactKind::Note,
-                    instance: envelope.artifact,
-                };
-                let required = collab_types::caps::verb_for_opclass(envelope.op_class);
-                Ok::<bool, String>(
-                    workspace.decide_at(&actor, &resource, required, now) == CapDecision::Allow
-                        && role_permits(role, ArtifactKind::Note, envelope.op_class),
-                )
+        // The change the op makes must be allowed outright: a signed op
+        // carries no answer to a grant that would ask first.
+        let node = collab_types::validator::op_node(
+            &route.cluster_id,
+            Some(&route.app_id),
+            &route.record_id,
+            envelope.op_class,
+        );
+        let kind = collab_types::validator::op_kind(envelope.op_class);
+        let allowed = admitted
+            .with_current_authority(self.membership.as_ref(), &route.cluster_id, |authority| {
+                authority
+                    .decide(&node, kind, &tilo_desktop_model::context_at(now))
+                    .answer
+                    == Answer::Allow
             })
-            .and_then(std::convert::identity)
             .map_err(capnp::Error::failed)?;
         if !allowed {
             return Err(capnp::Error::failed(
-                "current workspace capability denies this document action".into(),
+                "current workspace grants deny this document action".into(),
             ));
         }
         Ok(AuthorizedDocumentRoute {
@@ -6463,16 +6527,21 @@ impl CapnpBrokerState {
             .ok_or("native context has no membership authority")?
             .decide_in_room(&route.cluster_id, |workspace| {
                 let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let mut agents = workspace.agent_members_in_room_at(&route.cluster_id, now);
+                let mut agents = workspace.agent_members_at(now);
                 agents.sort_by(|left, right| left.0.cmp(&right.0));
-                let mut people = workspace.roster_in_room_at(&route.cluster_id, now);
-                people.sort_by(|left, right| left.0.cmp(&right.0));
+                let mut people: Vec<String> = workspace
+                    .roster()
+                    .into_iter()
+                    .map(|(person, _)| person)
+                    .filter(|person| !workspace.is_blocked(person))
+                    .collect();
+                people.sort();
                 // Presence may supply a label, but only owner-backed
                 // membership supplies the identity. An offline member
                 // remains a member.
                 let people = people
                     .into_iter()
-                    .map(|(person, _)| {
+                    .map(|person| {
                         let name = workspace
                             .collaborators
                             .iter()
@@ -9511,10 +9580,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         let workspace = match membership
             .decide_in_room(&self.route().cluster_id, |workspace| {
                 let workspace = workspace.ok_or("the application workspace is no longer hosted")?;
-                let caller = actor.policy_in(workspace, now);
-                if workspace.decide_at(&caller, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-                    != CapDecision::Allow
-                {
+                if !actor.may_in(
+                    workspace,
+                    &app_node(workspace, &app_id),
+                    ActionKind::Undoable,
+                    now,
+                ) {
                     return Err("the caller is not allowed to launch that application");
                 }
                 Ok(workspace.clone())
@@ -9738,22 +9809,30 @@ fn permits_directory_row(
 }
 
 /// What current authority must decide for one directory row: the action
-/// whose contract governs the row and the verb that contract requires
-/// (`None`: the contract requires none).
+/// whose contract governs the row, where it sits and what kind it is.
 struct DirectoryQuestion<'a> {
+    resource_kind: &'a str,
     resource: &'a str,
     action: &'a str,
-    verb: Option<Verb>,
+    field: Option<&'a str>,
+    kind: ActionKind,
 }
 
 impl<'a> DirectoryQuestion<'a> {
     /// The question the row's decoded contract asks. Resource-only rows
     /// carry the visibility contract.
-    fn of(resource: &'a str, action: &'a str, contract: &tilo_actions::ActionContract) -> Self {
+    fn of(
+        resource_kind: &'a str,
+        resource: &'a str,
+        action: &'a str,
+        contract: &'a tilo_actions::ActionContract,
+    ) -> Self {
         Self {
+            resource_kind,
             resource,
             action,
-            verb: permission_verb(contract.permission),
+            field: contract.field.as_deref(),
+            kind: contract.kind,
         }
     }
 }
@@ -9849,6 +9928,7 @@ fn directory_row_question(
             let published = published_directory_action(row)?;
             validate_resource_view_descriptors(std::slice::from_ref(&published))?;
             Ok(DirectoryQuestion::of(
+                &row.resource_kind,
                 &row.resource,
                 action,
                 &descriptor.contract,
@@ -9867,6 +9947,7 @@ fn directory_row_question(
                 true,
             )?;
             Ok(DirectoryQuestion::of(
+                &row.resource_kind,
                 &row.resource,
                 &visibility.action,
                 &visibility.contract,
@@ -9991,6 +10072,48 @@ fn policy_system_time(state: &CapnpBrokerState) -> Option<std::time::SystemTime>
     std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(now))
 }
 
+/// `envelope` validated against its author's current authority in the room
+/// and the channel's state, or `None` when either is unavailable.
+fn validate_signed_op(
+    state: &Arc<CapnpBrokerState>,
+    route: &CrdtRoute,
+    verified_identity: &AdmittedJoinIdentity,
+    artifact: ArtifactId,
+    envelope: &SignedOp,
+) -> Option<Result<(), ValidationError>> {
+    let now = policy_system_time(state)?;
+    let validation = verified_identity.with_current_authority(
+        state.membership.as_ref(),
+        &route.cluster_id,
+        |author| {
+            let Ok(mut ch) = state.broker_channels.lock() else {
+                return None;
+            };
+            let ch_state = ch.state_for(artifact);
+            ch_state.room.clone_from(&route.cluster_id);
+            ch_state.artifacts.insert(artifact, ArtifactKind::Note);
+            ch_state
+                .artifact_apps
+                .insert(artifact, route.app_id.clone());
+            ch_state
+                .artifact_records
+                .insert(artifact, route.record_id.clone());
+            Some(validate_admitted_inbound_op(
+                envelope,
+                author,
+                ch_state,
+                now,
+                Duration::from_secs(300),
+            ))
+        },
+    );
+    match validation {
+        Ok(Some(validation)) => Some(validation),
+        Ok(None) => None,
+        Err(error) => Some(Err(ValidationError::NotGranted(error))),
+    }
+}
+
 fn handle_signed_op_send_for_artifact(
     state: &Arc<CapnpBrokerState>,
     peer_id: u64,
@@ -9999,25 +10122,9 @@ fn handle_signed_op_send_for_artifact(
     artifact: ArtifactId,
     envelope: SignedOp,
 ) {
-    let Some(now) = policy_system_time(state) else {
+    let Some(validation) = validate_signed_op(state, route, verified_identity, artifact, &envelope)
+    else {
         return;
-    };
-    let validation = {
-        let Ok(mut ch) = state.broker_channels.lock() else {
-            return;
-        };
-        let ch_state = ch.state_for(artifact);
-        ch_state.artifacts.insert(artifact, ArtifactKind::Note);
-        ch_state
-            .artifact_apps
-            .insert(artifact, route.app_id.clone());
-        validate_admitted_inbound_op(
-            &envelope,
-            verified_identity.role,
-            ch_state,
-            now,
-            Duration::from_secs(300),
-        )
     };
     match validation {
         Ok(()) => {
@@ -12157,7 +12264,9 @@ pub mod tests {
     #[cfg(test)]
     use crate::collab_outbound::recording::{RecordingSink, Sent};
     #[cfg(test)]
-    use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
+    use crate::test_support::Grants as _;
+    #[cfg(test)]
+    use collab_types::{Ed25519PublicKey, Role, sign_op};
     #[cfg(test)]
     use ed25519_dalek::Signer as _;
     #[cfg(test)]
@@ -13578,7 +13687,7 @@ pub mod tests {
             crate::test_support::WorkspaceId(71),
             "Directory test room",
         );
-        workspace.owner = Some("fixture-owner".to_string());
+        workspace.set_owner("fixture-owner".to_string());
         tree.workspaces.push(workspace);
         tree.set_active(crate::test_support::WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
@@ -13882,7 +13991,7 @@ pub mod tests {
             out.get_rows()
                 .unwrap()
                 .get(1)
-                .set_visibility_contract_json(r#"{"permission":"everyone"}"#);
+                .set_visibility_contract_json(r#"{"kind":"everyone"}"#);
             Promise::ok(())
         }
     }
@@ -14096,8 +14205,8 @@ pub mod tests {
             .read()
             .active_workspace()
             .unwrap()
-            .owner
-            .clone()
+            .owner()
+            .cloned()
             .unwrap();
         let job = fixture
             .state
@@ -14242,14 +14351,10 @@ pub mod tests {
                 crate::test_support::WorkspaceId(101),
                 "Exact Agent identity",
             );
-            workspace.owner = Some(principal.clone());
+            workspace.set_owner(principal.clone());
             let route = CrdtRoute::cluster(workspace.room.to_string());
             for agent in agents {
-                workspace.grant_capability(CapOverride::membership(
-                    Subject::agent(agent),
-                    route.cluster_id.clone(),
-                    Verb::Comment,
-                ));
+                workspace.admit_agent(agent, crate::test_support::KindSet::READ);
             }
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
@@ -14490,7 +14595,6 @@ pub mod tests {
         assert!(workspace_control_role_allowed(Role::Editor));
         assert!(!workspace_control_role_allowed(Role::Commenter));
         assert!(!workspace_control_role_allowed(Role::Viewer));
-        assert!(!workspace_control_role_allowed(Role::Denied));
     }
 
     #[cfg(test)]
@@ -14506,13 +14610,9 @@ pub mod tests {
     fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
         let mut tree = membership.write();
         let workspace = &mut tree.workspaces[0];
-        workspace.owner = None;
-        workspace.capabilities.clear();
-        workspace.capabilities.push(CapOverride::membership(
-            Subject::person(principal),
-            room,
-            collab_types::Verb::Read,
-        ));
+        let _ = room;
+        workspace.policy.owner = None;
+        workspace.admit(principal, Role::Viewer);
         drop(tree);
     }
 
@@ -14523,11 +14623,7 @@ pub mod tests {
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(1), "Member room");
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(crate::test_support::CapOverride::membership(
-            crate::test_support::Subject::person(&principal),
-            workspace.room.to_string(),
-            crate::test_support::Verb::Write,
-        ));
+        workspace.admit(principal.clone(), crate::test_support::Role::Editor);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -14563,11 +14659,11 @@ pub mod tests {
 
     #[test]
     fn a_foreign_device_is_refused_actions_above_the_workspace_cap() {
-        use tilo_actions::PermissionRequirement::{Admin, Invite, Write};
+        use tilo_actions::ActionKind::{Outside, Undoable};
         let root = SigningKey::from_bytes(&[24; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(4), "Actions");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let room = workspace.room.to_string();
         let route = CrdtRoute::cluster(room.clone());
         let mut tree = WorkspaceTree::default();
@@ -14585,24 +14681,29 @@ pub mod tests {
             Some(tree.shared()),
             None,
         );
-        let authorize = |admitted: &AdmittedJoinIdentity, permission| {
+        let authorize = |admitted: &AdmittedJoinIdentity, kind| {
             state.authorize_invocation_permission(
                 &room,
-                "so.tilo.settings",
-                "settings.workspace",
-                "workspace.rename",
-                permission,
+                (
+                    "so.tilo.settings",
+                    "settings.workspace",
+                    "settings.workspace",
+                    "workspace.rename",
+                ),
+                &tilo_actions::ActionNeed::of(kind),
                 &admitted.broker_actor(),
                 0,
             )
         };
 
-        for permission in [Admin, Invite, Write] {
-            authorize(&native, permission).unwrap();
+        for kind in [Outside, Undoable] {
+            authorize(&native, kind).unwrap();
         }
-        assert!(authorize(&foreign, Admin).is_err());
-        assert!(authorize(&foreign, Invite).is_err());
-        authorize(&foreign, Write).unwrap();
+        assert!(
+            authorize(&foreign, Outside).is_err(),
+            "reaching outside asks first on a device not theirs, and nobody answered"
+        );
+        authorize(&foreign, Undoable).unwrap();
     }
 
     /// Governs every room for one device; admits every certificate.
@@ -14628,7 +14729,7 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[25; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(5), "Own");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
         let room = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -14662,10 +14763,13 @@ pub mod tests {
             let actor = state.certified_person(&room, cert);
             let admin = state.authorize_invocation_permission(
                 &room,
-                "so.tilo.settings",
-                "settings.workspace",
-                "workspace.rename",
-                tilo_actions::PermissionRequirement::Admin,
+                (
+                    "so.tilo.settings",
+                    "settings.workspace",
+                    "settings.workspace",
+                    "workspace.rename",
+                ),
+                &tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Outside),
                 &actor,
                 0,
             );
@@ -14673,7 +14777,7 @@ pub mod tests {
         };
 
         assert_eq!(admin(&foreign_cert(governor)), (CapRole::Owner, true));
-        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Editor, false));
+        assert_eq!(admin(&foreign_cert([8; 32])), (CapRole::Owner, false));
     }
 
     #[test]
@@ -14681,12 +14785,8 @@ pub mod tests {
         let root = SigningKey::from_bytes(&[23; 32]);
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(3), "Foreign");
-        workspace.owner = Some(principal_id_for_root(root.verifying_key().to_bytes()));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Comment,
-        ));
+        workspace.set_owner(principal_id_for_root(root.verifying_key().to_bytes()));
+        workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
@@ -14700,14 +14800,33 @@ pub mod tests {
         admit_agent_delegation(&tree, &route, &mut admitted, "scribe").unwrap();
 
         let mut admitted = admit_verified_join(&tree, &route, foreign.clone()).unwrap();
-        assert_eq!(admitted.role, CapRole::Editor);
         assert!(admit_agent_delegation(&tree, &route, &mut admitted, "scribe").is_err());
+        let changes = |admitted: &AdmittedJoinIdentity, tree: &WorkspaceTree| {
+            admitted
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(
+                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            ActionKind::Undoable,
+                            &tilo_desktop_model::context_at(0),
+                        )
+                        .answer
+                })
+                .unwrap()
+        };
+        assert_eq!(changes(&admitted, &tree), Answer::Allow);
 
-        tree.workspaces[0].grant_capability(collab_types::foreign_device::foreign_device_cap(
-            Verb::Comment,
-        ));
+        tree.workspaces[0].deny(
+            crate::test_support::Subject::ForeignDevice,
+            &crate::test_support::TreePath::root(),
+            crate::test_support::KindSet::UNDOABLE,
+        );
         let admitted = admit_verified_join(&tree, &route, foreign).unwrap();
-        assert_eq!(admitted.role, CapRole::Commenter);
+        assert_eq!(
+            changes(&admitted, &tree),
+            Answer::Deny,
+            "the room bounds devices that are not their owner's further"
+        );
     }
 
     #[test]
@@ -14716,13 +14835,9 @@ pub mod tests {
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(44), "Agent room");
-        workspace.owner = Some(principal);
+        workspace.set_owner(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        let agent_membership = workspace.grant_capability(CapOverride::membership(
-            Subject::agent("scribe"),
-            workspace.room.to_string(),
-            Verb::Comment,
-        ));
+        let agent_membership = workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -14732,16 +14847,28 @@ pub mod tests {
             .expect("the owner may operate an admitted agent");
         assert_eq!(admitted.broker_actor().id, "agent:scribe");
         assert!(admitted.broker_actor().is_agent);
-        assert_eq!(admitted.role, CapRole::Commenter);
-        assert!(
+        let answer = |kind| {
             admitted
-                .policy_actor(&tree.workspaces[0], 0)
-                .principals
-                .contains(&Principal::Agent("scribe".into()))
+                .with_authority(Some(&tree.desktop), &route.cluster_id, |authority| {
+                    authority
+                        .decide(
+                            &tree.workspaces[0].node().app("so.tilo.notes"),
+                            kind,
+                            &tilo_desktop_model::context_at(0),
+                        )
+                        .answer
+                })
+                .unwrap()
+        };
+        assert_eq!(answer(ActionKind::Read), Answer::Allow, "the agent reads");
+        assert_eq!(
+            answer(ActionKind::Undoable),
+            Answer::Deny,
+            "and does only what its own grant allows, whoever launched it"
         );
 
         let membership = tree.shared();
-        assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+        assert!(membership.write().workspaces[0].revoke_grant(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -14789,34 +14916,22 @@ pub mod tests {
         let reed = "reed";
         let mut workspace =
             crate::test_support::Workspace::new(crate::test_support::WorkspaceId(46), "Roster");
-        workspace.owner = Some(person.clone());
+        workspace.set_owner(person.clone());
         let room = workspace.room.to_string();
         let other_person = "other-person";
-        let person_membership = workspace.grant_capability(CapOverride::membership(
-            Subject::person(other_person),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person("person-in-other-room"),
-            uuid::Uuid::new_v4().to_string(),
-            Verb::Read,
-        ));
-        let collision = workspace.grant_capability(CapOverride::membership(
-            Subject::agent(&person),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent(tide),
-            room.clone(),
-            Verb::Read,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("wrong-room"),
-            uuid::Uuid::new_v4().to_string(),
-            Verb::Read,
-        ));
+        workspace.admit(other_person, crate::test_support::Role::Viewer);
+        workspace.allow_in_room(
+            crate::test_support::Subject::person("person-in-other-room"),
+            &uuid::Uuid::new_v4().to_string(),
+            crate::test_support::KindSet::READ,
+        );
+        let collision = workspace.admit_agent(&person, crate::test_support::KindSet::READ);
+        workspace.admit_agent(tide, crate::test_support::KindSet::READ);
+        workspace.allow_in_room(
+            crate::test_support::Subject::agent("wrong-room"),
+            &uuid::Uuid::new_v4().to_string(),
+            crate::test_support::KindSet::READ,
+        );
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let route = CrdtRoute::record("so.tilo.chat", &room, "main");
@@ -14927,8 +15042,8 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
-        assert!(membership.write().workspaces[0].revoke_capability(&collision));
-        assert!(membership.write().workspaces[0].revoke_capability(&person_membership));
+        assert!(membership.write().workspaces[0].revoke_grant(&collision));
+        assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
         let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
@@ -14952,11 +15067,7 @@ pub mod tests {
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
         );
-        membership.write().workspaces[0].grant_capability(CapOverride::membership(
-            Subject::agent(reed),
-            room,
-            Verb::Read,
-        ));
+        membership.write().workspaces[0].admit_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
         let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
@@ -14997,7 +15108,7 @@ pub mod tests {
                 .is_err(),
             "the actual stream read must be waiting before revocation"
         );
-        membership.write().workspaces[0].owner = None;
+        membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
         let Err(error) = pending.await else {
             panic!("revocation must terminate an already waiting native read");
@@ -15014,16 +15125,8 @@ pub mod tests {
             "Delegation room",
         );
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        workspace.grant_capability(CapOverride::membership(
-            Subject::person(&member_id),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
-        workspace.grant_capability(CapOverride::membership(
-            Subject::agent("operator"),
-            workspace.room.to_string(),
-            Verb::Write,
-        ));
+        workspace.admit(member_id, crate::test_support::Role::Editor);
+        workspace.admit_agent("operator", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
@@ -15041,11 +15144,7 @@ pub mod tests {
             "Revocation room",
         );
         let route = CrdtRoute::cluster(workspace.room.to_string());
-        let membership = workspace.grant_capability(crate::test_support::CapOverride::membership(
-            crate::test_support::Subject::person(&member_id),
-            workspace.room.to_string(),
-            crate::test_support::Verb::Read,
-        ));
+        workspace.admit(member_id.clone(), crate::test_support::Role::Viewer);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -15061,7 +15160,7 @@ pub mod tests {
             Some(membership_tree.clone()),
             None,
         );
-        assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
+        assert!(membership_tree.write().workspaces[0].dismiss(&member_id));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing membership rejects the certified session's next operation"
@@ -15342,10 +15441,21 @@ pub mod tests {
             },
         )
         .expect("the root's foreign device joins its person room");
+        let governs = foreign
+            .with_authority(None, &route.cluster_id, |authority| {
+                authority
+                    .decide(
+                        &roles::governance_action(&route.cluster_id, roles::governance::INVITE),
+                        roles::GOVERNANCE_KIND,
+                        &tilo_desktop_model::context_at(0),
+                    )
+                    .answer
+            })
+            .unwrap();
         assert_eq!(
-            foreign.role,
-            CapRole::Editor,
-            "a foreign device keeps the foreign-device cap in the person room too"
+            governs,
+            Answer::Deny,
+            "a foreign device keeps the foreign-device bound in the person room too"
         );
         let strangers_room = CrdtRoute::record(
             "so.tilo.tube",
@@ -15548,7 +15658,7 @@ pub mod tests {
                 operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Write,
+                    kind: tilo_actions::ActionKind::Undoable,
                     ..Default::default()
                 },
                 view: None,
@@ -15731,7 +15841,11 @@ pub mod tests {
                 .contains("files.entry:owner")
         );
 
-        tree.lock().unwrap().workspaces[0].set_owner("replacement");
+        {
+            let mut tree = tree.lock().unwrap();
+            tree.workspaces[0].set_owner("replacement");
+            tree.workspaces[0].dismiss("owner");
+        }
         state.publish_action_catalogue();
         assert!(
             !current_catalogue(&mut rx)
@@ -15943,7 +16057,7 @@ pub mod tests {
                 operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Write,
+                    kind: tilo_actions::ActionKind::Undoable,
                     ..Default::default()
                 },
                 view: None,

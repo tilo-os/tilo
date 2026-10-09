@@ -25,7 +25,6 @@
 //! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
 //! trusted, since a peer naming itself could name anybody.
 
-use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -2000,25 +1999,25 @@ mod tests {
         a_session_that_names_nobody_is_labelled_with_its_handle();
     }
 
-    /// A workspace `owner` owns, whose room admits `member` with `verb` —
-    /// the membership capability invite redemption writes, keyed by the
-    /// person's key hex.
+    /// A workspace `owner` owns, whose room admits `member` as `role` —
+    /// the membership invite redemption writes, keyed by the person's key
+    /// hex.
     fn room_admitting(
         owner: &str,
         member: &str,
-        verb: collab_types::Verb,
+        role: crate::shell::state::CapRole,
     ) -> crate::shell::state::Workspace {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut ws = Workspace::new(WorkspaceId(1), "Design review");
-        ws.room = crate::shell::state::RoomId::new();
+        ws.set_room(crate::shell::state::RoomId::new());
         ws.set_owner(owner.to_string());
-        ws.grant_as(
-            &owner.to_string(),
-            collab_types::CapOverride::membership(
-                collab_types::Subject::person(member),
-                ws.room.to_string(),
-                verb,
-            ),
+        ws.govern_as_at(
+            owner,
+            tilo_action_policy::Change::AddMember {
+                person: member.to_owned(),
+                role,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner admits the member");
         ws
@@ -2035,7 +2034,7 @@ mod tests {
         // invited as an editor; the room calls him "Bob" and his
         // certified device belongs to his key. The chip is the policy's.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Write);
+            let ws = room_admitting("ada", &bob, CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2052,7 +2051,7 @@ mod tests {
         // A certified device is asked about by its person only: a label
         // that happens to read as the owner's id lends it nothing.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Read);
+            let ws = room_admitting("ada", &bob, CapRole::Viewer);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob.clone())]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2067,7 +2066,7 @@ mod tests {
         // The inviter labels its own endpoint with its user id and has no
         // certified device in the room; that row keeps the owner chip.
         {
-            let ws = room_admitting("ada", &bob, collab_types::Verb::Write);
+            let ws = room_admitting("ada", &bob, CapRole::Editor);
             let labels = PeerLabels::from([(handle, "ada".to_string())]);
             let rows = room_roster(
                 &ws,
@@ -2085,7 +2084,7 @@ mod tests {
 
         // Phase `a_certified_person_without_membership_has_no_chip`.
         {
-            let ws = room_admitting("ada", "someone-else", collab_types::Verb::Write);
+            let ws = room_admitting("ada", "someone-else", CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);
             let principals = std::collections::BTreeMap::from([(handle, bob)]);
             let rows = room_roster(&ws, &labels, &arrived, 1, &principals);
@@ -2661,7 +2660,7 @@ mod two_sessions {
         let strip = StripId(77);
         let ws_id = WorkspaceId(7);
         let mut ws = Workspace::new(ws_id, "Desk");
-        ws.room = room;
+        ws.set_room(room);
         ws.strips = vec![Strip {
             id: strip,
             name: "Main".into(),

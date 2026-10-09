@@ -908,7 +908,7 @@ mod tests {
                 Subject::User(collab_types::Ed25519PublicKey(subject)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             assert!(
                 authority
@@ -945,7 +945,7 @@ mod tests {
         }
     }
     use crate::Access;
-    use collab_types::{Effect, Scope, Subject, Verb};
+    use collab_types::{Access as CapAccess, Effect, Scope, Subject};
     use std::sync::Arc;
 
     #[cfg(unix)]

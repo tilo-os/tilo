@@ -392,10 +392,7 @@ fn text_operations_snapshot_public_read_stamps_canonical_record() {
                 && action.resource_kind == "code_editor.file"
         })
         .unwrap();
-    assert_eq!(
-        descriptor.contract.permission,
-        ui::tilo_actions::PermissionRequirement::Read
-    );
+    assert_eq!(descriptor.contract.kind, ui::tilo_actions::ActionKind::Read);
     let snapshot = invoke(
         &mut app,
         &file,

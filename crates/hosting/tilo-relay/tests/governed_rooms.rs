@@ -135,7 +135,7 @@ fn text(peer: &StatePeer, key: &str) -> Option<String> {
 fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
     peer.permissions(device, SystemTime::now())
         .ok()
-        .map(|(role, _, _)| role)
+        .map(|member| member.role)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

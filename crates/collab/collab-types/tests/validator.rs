@@ -21,11 +21,12 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
+    Clearance, DEFAULT_ROOM, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
     validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{Authority, Grant, Party, Subject, roles};
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
@@ -181,6 +182,14 @@ fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519P
     issuer_pub
 }
 
+fn presets() -> Vec<Grant> {
+    roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner))
+}
+
+fn party(grants: &[Grant], role: Role) -> Authority<'_> {
+    Authority::person(Party::new(vec![Subject::Role(role)], grants))
+}
+
 fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError {
     match result {
         Err(e) => e,
@@ -238,6 +247,7 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
 /// yet still rejects forgery, a forbidding role, a stale clock and replay.
 #[test]
 fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
+    let g = presets();
     // Case: admission with no attestations or signers at all.
     let mut f = fixture();
     f.state.attestations.clear();
@@ -246,7 +256,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
     assert!(
         validate_admitted_inbound_op(
             &op,
-            Role::Editor,
+            &party(&g, Role::Editor),
             &mut f.state,
             t(10),
             Duration::from_secs(5),
@@ -266,22 +276,43 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
     let mut forged = valid.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_admitted_inbound_op(&forged, Role::Editor, &mut f.state.clone(), t(10), skew),
+        validate_admitted_inbound_op(
+            &forged,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
         Err(ValidationError::BadOpSignature(_))
     ));
+    assert!(matches!(
+        validate_admitted_inbound_op(
+            &valid,
+            &party(&g, Role::Viewer),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
+        Err(ValidationError::NotGranted(_))
+    ));
     assert_eq!(
-        validate_admitted_inbound_op(&valid, Role::Viewer, &mut f.state.clone(), t(10), skew),
-        Err(ValidationError::RoleForbidsOpClass)
-    );
-    assert_eq!(
-        validate_admitted_inbound_op(&valid, Role::Editor, &mut f.state.clone(), t(20), skew),
+        validate_admitted_inbound_op(
+            &valid,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(20),
+            skew
+        ),
         Err(ValidationError::OutsideValidityWindow)
     );
 
     let mut state = f.state;
-    assert!(validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew).is_ok());
+    assert!(
+        validate_admitted_inbound_op(&valid, &party(&g, Role::Editor), &mut state, t(10), skew)
+            .is_ok()
+    );
     assert!(matches!(
-        validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew),
+        validate_admitted_inbound_op(&valid, &party(&g, Role::Editor), &mut state, t(10), skew),
         Err(ValidationError::ReplaySeq {
             seen: 7,
             incoming: 7
@@ -296,6 +327,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 /// tampered op signature, and an author who is not the attestation subject.
 #[test]
 fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
+    let g = presets();
     let mut f = fixture();
     let old = build_op(&f, OpClass::Splice, t(10), 3);
     let skew = Duration::from_secs(300);
@@ -303,7 +335,7 @@ fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_fut
     assert_eq!(
         validate_admitted_inbound_op(
             &old,
-            Role::Editor,
+            &party(&g, Role::Editor),
             &mut f.state.clone(),
             an_hour_later,
             skew
@@ -313,26 +345,51 @@ fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_fut
     );
     let mut state = f.state.clone();
     assert!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew).is_ok()
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut state,
+            an_hour_later,
+            skew
+        )
+        .is_ok()
     );
     assert!(matches!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew),
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut state,
+            an_hour_later,
+            skew
+        ),
         Err(ValidationError::ReplaySeq { .. })
     ));
     assert_eq!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut f.state.clone(), t(0), skew),
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(0),
+            skew
+        ),
         Ok(()),
         "within the skew ahead",
     );
     let future = build_op(&f, OpClass::Splice, t(10 + 3600), 4);
     assert_eq!(
-        validate_replayed_inbound_op(&future, Role::Editor, &mut f.state.clone(), t(10), skew),
+        validate_replayed_inbound_op(
+            &future,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
         Err(ValidationError::OutsideValidityWindow),
     );
     let mut forged = old.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state, t(10), skew),
+        validate_replayed_inbound_op(&forged, &party(&g, Role::Editor), &mut f.state, t(10), skew),
         Err(ValidationError::BadOpSignature(_))
     ));
 }
@@ -423,10 +480,10 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
         t(10),
         &f.author_sk,
     );
-    assert_eq!(
+    assert!(matches!(
         rejection("step5 commenter", validate_inbound_op(&op, &mut f.state)),
-        ValidationError::RoleForbidsOpClass
-    );
+        ValidationError::NotGranted(_)
+    ));
 
     // Step 5: unknown artifact (not registered with the channel).
     let mut f = fixture();

@@ -42,7 +42,7 @@ pub(crate) fn next_id() -> u64 {
 
 fn empty_workspace(id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
     let mut workspace = Workspace::new(id, name);
-    workspace.room = RoomId::new();
+    workspace.set_room(RoomId::new());
     workspace.strips = strips;
     workspace
 }
@@ -199,12 +199,14 @@ impl TestTree {
         )
     }
 
-    fn doc_insert_capability(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
-        if tilo_desktop_model::desktop_doc::insert_capability(&mut self.doc, workspace_id, cap) {
+    fn doc_insert_sandbox(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
+        if tilo_desktop_model::desktop_doc::insert_sandbox(&mut self.doc, workspace_id, cap) {
             self.commit_room_change();
         }
     }
 
+    /// Let an app reach a sandboxed resource, as `grantor`, who must be
+    /// allowed to grant in the room.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
@@ -216,13 +218,17 @@ impl TestTree {
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)?;
-        let id = workspace.grant_as_at(grantor, cap, tilo_clock::unix_now())?;
-        let stored = workspace
-            .capabilities
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()?;
-        self.doc_insert_capability(workspace_id, &stored);
+        if !workspace.may_govern_at(
+            grantor,
+            tilo_action_policy::roles::governance::GRANT,
+            tilo_clock::unix_now(),
+        ) {
+            return None;
+        }
+        let id = workspace
+            .grant_sandbox(cap.granted_by(collab_types::caps::Principal::Person(grantor.clone())));
+        let stored = workspace.sandbox.iter().find(|c| c.id == id).cloned()?;
+        self.doc_insert_sandbox(workspace_id, &stored);
         Some(id)
     }
 
@@ -240,10 +246,15 @@ impl TestTree {
         else {
             return false;
         };
-        if !workspace.revoke_as_at(revoker, cap_id, tilo_clock::unix_now()) {
+        if !workspace.may_govern_at(
+            revoker,
+            tilo_action_policy::roles::governance::REVOKE,
+            tilo_clock::unix_now(),
+        ) || !workspace.revoke_sandbox(cap_id)
+        {
             return false;
         }
-        if tilo_desktop_model::desktop_doc::revoke_capability(&mut self.doc, workspace_id, cap_id) {
+        if tilo_desktop_model::desktop_doc::revoke_sandbox(&mut self.doc, workspace_id, cap_id) {
             self.commit_room_change();
         }
         true
@@ -252,7 +263,7 @@ impl TestTree {
     pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
-            if workspace.owner.is_none() {
+            if workspace.owner().is_none() {
                 workspace.set_owner(user.clone());
                 adopted.push(workspace.id);
             }
@@ -266,10 +277,10 @@ impl TestTree {
                 .workspaces
                 .iter()
                 .find(|w| w.id == *id)
-                .map(|w| w.capabilities.clone())
+                .map(|w| w.sandbox.clone())
                 .unwrap_or_default();
             for cap in caps {
-                self.doc_insert_capability(*id, &cap);
+                self.doc_insert_sandbox(*id, &cap);
             }
         }
         adopted
@@ -491,7 +502,7 @@ impl ActivityHost for TestHost {
     fn all_workspaces_available(&self) -> bool {
         true
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members_at(tilo_clock::unix_now())
     }
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {

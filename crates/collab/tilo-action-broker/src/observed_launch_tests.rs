@@ -64,9 +64,9 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             assert_eq!(custody.certificate().unwrap(),
                 *env.authority.additional_certificates.lock().unwrap().last().unwrap());
             assert!(!pending.is_finished(), "custody is not actual adoption");
-            let grants = std::mem::take(&mut env.membership.write().workspaces[0].capabilities);
+            let grants = std::mem::take(&mut env.membership.write().workspaces[0].policy.grants);
             assert!(custody.certificate().is_err(), "fresh rights, not the launch snapshot, govern admission");
-            env.membership.write().workspaces[0].capabilities = grants;
+            env.membership.write().workspaces[0].policy.grants = grants;
             assert!(custody.certificate().is_ok());
             host.cancel(&person, &original).unwrap();
             assert!(
@@ -189,10 +189,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 );
                 if scenario == "revoked" {
                     let mut tree = env.membership.write();
-                    let grants = tree.workspaces[0].capabilities.clone();
-                    for grant in grants {
-                        tree.workspaces[0].revoke_capability(&grant.id);
-                    }
+                    tree.workspaces[0].revoke_grants_matching(|_| true);
                 } else if scenario == "expired" {
                     env.control.advance_monotonic(Duration::from_secs(80));
                 }
@@ -287,25 +284,20 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     },
                 )
                 .await;
-                let room = env.route.cluster_id.clone();
+                use crate::test_support::{Grants as _, KindSet, Subject};
                 let target = "host:org.example.App.desktop";
-                let target_grant = CapOverride::grant(
-                    Subject::agent("scribe"),
-                    collab_types::Scope::App(target.into()),
-                    Verb::Write,
-                );
-                for cap in [
-                    CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
-                    CapOverride::grant(
-                        Subject::agent("scribe"),
-                        collab_types::Scope::App(env.route.app_id.clone()),
-                        Verb::Write,
-                    ),
-                ] {
-                    env.membership.write().workspaces[0].grant_capability(cap);
+                {
+                    let workspace = &mut env.membership.write().workspaces[0];
+                    workspace.admit_agent("scribe", KindSet::READ);
+                    workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 }
-                let target_grant_id = (scenario != "denied")
-                    .then(|| env.membership.write().workspaces[0].grant_capability(target_grant));
+                let target_grant_id = (scenario != "denied").then(|| {
+                    env.membership.write().workspaces[0].allow_app(
+                        Subject::agent("scribe"),
+                        target,
+                        KindSet::ALL,
+                    )
+                });
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let original = id(0xc510);
                 invoke(&agent.handle, &rig.binding, original).await.unwrap();
@@ -351,7 +343,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 if scenario == "revoked" {
                     assert!(
                         env.membership.write().workspaces[0]
-                            .revoke_capability(target_grant_id.as_ref().unwrap())
+                            .revoke_grant(target_grant_id.as_ref().unwrap())
                     );
                 }
                 adopt.send(Ok(())).unwrap();

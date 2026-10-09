@@ -405,7 +405,7 @@ impl ActivityHost for NativeActivityHost {
     fn app_display_name(&self, app: &str) -> Option<String> {
         crate::shell::launcher::display_name_for_app_id(app)
     }
-    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, collab_types::role::Role)> {
+    fn agent_members(&self, workspace: &Workspace) -> Vec<(String, tilo_action_policy::KindSet)> {
         workspace.agent_members()
     }
     fn agent_is_live(&self, room: &str, agent: &str) -> bool {

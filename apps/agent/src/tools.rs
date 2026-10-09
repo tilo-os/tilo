@@ -1198,9 +1198,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     }
     let _ = writeln!(
         s,
-        "  contract: permission={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
+        "  contract: kind={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
          reversible={}; execution={:?}; result={:?}",
-        c.permission, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+        c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
     );
     if !d.params.is_empty() {
         s.push_str("  structured arguments:\n");

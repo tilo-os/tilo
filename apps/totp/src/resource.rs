@@ -132,16 +132,16 @@ pub enum TotpEffect {
     ///
     /// Opens the protected form on this device: a setup link carries the
     /// secret, so it is never an action argument.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     AddAccount,
     /// Open account.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     Open {
         #[param("Id of the account")]
         account: String,
     },
     /// Copy current code.
-    #[effect(privileged, permission = "read")]
+    #[effect(privileged, kind = "read")]
     CopyCode {
         #[param("Id of the account")]
         account: String,
@@ -149,7 +149,7 @@ pub enum TotpEffect {
     /// Set up on this device.
     ///
     /// Opens the protected form for the account's secret on this device.
-    #[effect(permission = "read")]
+    #[effect(kind = "read")]
     SetUpLocal {
         #[param("Id of the account")]
         account: String,

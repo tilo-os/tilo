@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn reader_pointer_and_resource_join_use_the_same_service_without_document_mutation() {
-        use ui::permissions::{Actor, PermissionContext, Role};
+        use ui::permissions::{PermissionContext, Role};
         use ui::widget::Collaborative;
         let mut doc = automerge::AutoCommit::new();
         crate::demo::seed(&mut doc).unwrap();
@@ -730,10 +730,7 @@ mod tests {
         let mut pointer = crate::app::ChatApp::new_ephemeral();
         pointer.reload(&doc);
         pointer.perms = crate::permissions::ChatPermissions::from_context(
-            PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Viewer), "reader"),
-                vec![],
-            ),
+            PermissionContext::member("reader", Role::Viewer),
         );
         pointer.on_hit(
             crate::app::Hit::VoiceChannel("c_standup".into()),

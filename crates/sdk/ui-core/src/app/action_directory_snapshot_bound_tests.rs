@@ -43,11 +43,7 @@ fn directory_snapshot_bound_projection_expires_or_revises_on_owner_changes() {
         assert!(fixture.app.actions.action_directory_snapshot.is_none());
         let revision = capture_bound_directory(&mut fixture);
         *fixture.permissions.borrow_mut() =
-            crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "fixture-user"),
-                vec![],
-            )
-            .at_unix_time(100);
+            crate::permissions::PermissionContext::stranger("fixture-user").at_unix_time(100);
         assert!(matches!(
             fixture
                 .app

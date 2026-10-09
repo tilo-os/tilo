@@ -457,9 +457,12 @@ pub fn bound<R: Resource, N: AsRef<str>>(
             crate::resource::encode_built::<R>(action)
         },
     )
-    .requiring(decl.permission);
+    .of_kind(decl.kind);
     if decl.kind == crate::ActionKind::Undoable {
         spec = spec.reversible();
+    }
+    if let Some(field) = decl.field {
+        spec = spec.below_field(field);
     }
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());

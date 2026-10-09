@@ -100,8 +100,10 @@ impl<R: Resource> Bound<R> {
                 build(&args, now_ms)
             },
         )
-        .requiring(verb.permission)
         .of_kind(verb.kind);
+        if let Some(field) = verb.field {
+            decl = decl.below_field(field);
+        }
         if let Some(description) = verb.description {
             decl = decl.describe(description);
         }

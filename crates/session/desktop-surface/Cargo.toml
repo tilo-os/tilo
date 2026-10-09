@@ -23,6 +23,7 @@ serde_json.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 blake3.workspace = true

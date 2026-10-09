@@ -21,6 +21,7 @@ mod kind;
 mod path;
 pub mod roles;
 mod room;
+mod standing;
 
 pub use decide::{Authority, Basis, Decision, Party, Verdict, decide};
 pub use describe::{Ids, Labels, describe, describe_node};
@@ -29,3 +30,4 @@ pub use kind::{ActionKind, KindSet};
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use roles::{Preset, PresetError, Rule};
 pub use room::{Change, Refusal, RoomPolicy};
+pub use standing::{Bound, Standing};

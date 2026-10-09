@@ -29,7 +29,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video file or stream on this device and answers once its
     /// first picture has decoded.
-    #[effect(job, permission = "read", device_only)]
+    #[effect(job, kind = "read", device_only)]
     Open {
         #[param(
             "A video's path or stream URL on this device; omit to choose with the file picker"
@@ -40,7 +40,7 @@ pub enum VideoEffect {
     ///
     /// Opens a video of this device's queue or recent videos and answers
     /// once its first picture has decoded.
-    #[effect(row, job, permission = "read", device_only)]
+    #[effect(row, job, kind = "read", device_only)]
     PlayQueued {
         #[param("The queue or recent video's item id")]
         item: String,
@@ -48,7 +48,7 @@ pub enum VideoEffect {
     /// Remove from queue.
     ///
     /// Removes the entry from this device's queue; the video file stays.
-    #[effect(row, permission = "read")]
+    #[effect(row, kind = "read")]
     RemoveQueued {
         #[param("The queued video's item id")]
         item: String,
@@ -56,7 +56,7 @@ pub enum VideoEffect {
     /// Clear recent videos.
     ///
     /// Forgets the videos played on this device; no file is deleted.
-    #[effect(destructive, permission = "read")]
+    #[effect(destructive, kind = "read")]
     ClearRecent,
     /// Show library.
     #[effect(view)]

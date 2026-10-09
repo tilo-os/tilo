@@ -3489,10 +3489,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == expected)
                 .unwrap();
-            assert_eq!(
-                action.contract.permission,
-                ui::tilo_actions::PermissionRequirement::Admin
-            );
+            assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
             let job = admitted_job(&mut app, remote_enabled_effect(&remote));
             assert!(
                 matches!(job.request, Request::RemoteSetEnabled { ref name, enabled: value } if name == "custom-tools" && value == enabled)
@@ -3630,10 +3627,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "enable-remote")
             .unwrap();
-        assert_eq!(
-            enable.contract.permission,
-            ui::tilo_actions::PermissionRequirement::Admin
-        );
+        assert_eq!(enable.contract.kind, ui::tilo_actions::ActionKind::Outside);
         assert!(matches!(
             admitted_job(&mut app, remote_enabled_effect(&account)).request,
             Request::RemoteSetEnabled { enabled: true, .. }
