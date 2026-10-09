@@ -32,6 +32,7 @@
     reason = "paired measurements are named after the protocol they were taken on"
 )]
 
+use collab_types::CommitNamed as _;
 use std::path::Path;
 use std::time::{Instant, SystemTime};
 
@@ -59,11 +60,12 @@ const KEYSTROKES: usize = 1_000;
 const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame on `tilo-relay/5`:
-/// the 548 B the TIL-625 probe measured with the zero signature, less its 64
-/// bytes. Measured here on Linux CI: 481 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 484;
-/// Ceiling for the largest such frame: measured 489 B on Linux CI, plus 10 %.
-const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 538;
+/// 481 B measured on Linux CI before every change named its action, plus
+/// the keystroke's entry in the change (a field edit, ~160 B) and its claim
+/// in the envelope (~60 B). Measured here: 708 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 712;
+/// Ceiling for the largest such frame: measured 716 B, plus 5 %.
+const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 752;
 
 /// A raw subscriber on one ALPN, reading the exact bytes the relay writes.
 struct RawSubscriber {
@@ -200,7 +202,7 @@ fn text_document(actor: u8) -> Vec<u8> {
     let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
     doc.splice_text(&body, 0, 0, &"x".repeat(DOCUMENT_CHARS))
         .unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "body");
     doc.save()
 }
 
@@ -355,7 +357,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         let heads = doc.get_heads();
         let end = doc.length(&body);
         doc.splice_text(&body, end, 0, "a").unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "fixture");
         let change = doc.save_after(&heads);
         change_bytes.push(change.len() as u64);
         let message = owner
