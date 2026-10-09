@@ -527,6 +527,17 @@ mod wayland {
             self.rx.try_iter().collect()
         }
 
+        /// A duplicate of the connection's socket, for a thread to wait on for
+        /// readability without holding the client — the client is shared with
+        /// the thread that commits typed text, so it cannot block in
+        /// [`Self::blocking_dispatch`].
+        ///
+        /// # Errors
+        /// The descriptor cannot be duplicated.
+        pub fn connection_fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+            self.conn.backend().poll_fd().try_clone_to_owned()
+        }
+
         /// Block until at least one event is available, dispatch it, and return
         /// the drained batch. Lets a dedicated thread sleep on the socket instead
         /// of busy-polling.
