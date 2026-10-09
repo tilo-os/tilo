@@ -70,7 +70,7 @@ pub(crate) struct ResourceRoot<R: Resource> {
     pub(crate) content: Element,
     /// The store the view keeps the bytes its record names in, where
     /// `render` keeps its picture.
-    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    #[cfg(not(target_family = "wasm"))]
     store: Option<tilo_content::ContentStore>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
@@ -80,21 +80,19 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
+    #[cfg(not(target_family = "wasm"))]
     drawn_theme: Option<Theme>,
     /// Shapes text for `render`, which runs outside a frame.
-    /// Kept across renders; unused on wasm where `render` is cfg'd out.
-    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    /// Kept across renders.
+    #[cfg(not(target_family = "wasm"))]
     render_text: Option<TextRenderer>,
     /// Draws the view over a past version, which `render` answers for a
     /// `version`. `None` in a view that is itself a past version.
-    /// Used by native-only `render` / past-version draw; unused on wasm.
-    #[allow(
-        dead_code,
-        reason = "used by native-only render / past-version draw; unused on wasm"
-    )]
+    #[cfg(not(target_family = "wasm"))]
     past: Option<super::preview::DrawPast>,
     /// Whether the resource keeps document state History shows.
     history: bool,
+    #[cfg(not(target_family = "wasm"))]
     activation_requested: std::cell::Cell<bool>,
 }
 
@@ -137,6 +135,7 @@ fn activate_spec() -> tilo_actions::ActionSpec {
     spec
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl<R: Resource> ui_core::component_lifecycle::WindowActivation for ResourceRoot<R> {
     fn take_window_activation_intent(&self) -> bool {
         self.activation_requested.replace(false)
@@ -312,12 +311,14 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
+        #[cfg(not(target_family = "wasm"))]
         let store = cx.content();
         cx.dispatch.name_resource(&label);
         Self {
             title,
             icon,
             label,
+            #[cfg(not(target_family = "wasm"))]
             store,
             live: cx.live,
             updaters: cx.updaters,
@@ -338,10 +339,14 @@ impl<R: Resource> ResourceRoot<R> {
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
+            #[cfg(not(target_family = "wasm"))]
             drawn_theme: None,
+            #[cfg(not(target_family = "wasm"))]
             render_text: None,
+            #[cfg(not(target_family = "wasm"))]
             past: None,
             history: true,
+            #[cfg(not(target_family = "wasm"))]
             activation_requested: std::cell::Cell::new(false),
         }
     }
@@ -353,6 +358,7 @@ impl<R: Resource> ResourceRoot<R> {
         self
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self
@@ -1119,7 +1125,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
     type Inner = dyn Widget;
 
@@ -1159,6 +1165,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         presence: &PresenceCtx,
     ) {
         let ground = theme.tokens.colors.surfaces.content;
+        #[cfg(not(target_family = "wasm"))]
         if self.drawn_theme.as_ref().is_none_or(|drawn| {
             drawn.name != theme.name || drawn.tokens.colors.surfaces.content != ground
         }) {
@@ -1193,6 +1200,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Decorator::draw(self, scene, transform, text, theme, presence);
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn needs_redraw(&self) -> bool {
         self.activation_requested.get() || self.content.needs_redraw()
     }
