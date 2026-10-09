@@ -94,7 +94,7 @@ fn an_unchanged_section_has_no_damage() {
 fn a_change_inside_a_part_damages_only_that_part() {
     let (old, old_parts) = desktop(caret(Color::WHITE), Color::WHITE);
     let (new, new_parts) = desktop(caret(Color::BLACK), Color::WHITE);
-    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A, A]));
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn a_part_that_grows_leaves_later_text_gradients_and_chrome_proven_equal() {
                 .any(|patch| matches!(patch, Patch::Ramp { .. })),
         "the later part must carry offset-bearing resources for this proof to mean anything"
     );
-    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A, A]));
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn what_follows_a_part_does_not_depend_on_the_parts_last_transform() {
     };
     let (old, old_parts) = frame(Affine::IDENTITY);
     let (new, new_parts) = frame(shifted);
-    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A, A]));
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn nested_parts_damage_the_innermost_part_that_changed() {
     };
     let (old, old_parts) = frame(Color::WHITE);
     let (new, new_parts) = frame(Color::BLACK);
-    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A, A]));
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![A]));
 }
 
 #[test]
@@ -315,10 +315,7 @@ fn an_appended_scene_keeps_its_parts_where_it_is_drawn() {
     let (old, old_parts) = embedded(Color::WHITE, 100.0);
     let (new, new_parts) = embedded(Color::BLACK, 100.0);
     let caret = Rect::new(100.0, 0.0, 110.0, 10.0);
-    assert_eq!(
-        damage(&old, &old_parts, &new, &new_parts),
-        Ok(vec![caret, caret])
-    );
+    assert_eq!(damage(&old, &old_parts, &new, &new_parts), Ok(vec![caret]));
 }
 
 #[test]

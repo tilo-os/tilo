@@ -369,7 +369,12 @@ pub fn damage(
             let flag = changed.get_mut(owner).ok_or(Unproven::Corrupt)?;
             if !*flag {
                 *flag = true;
-                damage.extend(old_part.iter().chain(new_part).copied());
+                // A part that changed in place has the same bounds twice.
+                for rect in old_part.iter().chain(new_part) {
+                    if !damage.contains(rect) {
+                        damage.push(*rect);
+                    }
+                }
             }
         }
         // Advance past the boundary that ends this piece.
