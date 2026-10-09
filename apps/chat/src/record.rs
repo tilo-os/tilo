@@ -534,14 +534,14 @@ pub(crate) fn valid_source_provider(provider: &str) -> bool {
         && !provider.contains('\\')
 }
 
-/// A monogram for a workspace glyph: the initials of its first two words.
+/// A monogram for a workspace glyph: the initials of its first two words,
+/// as written.
 pub(crate) fn monogram(name: &str) -> String {
     let letters: String = name
         .split_whitespace()
         .filter_map(|word| word.chars().next())
         .take(2)
-        .collect::<String>()
-        .to_uppercase();
+        .collect();
     if letters.is_empty() {
         "WS".to_owned()
     } else {
