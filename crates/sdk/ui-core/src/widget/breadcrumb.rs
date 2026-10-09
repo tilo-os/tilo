@@ -488,7 +488,7 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::{ElementState, Modifiers, MouseButton};
+    use winit::event::Modifiers;
 
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -497,13 +497,7 @@ mod tests {
         }
     }
 
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     /// Drive an event through the breadcrumb with default scaffolding.
     /// Mirrors `permission_prompt.rs::tests::dispatch`.
@@ -637,7 +631,7 @@ mod tests {
             );
             let middle_center = bc.segment_rects[1].center();
             dispatch(&mut bc, &cursor_at(middle_center));
-            dispatch(&mut bc, &left_press());
+            dispatch(&mut bc, &mouse_press());
 
             assert_eq!(
                 *received.borrow(),

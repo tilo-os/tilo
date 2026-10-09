@@ -1254,7 +1254,7 @@ mod tests {
             assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
             dispatch(&mut c, &cursor(just_above));
             assert!(
-                dispatch(&mut c, &press()),
+                dispatch(&mut c, &mouse_press()),
                 "a click in the grown target is consumed"
             );
             assert!(c.is_selected());
@@ -1347,13 +1347,7 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -1387,14 +1381,14 @@ mod tests {
             let center = c.get_rect().center();
             dispatch(&mut c, &cursor(center));
             assert!(
-                dispatch(&mut c, &press()),
+                dispatch(&mut c, &mouse_press()),
                 "body click on a selectable chip is consumed"
             );
             assert!(c.is_selected(), "click selects");
             assert!(c.take_toggled(), "toggle signal fires");
             assert!(!c.take_toggled(), "toggle drains after one read");
             // Click again → deselect.
-            dispatch(&mut c, &press());
+            dispatch(&mut c, &mouse_press());
             assert!(!c.is_selected(), "second click deselects");
         }
 
@@ -1404,7 +1398,10 @@ mod tests {
             draw(&mut c);
             let center = c.get_rect().center();
             dispatch(&mut c, &cursor(center));
-            assert!(!dispatch(&mut c, &press()), "a plain chip ignores clicks");
+            assert!(
+                !dispatch(&mut c, &mouse_press()),
+                "a plain chip ignores clicks"
+            );
             assert!(!c.take_toggled());
         }
 
@@ -1415,7 +1412,7 @@ mod tests {
             let x = c.remove_rect().center();
             assert!(x.x > 0.0, "× rect resolves after draw");
             dispatch(&mut c, &cursor(x));
-            assert!(dispatch(&mut c, &press()), "× click is consumed");
+            assert!(dispatch(&mut c, &mouse_press()), "× click is consumed");
             assert!(c.take_removed(), "remove signal fires");
             assert!(!c.take_removed(), "remove drains after one read");
         }
@@ -1426,7 +1423,7 @@ mod tests {
             draw(&mut c);
             let x = c.remove_rect().center();
             dispatch(&mut c, &cursor(x));
-            dispatch(&mut c, &press());
+            dispatch(&mut c, &mouse_press());
             assert!(c.take_removed(), "× removes");
             assert!(!c.take_toggled(), "× does not also toggle selection");
             assert!(!c.is_selected());

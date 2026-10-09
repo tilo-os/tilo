@@ -35,12 +35,7 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
     )
 }
 
-fn move_to(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use crate::synthetic_input::cursor_moved;
 
 fn focused(frame: &FrameHarness, name: &str) -> bool {
     frame.access_node_named(name, None).unwrap().state.focused
@@ -570,7 +565,7 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         "inert point stays inside the 400x240 frame"
     );
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     let schedule = frame.frame_schedule();
     assert!(
         frame.last_send_skipped_relayout(),
@@ -580,18 +575,18 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         schedule.next_wake_deadline.map(|w| w <= Instant::now()),
         frame.redraw_sources()
     );
-    frame.send_host_event(&move_to(filler_point.0 + 8.0, filler_point.1 + 3.0));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 8.0, filler_point.1 + 3.0));
     assert!(
         frame.last_send_skipped_relayout(),
         "repeated inert motion stays skipped"
     );
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button is paint and produces a frame"
     );
-    frame.send_host_event(&move_to(button.center().x + 1.0, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x + 1.0, button.center().y));
     assert!(
         frame.last_send_skipped_relayout(),
         "motion inside the hovered button changes nothing"
@@ -613,12 +608,12 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     });
     assert!(!frame.last_send_skipped_relayout());
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     assert!(
         !frame.last_send_skipped_relayout(),
         "leaving the button repaints its resting state"
     );
-    frame.send_host_event(&move_to(filler_point.0 + 2.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 2.0, filler_point.1));
     assert!(frame.last_send_skipped_relayout());
 }
 
@@ -633,7 +628,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let filler = (button.center().x, other.max_y() + 40.0);
     let ids = frame.layout_node_ids();
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button paints"
@@ -646,7 +641,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let frames = frame.relayout_frames();
 
     for step in 0..3 {
-        frame.send_host_event(&move_to(
+        frame.send_host_event(&cursor_moved(
             button.center().x + 1.0 + f64::from(step),
             button.center().y,
         ));
@@ -656,7 +651,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         frames,
         "motion inside the hovered button runs no layout pass"
     );
-    frame.send_host_event(&move_to(filler.0, filler.1));
+    frame.send_host_event(&cursor_moved(filler.0, filler.1));
     assert_eq!(
         frame.relayout_frames(),
         frames + 1,
@@ -667,7 +662,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         "the leave repaints the retained tree"
     );
     for step in 0..3 {
-        frame.send_host_event(&move_to(filler.0 + f64::from(step), filler.1));
+        frame.send_host_event(&cursor_moved(filler.0 + f64::from(step), filler.1));
     }
     assert_eq!(
         frame.relayout_frames(),
@@ -824,7 +819,7 @@ fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focu
     let frames = frame.relayout_frames();
     let heads = frame.state.doc.get_heads();
     let focused = frame.focused;
-    frame.dispatch_to_root_outcome(&move_to(center.x, center.y), &modifiers);
+    frame.dispatch_to_root_outcome(&cursor_moved(center.x, center.y), &modifiers);
     let result = frame.dispatch_to_root_outcome(
         &WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),

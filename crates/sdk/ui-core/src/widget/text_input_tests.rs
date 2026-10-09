@@ -2179,14 +2179,14 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(target.x, target.y),
+            &cursor_moved(target.x, target.y),
             mods(false, false),
         );
 
         let mut handled = false;
         let mut focus_target = None;
         let (taffy, node) = test_node();
-        for event in [left_press(), left_release()] {
+        for event in [mouse_press(), mouse_release()] {
             ti.handle_event(
                 &event,
                 &mut crate::widget::EventCtx {
@@ -2409,26 +2409,9 @@ fn named_key_event(k: NamedKey) -> WindowEvent {
     ))
 }
 
-fn mouse_move(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
-fn left_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
-fn left_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use crate::synthetic_input::cursor_moved;
+use crate::synthetic_input::mouse_press;
+use crate::synthetic_input::mouse_release;
 fn middle_press() -> WindowEvent {
     WindowEvent::MouseInput {
         device_id: winit::event::DeviceId::dummy(),
@@ -3236,11 +3219,16 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8); // inside "world" (bytes 6..11)
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(bx, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
         // Within the multi-click interval → double click.
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
 
         assert_eq!(
             ti.selection_range(),
@@ -3262,15 +3250,15 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(x_start, 20.0),
+            &cursor_moved(x_start, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert!(ti.is_dragging(), "press starts a drag");
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(x_end, 20.0),
+            &cursor_moved(x_end, 20.0),
             mods(false, false),
         );
         assert_eq!(
@@ -3278,7 +3266,7 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
             Some((2, 9)),
             "drag selected the swept range"
         );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
         assert!(!ti.is_dragging(), "release ends the drag");
     }
 
@@ -3290,10 +3278,15 @@ fn pointer_clicks_and_drags_select_word_range_and_all() {
         let mut doc = AutoCommit::new();
 
         let bx = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(bx, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(bx, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(
             ti.selection_range(),
             Some((0, 11)),
@@ -3315,17 +3308,17 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(end, 20.0),
+            &cursor_moved(end, 20.0),
             mods(false, false),
         );
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
 
         assert_eq!(ti.shareable_selection(), Some("hello"));
     }
@@ -3337,13 +3330,18 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         draw_to_populate(&mut ti);
         let mut doc = AutoCommit::new();
         let at = x_for_byte(&ti, 8);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(at, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(ti.shareable_selection(), Some("world"));
-        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
-        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &mouse_press(), mods(false, false));
         assert_eq!(ti.shareable_selection(), Some("hello world"));
     }
 
@@ -3357,7 +3355,12 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         ti.set_selection(0, ti.value().len());
         let mut doc = AutoCommit::new();
         let at = x_for_byte(&ti, 4);
-        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(at, 20.0),
+            mods(false, false),
+        );
         let mut focus_target = None;
         let mut handled = false;
         ti.handle_middle_click_with_primary(
@@ -3385,23 +3388,23 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
-        drive(&mut secret, &mut doc, &left_press(), mods(false, false));
+        drive(&mut secret, &mut doc, &mouse_press(), mods(false, false));
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(end, 20.0),
+            &cursor_moved(end, 20.0),
             mods(false, false),
         );
-        drive(&mut secret, &mut doc, &left_release(), mods(false, false));
+        drive(&mut secret, &mut doc, &mouse_release(), mods(false, false));
         assert_eq!(secret.shareable_selection(), None);
 
         drive(
             &mut secret,
             &mut doc,
-            &mouse_move(start, 20.0),
+            &cursor_moved(start, 20.0),
             mods(false, false),
         );
         let mut focus_target = None;
@@ -4245,10 +4248,10 @@ fn submit_accessory_and_span_highlighting() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(rect.center().x, rect.center().y),
+            &cursor_moved(rect.center().x, rect.center().y),
             mods(false, false),
         );
-        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
         assert_eq!(ti.value(), "");
         assert_eq!(
             ti.take_dirty().as_deref(),
@@ -4288,10 +4291,10 @@ fn submit_accessory_and_span_highlighting() {
         drive(
             &mut ti,
             &mut doc,
-            &mouse_move(rect.center().x, rect.center().y),
+            &cursor_moved(rect.center().x, rect.center().y),
             mods(false, false),
         );
-        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
         assert_eq!(ti.accessory_pressed(), Some(true));
         let node = Widget::accessibility(&ti).expect("field semantics");
         assert_eq!(node.children[0].state.checked, Some(true));
