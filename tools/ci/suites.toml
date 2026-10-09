@@ -381,13 +381,15 @@ suites = [
 
 [[group]]
 name = "vm-acceptance"
-inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml"]
+# acceptance/records.py writes its records through tools/perf/record.py.
+inputs = ["scripts/vm-acceptance/", ".forgejo/workflows/vm-acceptance.yml", "tools/perf/"]
 suites = [
   "scripts/vm-acceptance/test_apps.py",
   "scripts/vm-acceptance/test_app_startup.py",
   "scripts/vm-acceptance/test_ci_select.py",
   "scripts/vm-acceptance/test_frames.py",
   "scripts/vm-acceptance/test_provenance.py",
+  "scripts/vm-acceptance/test_records.py",
   "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
   "scripts/vm-acceptance/test_app_cohort.py",
@@ -890,6 +892,9 @@ inputs = [
   "crates/sdk/ui-core/assets/fonts/",
   "dist/VERSION",
   "docs/shell-navigation-keyboard-map.md",
+  "docs/architecture/dictation-whistle-aot-review.json",
+  "docs/architecture/dictation-whistle-aot-image.json",
+  "docs/architecture/dictation-whistle-aot-image-120s.json",
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
@@ -901,6 +906,7 @@ readers = [
   "crates/session/shell/examples/packaged_native_bootstrap.rs",
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/tests/support/snapshot.rs",
+  "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
 ]

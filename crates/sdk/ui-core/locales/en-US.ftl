@@ -556,6 +556,9 @@ dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
 
 dropdown-no-matches = No matching choices
+host-native-history-unobserved = The original field’s editing history has not been confirmed.
+host-native-history-unconfirmed = This page’s history edit was not confirmed. Inspect the page before trying again.
+host-native-page-history-scope = Undo and redo apply to this page’s editing history. The latest change may be in another field.
 
 # Shared native screen topology canvas
 display-arrangement-name = Display arrangement
@@ -600,6 +603,10 @@ music-recommendations-enabled = Enabled
 music-recommendations-disabled = Disabled
 music-recommendations-enable = Enable input
 music-recommendations-disable = Disable input
+
+terminal-editor-busy = The editor is still confirming the previous input. Check the field before entering more text.
+terminal-editor-rejected = The field changed before this input could be inserted. Check the field before trying again.
+terminal-editor-unconfirmed = The editor did not confirm this input. Check the field before trying again.
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.

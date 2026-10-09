@@ -163,7 +163,7 @@ mod tests {
         for spec in &specs {
             let reads = matches!(
                 spec.id.as_str(),
-                "history-top" | "history-live" | "inspect-session" | "read"
+                "history-top" | "history-live" | "inspect-session" | "read" | "inspect-editor"
             );
             assert_eq!(
                 spec.contract.confirmation == ConfirmationPolicy::Confirm,
@@ -176,6 +176,7 @@ mod tests {
                 "history-top"
                     | "inspect-session"
                     | "read"
+                    | "inspect-editor"
                     | "history-live"
                     | "copy-visible"
                     | "copy-selection"

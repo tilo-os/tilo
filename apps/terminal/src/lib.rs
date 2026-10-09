@@ -33,6 +33,7 @@
 pub mod actions;
 mod graphics;
 pub mod history;
+mod native_editor;
 pub mod parse;
 pub mod resource;
 pub mod runs;

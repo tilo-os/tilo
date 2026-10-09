@@ -286,3 +286,28 @@ fn scenarios_stage_their_output_and_view_state() {
     let target = captured("host", |terminal| terminal.session_target().cloned());
     assert_eq!(target, Some(crate::target::SessionTarget::Host));
 }
+
+#[test]
+fn native_replacement_preserves_private_effect_contract() {
+    use ui::tilo_resource::Effect as _;
+    let effect = TerminalEffect::ReplaceEditorSelection {
+        session: "original-session".into(),
+        lease: "private-lease".into(),
+        text: "private transcript".into(),
+    };
+    let debug = format!("{effect:?}");
+    assert!(!debug.contains("private"));
+    assert!(!debug.contains("original-session"));
+    let declaration = TerminalEffect::declarations()
+        .into_iter()
+        .find(|declaration| declaration.id == effect.id())
+        .unwrap();
+    assert!(declaration.device_only);
+    let text = declaration
+        .params
+        .iter()
+        .find(|param| param.name == "text")
+        .unwrap();
+    assert_eq!(text.ty, ui::tilo_actions::ParamType::Secret);
+    assert_eq!(effect.arguments()["text"], "private transcript");
+}

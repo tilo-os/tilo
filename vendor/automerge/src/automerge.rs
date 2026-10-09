@@ -1528,6 +1528,14 @@ impl Automerge {
         deps
     }
 
+    /// Every change's hash, in the order [`Self::get_changes`] lists them
+    /// for `&[]`: the order the changes were added to this document. Adding
+    /// changes only appends to it, so a reader that read a prefix of the log
+    /// can tell, without rebuilding any change, whether it still is one.
+    pub fn change_hashes(&self) -> &[ChangeHash] {
+        self.change_graph.hashes()
+    }
+
     pub fn get_changes(&self, have_deps: &[ChangeHash]) -> Vec<Change> {
         ChangeCollector::exclude_hashes(&self.ops, &self.change_graph, have_deps)
     }

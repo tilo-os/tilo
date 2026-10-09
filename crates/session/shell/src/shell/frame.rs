@@ -579,6 +579,11 @@ pub struct FrameBuilder {
     /// ([`Self::shots_theme_override`]), so the settings file is not
     /// watched. Read once when watching starts, not on every paint.
     shots_theme_pinned: bool,
+    /// The session's settings document, followed off the compositor
+    /// thread: paint reads its snapshot, never the file. The compositor
+    /// hands over its own ([`Self::follow_settings`]); a builder that watches
+    /// the configured theme without one starts its own at its first look.
+    live_settings: Option<settings_store::live::LiveSettings>,
     /// Every workspace's temperature and the person's colour: what the
     /// chrome wears for the active workspace, and what each app window is
     /// sent for the workspace it is in.
@@ -890,6 +895,7 @@ impl FrameBuilder {
             theme: presentation.theme,
             watch_configured_theme: false,
             shots_theme_pinned: false,
+            live_settings: None,
             windows: super::window_appearance::WindowAppearances::new(
                 ui::tokens::PresenceHue::Blue,
             ),
@@ -2798,7 +2804,15 @@ impl FrameBuilder {
         if !self.windows.due(active.as_deref(), now) {
             return;
         }
-        let settings = serde_json::Value::Object(settings_store::load());
+        // The snapshot is the whole document, already parsed: paint does no
+        // I/O. Only the section the overrides live in is copied.
+        let snapshot = self
+            .live_settings
+            .get_or_insert_with(|| settings_store::live::LiveSettings::start(|| {}))
+            .snapshot();
+        let settings = serde_json::json!({
+            "appearance": snapshot.document.get("appearance"),
+        });
         let mut temperature_of = |id: &str| {
             ui::theme::workspace_temperature_override(&settings, id)
                 .or_else(|| super::desktop_backdrop::native_workspace_hue(id))
@@ -2852,6 +2866,12 @@ impl FrameBuilder {
     #[must_use]
     pub fn configured_app_theme(&self) -> &Theme {
         &self.configured_theme
+    }
+
+    /// Read settings in paint from `settings`, the session's one followed
+    /// document, rather than from the file.
+    pub fn follow_settings(&mut self, settings: settings_store::live::LiveSettings) {
+        self.live_settings = Some(settings);
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -3841,6 +3861,86 @@ impl FrameBuilder {
         // pointer stays valid until the next structural rebuild, the same
         // invariant every focused-node dispatch here relies on.
         ui::ime::ImeWindowState::from_widget(unsafe { &*widget })
+    }
+
+    pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
+        if self.host.palette_visible() {
+            return false;
+        }
+        let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
+            return false;
+        };
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        unsafe { &**widget }.ime_requires_deferred_ack()
+    }
+
+    pub(crate) fn start_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // the callback only starts a private transaction without structural mutation.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.start_deferred_text(),
+            )
+            .ok()
+            .flatten()
+        }
+    }
+
+    /// Admit the original focused owner through the same bound map as native
+    /// dispatch. Only deferred fields consume this path; ordinary fields keep IME.
+    pub(crate) fn commit_deferred_text(
+        &mut self,
+        focus: Option<NodeId>,
+        text: &str,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Option<ui::webview::text_input::Receipt> {
+        if self.host.palette_visible() {
+            return None;
+        }
+        let focus = focus?;
+        let mut admitted = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: exclusive frame access owns the live host and pointer map;
+        // no structural mutation occurs while this cache-only callback runs.
+        unsafe {
+            admitted.rebuild(
+                self.host.as_ref(),
+                &self.taffy,
+                self.host_node?,
+                &self.node_map,
+            );
+            ui::bound_dispatch::invoke_bound_node(
+                &admitted,
+                &self.node_map,
+                focus,
+                document,
+                root,
+                |widget, _, _| widget.commit_deferred_text(text),
+            )
+            .ok()
+            .flatten()
+        }
     }
 
     pub(crate) fn focused_ime_edit_stamp(
@@ -7688,6 +7788,63 @@ mod tests {
         assert!(
             (light_y - dark_y).abs() > 0.08,
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn workspace_temperature_is_read_from_the_followed_settings_not_the_file() {
+        let config = tempfile::tempdir().expect("isolated settings store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SESSION_SETTINGS");
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        let active = frame
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id.0.to_string())
+            .expect("an active workspace");
+        let temperatures = |hue: f64| {
+            let mut temperatures = serde_json::Map::new();
+            temperatures.insert(active.clone(), serde_json::json!(hue));
+            let mut appearance = serde_json::Map::new();
+            appearance.insert(
+                "workspace_temperatures".into(),
+                serde_json::Value::Object(temperatures),
+            );
+            appearance
+        };
+        // The file on disk says one hue; the session's followed document
+        // says another. Paint must take the followed one: reading the file
+        // in paint is what this replaced.
+        settings_store::update_section("appearance", temperatures(200.0))
+            .expect("write the settings file");
+        let mut followed = serde_json::Map::new();
+        followed.insert(
+            "appearance".into(),
+            serde_json::Value::Object(temperatures(40.0)),
+        );
+        let source = settings_store::HostDocument::new(followed, |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "read-only fixture settings",
+            ))
+        });
+        frame.follow_settings(settings_store::live::LiveSettings::start_from(
+            std::sync::Arc::new(source),
+            || {},
+        ));
+        frame.watch_configured_theme = true;
+        frame.refresh_workspace_temperature();
+        assert_eq!(
+            frame.windows.active().workspace_hue,
+            Some(40.0),
+            "the hue comes from the followed settings snapshot"
         );
     }
 }

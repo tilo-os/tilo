@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
 tilo-paths.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).

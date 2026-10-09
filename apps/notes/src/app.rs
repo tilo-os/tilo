@@ -3305,6 +3305,34 @@ mod tests {
     }
 
     #[test]
+    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
+        ui::clock::freeze_for_capture();
+        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+        // A zero remaining lifetime deterministically exercises the expiry
+        // boundary without making CI speed or a real-time sleep the oracle.
+        app.transfer_toasts =
+            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
+        app.transfer_toasts.push(
+            "Imported Project brief",
+            ui::widget::toast::ToastKind::Success,
+        );
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        let node = app
+            .transfer_toasts
+            .accessibility()
+            .expect("the captured import notification remains announced");
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
+    }
+
+    #[test]
     fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
         use tilo_automerge::ApplyIncoming as _;
         let (mut app, mut state, _tmp, source) = app_seeded_into_doc();

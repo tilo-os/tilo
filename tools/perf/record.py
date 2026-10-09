@@ -47,7 +47,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA = 1
-UNITS = frozenset({"ms", "us", "s", "bytes", "MiB", "count", "W", "fps", "pixels"})
+# `percent` is a share of one CPU (or of a resource) over a window; `per_s` a rate.
+UNITS = frozenset({"ms", "us", "s", "bytes", "MiB", "count", "W", "fps", "pixels", "percent", "per_s"})
 PROFILES = frozenset({"release", "thin-app", "dev"})
 RENDERERS = frozenset({"gpu", "llvmpipe", "lavapipe", "virgl", "none"})
 VIRTUALIZATIONS = frozenset({"none", "kvm", "tcg"})

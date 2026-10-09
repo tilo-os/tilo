@@ -19,6 +19,47 @@ fn type_in_body(app: &mut ui::framework::testing::TestApp<notes::NotesShell>, ke
 }
 
 #[test]
+fn dictation_ime_replaces_a_note_selection_with_one_undoable_final() {
+    use winit::event::{Ime, WindowEvent};
+    let (mut app, page) = with_note("Dictation fixture", "replace me");
+    type_in_body(&mut app, &[]);
+    app.harness().key("Home");
+    app.harness().set_modifiers(&["shift".into()]);
+    app.harness().key("End");
+    app.harness().set_modifiers(&[]);
+    let before = app.read_document(|doc| read::page_blocks(doc, page));
+    app.harness().send(&WindowEvent::Ime(Ime::Preedit(
+        "temporary draft".into(),
+        None,
+    )));
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page)),
+        before
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(Ime::Commit("日本語 café العربية".into())));
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "日本語 café العربية"
+    );
+    assert!(app.undo(), "the final must use system history");
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page)),
+        before
+    );
+    assert!(app.redo());
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "日本語 café العربية"
+    );
+    let reopened = app.reopen().unwrap();
+    assert_eq!(
+        reopened.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "日本語 café العربية"
+    );
+}
+
+#[test]
 fn typed_paragraphs_and_headings_survive_a_reopen() {
     eprintln!("phase split_paragraphs_round_trip_through_the_record");
     {

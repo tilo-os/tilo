@@ -19,6 +19,63 @@ fn loaded_fixture() -> (
 }
 
 #[test]
+fn dictation_ime_final_uses_native_code_actions_and_system_undo() {
+    let (_directory, mut app, manifest) = loaded_fixture();
+    app.harness()
+        .perform_named("editor_view", &ui::a11y::Action::Focus)
+        .unwrap();
+    crate::test_support::editor(&mut app, |app| {
+        app.editor.set_caret_for_test(0, 0);
+    });
+    assert_eq!(
+        app.harness()
+            .ime_window()
+            .expect("focused native code field")
+            .purpose,
+        winit::window::ImePurpose::Normal
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Preedit(
+            "temporary draft".into(),
+            None,
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "日本語 café العربية".into(),
+        )));
+    let changed = cold_editor_snapshot(&mut app);
+    assert_ne!(changed["body_hash"], manifest.body_hash);
+    assert!(crate::test_support::editor(&mut app, |app| {
+        app.editor
+            .text_for_test()
+            .starts_with("日本語 café العربية")
+    }));
+    assert!(app.undo(), "the final must be a system history action");
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        manifest.body_hash
+    );
+    assert!(app.redo());
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+    crate::test_support::editor(&mut app, |app| app.editor.set_focus(false));
+    app.harness()
+        .send(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "must not reach the unfocused editor".into(),
+        )));
+    assert_eq!(
+        cold_editor_snapshot(&mut app)["body_hash"],
+        changed["body_hash"]
+    );
+}
+
+#[test]
 fn native_snapshot_reports_readiness_durable_edits_and_wheel_input() {
     // Each phase builds a fresh app/fixture: edits and scroll must not leak.
     native_snapshot_of_unopened_editor_is_not_ready();

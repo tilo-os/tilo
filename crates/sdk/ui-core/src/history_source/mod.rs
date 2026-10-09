@@ -22,7 +22,6 @@
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
@@ -37,6 +36,7 @@ pub mod detail;
 pub mod digest;
 pub mod facets;
 pub mod groups;
+mod log;
 pub mod narrative;
 pub mod revert;
 pub mod run_undo;
@@ -58,6 +58,7 @@ pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,
 };
+pub use log::HistoryLog;
 pub use narrative::{
     ActivityNarrator, GroundedNarrative, NarrativeRequest, NarrativeSource,
     deterministic_narrative, validate_narrative,
@@ -205,115 +206,6 @@ impl HistorySource {
     pub fn entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
         with_committed_history(doc, |doc| self.committed_entries(doc))
     }
-
-    fn committed_entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
-        let versions = tilo_resource::history::versions(doc);
-        if versions.is_empty() {
-            return Vec::new();
-        }
-        let start = versions.len().saturating_sub(self.max_entries);
-        let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
-
-        // Plus the one before the window — the fallback diffs between
-        // consecutive frontiers.
-        let heads = prefix_heads_series(doc, start, versions.len());
-
-        // One replay of the change log describes every change in the window:
-        // each change's patches come from the replica's incremental diff, so
-        // describing a change costs that change, not a scan of the document.
-        // Only a document carrying the qdoc schema is also materialised per
-        // version for the structural summary.
-        let mut replay = Replay::new(doc, start, tilo_doc::snapshot::of(doc).is_some());
-        let mut prev_snapshot: Option<DocSnapshot> = if start == 0 {
-            Some(DocSnapshot::default())
-        } else {
-            replay.snapshot()
-        };
-
-        let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
-        for (index, v) in versions.iter().enumerate().skip(start) {
-            let patches = replay.advance();
-            let cur_snapshot = replay.snapshot();
-            let before = heads
-                .get(&index.wrapping_sub(1))
-                .cloned()
-                .unwrap_or_default();
-            let after = heads.get(&index).cloned().unwrap_or_default();
-            let (structural_summary, op_class, text_delta) =
-                match (&prev_snapshot, &cur_snapshot, &patches) {
-                    (Some(prev), Some(cur), _) => structural_summary(prev, cur),
-                    (_, _, Some(patches)) => {
-                        summarize_patches(replay.document(), patches, self.field_paths)
-                    }
-                    _ => patch_summary(doc, &before, &after, self.field_paths),
-                };
-            prev_snapshot = cur_snapshot;
-
-            // The schema genesis is a change nobody made — its containers are
-            // written by a fixed actor so two independently created documents
-            // merge instead of shadowing each other. Listing it would attribute
-            // a revision to a nonexistent person. Skipped here rather than in
-            // `versions`, which stays positional (`materialize_at` / `prefix_heads`
-            // address a change by its place).
-            if tilo_doc::model::is_schema_genesis(v) {
-                continue;
-            }
-            // A record's genesis is the same kind of change; so is a
-            // package-primary document's, which holds no identity to derive
-            // its actor from. The document's own history keeps it, marked,
-            // as the version to restore to.
-            let genesis =
-                genesis_actor.as_deref() == Some(v.actor.as_str()) || is_store_genesis(doc, v);
-            if genesis && !self.record_genesis {
-                continue;
-            }
-
-            // Naming a version (or recording a cross-app run) is a change but
-            // not a row — the name is already on screen as the band's title.
-            // Checked only when there's no other summary, so the common path
-            // pays no extra diff.
-            if structural_summary == NO_VISIBLE_CHANGE {
-                let patches = patches.unwrap_or_else(|| doc.diff(&before, &after));
-                if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
-                    continue;
-                }
-            }
-
-            let context = if genesis {
-                Some(genesis_context())
-            } else {
-                v.message
-                    .as_deref()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
-            };
-            let summary = if genesis {
-                crate::i18n::I18nManager::lookup_plain("history-genesis")
-            } else {
-                context
-                    .as_ref()
-                    .and_then(sentence::step_summary)
-                    .unwrap_or(structural_summary)
-            };
-
-            out.push(HistoryEntry {
-                id: entry_id_from_hash(&v.hash.to_string()),
-                author: self.authors.resolve_entry(&v.actor, context.as_ref()),
-                op_class,
-                artifact_kind: self.artifact_kind,
-                timestamp: timestamp_from_ms(v.time_ms),
-                summary,
-                text_delta,
-                // The scrubber re-derives state via `materialize_at` /
-                // `heads_for_entry` rather than cracking open a payload.
-                diff_payload: None,
-                // Projected from the broker's redaction log, keyed by
-                // artifact and not reachable from a bare document.
-                redaction: None,
-                context,
-            });
-        }
-        out
-    }
 }
 
 /// What a genesis row says: the document was created, by no one in
@@ -328,12 +220,12 @@ fn genesis_context() -> tilo_actions::ActionContext {
 /// Whether `v` is the genesis of a document its store created: the root
 /// change, made at time zero, which stamps the store's schema along with the
 /// initial content. Nobody's edit writes the schema stamp.
-fn is_store_genesis(doc: &mut AutoCommit, v: &tilo_resource::history::Version) -> bool {
-    v.time_ms == 0
+fn is_store_genesis(doc: &mut AutoCommit, time_ms: i64, hash: &ChangeHash) -> bool {
+    time_ms == 0
         && doc
-            .get_change_by_hash(&v.hash)
-            .is_some_and(|change| change.deps().is_empty())
-        && doc.diff(&[], &[v.hash]).iter().any(|patch| {
+            .get_change_meta_by_hash(hash)
+            .is_some_and(|change| change.deps.is_empty())
+        && doc.diff(&[], &[*hash]).iter().any(|patch| {
             patch.obj == automerge::ROOT
                 && matches!(
                     &patch.action,
@@ -396,82 +288,6 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
     UNIX_EPOCH
         .checked_add(Duration::from_millis(millis))
         .unwrap_or(UNIX_EPOCH)
-}
-
-/// A replica rebuilt change by change in the document's causal order, for
-/// describing each change of a history window from one pass over the log.
-struct Replay {
-    changes: std::vec::IntoIter<automerge::Change>,
-    replica: AutoCommit,
-    structural: bool,
-    failed: bool,
-}
-
-impl Replay {
-    /// The replica as of the first `start` changes of `doc`.
-    fn new(doc: &mut AutoCommit, start: usize, structural: bool) -> Self {
-        use tilo_automerge::ApplyIncoming as _;
-        let mut changes = doc.get_changes(&[]).into_iter();
-        let mut replica = AutoCommit::new();
-        let prefix: Vec<_> = changes.by_ref().take(start).collect();
-        let failed = !prefix.is_empty() && replica.apply_incoming(prefix).is_err();
-        // Every later change is then indexed as it applies, so each one's
-        // patches are read without diffing the whole document.
-        replica.update_diff_cursor();
-        Self {
-            changes,
-            replica,
-            structural,
-            failed,
-        }
-    }
-
-    /// Apply the next change; its patches, or `None` once the replay failed.
-    fn advance(&mut self) -> Option<Vec<automerge::Patch>> {
-        use tilo_automerge::ApplyIncoming as _;
-        let change = self.changes.next()?;
-        if self.failed || self.replica.apply_incoming([change]).is_err() {
-            self.failed = true;
-            return None;
-        }
-        Some(self.replica.diff_incremental())
-    }
-
-    /// The replica's qdoc snapshot, when the document carries that schema.
-    fn snapshot(&self) -> Option<DocSnapshot> {
-        (self.structural && !self.failed)
-            .then(|| tilo_doc::snapshot::of(&self.replica))
-            .flatten()
-    }
-
-    fn document(&self) -> &AutoCommit {
-        &self.replica
-    }
-}
-
-/// Versions `start - 1 ..= end - 1`, computed in one pass — `prefix_heads`
-/// re-reads the change list per call, so a timeline asking for every
-/// version builds the series from one read instead. The change list is in
-/// causal order, so a prefix's heads are the previous prefix's heads minus
-/// what the next change depends on, plus that change: linear in the history,
-/// where recomputing each prefix from scratch was quadratic.
-fn prefix_heads_series(
-    doc: &mut AutoCommit,
-    start: usize,
-    end: usize,
-) -> HashMap<usize, Vec<ChangeHash>> {
-    let metas = doc.get_changes_meta(&[]);
-    let mut out = HashMap::new();
-    let lo = start.saturating_sub(1);
-    let mut heads: Vec<ChangeHash> = Vec::new();
-    for (i, meta) in metas.iter().enumerate().take(end) {
-        heads.retain(|head| !meta.deps.contains(head));
-        heads.push(meta.hash);
-        if i >= lo {
-            out.insert(i, heads.clone());
-        }
-    }
-    out
 }
 
 /// The op class follows what actually moved, in the order a reader cares

@@ -556,6 +556,7 @@ impl App {
                 .collect();
             Some(resource)
         }
+        self.refresh_local_undo_discovery();
         let key = self.ensure_resource_cache();
         let mut resources = self
             .actions
@@ -627,6 +628,12 @@ impl App {
             true,
         ) {
             resources.extend(legacy);
+        }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
+            if let Some(edit) = self.edit_resource_for(&address) {
+                resources.push(edit);
+            }
         }
         resources
     }
@@ -2568,6 +2575,9 @@ impl App {
             if let Some(resource) = fallback {
                 resources.push(resource);
             }
+        }
+        if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
+            resources.extend(self.edit_resource_for(address));
         }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,

@@ -16,6 +16,7 @@ name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }
 sha2.workspace = true

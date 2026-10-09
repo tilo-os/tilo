@@ -3449,6 +3449,46 @@ fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
     ti
 }
 
+#[test]
+fn multiline_ime_intent_and_paragraph_commit_preserve_the_submit_boundary() {
+    let mut input = ml_input("before old after", 400.0, 200.0).with_enter_submits(true);
+    input.set_selection(7, 10);
+    let intent = crate::ime::ImeWindowState::from_widget(&input).unwrap();
+    assert!(intent.multiline);
+    assert_eq!(intent.purpose, winit::window::ImePurpose::Normal);
+    let mut doc = AutoCommit::new();
+    assert!(drive(
+        &mut input,
+        &mut doc,
+        &WindowEvent::Ime(winit::event::Ime::Commit("First café.\n\nSecond 👋".into())),
+        Modifiers::default(),
+    ));
+    assert_eq!(input.value(), "before First café.\n\nSecond 👋 after");
+    assert!(!input.take_submit());
+    input.set_selection(7, 7 + "First café.\n\nSecond 👋".len());
+    assert!(drive(
+        &mut input,
+        &mut doc,
+        &WindowEvent::Ime(winit::event::Ime::Commit("\n\n".into())),
+        Modifiers::default(),
+    ));
+    assert_eq!(input.value(), "before \n\n after");
+    assert!(!input.take_submit());
+    input.set_multiline(false);
+    assert!(
+        !crate::ime::ImeWindowState::from_widget(&input)
+            .unwrap()
+            .multiline
+    );
+    input.set_focus(false);
+    assert!(crate::ime::ImeWindowState::from_widget(&input).is_none());
+    let mut secret = TextInput::local().multiline(true).with_secret(true);
+    secret.set_focus(true);
+    let secret = crate::ime::ImeWindowState::from_widget(&secret).unwrap();
+    assert_eq!(secret.purpose, winit::window::ImePurpose::Password);
+    assert!(!secret.multiline);
+}
+
 fn shaped_row(ti: &TextInput, byte: usize) -> usize {
     ti.single_layout
         .as_ref()

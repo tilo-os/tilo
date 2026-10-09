@@ -71,6 +71,7 @@
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;
+pub mod editor;
 pub mod fleet;
 pub mod guard;
 pub mod guest;

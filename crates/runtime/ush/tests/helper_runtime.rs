@@ -28,6 +28,7 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         term: "xterm".into(),
         env: Vec::new(),
         resolver: None,
+        editor: None,
     })
 }
 

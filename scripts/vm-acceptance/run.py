@@ -28,7 +28,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from acceptance import core, report  # noqa: E402
+from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
                                startup, ui, window)
 from acceptance.context import Context  # noqa: E402
@@ -60,19 +60,25 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
+    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
+    # per-frame presentation and main-thread work on a software renderer.
+    "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
 }
 
 # Run in a German session (a second slot), after the main pass.
 DE_PASS = ("U03", "U04", "S03")
 # A14 runs before anything else opens Files, so it times the session's first launch. R05
-# runs last but P03, so the adapter lines of every app the run opened are in the log.
-ORDER = ["P01", "P02", "R01", "A14", "R02", "R03", "R04",
+# runs last but P03, so the adapter lines of every app the run opened are in the log; R07
+# and A16 judge everything the run rendered and launched. R06 reads this boot's
+# timestamps, so it may run anywhere. A15 times apps R02 has already opened once.
+ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R05", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "R07", "A16", "R05", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:
@@ -186,6 +192,44 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         vm.run(*args, timeout=300, slot=False)
 
 
+def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
+    """What the slot's compositor and tilo-vmd said, for a run that could not set up its
+    session: `tilo-vm logs <slot>`, which the throwaway VM takes with it when it goes."""
+    try:
+        text = vm.run("logs", vm.slot, timeout=120, check=False, slot=False)
+    except VmError as exc:
+        text = f"tilo-vm logs {vm.slot} failed: {exc}"
+    if not text.strip():
+        return None
+    path = out / "data" / f"P00-{vm.slot}-logs.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def write_records(path: Path, samples: list[dict], meta: dict, runner: str) -> int:
+    """The run's performance records (acceptance/records.py). They name the commit whose
+    code was measured: the swapped ref's when components were swapped, else the disk's.
+    An aborted run measured nothing and writes an empty file."""
+    if not samples:
+        records.write(path, [])
+        return 0
+    provenance = meta.get("provenance") or {}
+    swap = provenance.get("swap") or {}
+    base = (provenance.get("record") or {}).get("commit") or meta.get("commit") or "unknown"
+    swapped = [c["component"] for c in swap.get("components", []) if "error" not in c]
+    guest = f"{meta['vm_cpus']} vCPU, {meta['vm_memory_mb']} MiB, outputs {','.join(meta['outputs'])}"
+    env = records.environment(swap.get("commit") if swapped else base,
+                              records.renderer(meta.get("renderer"), meta.get("display")), runner, guest)
+    run_meta = {"suite": "scripts/vm-acceptance", "base_commit": base,
+                "swapped": ",".join(swapped) or "none",
+                "image_digest": provenance.get("booted_digest") or "unknown",
+                "renderer_line": (meta.get("renderer") or "")[:200]}
+    built = records.build(samples, env, run_meta)
+    records.write(path, built)
+    return len(built)
+
+
 def whole_json(text: str) -> dict:
     """`tilo-vm --json`'s one object, which it may print across lines; {} if there is none."""
     start = text.find("{")
@@ -271,6 +315,9 @@ def main() -> int:
     ap.add_argument("--swap-ref", help="the ref the swapped components are built from, for the report "
                     "(default: the --swap-from worktree's HEAD)")
     ap.add_argument("--owners", help="area=owner,... to name who each area routes to")
+    ap.add_argument("--records", type=Path, help="write the run's performance records here "
+                    "(JSON lines, tools/perf/record.py)")
+    ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
 
@@ -320,6 +367,7 @@ def main() -> int:
         "host_mem_available_mb_at_start": mem_available_mb(),
     }
     results: list[core.Result] = []
+    ctx = None
     owners = report.owners_from(args.owners)
     try:
         cmd = None
@@ -338,7 +386,13 @@ def main() -> int:
         if management:
             facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
-        slot_create(vm, outputs, None)
+        try:
+            slot_create(vm, outputs, None)
+        except VmError:
+            logs = keep_slot_logs(vm, out)
+            if logs:
+                print(f"the slot's logs: {logs}", file=sys.stderr)
+            raise
         if swaps:
             swapped = swap_components(vm, swaps, swap_ref, swap_from)
             if management:
@@ -393,6 +447,13 @@ def main() -> int:
             except VmError as exc:
                 meta["cleanup_error"] = str(exc)
         doc = report.write(out, meta, results, owners)
+        if args.records:
+            try:
+                written = write_records(args.records, ctx.samples if ctx else [], meta, args.runner)
+                print(f"records: {written} written to {args.records}")
+            except ValueError as exc:
+                # No file: the comparison then reports every KPI of the run as missing.
+                print(f"records: none written: {exc}", file=sys.stderr)
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass")
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1

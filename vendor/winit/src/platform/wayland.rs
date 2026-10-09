@@ -121,6 +121,16 @@ pub type WaylandPresentationObserver = Box<dyn FnOnce(WaylandPresentation) + Sen
 ///
 /// [`Window`]: crate::window::Window
 pub trait WindowExtWayland {
+    /// Publish whether the original IME field accepts line feeds as text.
+    /// Password and terminal purposes never gain the multiline hint.
+    fn set_ime_multiline(&self, multiline: bool);
+    /// Publish a private, ephemeral equality stamp for the original editable field.
+    /// An empty stamp disables admission. Does not grant microphone or IME ownership.
+    fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool;
+    /// Resolve the exact original request after its actual renderer result.
+    /// Outcome is accepted (0), known rejection (1), or unknown delivery (2).
+    fn acknowledge_private_text_input(&self, serial: u32, outcome: u32);
+
     /// Observe the next committed buffer with the standard presentation protocol.
     /// Holds the native window state lock across the request and `present` so an
     /// IME/configure commit cannot take the feedback for an unrelated buffer.
@@ -160,6 +170,25 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn set_ime_multiline(&self, multiline: bool) {
+        match &self.window {
+            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
+        }
+    }
+    fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.private_text_input(snapshot),
+        }
+    }
+    fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        match &self.window {
+            #[cfg(x11_platform)] crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)] crate::platform_impl::Window::Wayland(window) => window.acknowledge_private_text_input(serial, outcome),
+        }
+    }
+
     fn present_with_feedback(
         &self,
         observer: WaylandPresentationObserver,
@@ -268,3 +297,7 @@ impl MonitorHandleExtWayland for MonitorHandle {
         self.inner.physical_size_mm()
     }
 }
+
+#[doc(hidden)]
+#[cfg(wayland_platform)]
+pub use crate::platform_impl::wayland::private_text_input_protocol;

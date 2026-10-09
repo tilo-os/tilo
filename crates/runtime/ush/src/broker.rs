@@ -2221,7 +2221,9 @@ mod tests {
         std::fs::write(
             &app,
             format!(
-                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\nwait\n",
+                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}.pending'\nmv '{}.pending' '{}'\nwait\n",
+                pid_file.display(),
+                pid_file.display(),
                 pid_file.display()
             ),
         )

@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 
+use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
 use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
@@ -163,6 +164,12 @@ pub enum AccessibilityEffect {
         #[param("The voice", choices = ScreenReaderVoice::OPTIONS.iter().copied())]
         voice: String,
     },
+    /// Select the local dictation language without starting capture.
+    #[effect(idempotent)]
+    SetDictationLanguage {
+        #[param("Stable recognition language code", choices = DictationLanguage::ALL.iter().map(|language| language.code()))]
+        language: String,
+    },
 }
 
 /// Answer `effect`.
@@ -231,6 +238,11 @@ pub(crate) fn answer(
                 ScreenReaderVoice::from_label(&voice).ok_or_else(|| not(&voice, "voice"))?;
             Box::new(move |p| p.screen_reader_voice = voice)
         }
+        E::SetDictationLanguage { language } => {
+            let language = DictationLanguage::from_code(&language)
+                .ok_or_else(|| not(&language, "dictation language code"))?;
+            Box::new(move |p| p.dictation_language = language)
+        }
     };
     app.host().update(change)
 }
@@ -282,6 +294,8 @@ struct Shown {
     screen_reader: LocalState<bool>,
     speech_rate: LocalState<String>,
     speech_voice: LocalState<String>,
+    dictation_language: LocalState<String>,
+    dictation_literal: LocalState<bool>,
     visual_alerts: LocalState<bool>,
 }
 
@@ -313,6 +327,8 @@ impl Shown {
             screen_reader: flag(),
             speech_rate: text(),
             speech_voice: text(),
+            dictation_language: text(),
+            dictation_literal: flag(),
             visual_alerts: flag(),
         };
         shown.show_appearance(appearance);
@@ -358,6 +374,9 @@ impl Shown {
         self.speech_voice
             .set(access.screen_reader_voice.label().to_owned());
         self.visual_alerts.set(access.visual_alerts);
+        self.dictation_literal.set(access.dictation_literal);
+        self.dictation_language
+            .set(access.dictation_language.code().to_owned());
     }
 }
 
@@ -740,6 +759,20 @@ impl AccessibilityPane {
                 reader_rows
                     .into_iter()
                     .chain([
+                        choice_row(
+                            &t("a11y-dictation-language"),
+                            self.dictation_language_choice(),
+                        ),
+                        caption(&t("a11y-dictation-language-desc")),
+                        setting_row_described(
+                            &t("a11y-dictation-literal"),
+                            &t("a11y-dictation-literal-desc"),
+                            self.toggle(
+                                "a11y.dictation_literal",
+                                &shown.dictation_literal,
+                                AccessibilityPrefs::paths().dictation_literal,
+                            ),
+                        ),
                         setting_row_described(
                             &t("a11y-visual-alerts"),
                             &t("a11y-visual-alerts-desc"),
@@ -765,6 +798,22 @@ impl AccessibilityPane {
             &t("a11y-shared-title"),
             rows(vec![caption(&t("a11y-shared-caption"))]),
         )
+    }
+
+    fn dictation_language_choice(&self) -> El {
+        let mut dropdown = Dropdown::from_state(Vec::new(), &self.shown.dictation_language)
+            .with_id("a11y.dictation_language")
+            .with_resolved_accessible_name(t("a11y-dictation-language"));
+        dropdown.set_value_options(
+            DictationLanguage::ALL
+                .iter()
+                .map(|language| (language.code().to_owned(), t(&language.label_key())))
+                .collect(),
+        );
+        Box::new(self.cx.bind(
+            dropdown,
+            effect(AccessibilityEffect::SET_DICTATION_LANGUAGE),
+        ))
     }
 }
 
@@ -818,6 +867,61 @@ mod tests {
     fn set(app: &mut TestApp<SettingsShell>, effect: impl Into<SettingsEffect>) {
         app.effect(&effect.into())
             .expect("the accessibility effect is answered");
+    }
+
+    #[test]
+    fn dictation_language_action_persists_stable_code_and_preserves_other_assists() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "sticky_keys", true).unwrap();
+        set(
+            &mut app,
+            AccessibilityEffect::SetDictationLanguage {
+                language: "de".into(),
+            },
+        );
+        let preferences = app.settings::<AccessibilityPrefs>();
+        let section = preferences.document().section("accessibility");
+        assert_eq!(DictationLanguage::from_section(&section).code(), "de");
+        assert!(preferences.get().sticky_keys);
+        let before = preferences.get();
+        assert!(
+            app.effect(&SettingsEffect::from(
+                AccessibilityEffect::SetDictationLanguage {
+                    language: "Deutsch".into(),
+                }
+            ))
+            .is_err()
+        );
+        assert_eq!(app.settings::<AccessibilityPrefs>().get(), before);
+        for language in DictationLanguage::ALL {
+            assert_ne!(t(&language.label_key()), language.label_key());
+        }
+    }
+
+    #[test]
+    fn dictation_literal_edit_preserves_language_and_other_assists() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        edit_field(&mut app, ACCESSIBILITY, "sticky_keys", true).unwrap();
+        set(
+            &mut app,
+            AccessibilityEffect::SetDictationLanguage {
+                language: "en".into(),
+            },
+        );
+        edit_field(&mut app, ACCESSIBILITY, "dictation_literal", true).unwrap();
+        let preferences = app.settings::<AccessibilityPrefs>();
+        assert!(preferences.get().dictation_literal);
+        assert!(preferences.get().sticky_keys);
+        assert_eq!(preferences.get().dictation_language.code(), "en");
+        assert_eq!(
+            preferences
+                .document()
+                .section("accessibility")
+                .get("dictation_literal"),
+            Some(&serde_json::json!(true))
+        );
+        edit_field(&mut app, ACCESSIBILITY, "dictation_literal", false).unwrap();
+        assert!(!app.settings::<AccessibilityPrefs>().get().dictation_literal);
     }
 
     /// The vision comforts are the appearance section's (one stored value,

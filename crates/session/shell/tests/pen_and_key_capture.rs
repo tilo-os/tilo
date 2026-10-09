@@ -393,7 +393,7 @@ impl Harness {
         self.pump();
         assert!(
             shell::compositor::foreign::store().is_mapped(surface_id),
-            "the applied non-null commit maps for input before pixel presentation"
+            "the committed SHM buffer maps before painting or asynchronous pixel conversion"
         );
         let _ = self.fb.paint_settled();
         assert!(
