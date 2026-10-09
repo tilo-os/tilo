@@ -262,7 +262,7 @@ fn portable_media_file_name(name: &str) -> Option<String> {
 }
 
 fn personal_media_cache_root() -> Option<PathBuf> {
-    let root = xdg_paths::cache_dir()?.join("tilo/personal-media");
+    let root = tilo_paths::cache_dir()?.join("tilo/personal-media");
     // A partial stream is never useful after restart and can never become
     // authorized again because transfer ids/actions are session-local.
     let incoming = root.join("incoming");
@@ -761,7 +761,7 @@ pub fn peer_key_path() -> std::path::PathBuf {
 ///
 /// When the session has no per-user state directory.
 pub fn peer_state_dir() -> std::io::Result<std::path::PathBuf> {
-    xdg_paths::state_dir()
+    tilo_paths::state_dir()
         .map(|state| state.join("tilo").join("peer-sync"))
         .ok_or_else(|| {
             std::io::Error::new(

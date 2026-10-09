@@ -715,7 +715,6 @@ inputs = [
   "crates/system/tilo-startup-metrics/",
   "crates/system/tts/",
   "crates/system/wire-frame/",
-  "crates/system/xdg-paths/",
   "crates/text/spellcheck/",
   "crates/workspace-hack/",
 ]

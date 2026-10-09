@@ -253,7 +253,7 @@ impl sms_first::Source for Source {
 fn empty_native_messages_sim_choice_protected_review_receive_reply_and_revoke() {
     let bus = FixtureBus::new();
     let mut rig = Rig::new();
-    let _paths = xdg_paths::scope_profile(rig.root.path().join("sms-owner"));
+    let _paths = tilo_paths::scope_profile(rig.root.path().join("sms-owner"));
     let _secrets = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);

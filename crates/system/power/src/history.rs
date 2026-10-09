@@ -88,7 +88,7 @@ pub fn record_power_history(
 }
 
 fn history_path(kind: PowerSourceKind) -> Option<PathBuf> {
-    let base = xdg_paths::xdg::state_home()?;
+    let base = tilo_paths::xdg::state_home()?;
     let name = match kind {
         PowerSourceKind::Battery => "power-history.json",
         PowerSourceKind::Ups => "ups-history.json",

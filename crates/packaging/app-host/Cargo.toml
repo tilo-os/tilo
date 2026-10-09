@@ -24,7 +24,7 @@ test-support = []
 dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
-xdg-paths = { package = "tilo-xdg-paths", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry and store; this daemon keeps none of its own.

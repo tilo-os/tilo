@@ -12,7 +12,7 @@ pub(super) struct TrashSlot {
 
 impl TrashSlot {
     pub(super) fn prepare(original: &Path) -> Result<Self, String> {
-        let data = xdg_paths::data_dir().ok_or("home Trash is unavailable")?;
+        let data = tilo_paths::data_dir().ok_or("home Trash is unavailable")?;
         fs::create_dir_all(&data).map_err(|error| error.to_string())?;
         let data_directory = SecureNearbyDestination::open_beneath(&data, &data)?;
         let trash = private_directory(&data_directory, "Trash")?;
@@ -100,7 +100,7 @@ fn sync_directory(directory: &SecureNearbyDestination) -> Result<(), String> {
 }
 
 pub(super) fn files_directory() -> Result<SecureNearbyDestination, String> {
-    let data = xdg_paths::data_dir().ok_or("home Trash unavailable")?;
+    let data = tilo_paths::data_dir().ok_or("home Trash unavailable")?;
     let root = SecureNearbyDestination::open_beneath(&data, &data)?;
     let trash = private_directory(&root, "Trash")?;
     private_directory(&trash, "files")
@@ -109,7 +109,7 @@ pub(super) fn files_directory() -> Result<SecureNearbyDestination, String> {
 /// Remove only the metadata belonging to a successfully restored Trash leaf.
 /// The payload has already moved through its retained no-replace descriptor.
 pub(super) fn consume_info(path: &Path) -> Result<(), String> {
-    let data = xdg_paths::data_dir().ok_or("home Trash unavailable")?;
+    let data = tilo_paths::data_dir().ok_or("home Trash unavailable")?;
     if path.parent() != Some(data.join("Trash/files").as_path()) {
         return Err("restored Trash metadata escaped its scope".into());
     }

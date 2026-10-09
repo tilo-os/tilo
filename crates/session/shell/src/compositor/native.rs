@@ -2034,7 +2034,7 @@ fn spawn_agent_mcp(
         eprintln!("tilo compositor: agent MCP endpoint: no active workspace");
         return;
     };
-    let scratch = xdg_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
+    let scratch = tilo_paths::xdg::cache_home().map(|cache| cache.join("tilo").join("computer"));
     let Some(scratch) = scratch.filter(|path| {
         std::fs::create_dir_all(path).is_ok()
             && std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o700))
@@ -8444,7 +8444,7 @@ pub fn run() {
         let runtime = crate::shell::launcher::runtime_dir();
         // SAFETY: getuid has no arguments or memory contract.
         let uid = unsafe { libc::getuid() };
-        let pending = xdg_paths::data_local_dir().is_some_and(|data| {
+        let pending = tilo_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("tilo-imager/migrations/desktop-continuation.json"),
                 uid,
