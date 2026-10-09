@@ -73,3 +73,4 @@ contacts-address-region = Changed the region of an address
 contacts-address-postal = Changed the postal code of an address
 contacts-address-country = Changed the country of an address
 contacts-group-entry-value = Renamed the group { $item }
+contacts-project-contacts = Updated the contact identities from the address book

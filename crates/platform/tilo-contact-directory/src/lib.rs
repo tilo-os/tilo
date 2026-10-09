@@ -3,7 +3,23 @@
 //! identity; concurrent conflicting confirmations remain ambiguous and refuse
 //! routing rather than choosing a winner. No credentials or histories live here.
 
-use tilo_resource::{Collection, Id, Json, Model, Refusal, SharedRecord, resource};
+use serde::{Deserialize, Serialize};
+use tilo_resource::{Collection, Id, Json, JsonSchema, Model, Refusal, SharedRecord, resource};
+
+/// How many people one projection may carry: a large imported book in one
+/// change, bounded so one payload stays a reasonable size.
+pub const MAX_PROJECTED: usize = 10_000;
+
+/// One Contacts identity as Contacts projects it: its label and the phone
+/// and mailbox hints it holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Projected {
+    /// The Contacts UUID.
+    pub person: Id,
+    pub label: String,
+    pub phones: Vec<String>,
+    pub emails: Vec<String>,
+}
 
 #[cfg(test)]
 mod tests;
@@ -168,9 +184,7 @@ impl ContactDirectory {
     /// Project phone hints from Contacts. These can suggest candidates only.
     #[action(external)]
     pub fn project_phones(&mut self, person: Id, phones: Vec<String>) -> Result<(), Refusal> {
-        if phones.len() > 128 || phones.iter().any(|phone| phone.len() > 512) {
-            return Err(refused());
-        }
+        hints_bounded(&phones)?;
         let selected = self
             .people
             .get_mut(&person)
@@ -183,15 +197,60 @@ impl ContactDirectory {
     /// Project mailbox hints without creating any service association.
     #[action(external)]
     pub fn project_emails(&mut self, person: Id, emails: Vec<String>) -> Result<(), Refusal> {
-        if emails.len() > 128 || emails.iter().any(|email| email.len() > 512) {
-            return Err(refused());
-        }
+        hints_bounded(&emails)?;
         let selected = self
             .people
             .get_mut(&person)
             .filter(|person| !person.removed)
             .ok_or_else(refused)?;
         selected.emails = Json(emails);
+        Ok(())
+    }
+
+    /// Project many Contacts identities as one change: each person's label,
+    /// phone and mailbox hints as [`Self::project_contact`],
+    /// [`Self::project_phones`] and [`Self::project_emails`] would, and each
+    /// of `removed` tombstoned as [`Self::remove_contact`] would. A large
+    /// import costs one change instead of three per person.
+    #[action(external)]
+    pub fn project_contacts(
+        &mut self,
+        people: Vec<Projected>,
+        removed: Vec<Id>,
+    ) -> Result<(), Refusal> {
+        if people.len().saturating_add(removed.len()) > MAX_PROJECTED {
+            return Err(refused());
+        }
+        for projected in people {
+            validate_person(&projected.person)?;
+            if projected.label.len() > 4096 {
+                return Err(refused());
+            }
+            hints_bounded(&projected.phones)?;
+            hints_bounded(&projected.emails)?;
+            match self.people.get_mut(&projected.person) {
+                Some(existing) if existing.removed => {}
+                Some(existing) => {
+                    existing.label = projected.label;
+                    existing.phones = Json(projected.phones);
+                    existing.emails = Json(projected.emails);
+                }
+                None => {
+                    self.people.push(
+                        projected.person,
+                        Person {
+                            label: projected.label,
+                            phones: Json(projected.phones),
+                            emails: Json(projected.emails),
+                            ..Person::default()
+                        },
+                    );
+                }
+            }
+        }
+        for person in removed {
+            self.remove_contact(person)?;
+        }
         Ok(())
     }
 
@@ -458,6 +517,14 @@ pub fn canonical_email_hint(value: &str) -> Option<String> {
         return None;
     }
     Some(format!("{local}@{}", domain.to_ascii_lowercase()))
+}
+
+/// Phone or mailbox hints of one person: at most 128, each bounded.
+fn hints_bounded(hints: &[String]) -> Result<(), Refusal> {
+    if hints.len() > 128 || hints.iter().any(|hint| hint.len() > 512) {
+        return Err(refused());
+    }
+    Ok(())
 }
 
 fn refused() -> Refusal {

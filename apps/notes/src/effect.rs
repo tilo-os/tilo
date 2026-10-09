@@ -43,7 +43,7 @@ pub enum NotesEffect {
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, row, item = pages)]
     ExportMarkdown {
         #[param("The note")]
         page: Uuid,
@@ -51,7 +51,7 @@ pub enum NotesEffect {
     /// Insert image
     ///
     /// Choose an image and add it to a note.
-    #[effect(job, cancellable, device_only)]
+    #[effect(job, cancellable, device_only, row, item = pages)]
     InsertImage {
         #[param("The note")]
         page: Uuid,
@@ -59,7 +59,7 @@ pub enum NotesEffect {
     /// Copy note link
     ///
     /// Copy a link to a note that pastes into another note.
-    #[effect(device_only)]
+    #[effect(device_only, row, item = pages)]
     CopyLink {
         #[param("The note")]
         page: Uuid,
@@ -75,7 +75,7 @@ pub enum NotesEffect {
     /// Open note
     ///
     /// Show a note, and the block in it when one is named.
-    #[effect(view, idempotent)]
+    #[effect(view, idempotent, item = pages)]
     OpenNote {
         #[param("The note")]
         page: Uuid,
@@ -85,7 +85,7 @@ pub enum NotesEffect {
     /// Reveal block range
     ///
     /// Select an exact range in a note block without changing its text.
-    #[effect(view, idempotent)]
+    #[effect(view, idempotent, row, item = pages)]
     RevealBlockRange {
         #[param("The note")]
         page: Uuid,
@@ -101,7 +101,7 @@ pub enum NotesEffect {
     /// Browse tagged notes
     ///
     /// Show the notes carrying a tag.
-    #[effect(view, idempotent)]
+    #[effect(view, idempotent, item = tags)]
     OpenTag {
         #[param("The tag")]
         tag: Uuid,

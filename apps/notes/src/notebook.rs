@@ -140,7 +140,8 @@ pub fn page_of(id: &Id) -> Option<PageId> {
     kind = "notes.notebook",
     label = "Notebook",
     search = crate::search::entries,
-    read_content = Notebook::read_note
+    read_content = Notebook::read_note,
+    effects = crate::effect::NotesEffect
 )]
 impl Notebook {
     /// New note

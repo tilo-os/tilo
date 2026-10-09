@@ -523,53 +523,51 @@ impl ContactsApp {
     /// are independently confirmed in the shared person-owned directory and
     /// never inferred from matching names, emails or telephone numbers.
     fn project_identities(&self, state: &Contacts) {
-        use tilo_contact_directory::ContactDirectory;
+        use tilo_contact_directory::{ContactDirectory, Projected};
         let Some(directory) = &self.identity_directory else {
             return;
         };
         let current = directory.get();
-        for contact in &state.contacts {
-            let id = Contacts::key(contact.id);
-            let label = contact.display_name();
-            if current
-                .people
-                .get(&id)
-                .is_none_or(|person| !person.removed && person.label != label)
-            {
-                let _ =
-                    directory.invoke(&ContactDirectory::PROJECT_CONTACT.with((id.clone(), label)));
-            }
-            let phones = contact
-                .phones
-                .iter()
-                .map(|phone| phone.value.clone())
-                .collect::<Vec<_>>();
-            if current
-                .people
-                .get(&id)
-                .is_none_or(|person| !person.removed && person.phones.0 != phones)
-            {
-                let _ =
-                    directory.invoke(&ContactDirectory::PROJECT_PHONES.with((id.clone(), phones)));
-            }
-            let emails = contact
-                .emails
-                .iter()
-                .map(|email| email.value.clone())
-                .collect::<Vec<_>>();
-            if current
-                .people
-                .get(&id)
-                .is_none_or(|person| !person.removed && person.emails.0 != emails)
-            {
-                let _ = directory.invoke(&ContactDirectory::PROJECT_EMAILS.with((id, emails)));
-            }
+        let people: Vec<Projected> = state
+            .contacts
+            .iter()
+            .map(|contact| Projected {
+                person: Contacts::key(contact.id),
+                label: contact.display_name(),
+                phones: contact
+                    .phones
+                    .iter()
+                    .map(|phone| phone.value.clone())
+                    .collect(),
+                emails: contact
+                    .emails
+                    .iter()
+                    .map(|email| email.value.clone())
+                    .collect(),
+            })
+            .filter(|projected| {
+                current.people.get(&projected.person).is_none_or(|person| {
+                    !person.removed
+                        && (person.label != projected.label
+                            || person.phones.0 != projected.phones
+                            || person.emails.0 != projected.emails)
+                })
+            })
+            .collect();
+        let removed: Vec<_> = state
+            .removed
+            .iter()
+            .map(|removed| Contacts::key(*removed))
+            .filter(|id| current.people.get(id).is_none_or(|person| !person.removed))
+            .collect();
+        // One change for the whole book, however many people it touches.
+        for chunk in people.chunks(tilo_contact_directory::MAX_PROJECTED) {
+            let _ = directory
+                .invoke(&ContactDirectory::PROJECT_CONTACTS.with((chunk.to_vec(), Vec::new())));
         }
-        for removed in state.removed.iter() {
-            let id = Contacts::key(*removed);
-            if current.people.get(&id).is_none_or(|person| !person.removed) {
-                let _ = directory.invoke(&ContactDirectory::REMOVE_CONTACT.with(id));
-            }
+        if !removed.is_empty() {
+            let _ =
+                directory.invoke(&ContactDirectory::PROJECT_CONTACTS.with((Vec::new(), removed)));
         }
     }
 }
