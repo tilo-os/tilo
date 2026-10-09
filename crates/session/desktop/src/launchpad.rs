@@ -1225,14 +1225,7 @@ mod tests {
         }
     }
 
-    fn named_key(key: NamedKey) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
-    }
+    use ui::synthetic_input::named_key;
 
     #[test]
     fn launchpad_layout_keeps_edges_bounds_and_clears_chrome_at_every_size() {

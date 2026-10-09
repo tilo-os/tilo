@@ -659,16 +659,10 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     }
 
     fn ctrl_shift_arrow_extends_selection_across_blocks() {
-        use winit::event::{ElementState, Modifiers, WindowEvent};
-        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        use winit::event::{Modifiers, WindowEvent};
+        use winit::keyboard::{ModifiersState, NamedKey};
 
-        fn arrow(named: NamedKey) -> WindowEvent {
-            crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-                Key::Named(named),
-                None,
-                ElementState::Pressed,
-            ))
-        }
+        use crate::synthetic_input::named_key;
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![
@@ -702,7 +696,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         };
 
         // Down once: selects the tail of block 0 ("llo"), caret into block 1.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
         assert_eq!(
             e.blocks()[0].line.selection_range(),
@@ -711,7 +705,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Down again: block 1 fully selected too.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(2));
         assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
         assert_eq!(
@@ -721,7 +715,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Retreat up: block 2 cleared, block 1 selected to its end.
-        send(&mut e, &arrow(NamedKey::ArrowUp));
+        send(&mut e, &named_key(NamedKey::ArrowUp));
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(
             e.blocks()[2].line.selection_range(),

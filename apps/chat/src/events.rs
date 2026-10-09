@@ -2053,7 +2053,7 @@ mod tests {
             for key in [NamedKey::ArrowDown, NamedKey::Enter] {
                 let mut handled = false;
                 app.dispatch_event(
-                    &key_named(key),
+                    &named_key(key),
                     1.0,
                     Modifiers::default(),
                     &mut ui::widget::Edits::lend(&mut doc),
@@ -2161,7 +2161,7 @@ mod tests {
                 app.draft_main, "hello team",
                 "the draft is mirrored into the CRDT"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             let after = ChatDoc::list_messages(&doc, "c_crit");
             assert_eq!(after.len(), before + 1);
             assert_eq!(after.last().unwrap().text, "hello team");
@@ -2175,7 +2175,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "abc");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Backspace));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Backspace));
             assert_eq!(
                 app.composer_main.value(),
                 "ab",
@@ -2199,7 +2199,7 @@ mod tests {
                 "clipboard round-trips here (precondition for the paste path)"
             );
 
-            feed_mods(&mut app, &mut doc, &key_char("v"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("v"), mods(true, false));
 
             assert_eq!(
                 app.composer_main.value(),
@@ -2223,9 +2223,9 @@ mod tests {
             render_frame(&mut app, 1280.0, 720.0);
 
             // Select the whole value (Ctrl+A) then copy it (Ctrl+C).
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             ui::clipboard_copy("stale"); // ensure the copy overwrites something
-            feed_mods(&mut app, &mut doc, &key_char("c"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("c"), mods(true, false));
             assert_eq!(
                 ui::clipboard_paste().as_deref(),
                 Some("copy me please"),
@@ -2393,10 +2393,10 @@ mod tests {
                 .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
                 .expect("Inbox is in the visible keyboard inventory");
             for _ in 0..=inbox_index {
-                feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+                feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
             }
             assert_eq!(app.keyboard_target, Some(inbox_index));
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.inbox_open, "Enter follows the first visible Tab target");
         }
@@ -2794,7 +2794,7 @@ mod tests {
             app.begin_rename(MenuTarget::Channel("c_random".into()));
             app.rename_input.select_all();
             type_str(&mut app, &mut doc, "watercooler");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
             assert_eq!(c.name, "watercooler");
         }
@@ -2805,7 +2805,7 @@ mod tests {
             let original = app.channel("c_random").unwrap().name.clone();
             app.begin_rename(MenuTarget::Channel("c_random".into()));
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             assert_eq!(
                 app.rename_input.selection_range_public(),
                 Some((0, original.len()))
@@ -2826,7 +2826,7 @@ mod tests {
                 "partial rename text is not collaborative state"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.channel("c_random").unwrap().name, "東京");
         }
 
@@ -3091,7 +3091,7 @@ mod tests {
                 &mut doc,
                 "Revised: host tile carries the follow control.",
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
 
             assert!(app.editing.is_none(), "saving closes the editor");
             let m = app.message("m_me1").unwrap();
@@ -3115,7 +3115,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
 
-            feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
+            feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
             let (anchor, caret) = app.edit_input.selection();
             assert_eq!((anchor.min(caret), anchor.max(caret)), (0, original.len()));
             feed(
@@ -3144,7 +3144,7 @@ mod tests {
                 "partial edits stay local until Save"
             );
 
-            feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(app.message("m_me1").unwrap().text, "東京");
         }
 
@@ -3192,7 +3192,7 @@ mod tests {
                 app.composer_main.value().is_empty(),
                 "composer starts empty"
             );
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             let id = app.editing.clone().expect("ArrowUp opened the editor");
             assert_eq!(id, "m_me2", "loaded the last own top-level message");
             assert_eq!(
@@ -3208,7 +3208,7 @@ mod tests {
             app.focus = Focus::Main;
             app.set_composer_focus();
             type_str(&mut app, &mut doc, "half a thought");
-            feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
+            feed(&mut app, &mut doc, &named_key(NamedKey::ArrowUp));
             assert!(
                 app.editing.is_none(),
                 "a non-empty composer suppresses ArrowUp-to-edit"
@@ -3221,7 +3221,7 @@ mod tests {
             let original = app.message("m_me1").unwrap().text.clone();
             app.begin_edit("m_me1".into());
             type_str(&mut app, &mut doc, "Z");
-            feed(&mut app, &mut doc, &key_named(NamedKey::Escape));
+            feed(&mut app, &mut doc, &named_key(NamedKey::Escape));
             assert!(app.editing.is_none(), "Escape closes the editor");
             let m = app.message("m_me1").unwrap();
             assert_eq!(m.text, original, "cancel leaves the message untouched");
@@ -3912,32 +3912,18 @@ mod tests {
         );
     }
 
-    /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
-    fn key_named(k: NamedKey) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::named_key;
 
-    /// A `KeyboardInput` press for a printable character.
-    fn key_char(s: &str) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::char_key;
 
     /// Type each character of `s` into the app through the real keyboard path
     /// (space via the named key, like winit reports it).
     fn type_str(app: &mut ChatApp, doc: &mut AutoCommit, s: &str) {
         for ch in s.chars() {
             let ev = if ch == ' ' {
-                key_named(NamedKey::Space)
+                named_key(NamedKey::Space)
             } else {
-                key_char(&ch.to_string())
+                char_key(&ch.to_string())
             };
             feed(app, doc, &ev);
         }
@@ -4151,11 +4137,11 @@ mod tests {
             .expect("the demo room has someone to mention");
         let prefix: String = who.name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));
-        feed(&mut app, &mut doc, &key_named(NamedKey::Tab));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
         let label = format!("@{}", who.name);
         assert_eq!(app.composer_main.value(), format!("ping {label} "));
         type_str(&mut app, &mut doc, "now");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let sent = ChatDoc::list_messages(&doc, &app.active_channel)
             .into_iter()
             .last()
@@ -4182,9 +4168,9 @@ mod tests {
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "plain ");
-        feed_mods(&mut app, &mut doc, &key_char("b"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &char_key("b"), mods(true, false));
         type_str(&mut app, &mut doc, "bold");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let sent = ChatDoc::list_messages(&doc, &app.active_channel)
             .into_iter()
             .last()
@@ -4200,7 +4186,7 @@ mod tests {
         app.begin_edit(sent.id.clone());
         assert_eq!(app.edit_input.value(), "plain bold");
         type_str(&mut app, &mut doc, "!");
-        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         let edited = app.message(&sent.id).unwrap();
         assert_eq!(edited.text, "plain bold!");
         assert!(
@@ -4677,7 +4663,7 @@ mod tests {
             feed_mods(
                 &mut app,
                 &mut doc,
-                &key_named(NamedKey::End),
+                &named_key(NamedKey::End),
                 mods(true, false),
             );
             assert_eq!(app.scroll, 0.0);

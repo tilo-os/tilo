@@ -1606,13 +1606,7 @@ mod tests {
             button: MouseButton::Left,
         }
     }
-    fn char_key(s: &str) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            Key::Character(winit::keyboard::SmolStr::new(s)),
-            Some(winit::keyboard::SmolStr::new(s)),
-            ElementState::Pressed,
-        ))
-    }
+    use crate::synthetic_input::char_key;
     fn enter() -> WindowEvent {
         crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
             Key::Named(NamedKey::Enter),

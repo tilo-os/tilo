@@ -911,7 +911,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+use winit::keyboard::{ModifiersState, NamedKey};
 
 fn cursor_moved(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
@@ -944,22 +944,9 @@ fn mouse_release() -> WindowEvent {
     }
 }
 
-/// A printable-character keyboard event (mirrors `text_input`'s test helper.
-fn char_key(s: &str) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Character(SmolStr::new(s)),
-        Some(SmolStr::new(s)),
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::char_key;
 
-fn named_key(key: NamedKey) -> WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Named(key),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::named_key;
 
 /// Notes with a Welcome note that uses every block kind, open.
 fn starter() -> TestApp<NotesShell> {
