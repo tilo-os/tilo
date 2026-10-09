@@ -495,8 +495,13 @@ impl NoParams for () {}
 pub trait Params: Serialize + DeserializeOwned + crate::JsonSchema + Clone + 'static {
     /// The resource the verb belongs to.
     type Resource;
+    /// The typed paths into the parameters, one per parameter.
+    type Paths: Clone;
     /// The verb.
     const ACTION: ActionRef<Self::Resource, Self>;
+
+    /// The typed paths into the parameters.
+    fn paths() -> Self::Paths;
 }
 
 impl<R, A: NoParams> ActionRef<R, A> {

@@ -58,10 +58,25 @@ fn refused(error: tilo_actions::ActionError) -> ModelError {
 
 impl Operations for RichText {
     type Op = RichTextAction;
+
+    /// Typing on in one paragraph, within a word.
+    fn coalesces(previous: &RichTextAction, next: &RichTextAction) -> bool {
+        <Self as tilo_resource::Resource>::coalesces(previous, next)
+    }
+
+    fn continuable(op: &RichTextAction) -> bool {
+        <Self as tilo_resource::Resource>::continuable(op)
+    }
+
+    /// The caret after typed text, an inserted paragraph, a split.
+    fn lands(&self, op: &RichTextAction) -> Option<tilo_resource::Place> {
+        <Self as tilo_resource::Resource>::lands(self.state.as_ref()?, op)
+    }
 }
 
 impl Model for RichText {
     tilo_resource::leaf_paths!();
+    tilo_resource::operations_model!();
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.text())
@@ -214,5 +229,71 @@ mod tests {
         assert_eq!(merged, body_text(&other));
         let fresh = note.state().unwrap();
         assert_eq!(note.live().unwrap(), &fresh);
+    }
+
+    #[test]
+    fn rich_edits_coalesce_land_and_publish_their_vocabulary() {
+        use tilo_resource::Resource;
+        let splice = |at: usize, ins: &str| {
+            let edit = Note::paths()
+                .body
+                .perform(&RichTextAction::SpliceText {
+                    region: crate::action::RegionKind::Body,
+                    block: "p1".into(),
+                    at,
+                    del: 0,
+                    ins: ins.into(),
+                })
+                .unwrap();
+            Note::edit_action(edit).unwrap()
+        };
+        assert!(Note::coalesces(&splice(0, "h"), &splice(1, "i")));
+        assert!(!Note::coalesces(&splice(0, "h "), &splice(2, "i")));
+        assert!(Note::continuable(&splice(0, "h")));
+
+        let mut note = Replica::<Note>::new();
+        note.apply(Note::WRITE.with("hello")).unwrap();
+        let state = note.state().unwrap();
+        let block = state
+            .body
+            .state()
+            .unwrap()
+            .body()
+            .id_at(0)
+            .unwrap()
+            .to_owned();
+        let typed = Note::edit_action(
+            Note::paths()
+                .body
+                .perform(&RichTextAction::SpliceText {
+                    region: crate::action::RegionKind::Body,
+                    block: block.clone(),
+                    at: 5,
+                    del: 0,
+                    ins: "!".into(),
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            Note::lands(&state, &typed),
+            Some(tilo_resource::Place::Caret { item, at: 6 }) if item == block
+        ));
+
+        let surface = Note::surface();
+        let body = surface
+            .fields
+            .iter()
+            .find(|field| field.path == "body")
+            .unwrap();
+        assert!(body.ops.is_some());
+        let tree = tilo_resource::publish::<Note>("note", "Note", &state);
+        let edit = tree
+            .actions
+            .iter()
+            .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+            .unwrap();
+        let schema = serde_json::to_string(edit.params()[0].schema.as_deref().unwrap()).unwrap();
+        assert!(schema.contains("SpliceText"), "{schema}");
     }
 }

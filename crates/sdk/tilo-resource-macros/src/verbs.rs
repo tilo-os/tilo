@@ -25,11 +25,15 @@ pub(crate) struct ResourceOptions {
     views: Option<syn::Path>,
     version: Option<syn::LitInt>,
     migrate: Option<syn::Path>,
+    load: Option<syn::Path>,
+    locate: Option<syn::Path>,
+    lands: Option<syn::Path>,
 }
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `views = path`, `version = N` or `migrate = path`";
+     `read_content = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `locate = path` or `lands = path`";
 
 pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<ResourceOptions> {
     let metas = syn::parse::Parser::parse(Punctuated::<Meta, Token![,]>::parse_terminated, attr)?;
@@ -47,6 +51,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         views: None,
         version: None,
         migrate: None,
+        load: None,
+        locate: None,
+        lands: None,
     };
     let mut kind = None;
     let mut label = None;
@@ -93,6 +100,9 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
                 }),
             ) => options.version = Some(version.clone()),
             ("migrate", Expr::Path(path)) => options.migrate = Some(path.path.clone()),
+            ("load", Expr::Path(path)) => options.load = Some(path.path.clone()),
+            ("locate", Expr::Path(path)) => options.locate = Some(path.path.clone()),
+            ("lands", Expr::Path(path)) => options.lands = Some(path.path.clone()),
             _ => return Err(syn::Error::new(pair.span(), RESOURCE_KEYS)),
         }
     }
@@ -471,7 +481,12 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
 
         impl #krate::Params for #name {
             type Resource = #self_ty;
+            type Paths = #paths_name;
             const ACTION: #krate::ActionRef<#self_ty, Self> = <#self_ty>::#const_ident;
+
+            fn paths() -> #paths_name {
+                #paths_name { #(#path_inits,)* }
+            }
         }
 
         /// The typed paths into the parameters, for a form that edits them.
@@ -484,7 +499,7 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
             /// The typed paths into the parameters.
             #[must_use]
             pub fn paths() -> #paths_name {
-                #paths_name { #(#path_inits,)* }
+                <Self as #krate::Params>::paths()
             }
         }
     }
@@ -880,6 +895,43 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    let load = options.load.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                fn load(
+                    state: &mut Self,
+                    doc: &#krate::Doc,
+                    demand: &#krate::Demand,
+                ) -> ::core::result::Result<(), #krate::ModelError> {
+                    #path(state, doc, demand)
+                }
+            }
+        },
+    );
+    let locate = options.locate.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                fn locate(
+                    state: &Self,
+                    obj: &#krate::__private::ObjId,
+                ) -> ::core::option::Option<#krate::ObjPath> {
+                    #path(state, obj)
+                }
+            }
+        },
+    );
+    let lands_first = options.lands.as_ref().map_or_else(
+        || quote!(),
+        |path| {
+            quote! {
+                if let ::core::option::Option::Some(place) = #path(state, action) {
+                    return ::core::option::Option::Some(place);
+                }
+            }
+        },
+    );
     let read_content = options.read_content.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -1098,8 +1150,41 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 }
             }
 
+            fn continuable(action: &Self::Action) -> bool {
+                match &action.operation {
+                    #action_enum::FieldEdit(edit) => match edit.op() {
+                        #krate::EditOp::Rich { rich } => {
+                            <Self as #krate::Model>::op_continuable(edit.path(), rich).unwrap_or(true)
+                        }
+                        _ => true,
+                    },
+                    _ => true,
+                }
+            }
+
+            fn lands(state: &Self, action: &Self::Action) -> ::core::option::Option<#krate::Place> {
+                #lands_first
+                match &action.operation {
+                    #action_enum::FieldEdit(edit) => match edit.op() {
+                        #krate::EditOp::Rich { rich } => {
+                            #krate::Model::op_lands(state, edit.path(), rich)
+                        }
+                        _ => ::core::option::Option::None,
+                    },
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            fn op_schemas() -> ::std::vec::Vec<(::std::string::String, #krate::__private::serde_json::Value)> {
+                let mut out = ::std::vec::Vec::new();
+                <Self as #krate::Model>::op_schemas("", &mut out);
+                out
+            }
+
             #seed_fn
             #version
+            #load
+            #locate
             #availability
             #read_content
             #views

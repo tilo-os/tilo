@@ -66,6 +66,10 @@ pub struct FieldSurface {
     pub unit: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub label: bool,
+    /// The schema of the field's own operations, for a type with its own
+    /// vocabulary (rich text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ops: Option<serde_json::Value>,
 }
 
 impl VerbSurface {
@@ -122,6 +126,7 @@ fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
             readonly: field.readonly,
             unit: field.unit,
             label: field.label,
+            ops: None,
         });
         fields_of(field.shape, &format!("{path}."), out);
     }
@@ -133,6 +138,11 @@ pub fn surface_of<R: Resource>() -> Surface {
     let mut fields = Vec::new();
     if let Some(shape) = R::shape() {
         fields_of(shape, "", &mut fields);
+    }
+    for (path, schema) in R::op_schemas() {
+        if let Some(field) = fields.iter_mut().find(|field| field.path == path) {
+            field.ops = Some(schema);
+        }
     }
     Surface {
         kind: R::KIND.to_owned(),

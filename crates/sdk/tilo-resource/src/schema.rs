@@ -614,16 +614,13 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
         })
         .collect();
     if R::EDITS {
+        // Described in full by the field-edit action itself.
         operations.push(describe(
             object(vec![
                 ("action", constant(crate::FIELD_EDIT), true),
-                (
-                    "args",
-                    <crate::Edit<R> as crate::JsonSchema>::json_schema(),
-                    true,
-                ),
+                ("args", json!({"type": "object"}), true),
             ]),
-            "Change one field",
+            "A field edit, as the field-edit action takes it",
         ));
     }
     if R::seed().is_some() {

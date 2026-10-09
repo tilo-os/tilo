@@ -217,10 +217,109 @@ impl<R, T: Settable> Path<R, T> {
 }
 
 /// A type with its own vocabulary of edits beside the generic ones: rich
-/// text's marks and blocks. Its paths offer [`Path::perform`].
+/// text's marks and blocks. Its paths offer [`Path::perform`]; its `Model`
+/// impl calls [`operations_model!`](crate::operations_model) so records
+/// holding it route those edits' gestures, landing places and schema to it.
 pub trait Operations: Model {
     /// One edit of the type, in its own terms.
-    type Op: Serialize;
+    type Op: Serialize + serde::de::DeserializeOwned + crate::JsonSchema;
+
+    /// Whether `next`, straight after `previous` by the same actor, is the
+    /// same gesture (typing on in one word): one undo step.
+    fn coalesces(previous: &Self::Op, next: &Self::Op) -> bool {
+        let _ = (previous, next);
+        false
+    }
+
+    /// Whether a gesture may go on after `op`.
+    fn continuable(op: &Self::Op) -> bool {
+        let _ = op;
+        true
+    }
+
+    /// Where the actor of `op` is after it applied (the caret after typed
+    /// text), read from the value it applied to.
+    fn lands(&self, op: &Self::Op) -> Option<crate::Place> {
+        let _ = op;
+        None
+    }
+}
+
+/// [`Model::op_coalesces`] of an [`Operations`] type.
+#[doc(hidden)]
+pub fn op_coalesces<T: Operations>(
+    path: &[Segment],
+    previous: &serde_json::Value,
+    next: &serde_json::Value,
+) -> Option<bool> {
+    if !path.is_empty() {
+        return None;
+    }
+    let previous = serde_json::from_value(previous.clone()).ok()?;
+    let next = serde_json::from_value(next.clone()).ok()?;
+    Some(T::coalesces(&previous, &next))
+}
+
+/// [`Model::op_continuable`] of an [`Operations`] type.
+#[doc(hidden)]
+pub fn op_continuable<T: Operations>(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+    if !path.is_empty() {
+        return None;
+    }
+    Some(T::continuable(&serde_json::from_value(op.clone()).ok()?))
+}
+
+/// [`Model::op_lands`] of an [`Operations`] type.
+#[doc(hidden)]
+pub fn op_lands<T: Operations>(
+    value: &T,
+    path: &[Segment],
+    op: &serde_json::Value,
+) -> Option<crate::Place> {
+    if !path.is_empty() {
+        return None;
+    }
+    value.lands(&serde_json::from_value(op.clone()).ok()?)
+}
+
+/// Implements the `Model` items that route a record's edits of an
+/// [`Operations`] type to it; call it inside the type's `impl Model`.
+#[macro_export]
+macro_rules! operations_model {
+    () => {
+        fn op_coalesces(
+            path: &[$crate::Segment],
+            previous: &$crate::__private::serde_json::Value,
+            next: &$crate::__private::serde_json::Value,
+        ) -> ::core::option::Option<bool> {
+            $crate::path::op_coalesces::<Self>(path, previous, next)
+        }
+        fn op_continuable(
+            path: &[$crate::Segment],
+            op: &$crate::__private::serde_json::Value,
+        ) -> ::core::option::Option<bool> {
+            $crate::path::op_continuable::<Self>(path, op)
+        }
+        fn op_lands(
+            &self,
+            path: &[$crate::Segment],
+            op: &$crate::__private::serde_json::Value,
+        ) -> ::core::option::Option<$crate::Place> {
+            $crate::path::op_lands::<Self>(self, path, op)
+        }
+        fn op_schemas(
+            prefix: &str,
+            out: &mut ::std::vec::Vec<(
+                ::std::string::String,
+                $crate::__private::serde_json::Value,
+            )>,
+        ) {
+            out.push((
+                ::std::string::String::from(prefix.trim_end_matches('.')),
+                <<Self as $crate::Operations>::Op as $crate::JsonSchema>::json_schema(),
+            ));
+        }
+    };
 }
 
 impl<R, T: Operations> Path<R, T> {
@@ -554,13 +653,20 @@ impl<R> Edit<R> {
     /// Whether `next`, by the same actor straight after `self`, continues
     /// the same gesture: one undo step. Setting one path again (dragging a
     /// slider) and typing on at the end of the previous splice (a word)
-    /// continue; anything else starts a new step.
+    /// continue; an edit in a type's own vocabulary continues as that type
+    /// says ([`Operations::coalesces`]); anything else starts a new step.
     #[must_use]
-    pub fn coalesces(&self, next: &Self) -> bool {
+    pub fn coalesces(&self, next: &Self) -> bool
+    where
+        R: Model,
+    {
         if self.path != next.path {
             return false;
         }
         match (&self.op, &next.op) {
+            (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
+                R::op_coalesces(&self.path, previous, next).unwrap_or(false)
+            }
             (EditOp::Set { .. }, EditOp::Set { .. })
             | (EditOp::Replace { .. }, EditOp::Replace { .. })
             | (EditOp::Add { .. }, EditOp::Add { .. }) => true,

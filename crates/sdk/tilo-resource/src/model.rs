@@ -271,6 +271,37 @@ pub trait Model: Sized {
         None
     }
 
+    /// Whether two edits in the own vocabulary of the value at `path` below
+    /// this type are one gesture ([`Operations`](crate::Operations)); `None`
+    /// when nothing there has one.
+    fn op_coalesces(
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        let _ = (path, previous, next);
+        None
+    }
+
+    /// Whether a gesture may go on after the edit `op` at `path`.
+    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        let _ = (path, op);
+        None
+    }
+
+    /// Where the actor of the edit `op` at `path` below this value is after
+    /// it applied.
+    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
+        let _ = (path, op);
+        None
+    }
+
+    /// The schemas of the own vocabularies of the values below this type,
+    /// by path pattern from `prefix` (`*` for every item).
+    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        let _ = (prefix, out);
+    }
+
     /// The value at `path` below this one, if it is there. A value with
     /// nothing inside it is found only at the empty path.
     fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any>
@@ -819,6 +850,22 @@ impl<T: Model> Model for Option<T> {
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
+    fn op_coalesces(
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        T::op_coalesces(path, previous, next)
+    }
+    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        T::op_continuable(path, op)
+    }
+    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
+        self.as_ref()?.op_lands(path, op)
+    }
+    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        T::op_schemas(prefix, out);
+    }
     fn to_json(&self) -> serde_json::Value {
         self.as_ref()
             .map_or(serde_json::Value::Null, Model::to_json)
@@ -905,6 +952,22 @@ impl<T: Settable> Settable for Box<T> {}
 impl<T: Model> Model for Box<T> {
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
+    fn op_coalesces(
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        T::op_coalesces(path, previous, next)
+    }
+    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        T::op_continuable(path, op)
+    }
+    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
+        (**self).op_lands(path, op)
+    }
+    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        T::op_schemas(prefix, out);
+    }
     type Paths<R> = T::Paths<R>;
     fn paths_at<R>(path: Path<R, Self>) -> T::Paths<R> {
         T::paths_at(path.cast())
@@ -1036,6 +1099,31 @@ impl<T: Model> Settable for BTreeMap<String, T> {}
 impl<T: Model> Model for BTreeMap<String, T> {
     const CHECKS: bool = T::CHECKS;
     leaf_paths!();
+    fn op_coalesces(
+        path: &[Segment],
+        previous: &serde_json::Value,
+        next: &serde_json::Value,
+    ) -> Option<bool> {
+        match path.split_first() {
+            Some((Segment::Key(_), rest)) => T::op_coalesces(rest, previous, next),
+            _ => None,
+        }
+    }
+    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
+        match path.split_first() {
+            Some((Segment::Key(_), rest)) => T::op_continuable(rest, op),
+            _ => None,
+        }
+    }
+    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
+        match path.split_first() {
+            Some((Segment::Key(key), rest)) => self.get(key)?.op_lands(rest, op),
+            _ => None,
+        }
+    }
+    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
+        T::op_schemas(&format!("{prefix}*."), out);
+    }
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Object(
             self.iter()
