@@ -35,6 +35,7 @@ pub mod document;
 pub mod export;
 pub mod history;
 pub mod model;
+pub mod restore;
 pub mod schema;
 pub mod semantic_read;
 pub mod sheet;

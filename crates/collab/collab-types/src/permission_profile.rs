@@ -65,6 +65,8 @@ pub enum PermissionProfileError {
     DuplicateRule,
     #[error("profile contains both a grant and restriction for the same scope")]
     ContradictoryRule,
+    #[error("an action on every resource of a kind is granted only to a shortcut")]
+    ShortcutOnlyScope,
 }
 
 impl PermissionProfile {
@@ -86,6 +88,15 @@ impl PermissionProfile {
         }
         if self.rules.is_empty() || self.rules.len() > MAX_RULES {
             return Err(PermissionProfileError::InvalidRuleCount);
+        }
+        // Workspace policy never matches it, so a restriction would silently
+        // restrict nothing.
+        if self
+            .rules
+            .iter()
+            .any(|rule| matches!(rule.scope, Scope::ActionOnKind { .. }))
+        {
+            return Err(PermissionProfileError::ShortcutOnlyScope);
         }
         let mut exact = HashSet::new();
         for rule in &self.rules {
@@ -163,6 +174,7 @@ mod tests {
                     PermissionProfileRule::grant(
                         Scope::Action {
                             app: "org.tilo.Builds".into(),
+                            resource: "builds.release:42".into(),
                             action: "release.approve".into(),
                         },
                         Verb::Write,
@@ -192,6 +204,7 @@ mod tests {
                     &actor,
                     &ResourceRef::Action {
                         app: "org.tilo.Builds".into(),
+                        resource: "builds.release:42".into(),
                         action: "release.approve".into()
                     },
                     Verb::Write,
@@ -205,6 +218,7 @@ mod tests {
                     &actor,
                     &ResourceRef::Action {
                         app: "org.tilo.Builds".into(),
+                        resource: "builds.release:42".into(),
                         action: "release.delete".into()
                     },
                     Verb::Write,
@@ -212,6 +226,21 @@ mod tests {
                     None
                 ),
                 CapDecision::Allow
+            );
+            assert_ne!(
+                decide_capability(
+                    &actor,
+                    &ResourceRef::Action {
+                        app: "org.tilo.Builds".into(),
+                        resource: "builds.release:43".into(),
+                        action: "release.approve".into()
+                    },
+                    Verb::Write,
+                    &caps,
+                    None
+                ),
+                CapDecision::Allow,
+                "the same action on another release is another action"
             );
             assert!(
                 caps.iter()

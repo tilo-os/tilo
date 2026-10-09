@@ -271,9 +271,13 @@ impl Participant {
         // invocation needs what its value asks (a reply commenting, a
         // deletion writing).
         if let Some(spec) = door::resolve(&resources, address)
-            && !self
-                .permissions
-                .permits_invocation(self.app_id(), spec, Some(arguments), None)
+            && !self.permissions.permits_invocation(
+                self.app_id(),
+                &address.resource,
+                spec,
+                Some(arguments),
+                None,
+            )
         {
             return Err(DoorError::Unavailable {
                 code: "permission_denied".into(),

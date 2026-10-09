@@ -2489,3 +2489,10 @@ dictation-vocabulary-draft-retained = Your personal dictionary changed. Dictatio
 
 shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
+
+shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-retry = Reopen window
+
+device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
+device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
+device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.

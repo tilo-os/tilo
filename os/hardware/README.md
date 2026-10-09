@@ -330,3 +330,32 @@ and modular boot driver must be there, and when the sibling-unlock unit is,
 NetworkManager's Wi-Fi plugin, `wpa_supplicant` and its D-Bus activation file
 too. That proves the pieces are present. Only the laptop can show that the
 radio powers up, picks that board entry and associates before the root opens.
+
+### Lenovo 83ED Wi-Fi wake policy
+
+The optional version-2 `wifi_wake_on_wlan` field currently admits only numeric
+`0` on the exact Lenovo 83ED/aarch64/Yoga Slim 7x definition. The production
+profile preparer installs a NetworkManager connection default matching
+`driver:ath12k_wifi7_pci` into the selected board image. Generic images and
+other boards receive no such policy. No Wi-Fi power-save, autoconnect,
+credentials, or unrelated connection settings are changed.
+
+This prevents fresh/default WCN7850 profiles from enabling WoWLAN. It addresses
+an observed retained-firmware deep-resume failure (MHI resume followed by
+`ESHUTDOWN`), not a proven kernel repair. Physical non-WoW deep resume must
+still be tested on the laptop before claiming reconnection is fixed.
+
+As specified by [NetworkManager connection defaults](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/NetworkManager.conf.html),
+an existing explicit `802-11-wireless.wake-on-wlan=0x8` (magic packet) wins over
+the generated default. The source did not create that explicit setting; do not
+rewrite every saved profile or disable functional wake on unrelated hardware.
+For an owner-approved diagnostic correction on this affected device, first
+identify its exact active NetworkManager UUID and read only that profile's wake
+field plus `iw phy <exact-phy> wowlan show`. Use numeric `0` with
+`nmcli connection modify uuid <exact-uuid> 802-11-wireless.wake-on-wlan 0`;
+`none` is not accepted by the installed nmcli. Then `iw phy <exact-phy> wowlan
+disable` clears the already-applied kernel trigger. Verify both readbacks before
+a controlled resume test. These commands require normal device-owner authority;
+the generated default neither executes them nor silently migrates explicit
+settings. A NetworkManager restart alone cannot repair an already failed MHI
+transport.

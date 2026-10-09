@@ -28,10 +28,10 @@
 //! reasoning covers `rmdir` on a directory whose only remaining children
 //! are hidden: `EROFS`, not `ENOTEMPTY`.
 use fuser::{
-    BackingId, BsdFileFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr,
-    ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    BackingId, BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags,
+    Generation, INodeNo, InitFlags, KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags,
+    ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
+    ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
 use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ use crate::availability::{
 use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
-use crate::namespace::Namespace;
+use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
 
@@ -287,6 +287,19 @@ fn prepare_stage_dir(dir: &std::path::Path) -> io::Result<()> {
 #[cfg(test)]
 type CommitPause = Arc<dyn Fn(u64) + Send + Sync>;
 
+/// How a FUSE `read` is answered, decided by `QuickFS::plan_read` before
+/// any reply is sent.
+enum ReadPlan {
+    /// Refused, or failed, with this errno.
+    Error(i32),
+    /// From the inode's write stage or a document's export.
+    Buffered(BufferedRead),
+    /// Bytes already on this device (empty for a file with no content).
+    Local(Vec<u8>),
+    /// Content a peer must supply, hydrated off the FUSE worker.
+    Remote(Hash),
+}
+
 /// A read answered without the committed content's read path.
 enum BufferedRead {
     /// A range of a document's shared export.
@@ -501,6 +514,9 @@ pub struct QuickFS {
     /// Test-only: run while an inode's stage is locked for its commit.
     #[cfg(test)]
     commit_pause: Mutex<Option<CommitPause>>,
+    /// Test-only: how many times [`Self::ns`] has taken the namespace lock.
+    #[cfg(test)]
+    namespace_locks: std::sync::atomic::AtomicUsize,
 }
 
 impl QuickFS {
@@ -564,6 +580,8 @@ impl QuickFS {
             commit_fault: Mutex::new(None),
             #[cfg(test)]
             commit_pause: Mutex::new(None),
+            #[cfg(test)]
+            namespace_locks: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -596,9 +614,31 @@ impl QuickFS {
     }
 
     fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
+        #[cfg(test)]
+        self.namespace_locks.fetch_add(1, Ordering::Relaxed);
         self.namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// [`Namespace::inode_view`] under one namespace lock, with the path
+    /// built only when this mount has an ACL to check it against.
+    fn inode_view(&self, ino: u64, unlinked: bool) -> Option<InodeView> {
+        let query = InodeQuery {
+            unlinked,
+            path: self.enforcement.is_some(),
+        };
+        self.ns().inode_view(ino, query)
+    }
+
+    /// The state of kernel handle `fh`, when it was opened on `ino`.
+    fn open_handle(&self, ino: u64, fh: u64) -> Option<OpenFileHandleState> {
+        self.open_file_handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&fh)
+            .filter(|handle| handle.ino == ino)
+            .cloned()
     }
 
     fn buffers(&self) -> std::sync::MutexGuard<'_, WriteStages> {
@@ -1231,20 +1271,12 @@ impl QuickFS {
         Ok(())
     }
 
-    /// The part of `read` that is answered from memory or the stage: an
-    /// inode's write stage, else a document's shared export. `None` sends
-    /// the read to the committed content.
+    /// A range of document `ino`'s shared export, clamped to its length.
     ///
     /// `offset`/`size` cross the FUSE boundary as untrusted request values,
     /// so they are clamped rather than trusted to fit `usize`.
-    fn read_buffered(&self, ino: u64, offset: u64, size: u32) -> Option<BufferedRead> {
-        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
-            return Some(BufferedRead::Staged(staged));
-        }
-        if !self.is_document(ino) {
-            return None;
-        }
-        Some(match self.document_export(ino) {
+    fn read_document_export(&self, ino: u64, offset: u64, size: u32) -> BufferedRead {
+        match self.document_export(ino) {
             Some(bytes) => {
                 let start = usize::try_from(offset)
                     .unwrap_or(usize::MAX)
@@ -1253,10 +1285,128 @@ impl QuickFS {
                 BufferedRead::Shared(bytes, start..end)
             }
             None => BufferedRead::Failed,
-        })
+        }
     }
 
-    /// Answer a FUSE `read` with what [`Self::read_buffered`] found.
+    /// What a FUSE `getattr` answers for `ino` (through kernel handle `fh`,
+    /// when it has one): the attributes and whether `ino` is a document.
+    /// The inode is read under one namespace lock; a document's export size
+    /// and a directory's visible link count are the only further reads.
+    fn attr_for_request(&self, ino: u64, fh: Option<u64>) -> Result<(FileAttr, bool), i32> {
+        // Reflect an in-flight write stage so stat() sees read-your-writes size.
+        let buf_len = self.staged_len(ino);
+        let open_handle = fh.and_then(|fh| self.open_handle(ino, fh));
+        let view = self.inode_view(ino, open_handle.is_some()).ok_or(ENOENT)?;
+        // Outside the live view there is nothing to describe, except an inode
+        // retained by this exact open kernel handle after unlink/replacement.
+        let visible = if view.live {
+            self.view_in_view(&view)
+        } else {
+            open_handle
+                .as_ref()
+                .is_some_and(|handle| self.in_view(&handle.opened_path))
+        };
+        if !visible {
+            return Err(ENOENT);
+        }
+        let mut attr = view.attr;
+        // Documents have no stored byte length — report the current export
+        // size (so a collaboratively-edited document isn't read truncated).
+        let doc_len = if buf_len.is_none() && view.document {
+            self.document_export(ino).map(|b| b.len() as u64)
+        } else {
+            None
+        };
+        if let Some(len) = buf_len.or(doc_len) {
+            attr.size = len;
+            attr.blocks = len.div_ceil(512);
+        }
+        if attr.kind == FileType::Directory {
+            // Matches the filtered listing: an identity granted
+            // nothing sees an ordinary empty directory (nlink == 2).
+            attr.nlink = self.visible_dir_nlink(ino);
+        }
+        Ok((attr, view.document))
+    }
+
+    /// Everything a FUSE `read` decides before it replies: authorization,
+    /// then the write stage, a document's export, or the committed content.
+    /// The inode is read under **one** namespace lock — its liveness, path,
+    /// kind, content hash and whether it is a document come back together —
+    /// so a read of local content never queues behind a sync apply more than
+    /// once. Only a document read takes the lock again, to export it.
+    fn plan_read(&self, ino: u64, fh: u64, offset: u64, size: u32) -> ReadPlan {
+        let open_handle = self.open_handle(ino, fh);
+        let Some(view) = self.inode_view(ino, open_handle.is_some()) else {
+            return ReadPlan::Error(ENOENT);
+        };
+        // Live inodes use their current path. An unlinked/replaced inode has
+        // no path, so only the matching kernel handle may continue, with the
+        // access path captured when it was opened.
+        let access = if view.live {
+            self.check_view_access(&view, Access::Read)
+        } else if let Some(handle) = &open_handle {
+            self.check_path(&handle.opened_path, Access::Read)
+        } else {
+            Err(ENOENT)
+        };
+        if let Err(e) = access {
+            return ReadPlan::Error(e);
+        }
+        // Read-your-writes from the stage, else a document's shared export.
+        if let Some(staged) = self.read_staged(ino, offset, u64::from(size)) {
+            return ReadPlan::Buffered(BufferedRead::Staged(staged));
+        }
+        if view.document {
+            return ReadPlan::Buffered(self.read_document_export(ino, offset, size));
+        }
+        if view.attr.kind != FileType::RegularFile {
+            return ReadPlan::Error(EISDIR);
+        }
+        let Some(hash) = view.hash else {
+            return ReadPlan::Local(Vec::new());
+        };
+        // Local bytes are answered inline; bytes a peer must supply are
+        // left to the caller to hydrate off the FUSE worker.
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        let size = u64::from(size);
+        match tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size))) {
+            Some(data) => ReadPlan::Local(data),
+            None => ReadPlan::Remote(hash),
+        }
+    }
+
+    /// Answer a `read` whose bytes must come from a peer. The read still
+    /// blocks its caller as POSIX expects, but no FUSE worker waits on the
+    /// network, so a slow peer stalls only the readers of that file.
+    fn reply_remote(&self, hash: Hash, range: (u64, u64), nonblocking: bool, reply: ReplyData) {
+        let (offset, size) = range;
+        let hydrator = Arc::clone(&self.hydrator);
+        let rt = hydrator.runtime_handle.clone();
+        if nonblocking {
+            // A non-blocking reader gets EAGAIN at once; the range keeps
+            // hydrating so a retry finds it local.
+            rt.spawn(async move {
+                if let Err(error) = hydrator.read(hash, offset, size).await {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                }
+            });
+            reply.error(to_errno(libc::EAGAIN));
+            return;
+        }
+        rt.spawn(async move {
+            match hydrator.read(hash, offset, size).await {
+                Ok(data) => reply.data(&data),
+                Err(error) => {
+                    eprintln!("content hydration failed for {hash}: {error:#}");
+                    reply.error(to_errno(EIO));
+                }
+            }
+        });
+    }
+
+    /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer.
     /// Unwritten ranges a peer must supply are hydrated on the runtime, like
     /// an unbuffered read: no FUSE worker waits on the network.
     fn reply_buffered(&self, ino: u64, buffered: BufferedRead, reply: ReplyData) {
@@ -1547,13 +1697,26 @@ impl QuickFS {
 
     /// Import `data` as the content of document `ino`.
     fn commit_document(&self, ino: u64, data: &[u8]) -> Result<(), i32> {
-        self.remember_rich_metadata(ino, data);
         if self
             .document_export(ino)
             .is_some_and(|current| *current == *data)
         {
+            self.remember_rich_metadata(ino, data);
             return Ok(());
         }
+        // The version records the written bytes by the content id the store
+        // serves them under, like any other file's, so history can read and
+        // restore it. A failed ingest fails the write before anything changes.
+        let content = self
+            .write_content_blocking(data)
+            .map_err(|error| commit_errno(&error))?
+            .map(|hash| collab_types::ContentHash(*hash.as_bytes()));
+        // The version's metadata finds these facts by its content id.
+        self.remember_rich_metadata_as(
+            ino,
+            data,
+            content.unwrap_or_else(|| collab_types::ContentHash(*blake3::hash(data).as_bytes())),
+        );
         // import_document validates before replacing; an invalid input
         // leaves the previous content intact and returns false.
         let delta = {
@@ -1570,11 +1733,7 @@ impl QuickFS {
             return Err(EINVAL);
         }
         self.publish(delta);
-        self.record_version(
-            ino,
-            collab_types::FileProvenance::Edit,
-            Some(collab_types::ContentHash(*blake3::hash(data).as_bytes())),
-        );
+        self.record_version(ino, collab_types::FileProvenance::Edit, content);
         Ok(())
     }
 
@@ -1618,6 +1777,18 @@ impl QuickFS {
         ino: u64,
         bytes: &[u8],
     ) -> Option<collab_types::FilePropertiesV1> {
+        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
+        self.remember_rich_metadata_as(ino, bytes, hash)
+    }
+
+    /// [`Self::remember_rich_metadata`] keyed by `hash`, the content id the
+    /// version holding `bytes` records.
+    fn remember_rich_metadata_as(
+        &self,
+        ino: u64,
+        bytes: &[u8],
+        hash: collab_types::ContentHash,
+    ) -> Option<collab_types::FilePropertiesV1> {
         let (record_id, name) = {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
@@ -1626,7 +1797,6 @@ impl QuickFS {
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
-        let hash = collab_types::ContentHash(*blake3::hash(bytes).as_bytes());
         self.rich_metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2652,11 +2822,12 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if Self::restore_codec(&self.ns(), ino).is_err() {
-            // Document restoration needs codec-aware CRDT checkout rather
-            // than replacing its exported bytes as if it were a plain file.
-            return Err(libc::ENOTSUP);
-        }
+        // A namespace-held document needs a codec-aware CRDT checkout rather
+        // than replacing its exported bytes as if it were a plain file.
+        let kind = Self::restore_kind(&self.ns(), ino).map_err(|outcome| match outcome {
+            collab_types::files::CheckedHistoryOutcomeV1::UnsupportedOwner { .. } => libc::ENOTSUP,
+            _ => ENOENT,
+        })?;
         let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
         let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
         let version = history
@@ -2681,31 +2852,28 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if tilo_doc::Document::load(&data).is_ok() {
-            return Err(libc::ENOTSUP);
-        }
-        let current_hash = self.ns().hash_for(ino);
-        if let Some(hash) = current_hash.filter(|hash| {
-            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
-        }) {
-            let hydrator = self.hydrator.clone();
-            let runtime = hydrator.runtime_handle.clone();
-            let current =
-                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| EIO)?;
-            if tilo_doc::Document::load(&current).is_ok() {
-                return Err(libc::ENOTSUP);
-            }
-        }
-        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
-            return Err(EIO);
-        }
         let (expected_hash, expected_len) = {
             let namespace = self.ns();
             let attr = namespace.getattr(ino).ok_or(ENOENT)?;
             (namespace.hash_for(ino), attr.size)
         };
+        // A serialized document is restored as a new CRDT revision of the
+        // current document; any other content gets the version's bytes back.
+        let data = if kind.is_serialized_document() {
+            self.restored_document(expected_hash, version.content_hash, &data)
+                .map_err(|error| match error {
+                    checked_restore::DocumentRestoreError::Unavailable => EIO,
+                    checked_restore::DocumentRestoreError::NotADocument(_) => libc::ENOTSUP,
+                })?
+        } else {
+            data
+        };
+        let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
+        if !kind.is_serialized_document()
+            && restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0)
+        {
+            return Err(EIO);
+        }
         let snapshot = self
             .replacement_snapshot(ino, restored_hash, data.len() as u64)
             .ok_or(EIO)?;
@@ -4128,6 +4296,20 @@ impl QuickFS {
         }
         let path = self.ns().path_for(ino).ok_or(ENOENT)?;
         self.check_path(&path, access)
+    }
+
+    /// [`Self::check_access`] of an inode already read by
+    /// [`Self::inode_view`], so the check takes no namespace lock of its own.
+    fn check_view_access(&self, view: &InodeView, access: Access) -> Result<(), i32> {
+        if self.enforcement.is_none() {
+            return Ok(());
+        }
+        self.check_path(view.path.as_deref().ok_or(ENOENT)?, access)
+    }
+
+    /// [`Self::ino_in_view`] of an inode already read by [`Self::inode_view`].
+    fn view_in_view(&self, view: &InodeView) -> bool {
+        self.enforcement.is_none() || view.path.as_deref().is_some_and(|path| self.in_view(path))
     }
 
     /// [`Self::check_access`] against a path rather than an inode, for the
@@ -5684,17 +5866,19 @@ impl Filesystem for QuickFS {
     /// hidden by the view cost the same work and return the same `ENOENT`.
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let name = name.as_bytes();
-        let (found, child) = {
+        let (found, child, is_doc) = {
             let mut ns = self.ns();
             let found = ns.lookup(parent.0, name);
             let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
+            let is_doc = found
+                .as_ref()
+                .is_some_and(|attr| ns.document_codec(attr.ino.0).is_some());
             drop(ns);
-            (found, child)
+            (found, child, is_doc)
         };
         let in_view = child.is_some_and(|c| self.in_view(&c));
         match found {
             Some(attr) if in_view => {
-                let is_doc = self.ns().document_codec(attr.ino.0).is_some();
                 let mut attr = attr;
                 if attr.kind == FileType::Directory {
                     attr.nlink = self.visible_dir_nlink(attr.ino.0);
@@ -5706,60 +5890,9 @@ impl Filesystem for QuickFS {
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
-        // Reflect an in-flight write stage so stat() sees read-your-writes size.
-        let buf_len = self.staged_len(ino.0);
-        // Documents have no stored byte length — report the current export size
-        // (so a collaboratively-edited document isn't read truncated).
-        let is_doc = self.is_document(ino.0);
-        let doc_len = if buf_len.is_none() && is_doc {
-            self.document_export(ino.0).map(|b| b.len() as u64)
-        } else {
-            None
-        };
-        let open_handle = fh.and_then(|fh| {
-            self.open_file_handles
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&fh.0)
-                .filter(|handle| handle.ino == ino.0)
-                .cloned()
-        });
-        let live = self.ns().getattr(ino.0).is_some();
-        // Outside the live view there is nothing to describe, except an inode
-        // retained by this exact open kernel handle after unlink/replacement.
-        let visible = if live {
-            self.ino_in_view(ino.0)
-        } else {
-            open_handle
-                .as_ref()
-                .is_some_and(|handle| self.in_view(&handle.opened_path))
-        };
-        if !visible {
-            reply.error(to_errno(ENOENT));
-            return;
-        }
-        let found = {
-            let namespace = self.ns();
-            namespace.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| namespace.getattr_including_unlinked(ino.0))
-            })
-        };
-        match found {
-            Some(mut attr) => {
-                if let Some(len) = buf_len.or(doc_len) {
-                    attr.size = len;
-                    attr.blocks = len.div_ceil(512);
-                }
-                if attr.kind == FileType::Directory {
-                    // Matches the filtered listing: an identity granted
-                    // nothing sees an ordinary empty directory (nlink == 2).
-                    attr.nlink = self.visible_dir_nlink(ino.0);
-                }
-                reply.attr(&Self::ttl_for(is_doc), &attr);
-            }
-            None => reply.error(to_errno(ENOENT)),
+        match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
+            Ok((attr, is_doc)) => reply.attr(&Self::ttl_for(is_doc), &attr),
+            Err(e) => reply.error(to_errno(e)),
         }
     }
 
@@ -5849,7 +5982,7 @@ impl Filesystem for QuickFS {
         // Outside the view ⇒ `ENOENT`; in the view but not writable ⇒
         // `EROFS`, so opening for writing falls back to read-only.
         for access in required_accesses(flags.acc_mode()) {
-            if let Err(e) = self.check_access(ino.0, *access) {
+            if let Err(e) = self.check_path(&opened_path, *access) {
                 reply.error(to_errno(e));
                 return;
             }
@@ -5906,92 +6039,17 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let open_handle = self
-            .open_file_handles
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&fh.0)
-            .filter(|handle| handle.ino == ino.0)
-            .cloned();
-        // Live inodes use their current path. An unlinked/replaced inode has
-        // no path, so only the matching kernel handle may continue, with the
-        // access path captured when it was opened.
-        let live = self.ns().getattr(ino.0).is_some();
-        let access = if live {
-            self.check_access(ino.0, Access::Read)
-        } else if let Some(handle) = &open_handle {
-            self.check_path(&handle.opened_path, Access::Read)
-        } else {
-            Err(ENOENT)
-        };
-        if let Err(e) = access {
-            reply.error(to_errno(e));
-            return;
+        match self.plan_read(ino.0, fh.0, offset, size) {
+            ReadPlan::Error(e) => reply.error(to_errno(e)),
+            ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
+            ReadPlan::Local(data) => reply.data(&data),
+            ReadPlan::Remote(hash) => self.reply_remote(
+                hash,
+                (offset, u64::from(size)),
+                flags.0 & libc::O_NONBLOCK != 0,
+                reply,
+            ),
         }
-        // Read-your-writes from the stage, else a document's shared export.
-        if let Some(buffered) = self.read_buffered(ino.0, offset, size) {
-            self.reply_buffered(ino.0, buffered, reply);
-            return;
-        }
-
-        let hash = {
-            let ns = self.ns();
-            match ns.getattr(ino.0).or_else(|| {
-                open_handle
-                    .as_ref()
-                    .and_then(|_| ns.getattr_including_unlinked(ino.0))
-            }) {
-                Some(attr) if attr.kind == FileType::RegularFile => ns.hash_for(ino.0),
-                Some(_) => {
-                    reply.error(to_errno(EISDIR));
-                    return;
-                }
-                None => {
-                    reply.error(to_errno(ENOENT));
-                    return;
-                }
-            }
-        };
-        let Some(hash) = hash else {
-            reply.data(&[]);
-            return;
-        };
-
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        let size = u64::from(size);
-        // Local bytes are answered inline. Bytes that must come from a peer
-        // are hydrated on the runtime and answered from there: the read
-        // still blocks its caller as POSIX expects, but no FUSE worker waits
-        // on the network, so a slow peer stalls only the readers of that file.
-        let local = {
-            let hydrator = Arc::clone(&hydrator);
-            tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size)))
-        };
-        if let Some(data) = local {
-            reply.data(&data);
-            return;
-        }
-        if flags.0 & libc::O_NONBLOCK != 0 {
-            // A non-blocking reader gets EAGAIN at once; the range keeps
-            // hydrating so a retry finds it local.
-            rt.spawn(async move {
-                if let Err(error) = hydrator.read(hash, offset, size).await {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                }
-            });
-            reply.error(to_errno(libc::EAGAIN));
-            return;
-        }
-        rt.spawn(async move {
-            match hydrator.read(hash, offset, size).await {
-                Ok(data) => reply.data(&data),
-                Err(error) => {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
-                    reply.error(to_errno(EIO));
-                }
-            }
-        });
     }
 
     #[allow(

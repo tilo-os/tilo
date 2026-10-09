@@ -150,7 +150,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
         permission: tilo_actions::PermissionRequirement::Write,
         ..Default::default()
     };
-    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"actor":actor,"context":context,"contract":contract,"app_id":"so.tilo.chat","action":"test-effect"});
+    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"actor":actor,"context":context,"contract":contract,"app_id":"so.tilo.chat","resource":"app.so.tilo.chat","action":"test-effect"});
     let update = tilo_actions::InvocationUpdate::Succeeded {
         invocation: key.invocation,
         output: tilo_actions::ActionOutput::default(),

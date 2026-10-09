@@ -2492,3 +2492,10 @@ host-history-task-refused-title = Aufgabe konnte nicht geändert werden
 host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
+
+shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-retry = Fenster erneut öffnen
+
+device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
+device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
+device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.

@@ -28,7 +28,7 @@ pub(crate) enum ConsentStep {
     /// Nobody can be asked: refuse it.
     Refuse,
     /// The person is being asked.
-    Ask(PendingConsent),
+    Ask(Box<PendingConsent>),
 }
 
 /// A grant question on screen.
@@ -86,11 +86,11 @@ impl CapnpBrokerState {
             return ConsentStep::Refuse;
         };
         pending.insert(key);
-        ConsentStep::Ask(PendingConsent {
+        ConsentStep::Ask(Box::new(PendingConsent {
             request: consent,
             verb,
             answer,
-        })
+        }))
     }
 
     fn consent_question(
@@ -146,6 +146,7 @@ impl CapnpBrokerState {
             &as_app,
             now,
             &row.app_id,
+            &descriptor.address.resource,
             &descriptor.address.action,
             descriptor.contract.permission,
         ) {
@@ -158,7 +159,9 @@ impl CapnpBrokerState {
             person: person_id.clone(),
             app_id: app_id.to_string(),
             target_app: row.app_id,
+            resource: descriptor.address.resource.clone(),
             action: descriptor.address.action.clone(),
+            resource_label: descriptor.resource_label.clone(),
             action_label: descriptor.action_label.clone(),
             risk: contract.risk,
             needs_confirmation: contract.advertised_confirmation()
@@ -196,6 +199,7 @@ impl CapnpBrokerState {
             Subject::app(request.app_id.clone()),
             Scope::Action {
                 app: request.target_app.clone(),
+                resource: request.resource.clone(),
                 action: request.action.clone(),
             },
             consent.verb,
@@ -226,7 +230,7 @@ impl CapnpBrokerState {
 /// once removed as soon as the call is decided.
 pub(super) fn serve_after_consent(
     state: Arc<CapnpBrokerState>,
-    consent: PendingConsent,
+    consent: Box<PendingConsent>,
     host: ConnectionActionHost,
     caller: Caller,
     message: RemoteActionMessage,

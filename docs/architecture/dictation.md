@@ -2196,3 +2196,28 @@ code uses directory-based Whisper/Parakeet graph bundles. No compatibility
 with this pinned Whistle `.cact`/C API is established. That repository has an
 eligibility-restricted commercial licence, distinct from the Apache-2.0
 Needle3 artifact licence; none of its code was incorporated or built.
+
+
+### Native paragraph intent and current-main integration (2026-10-09)
+
+Native TextInput, CodeEditor, decorators and embedded apps now carry the original
+editable field's multiline policy through the shared IME state and Wayland
+content hint. The compositor binds that policy to the original dictation target;
+password, terminal and single-line targets remain ineligible for LF insertion.
+No accessibility presentation inference or synthetic key fallback is used.
+
+The held candidate integrates main 48fae48a334bba0677a893868eef603d858fdd21.
+The four actual CI merge conflicts were resolved while preserving both wake
+paths, generation-validated SHM mapping and the complete rootfs COPY contract.
+The COPY union contains 301 rows with SHA-256
+4bec7cf6742bff2a18ba086170146f0f8396c28929446347c11d971fd0e54c70;
+its 156-instruction budget and all existing assertions remain intact.
+
+Remote checks on the integrated source passed: shell --tests compilation;
+9 pen/key integration tests; native multiline intent (plain input, decorated
+input and code editor); 20 dictation integration tests; 5 public transcript
+replays; the pending/detached SHM readback mapping guard; 17 opted-in speech
+tests; multiline IME intent and the existing decorator forwarding contract.
+The full rootfs COPY invariant script also passed. These are synthetic field
+and worker checks, not live microphone or deployed-image qualification.
+Browser and block-document paragraph policy remain separate unfinished work.

@@ -1927,7 +1927,7 @@ impl MusicApp {
                         "rendered_counter_unit": if media::audio_output::is_governed() { "host_pcm_frames" } else { "sink_buffers" },
                         "sink": self.audio.actual_audio_sink_name(),
                         "position_ms": self.audio.position_ms(),
-                        "duration_ms": self.audio.duration_ms(),
+                        "duration_ms": self.observed_duration_ms(),
                         "error": self.playback_error,
                     })),
                     resources: Vec::new(),

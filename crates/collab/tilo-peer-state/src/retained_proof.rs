@@ -31,7 +31,7 @@ pub fn retention_authority_from_governance(
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed room id is missing")?;
     let authority = RetentionAuthority::new(&room, governor)?;
-    if crate::room::governance_of(Some(document)).0.as_deref()
+    if crate::room::governance_of(Some(document)).owner.as_deref()
         != Some(&hex::encode(authority.governor().user_public_key))
     {
         return Err("retention governor is not the governed room owner".into());
@@ -276,7 +276,7 @@ fn identities(
 ) -> Result<(), ProofError> {
     let parse = |doc| {
         crate::room::governance_of(doc)
-            .3
+            .identities
             .into_iter()
             .map(|(id, bytes)| {
                 let identity: crate::state::GovernedIdentity =
