@@ -661,7 +661,9 @@ impl Rooms {
         .await
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
-        runtime.admit_authenticated = false;
+        if std::mem::replace(&mut runtime.admit_authenticated, false) {
+            crate::authority_epoch::bump();
+        }
         runtime.room_authority = Some(RoomAuthority {
             rooms: Arc::downgrade(&self.inner),
             room: room.room().to_owned(),

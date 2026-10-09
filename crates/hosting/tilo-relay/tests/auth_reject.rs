@@ -191,3 +191,71 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         );
     }
 }
+
+/// The relay follows its revocation log with a watch rather than a poll, and
+/// an admitted session re-checks as soon as the live list changes. A
+/// revocation written the way `tilo-relay-admin` writes it therefore ends a
+/// subscribed member's session well inside one second; it used to wait for a
+/// one-second log poll and then a one-second session audit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_revocation_closes_a_member_session_within_a_second() {
+    let user = TestUser::fresh("Alice");
+    let relay_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let device = user.enrol("lost-phone", DeviceCapabilities::member());
+    let device_key = device.device_pubkey();
+    let state = tempfile::tempdir().unwrap();
+    let relay = tilo_relay::daemon::Relay::start(
+        tilo_relay::RelayConfig {
+            state_root: state.path().to_path_buf(),
+            ..Default::default()
+        },
+        tilo_relay::daemon::RelayIdentity {
+            user_public_key: user.user_pk,
+            device_signing_key: relay_dev.sk,
+            device_cert: relay_dev.cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    relay
+        .set_workspace_membership(34, true, vec![device_key], state.path().to_path_buf())
+        .await
+        .unwrap();
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        relay.node_addr(),
+        user.user_pk,
+        device.cert,
+        device.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(tilo_relay::Envelope::Subscribe { workspace_id: 34 })
+        .unwrap();
+    assert!(matches!(
+        tilo_test_env::within("the subscription", client.recv()).await,
+        Some(tilo_relay::Envelope::Ready { .. })
+    ));
+
+    let mut entry = RevocationEntry {
+        user_public_key: user.user_pk,
+        revoked_device_public_key: device_key,
+        revoked_at_ns: 1,
+        reason: RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
+    tilo_relay::store::save_revocations(state.path(), &[entry]).unwrap();
+
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while client.recv().await.is_some() {}
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "a persisted revocation must end the session within a second"
+    );
+}
