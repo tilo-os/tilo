@@ -33,7 +33,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -84,7 +83,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -117,11 +115,10 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": false,
+        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         },
@@ -176,7 +173,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         },
@@ -286,7 +282,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -323,7 +318,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -360,7 +354,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -421,7 +414,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -461,7 +453,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -536,7 +527,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -590,7 +580,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -657,7 +646,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -711,7 +699,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -765,7 +752,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -831,7 +817,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -864,7 +849,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -897,7 +881,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -930,7 +913,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -973,7 +955,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1006,7 +987,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1039,7 +1019,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1072,7 +1051,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1115,7 +1093,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1148,7 +1125,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1181,7 +1157,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1214,7 +1189,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1257,7 +1231,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1290,7 +1263,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1323,7 +1295,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }

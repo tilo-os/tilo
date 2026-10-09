@@ -19,6 +19,7 @@ use ui_core::automerge::transaction::Transactable;
 use ui_core::automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
 use super::*;
+use crate::advanced::{NodeId, TaffyTree};
 use crate::prelude::*;
 
 const ACTION_TYPE: &str = "test.shelf.action";
