@@ -519,7 +519,7 @@ fn persist_canonical_revocation(
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    let config = xdg_paths::xdg::config_home()
+    let config = tilo_paths::xdg::config_home()
         .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
     let path = config
         .join("tilo/identities/fleets")

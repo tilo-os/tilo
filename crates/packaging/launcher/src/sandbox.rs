@@ -831,7 +831,7 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
 /// Apps keep their own `XDG_DATA_HOME`; this hint lets shared host controls
 /// identify user resources such as Trash without granting another path.
 pub fn push_user_data(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
-    let data = xdg_paths::data_dir().filter(|path| path.is_absolute())?;
+    let data = tilo_paths::data_dir().filter(|path| path.is_absolute())?;
     if !capabilities
         .ro_paths
         .iter()

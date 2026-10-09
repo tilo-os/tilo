@@ -35,7 +35,7 @@ pub(crate) struct NativeActivityHost {
 /// every workspace switch, so it stays out of `settings.json`, whose writes
 /// every settings reader treats as a preference change to re-apply.
 fn history_path() -> Option<std::path::PathBuf> {
-    xdg_paths::state_dir().map(|root| root.join("tilo/activity-history.json"))
+    tilo_paths::state_dir().map(|root| root.join("tilo/activity-history.json"))
 }
 
 /// `key`'s per-workspace map from the history file at `path`. A missing or
