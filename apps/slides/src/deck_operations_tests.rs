@@ -468,9 +468,9 @@ fn an_agents_changes_read_as_sentences() {
         [
             "Added a slide",
             "Rewrote a slide's text",
-            "Moved an element",
-            "Made an element bold",
-            "Brought an element to the front",
+            "Moved Budget",
+            "Made Budget bold",
+            "Brought Budget to the front",
             "Renamed the deck",
         ]
     );
