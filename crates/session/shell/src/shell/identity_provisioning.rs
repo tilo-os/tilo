@@ -440,9 +440,7 @@ fn serve_pairing_request(
             // Expiry is decided by the trusted authority clock. Letting the
             // remote bearer supply this timestamp would make an expired
             // capability redeemable simply by replaying an older time.
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(u64::MAX, |duration| duration.as_secs());
+            let now = tilo_clock::try_unix_now().unwrap_or(u64::MAX);
             let secret =
                 ui::widget::identity_flow::InviteRedemptionAuthority::at(&**authority_root)
                     .and_then(|authority| authority.redeem(&capability, now))

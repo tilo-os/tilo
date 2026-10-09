@@ -6140,6 +6140,7 @@ name = "host-fs"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "tilo-clock",
  "tilo-xdg-paths",
  "trash",
  "workspace-hack",
@@ -16357,6 +16358,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "serde_json",
+ "tilo-clock",
  "workspace-hack",
 ]
 
@@ -16418,6 +16420,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
+ "tilo-clock",
  "tilo-files",
  "tilo-paths",
  "tilo-xdg-paths",
@@ -16481,6 +16484,7 @@ dependencies = [
  "sha2 0.11.0",
  "spki 0.7.3",
  "tempfile",
+ "tilo-clock",
  "time",
  "x509-cert",
  "zeroize",
@@ -18076,6 +18080,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-clock",
  "tilo-files",
  "tracing",
  "web-time",
