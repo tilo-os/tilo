@@ -548,12 +548,7 @@ impl Widget for PeerView {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        let new_rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let new_rect = ui::widget::placed(l, origin);
         // Rect changed → the placement matrix in `draw` changes too. Exact
         // equality is safe: taffy produces integer-valued logical pixels.
         if new_rect != self.rect {

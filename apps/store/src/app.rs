@@ -1107,12 +1107,7 @@ impl Widget for StoreApp {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
             && let Some(&child_node) = children.first()
         {

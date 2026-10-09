@@ -966,12 +966,7 @@ impl Widget for FileView {
             reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
         )]
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::placed(l, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
             return;
