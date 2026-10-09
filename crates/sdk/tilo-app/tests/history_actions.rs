@@ -493,3 +493,77 @@ fn undo_named_author_preserves_other_authors_and_attributes_the_undo_to_its_call
     assert_eq!(undo["by"], "person:owner", "{undo}");
     assert_eq!(undo["what"]["op"], "undo", "{undo}");
 }
+
+#[test]
+fn ctrl_z_takes_back_the_persons_steps_after_a_restart_through_the_one_history() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.invoke(Board::RENAME.with("Plan")).unwrap();
+    app.invoke(Board::RENAME.with("Launch")).unwrap();
+    let mut app = app.reopen().unwrap();
+
+    // After a restart Ctrl+Z still takes back the person's last step, read
+    // from the document, and records it as their undo of that step.
+    assert!(app.undo());
+    assert_eq!(app.state().title, "Plan");
+    let undo = newest(&mut app);
+    assert_eq!(undo["what"]["op"], "undo", "{undo}");
+    assert_eq!(
+        undo["what"]["of"]["what"]["args"]["title"], "Launch",
+        "{undo}"
+    );
+
+    // The published redo brings back what Ctrl+Z took back: one history.
+    app.call("redo", json!({})).unwrap();
+    assert_eq!(app.state().title, "Launch");
+
+    // An agent's or a script's undo is not a step Ctrl+Z takes back again:
+    // the next Ctrl+Z goes on to the step before.
+    app.call("undo", json!({})).unwrap();
+    assert_eq!(app.state().title, "Plan");
+    assert!(app.undo());
+    assert_eq!(app.state().title, "");
+}
+
+#[test]
+fn ctrl_z_in_a_session_is_the_same_undo_the_published_history_reports() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.invoke(Board::RENAME.with("Plan")).unwrap();
+    assert!(app.undo());
+    assert_eq!(app.state().title, "");
+    let listed = history(&mut app);
+    let versions = carried(listed["versions"].as_array().unwrap());
+    let renamed = versions
+        .iter()
+        .find(|version| version["what"]["args"]["title"] == "Plan")
+        .unwrap();
+    assert_eq!(renamed["undone"], true, "{listed}");
+    // So the published redo brings it back after Ctrl+Z.
+    app.call("redo", json!({})).unwrap();
+    assert_eq!(app.state().title, "Plan");
+}
+
+#[test]
+fn an_agents_edit_is_recorded_as_the_agent_acting_for_its_person() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    let agent = tilo_actions::InteractionActor::new("agent:claude", tilo_actions::ActorKind::Agent)
+        .acting_for("person:quinten");
+    app.call_by(
+        tilo_actions::ActionInvoker::admitted(&agent),
+        "test.board",
+        "rename",
+        json!({"title": "Drafted"}),
+    )
+    .unwrap();
+    let entry = app
+        .versions()
+        .pop()
+        .and_then(|version| version.context)
+        .expect("the agent's edit is recorded");
+    let invoker = entry.invoker.expect("attributed");
+    assert_eq!(invoker.actor, "agent:claude");
+    assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some("person:quinten"));
+    let listed = newest(&mut app);
+    assert_eq!(listed["actor"]["kind"], "agent", "{listed}");
+    assert_eq!(listed["actor"]["for"], "person:quinten", "{listed}");
+}

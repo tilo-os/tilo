@@ -1987,14 +1987,21 @@ impl ActivityTimeline {
         let (r, g, b) = entry.author.rgb();
         let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
-        let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            dot_color,
-            None,
-            &dot,
-        );
+        // A person is a filled dot in their colour; software acting for
+        // someone (an agent, a Shortcut, an app) is a ring.
+        if entry.author.relation == crate::widget::history::AuthorRelation::Software {
+            let ring = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0 - 0.75);
+            scene.stroke(&Stroke::new(1.5), transform, dot_color, None, &ring);
+        } else {
+            let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                dot_color,
+                None,
+                &dot,
+            );
+        }
         dot_x
     }
 
@@ -2121,10 +2128,16 @@ impl ActivityTimeline {
             (slot_end - x).max(24.0),
         );
         let name_top = text_top(text_renderer, text_style, cy);
+        // The reader's own changes read quieter than other people's.
+        let colour = if entry.author.relation == crate::widget::history::AuthorRelation::Reader {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
         text_renderer.draw_style(
             scene,
             &name,
-            theme.tokens.colors.text_primary,
+            colour,
             translated(transform, (x, name_top)),
             None,
             text_style,

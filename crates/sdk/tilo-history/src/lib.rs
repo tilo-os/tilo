@@ -136,6 +136,8 @@ pub struct Who<'a> {
     pub kind: ActorKind,
     /// The display name of the person the actor acted for.
     pub for_person: Option<&'a str>,
+    /// Whether the person the actor acted for is the reader.
+    pub for_reader: bool,
     /// Whether the actor is the reader.
     pub is_reader: bool,
 }
@@ -264,8 +266,8 @@ impl<'a> Reader<'a> {
         )
     }
 
-    /// Who did it, as one line: "You", "Claude (agent)", "Claude for
-    /// Quinten", "Shortcut “Morning”".
+    /// Who did it, as one line and as presence names them: "You",
+    /// "Claude · Agent, for Quinten", "Morning · Shortcut".
     pub fn actor(&self, who: &Who<'_>) -> String {
         let mut args = FluentArgs::new();
         args.set("actor", who.actor.to_owned());
@@ -282,17 +284,21 @@ impl<'a> Reader<'a> {
             return self.framework_message("history-actor-unknown", &args);
         }
         let named = match who.kind {
-            ActorKind::Agent if who.for_person.is_none() => {
-                self.framework_message("history-actor-agent", &args)
-            }
+            ActorKind::Agent => self.framework_message("history-actor-agent", &args),
             ActorKind::Shortcut => self.framework_message("history-actor-shortcut", &args),
-            _ => who.actor.to_owned(),
+            ActorKind::App => self.framework_message("history-actor-app", &args),
+            ActorKind::Person => who.actor.to_owned(),
         };
-        match who.for_person {
+        let person = if who.for_reader {
+            Some(self.framework_message("history-actor-for-you", &FluentArgs::new()))
+        } else {
+            who.for_person.map(str::to_owned)
+        };
+        match person {
             Some(person) => {
                 let mut args = FluentArgs::new();
                 args.set("actor", named);
-                args.set("for", person.to_owned());
+                args.set("for", person);
                 self.framework_message("history-actor-for", &args)
             }
             None => named,

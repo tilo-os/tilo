@@ -65,7 +65,20 @@ fn raw_changes(doc: &mut AutoCommit, since: &[ChangeHash]) -> Vec<Vec<u8>> {
 /// The whole document as a value tree, for comparing content across replicas
 /// and across an undo.
 pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
-    doc.document().hydrate(None)
+    use automerge::ReadDoc as _;
+    use automerge::transaction::Transactable as _;
+    // History's own bookkeeping (what is undone, named versions) is not
+    // content.
+    let mut content = doc.fork();
+    let bookkeeping: Vec<String> = content
+        .keys(automerge::ROOT)
+        .filter(|key| key.starts_with(crate::history_source::steps::BOOKKEEPING_PREFIX))
+        .collect();
+    for key in bookkeeping {
+        let _ = content.delete(automerge::ROOT, key);
+    }
+    content.commit();
+    content.document().hydrate(None)
 }
 
 /// What applying one action to a seed did.

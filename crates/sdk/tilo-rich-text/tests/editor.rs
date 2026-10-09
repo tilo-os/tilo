@@ -315,3 +315,17 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     app.harness().type_text(".");
     assert_eq!(paragraphs(&app), ["typed by hand."]);
 }
+
+#[test]
+fn a_typed_word_stays_one_undo_step_after_a_restart() {
+    let mut app = open();
+    app.harness().type_text("hello world");
+    assert_eq!(paragraphs(&app), ["hello world"]);
+    let mut app = app.reopen().unwrap();
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["hello "], "one word is one step");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), [""]);
+    assert!(app.redo());
+    assert_eq!(paragraphs(&app), ["hello "]);
+}

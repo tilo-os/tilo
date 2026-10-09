@@ -297,7 +297,7 @@ impl HistorySource {
 
             out.push(HistoryEntry {
                 id: entry_id_from_hash(&v.hash.to_string()),
-                author: self.authors.resolve(&v.actor),
+                author: self.authors.resolve_entry(&v.actor, context.as_ref()),
                 op_class,
                 artifact_kind: self.artifact_kind,
                 timestamp: timestamp_from_ms(v.time_ms),

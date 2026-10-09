@@ -786,12 +786,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
     {
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
-        let before = f
-            .records
-            .read(&checkout.id, |doc| {
-                serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
-            })
-            .unwrap();
+        let before = f.records.read(&checkout.id, |doc| content(doc)).unwrap();
         let mut a = driver(&f, 11, &checkout);
         invoke(
             &mut a,
@@ -804,10 +799,7 @@ fn bound_undo_is_per_instance_and_retypes_once() {
             .with_history(&checkout.id, |doc, history| {
                 assert_eq!(history.revision(), 1);
                 history.undo_in(doc, &f.author, 11, None, None).unwrap();
-                assert_eq!(
-                    serde_json::to_value(automerge::AutoSerde::from(&*doc)).unwrap(),
-                    before
-                );
+                assert_eq!(content(doc), before);
                 assert!(history.next_undo_in(&f.author, 11).is_none());
             })
             .unwrap();
@@ -1450,12 +1442,7 @@ fn assert_open_tag_view(
 fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
-    let before = f
-        .records
-        .read(&checkout.id, |doc| {
-            serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
-        })
-        .unwrap();
+    let before = f.records.read(&checkout.id, |doc| content(doc)).unwrap();
     let bodies = f
         .records
         .read(&checkout.id, |doc| {
@@ -1490,10 +1477,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     f.records
         .with_history(&checkout.id, |doc, history| {
             history.undo_in(doc, &f.author, 11, None, None).unwrap();
-            assert_eq!(
-                serde_json::to_value(automerge::AutoSerde::from(&*doc)).unwrap(),
-                before
-            );
+            assert_eq!(content(doc), before);
             assert!(history.next_undo_in(&f.author, 11).is_none());
         })
         .unwrap();
@@ -1518,9 +1502,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
     );
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| {
-                serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap()
-            })
+            .read(&checkout.id, |doc| { content(doc) })
             .unwrap(),
         before
     );
@@ -1604,4 +1586,14 @@ fn newly_created_note_opens_before_the_next_presentation_frame() {
             .unwrap(),
         rich
     );
+}
+
+/// The document's content: its history's own bookkeeping (what is undone)
+/// left out.
+fn content(doc: &automerge::AutoCommit) -> serde_json::Value {
+    let mut value = serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap();
+    if let Some(root) = value.as_object_mut() {
+        root.retain(|key, _| !key.starts_with("tilo:undone:"));
+    }
+    value
 }

@@ -107,14 +107,15 @@ impl tilo_actions::Action for HistoryEdit {
         }
     }
 
-    fn describe(&self, _doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        Some(self.described())
+    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
+        Some(self.described(doc))
     }
 }
 
 impl HistoryEdit {
-    /// What history records this step through history did.
-    fn described(&self) -> tilo_actions::Described {
+    /// What history records this step through history did: for an undo of
+    /// one step, the step it takes back.
+    fn described(&self, doc: &tilo_actions::Doc) -> tilo_actions::Described {
         use tilo_actions::HistoryOp;
         let (op, steps) = match self {
             Self::Undo {
@@ -128,7 +129,28 @@ impl HistoryEdit {
             Self::Restore { .. } => (HistoryOp::Restore, 0),
             Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
         };
-        tilo_actions::Described::new(tilo_actions::Did::history(op, steps, None))
+        let of = match self {
+            Self::Undo {
+                run: None,
+                to: None,
+                by,
+                ..
+            } if steps == 1 => {
+                let scope = by.as_ref().map_or_else(
+                    || Scope::invoking(doc),
+                    |author| Scope::Invoker(author.clone()),
+                );
+                let taken = steps::undo_preview(doc, &scope, 1);
+                // A gesture's changes share one description; the newest
+                // names the step.
+                taken
+                    .first()
+                    .and_then(|version| version.context.as_ref())
+                    .and_then(tilo_actions::ActionContext::described)
+            }
+            _ => None,
+        };
+        tilo_actions::Described::new(tilo_actions::Did::history(op, steps, of))
     }
 }
 
@@ -159,8 +181,8 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
         self.edit.change_kind()
     }
 
-    fn describe(&self, _doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        Some(self.edit.described())
+    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
+        Some(self.edit.described(doc))
     }
 
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {

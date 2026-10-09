@@ -66,9 +66,11 @@ history-value-false = off
 history-value-empty = nothing
 
 ## Who did it.
-history-actor-for = { $actor } for { $for }
+history-actor-for = { $actor }, for { $for }
 history-actor-you = You
 history-actor-you-for = You, for { $for }
 history-actor-unknown = Someone
-history-actor-agent = { $actor } (agent)
-history-actor-shortcut = Shortcut “{ $actor }”
+history-actor-agent = { $actor } · Agent
+history-actor-shortcut = { $actor } · Shortcut
+history-actor-app = { $actor } · App
+history-actor-for-you = you

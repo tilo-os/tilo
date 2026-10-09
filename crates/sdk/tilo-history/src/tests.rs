@@ -200,24 +200,27 @@ fn actors_are_named_with_the_person_they_act_for() {
             actor: "Claude",
             kind: agent.kind,
             for_person: Some("Quinten"),
+            for_reader: false,
             is_reader: false
         }),
-        "Claude for Quinten"
+        "Claude · Agent, for Quinten"
     );
     assert_eq!(
         reader.actor(&Who {
             actor: "Claude",
             kind: ActorKind::Agent,
             for_person: None,
+            for_reader: false,
             is_reader: false
         }),
-        "Claude (agent)"
+        "Claude · Agent"
     );
     assert_eq!(
         reader.actor(&Who {
             actor: "Quinten",
             kind: ActorKind::Person,
             for_person: None,
+            for_reader: false,
             is_reader: true
         }),
         "You"
@@ -227,9 +230,10 @@ fn actors_are_named_with_the_person_they_act_for() {
             actor: "Morgens",
             kind: ActorKind::Shortcut,
             for_person: Some("Quinten"),
+            for_reader: false,
             is_reader: false
         }),
-        "Kurzbefehl „Morgens“ für Quinten"
+        "Morgens · Kurzbefehl, für Quinten"
     );
 }
 

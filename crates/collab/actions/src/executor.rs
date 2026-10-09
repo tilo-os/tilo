@@ -79,8 +79,12 @@ fn envelope_for(
     // the document before it applies, else as the published action the door
     // resolved, else as the verb its encoded form names.
     let app = context.app.as_ref().map(|app| app.id.clone());
-    let described = action
-        .describe(doc)
+    // The value describes itself as it will apply: under its invoker.
+    let own = {
+        let _invoking = InvokingScope::enter(Some(context.clone()));
+        action.describe(doc)
+    };
+    let described = own
         .or_else(|| context.described())
         .or_else(|| Described::from_encoded(&encoded, app.as_deref()));
     if let Some(mut described) = described {
