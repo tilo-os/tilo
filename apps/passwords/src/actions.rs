@@ -87,7 +87,7 @@ pub enum PasswordsEffect {
     /// Open.
     ///
     /// Shows the item in the window, clearing a filter that hides it.
-    #[effect(permission = "read")]
+    #[effect(row, permission = "read")]
     Open {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -133,11 +133,6 @@ pub(crate) fn grant_row(grant: &accounts::CredentialGrant) -> LiveRow {
 /// The published id of the vault item `id`.
 pub fn item_resource_id(id: &str) -> String {
     format!("{ITEM_PREFIX}{id}")
-}
-
-/// The action a search hit for `id` runs: show the item.
-pub fn open_item_address(id: &accounts::SecretId) -> ui::tilo_actions::ActionAddress {
-    ui::tilo_actions::ActionAddress::new(item_resource_id(&id.0), PasswordsEffect::OPEN.id)
 }
 
 /// One vault item as a live row. Rows feed system-wide search and

@@ -236,6 +236,19 @@ impl PasswordsSurface {
         Self::with_core(Core::demo())
     }
 
+    /// What a search hit or an agent's `open` runs: show the vault item
+    /// its anchor names, as clicking its row does.
+    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
+        let requests = Rc::clone(&self.requests);
+        move |anchor| {
+            if let Some(id) = anchor.strip_prefix(crate::actions::ITEM_PREFIX) {
+                requests
+                    .borrow_mut()
+                    .push(Request::Open(SecretId(id.to_owned())));
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn core(&self) -> std::cell::Ref<'_, Core> {
         self.core.borrow()
