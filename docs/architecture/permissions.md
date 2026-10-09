@@ -117,8 +117,13 @@ A lookup that cannot resolve an action refuses.
 
 Every peer checks every incoming change before merging it.
 
-- A change is signed by its author and names its action (`ActionKey`, or the
-  field path for a field edit) and the storage units it writes.
+- A change is signed by its author and names its app package (by content
+  hash), its action (`ActionKey`, or the field path for a field edit) and the
+  storage units it writes. The package is named in the change itself because
+  in a sealed room the relay cannot read the record. Kinds, footprints and
+  tree positions come from that package's `surface.toml`, fetched by hash;
+  until it is available the change is held, never trusted. Builds that are not
+  packaged serve their committed surface by hash through the same path.
 - **The relay** checks, without app code and without reading content, that the
   action is granted to the author (and their delegation) and that the change
   writes only units that action may write. Storage units come from the model:
