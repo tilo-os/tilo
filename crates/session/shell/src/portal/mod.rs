@@ -884,7 +884,7 @@ pub struct PortalContext {
     /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
     /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
-    /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
+    /// production wires a [`ChannelInjector`] the compositor loop drains, and tests use the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
     /// Compositor authority for InputCapture.  Native mode supplies live
     /// output zones; hosted/headless contexts deliberately keep it unavailable.
