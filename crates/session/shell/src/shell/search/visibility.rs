@@ -19,7 +19,8 @@ use super::ResourceKind;
 use super::action_api::{ActionVisibility, ResourceRef};
 
 /// The app id chrome-level actions are attributed to — not exported by any
-/// packaged app, so they need a stable name to be addressed by.
+/// packaged app, so they need a stable name to be addressed by. The chrome
+/// is also the one resource those actions are on.
 pub const SHELL_APP_ID: &str = "shell";
 
 /// What invoking `resource` requires, or `None` when it only shows
@@ -36,13 +37,14 @@ pub fn required_capability(
         return Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
+                resource: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
             },
             Verb::Admin,
         ));
     }
     if resource.provider == super::providers::live_app_actions::PROVIDER_ID
-        && let Some((app, permission, action)) =
+        && let Some((app, permission, resource_id, action)) =
             super::providers::live_app_actions::LiveAppActionsProvider::capability_target(
                 &resource.id,
             )
@@ -58,6 +60,7 @@ pub fn required_capability(
         return Some((
             CapResource::Action {
                 app: app.to_string(),
+                resource: resource_id.to_string(),
                 action: action.to_string(),
             },
             verb,
@@ -82,6 +85,7 @@ pub fn required_capability(
             (
                 CapResource::Action {
                     app: SHELL_APP_ID.to_string(),
+                    resource: SHELL_APP_ID.to_string(),
                     action: resource.id.clone(),
                 },
                 verb,
@@ -93,6 +97,7 @@ pub fn required_capability(
         ResourceKind::Tab | ResourceKind::WindowGroup | ResourceKind::Custom(_) => Some((
             CapResource::Action {
                 app: SHELL_APP_ID.to_string(),
+                resource: SHELL_APP_ID.to_string(),
                 action: resource.id.clone(),
             },
             Verb::Write,
@@ -469,6 +474,7 @@ mod tests {
                 cap,
                 CapResource::Action {
                     app: SHELL_APP_ID.to_string(),
+                    resource: SHELL_APP_ID.to_string(),
                     action: "record.bring".to_string(),
                 }
             );

@@ -1828,8 +1828,8 @@ impl LiveAppActionsProvider {
 
     pub fn capability_target(
         id: &str,
-    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str)> {
-        let (app, permission, _cluster, _record, _resource, action) = Self::result_parts(id)?;
+    ) -> Option<(&str, tilo_actions::PermissionRequirement, &str, &str)> {
+        let (app, permission, _cluster, _record, resource, action) = Self::result_parts(id)?;
         let permission = match permission {
             "none" => tilo_actions::PermissionRequirement::None,
             "read" => tilo_actions::PermissionRequirement::Read,
@@ -1839,7 +1839,7 @@ impl LiveAppActionsProvider {
             "admin" => tilo_actions::PermissionRequirement::Admin,
             _ => return None,
         };
-        Some((app, permission, action))
+        Some((app, permission, resource, action))
     }
 
     /// The application, room, record, resource, and operation represented by

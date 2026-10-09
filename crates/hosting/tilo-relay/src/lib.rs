@@ -103,6 +103,8 @@ pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
 #[cfg(not(target_arch = "wasm32"))]
+mod membership_watch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;

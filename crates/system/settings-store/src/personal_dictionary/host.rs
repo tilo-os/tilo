@@ -171,6 +171,22 @@ impl SettingsSource for Host {
     ) -> std::io::Result<crate::ConditionalUpdate> {
         self.source.compare_display_update(update)
     }
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &crate::ChangeOrigin,
+    ) -> std::io::Result<()> {
+        self.source.update_section_by(name, values, origin)
+    }
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &crate::ChangeOrigin,
+        change: &mut crate::SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        self.source.update_section_with(name, origin, change)
+    }
     fn revision(&self) -> u64 {
         self.source.revision()
     }

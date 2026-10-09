@@ -14,7 +14,7 @@ use os_actions::DeviceOrientation;
 use settings_store::hardware::OutputTransform;
 
 /// Settings key (in the `display` section) holding the rotation lock.
-pub const ROTATION_LOCK_KEY: &str = "rotation_lock";
+pub const ROTATION_LOCK_KEY: &str = settings_store::hardware::ROTATION_LOCK.name();
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 /// Re-read the lock every this many samples (once a second).
@@ -32,7 +32,7 @@ pub fn output_transform(orientation: DeviceOrientation) -> OutputTransform {
 
 /// Whether the user locked rotation, from a loaded settings document.
 pub fn rotation_locked(settings: &serde_json::Map<String, serde_json::Value>) -> bool {
-    settings_store::bool_at(settings, "display", ROTATION_LOCK_KEY).unwrap_or(false)
+    settings_store::hardware::ROTATION_LOCK.from_document(settings)
 }
 
 /// Start following the accelerometer. Returns `None` when the machine has

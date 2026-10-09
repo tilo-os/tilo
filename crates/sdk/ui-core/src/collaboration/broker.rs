@@ -499,6 +499,17 @@ impl CollabTransport for BrokerTransport {
         channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_document_read_phase_for_test(&self, channel: &str) -> Option<serde_json::Value> {
+        let phase = self.state.document_reads.readiness_diagnostic(channel)?;
+        Some(serde_json::json!({
+            "required": phase.required,
+            "staged": phase.staged,
+            "applied": phase.applied,
+            "refresh_requested": phase.refresh_requested,
+        }))
+    }
+
     fn take_action_surface_failed(&mut self) -> bool {
         self.state
             .action_surface_failed

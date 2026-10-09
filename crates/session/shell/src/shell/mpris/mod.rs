@@ -12,6 +12,15 @@
 //! reach the compositor loop through the caller's delivery (a transport
 //! key's OSD) or shared state it already samples (handoff reports and
 //! accepted resumes).
+//!
+//! Which players exist, and what each reports, comes from one signal-driven
+//! observer ([`observer`]) and the table it keeps ([`table`]); nothing here
+//! polls the bus. Commands still go to a player directly, and a resume still
+//! reads a player's `Position` while it verifies the playhead, because MPRIS
+//! has no signal for a playhead that merely advances.
+
+mod observer;
+mod table;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
@@ -22,6 +31,8 @@ use std::time::{Duration, Instant};
 use media::handoff::{HandoffSource, PlaybackReport, PlaybackSession};
 use zbus::zvariant::OwnedValue;
 
+use table::PlayerTable;
+
 /// A transport command's outcome older than this is not shown: an OSD for a
 /// key pressed long ago would describe the wrong moment.
 const DEADLINE: Duration = Duration::from_millis(250);
@@ -31,16 +42,15 @@ const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 const PLAYER_IFACE: &str = "org.mpris.MediaPlayer2.Player";
 const ROOT_IFACE: &str = "org.mpris.MediaPlayer2";
-const DISCOVERY_INTERVAL: Duration = Duration::from_secs(1);
 
-#[derive(Default)]
-struct RefreshState {
-    running: bool,
-    last_started: Option<Instant>,
-}
+/// How long a command or resume waits for a just-started observer to have
+/// listed the bus before it gives up.
+const SEED_WAIT: Duration = Duration::from_secs(2);
 
-static REFRESH: LazyLock<Mutex<RefreshState>> =
-    LazyLock::new(|| Mutex::new(RefreshState::default()));
+/// How long after a now-playing command the card keeps its optimistic state
+/// before it shows the table again: a player that took the command has
+/// signalled by then, and one that refused it is shown as it is.
+const COMMAND_SETTLE: Duration = Duration::from_millis(500);
 
 const RESUME_DEADLINE: Duration = Duration::from_secs(10);
 const RESUME_POLL: Duration = Duration::from_millis(100);
@@ -252,42 +262,38 @@ struct PlayerObservation {
     position_us: i64,
 }
 
-/// Refresh the shell-owned MPRIS projection without ever putting a D-Bus
-/// round trip on the compositor's sampling path. The previous bounded
-/// snapshot remains usable while this worker runs and expires in `media` if
-/// discovery stops making progress.
+/// Publish this machine's players as handoff reports, while media
+/// continuity is permitted. Starts the player observer if it is not running
+/// and re-stamps the reports from its table, playheads extrapolated to now.
+/// No D-Bus round trip, on this thread or any other: called about once a
+/// second, this is what keeps the reports inside `media`'s freshness window
+/// while the observer is healthy. They expire there if it stops.
 pub fn refresh_handoff_reports() {
-    let Ok(mut refresh) = REFRESH.lock() else {
-        return;
-    };
-    if refresh.running
-        || refresh
-            .last_started
-            .is_some_and(|started| started.elapsed() < DISCOVERY_INTERVAL)
-    {
-        return;
-    }
-    refresh.running = true;
-    refresh.last_started = Some(Instant::now());
-    let spawned = spawn_on_session(async {
-        // Clears `running` however the task ends, so one failed discovery
-        // never stops the next.
-        let _finished = RefreshFinished;
-        media::handoff::replace_system_reports(discover_handoff_reports().await);
-    });
-    if !spawned {
-        refresh.running = false;
-    }
+    observer::ensure_started();
+    observer::set_handoff(true);
 }
 
-struct RefreshFinished;
+/// Stop publishing this machine's players as handoff reports: media
+/// continuity is not permitted.
+pub fn withdraw_handoff_reports() {
+    observer::set_handoff(false);
+}
 
-impl Drop for RefreshFinished {
-    fn drop(&mut self) {
-        if let Ok(mut refresh) = REFRESH.lock() {
-            refresh.running = false;
-        }
+/// Read the player table once the observer has listed the bus, starting the
+/// observer if it is not running. `None` when there is no bus, or the bus
+/// was not listed within [`SEED_WAIT`].
+async fn with_players<T, F>(read: F) -> Option<T>
+where
+    F: FnOnce(&PlayerTable) -> T + Send,
+{
+    observer::ensure_started();
+    if !observer::seeded(&observer::OBSERVER, SEED_WAIT).await {
+        return None;
     }
+    observer::OBSERVER
+        .lock()
+        .ok()
+        .map(|state| read(&state.table))
 }
 
 /// Run `task` on the session runtime. `false` when that runtime is
@@ -349,10 +355,6 @@ async fn player_proxy(
         .build()
         .await
         .ok()
-}
-
-async fn dbus_proxy(connection: &zbus::Connection) -> Option<zbus::fdo::DBusProxy<'static>> {
-    zbus::fdo::DBusProxy::new(connection).await.ok()
 }
 
 /// Ask a newly launched, launcher-verified player to assume an exact media
@@ -432,14 +434,14 @@ async fn run_resume(
         if !authority.is_active() {
             return None;
         }
-        for bus_name in verified_player_names(&connection, &request.package_id).await {
+        for (bus_name, reported_uri) in verified_players(&request.package_id).await {
             if !authority.is_active() {
                 return None;
             }
-            let Some(player) = player_proxy(&connection, &bus_name, PLAYER_IFACE).await else {
-                continue;
-            };
-            if player_reports_uri(&player, &expected_uri).await {
+            if reported_uri.as_deref() == Some(expected_uri.as_str()) {
+                let Some(player) = player_proxy(&connection, &bus_name, PLAYER_IFACE).await else {
+                    continue;
+                };
                 if drive_and_verify_player(&player, request.position_ms, request.playing, authority)
                     .await
                 {
@@ -460,28 +462,14 @@ async fn run_resume(
     None
 }
 
-async fn verified_player_names(connection: &zbus::Connection, package_id: &str) -> Vec<String> {
-    let Some(dbus) = dbus_proxy(connection).await else {
-        return Vec::new();
-    };
-    let Ok(names) = dbus.list_names().await else {
-        return Vec::new();
-    };
-    let mut verified = Vec::new();
-    for name in names {
-        if !name.as_str().starts_with(MPRIS_PREFIX) {
-            continue;
-        }
-        if let Ok(pid) = dbus
-            .get_connection_unix_process_id(zbus::names::BusName::from(name.clone()))
-            .await
-            && crate::shell::launcher::verified_package_for_descendant(pid)
-                .is_some_and(|package| package == package_id)
-        {
-            verified.push(name.as_str().to_string());
-        }
-    }
-    verified
+/// The players verified to belong to `package_id`, each with the source it
+/// reports. A player whose owner could not yet be attributed to a launch
+/// when it appeared is tried again first: no bus call.
+async fn verified_players(package_id: &str) -> Vec<(String, Option<String>)> {
+    observer::retry_verification(&observer::OBSERVER, None);
+    with_players(|table| table.players_of(package_id))
+        .await
+        .unwrap_or_default()
 }
 
 async fn player_reports_uri(player: &zbus::Proxy<'_>, expected_uri: &str) -> bool {
@@ -610,77 +598,6 @@ fn resume_uri(source: &ResumeSource) -> Option<String> {
         }
         ResumeSource::LocalFile(_) => None,
     }
-}
-
-async fn discover_handoff_reports() -> Vec<PlaybackReport> {
-    let Some(connection) = session_bus().await else {
-        return Vec::new();
-    };
-    let Some(dbus) = dbus_proxy(&connection).await else {
-        return Vec::new();
-    };
-    let Ok(names) = dbus.list_names().await else {
-        return Vec::new();
-    };
-    // The package registry is read from disk; that happens on the I/O pool.
-    let apps =
-        tilo_rt::io::run(|| Ok(crate::shell::launcher::installed_apps().unwrap_or_default()))
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|app| app.has_gui)
-            .map(|app| InstalledMediaApp {
-                package_id: app.package_id,
-                uri_schemes: app.opens_uri_schemes,
-                extensions: app.opens_extensions,
-            })
-            .collect::<Vec<_>>();
-    let mut reports = Vec::new();
-    for name in names {
-        if reports.len() >= media::handoff::MAX_PLAYBACK_REPORTS {
-            break;
-        }
-        if !name.as_str().starts_with(MPRIS_PREFIX) {
-            continue;
-        }
-        let Ok(pid) = dbus
-            .get_connection_unix_process_id(zbus::names::BusName::from(name.clone()))
-            .await
-        else {
-            continue;
-        };
-        let Some(package_id) = crate::shell::launcher::verified_package_for_descendant(pid) else {
-            continue;
-        };
-        if let Some(report) = observe_player(&connection, name.as_str().to_string(), package_id)
-            .await
-            .and_then(|observation| report_from_observation(&observation, &apps))
-        {
-            reports.push(report);
-        }
-    }
-    reports
-}
-
-async fn observe_player(
-    connection: &zbus::Connection,
-    bus_name: String,
-    package_id: String,
-) -> Option<PlayerObservation> {
-    let player = player_proxy(connection, &bus_name, PLAYER_IFACE).await?;
-    let root = player_proxy(connection, &bus_name, ROOT_IFACE).await?;
-    let identity = root.get_property("Identity").await.ok();
-    let status = player.get_property("PlaybackStatus").await.ok()?;
-    let metadata = player.get_property("Metadata").await.ok()?;
-    let position_us = player.get_property("Position").await.unwrap_or(0);
-    Some(PlayerObservation {
-        bus_name,
-        package_id,
-        identity,
-        status,
-        metadata,
-        position_us,
-    })
 }
 
 fn report_from_observation(
@@ -939,30 +856,20 @@ pub fn pause_named(bus_name: &str) -> bool {
 /// start sound on its own. Returns whether the pause was dispatched.
 pub fn pause_playing_players() -> bool {
     spawn_on_session(async {
+        let Some(playing) = with_players(PlayerTable::playing).await else {
+            return;
+        };
         let Some(connection) = session_bus().await else {
             return;
         };
-        let Some(dbus) = dbus_proxy(&connection).await else {
-            return;
-        };
-        let Ok(names) = dbus.list_names().await else {
-            return;
-        };
-        for name in names {
-            let bus_name = name.as_str();
-            if !bus_name.starts_with(MPRIS_PREFIX) {
-                continue;
-            }
-            let Some(proxy) = player_proxy(&connection, bus_name, PLAYER_IFACE).await else {
+        for bus_name in playing {
+            let Some(proxy) = player_proxy(&connection, &bus_name, PLAYER_IFACE).await else {
                 continue;
             };
-            if matches!(playback_status(&proxy).await.as_deref(), Some("Playing"))
-                && let Err(error) = proxy.call_method("Pause", &()).await
-            {
+            if let Err(error) = proxy.call_method("Pause", &()).await {
                 tracing::debug!(target: "tilo::mpris", %error, "player did not pause on unplug");
             }
         }
-        expire_now_playing();
     })
 }
 
@@ -996,78 +903,20 @@ pub(crate) fn pause_named_if_uri(bus_name: &str, expected_uri: &str) -> bool {
     })
 }
 
-/// The shell's projection of every player on the session bus, for the
-/// now-playing card. Refreshed off the compositor thread; readers only copy
-/// the last snapshot.
-#[derive(Default)]
-struct NowPlayingState {
-    players: Vec<crate::shell::now_playing::PlayerSnapshot>,
-    running: bool,
-    last_started: Option<Instant>,
-    /// Decoded artwork by `mpris:artUrl`, so a track's cover is read once and
-    /// not every second. Pruned to the current players when it grows.
-    artwork: HashMap<String, Option<crate::shell::now_playing::Artwork>>,
-}
-
-static NOW_PLAYING: LazyLock<Mutex<NowPlayingState>> =
-    LazyLock::new(|| Mutex::new(NowPlayingState::default()));
-
-/// Largest cover file the card will decode, and the edge it is scaled to.
-const MAX_ARTWORK_BYTES: u64 = 8 * 1024 * 1024;
-const ARTWORK_EDGE: u32 = 192;
+/// Most players the now-playing card lists.
 const MAX_NOW_PLAYING_PLAYERS: usize = 16;
 
-/// The players last observed. Empty until the first refresh completes.
+/// The players last observed. Empty until the observer has listed the bus.
 pub fn now_playing_players() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
-    NOW_PLAYING
+    observer::OBSERVER
         .lock()
-        .map_or_else(|_| Vec::new(), |state| state.players.clone())
+        .map_or_else(|_| Vec::new(), |state| state.now_playing.clone())
 }
 
-/// Start a fresh observation of every player unless one is running or the
-/// last started under a second ago. Never waits on the bus.
+/// Make sure the players are being observed. The observer follows their
+/// signals, so there is nothing to poll; this never waits on the bus.
 pub fn refresh_now_playing() {
-    let Ok(mut state) = NOW_PLAYING.lock() else {
-        return;
-    };
-    if state.running
-        || state
-            .last_started
-            .is_some_and(|started| started.elapsed() < DISCOVERY_INTERVAL)
-    {
-        return;
-    }
-    state.running = true;
-    state.last_started = Some(Instant::now());
-    drop(state);
-    let spawned = spawn_on_session(async {
-        let _finished = NowPlayingRefreshFinished;
-        let players = discover_now_playing().await;
-        if let Ok(mut state) = NOW_PLAYING.lock() {
-            state.players = players;
-        }
-    });
-    if !spawned && let Ok(mut state) = NOW_PLAYING.lock() {
-        state.running = false;
-    }
-}
-
-struct NowPlayingRefreshFinished;
-
-impl Drop for NowPlayingRefreshFinished {
-    fn drop(&mut self) {
-        if let Ok(mut state) = NOW_PLAYING.lock() {
-            state.running = false;
-        }
-    }
-}
-
-/// Forget the refresh throttle so the next [`refresh_now_playing`] observes
-/// at once — after a command, the card should show its effect promptly.
-fn expire_now_playing() {
-    if let Ok(mut state) = NOW_PLAYING.lock() {
-        state.last_started = None;
-    }
+    observer::ensure_started();
 }
 
 /// Send `command` to exactly the player at `bus_name`, never to whichever
@@ -1080,9 +929,9 @@ pub fn control(bus_name: &str, command: crate::shell::now_playing::PlayerCommand
     }
     // Show the toggle at once; the next observation confirms or corrects it.
     if matches!(command, PlayerCommand::PlayPause | PlayerCommand::Pause)
-        && let Ok(mut state) = NOW_PLAYING.lock()
+        && let Ok(mut state) = observer::OBSERVER.lock()
         && let Some(player) = state
-            .players
+            .now_playing
             .iter_mut()
             .find(|player| player.bus_name == bus_name)
     {
@@ -1125,90 +974,9 @@ pub fn control(bus_name: &str, command: crate::shell::now_playing::PlayerCommand
         if let Err(error) = result {
             tracing::debug!(target: "tilo::mpris", %error, ?command, "player rejected the command");
         }
-        expire_now_playing();
+        tokio::time::sleep(COMMAND_SETTLE).await;
+        observer::republish(&observer::OBSERVER);
     })
-}
-
-async fn discover_now_playing() -> Vec<crate::shell::now_playing::PlayerSnapshot> {
-    let Some(connection) = session_bus().await else {
-        return Vec::new();
-    };
-    let Some(dbus) = dbus_proxy(&connection).await else {
-        return Vec::new();
-    };
-    let Ok(names) = dbus.list_names().await else {
-        return Vec::new();
-    };
-    let mut observed = Vec::new();
-    for name in names {
-        if observed.len() >= MAX_NOW_PLAYING_PLAYERS {
-            break;
-        }
-        let bus_name = name.as_str();
-        if !bus_name.starts_with(MPRIS_PREFIX) {
-            continue;
-        }
-        if let Some(player) = observe_now_playing(&connection, bus_name).await {
-            observed.push(player);
-        }
-    }
-    let wanted = observed
-        .iter()
-        .filter_map(|(_, url)| url.clone())
-        .collect::<BTreeSet<_>>();
-    let mut players = Vec::with_capacity(observed.len());
-    for (mut player, art_url) in observed {
-        if let Some(url) = art_url {
-            player.artwork = artwork_for(&url).await;
-        }
-        players.push(player);
-    }
-    if let Ok(mut state) = NOW_PLAYING.lock()
-        && state.artwork.len() > MAX_NOW_PLAYING_PLAYERS
-    {
-        state.artwork.retain(|url, _| wanted.contains(url));
-    }
-    players
-}
-
-/// One player's snapshot plus the artwork URL still to resolve.
-async fn observe_now_playing(
-    connection: &zbus::Connection,
-    bus_name: &str,
-) -> Option<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
-    let player = player_proxy(connection, bus_name, PLAYER_IFACE).await?;
-    let root = player_proxy(connection, bus_name, ROOT_IFACE).await?;
-    let status = player.get_property::<String>("PlaybackStatus").await.ok()?;
-    let metadata = player
-        .get_property::<HashMap<String, OwnedValue>>("Metadata")
-        .await
-        .unwrap_or_default();
-    let properties = NowPlayingProperties {
-        identity: root.get_property::<String>("Identity").await.ok(),
-        status,
-        position_us: player.get_property::<i64>("Position").await.unwrap_or(0),
-        can_play: player
-            .get_property::<bool>("CanPlay")
-            .await
-            .unwrap_or(false),
-        can_pause: player
-            .get_property::<bool>("CanPause")
-            .await
-            .unwrap_or(false),
-        can_seek: player
-            .get_property::<bool>("CanSeek")
-            .await
-            .unwrap_or(false),
-        can_go_next: player
-            .get_property::<bool>("CanGoNext")
-            .await
-            .unwrap_or(false),
-        can_go_previous: player
-            .get_property::<bool>("CanGoPrevious")
-            .await
-            .unwrap_or(false),
-    };
-    now_playing_from_properties(bus_name, &properties, &metadata, Instant::now())
 }
 
 /// The scalar properties of one player, read before parsing.
@@ -1310,67 +1078,12 @@ fn now_playing_from_properties(
     ))
 }
 
-/// The decoded artwork for a `file://` URL, from the cache or decoded once on
-/// the I/O pool. A missing, oversized or undecodable file is remembered as
-/// having no artwork so it is not retried every second.
-async fn artwork_for(url: &str) -> Option<crate::shell::now_playing::Artwork> {
-    if let Ok(state) = NOW_PLAYING.lock()
-        && let Some(cached) = state.artwork.get(url)
-    {
-        return cached.clone();
-    }
-    let path = url
-        .strip_prefix("file://")
-        .and_then(|path| percent_decode(path.split(['?', '#']).next().unwrap_or(path)))
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
-    let decoded = match path {
-        Some(path) => tilo_rt::io::run(move || Ok(decode_artwork(&path)))
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
-    if let Ok(mut state) = NOW_PLAYING.lock() {
-        state.artwork.insert(url.to_string(), decoded.clone());
-    }
-    decoded
-}
-
-fn decode_artwork(path: &std::path::Path) -> Option<crate::shell::now_playing::Artwork> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_ARTWORK_BYTES {
-        return None;
-    }
-    let mut reader = image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .ok()?
-        .thumbnail(ARTWORK_EDGE, ARTWORK_EDGE)
-        .to_rgba8();
-    Some(crate::shell::now_playing::Artwork {
-        width: image.width(),
-        height: image.height(),
-        rgba: Arc::new(image.into_raw()),
-    })
-}
-
 async fn run(cmd: Command) -> Option<Outcome> {
+    // Status is taken *before* acting: reading after would race the
+    // player's own (asynchronous) state change.
+    let (name, was_playing) = with_players(PlayerTable::active_player).await??;
     let conn = session_bus().await?;
-    let name = active_player(&conn).await?;
     let proxy = player_proxy(&conn, &name, PLAYER_IFACE).await?;
-
-    // Read status *before* acting: reading after would race the player's
-    // own (asynchronous) state change.
-    let was_playing = matches!(playback_status(&proxy).await.as_deref(), Some("Playing"));
 
     proxy
         .call_method(cmd.method(), &())
@@ -1392,32 +1105,6 @@ async fn run(cmd: Command) -> Option<Outcome> {
         Command::Next | Command::Previous => Outcome::Skipped,
         Command::Stop => Outcome::Stopped,
     })
-}
-
-/// A machine can have several players; the one reporting `Playing` wins,
-/// else the first MPRIS name on the bus, so play/pause resumes whatever
-/// was last open.
-async fn active_player(conn: &zbus::Connection) -> Option<String> {
-    let dbus = dbus_proxy(conn).await?;
-    let names = dbus.list_names().await.ok()?;
-    let players: Vec<String> = names
-        .into_iter()
-        .map(|n| n.as_str().to_string())
-        .filter(|n| n.starts_with(MPRIS_PREFIX))
-        .collect();
-    for name in &players {
-        let Some(proxy) = player_proxy(conn, name, PLAYER_IFACE).await else {
-            continue;
-        };
-        if matches!(playback_status(&proxy).await.as_deref(), Some("Playing")) {
-            return Some(name.clone());
-        }
-    }
-    players.into_iter().next()
-}
-
-async fn playback_status(proxy: &zbus::Proxy<'_>) -> Option<String> {
-    proxy.get_property::<String>("PlaybackStatus").await.ok()
 }
 
 #[cfg(test)]

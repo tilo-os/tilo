@@ -2148,6 +2148,7 @@ dependencies = [
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2378,6 +2379,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tilo-clock",
+ "tracing",
  "uuid",
  "web-time",
  "wire-frame",
@@ -6147,7 +6149,6 @@ dependencies = [
 name = "host-info"
 version = "0.1.0"
 dependencies = [
- "bounded-command",
  "libc",
  "workspace-hack",
 ]
@@ -10561,6 +10562,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-bluez",
  "tilo-crypto",
+ "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -14239,10 +14241,10 @@ dependencies = [
  "bounded-command",
  "browser",
  "bytes",
- "chat",
  "capnp",
  "capnp-rpc",
  "channel-crypto",
+ "chat",
  "chrono",
  "code-editor",
  "collab-fixtures",
@@ -14354,6 +14356,7 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-moq",
+ "tilo-nm",
  "tilo-peer-state",
  "tilo-power-mgmt",
  "tilo-projector",
@@ -16746,6 +16749,7 @@ dependencies = [
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "libc",
  "tempfile",
  "thiserror 2.0.21",
@@ -16853,7 +16857,6 @@ dependencies = [
  "anyhow",
  "bao-tree",
  "blake3",
- "bounded-command",
  "bytes",
  "clap",
  "cloud-source",
@@ -16891,11 +16894,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
+ "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-test-env",
@@ -16933,6 +16938,7 @@ dependencies = [
  "tilo-files",
  "tilo-location",
  "tilo-media",
+ "tilo-net",
  "tilo-notify",
  "tilo-rt",
  "tilo-secrets",
@@ -17027,6 +17033,7 @@ dependencies = [
 name = "tilo-joined-room"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "channel-crypto",
  "collab-types",
@@ -17263,6 +17270,18 @@ dependencies = [
  "web-transport-quinn",
  "wire-frame",
  "workspace-hack",
+ "zbus",
+]
+
+[[package]]
+name = "tilo-nm"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "thiserror 2.0.21",
+ "tokio",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]

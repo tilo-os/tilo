@@ -441,6 +441,7 @@ for line in sys.stdin:
  elif m=='layer.verify':
   if mode in ('missing','corrupt','old'): error={"code":-32602,"message":mode}
   else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu'}}
+ elif m=='layer.upload.binary': error={"code":-32602,"message":"unknown optional method","hint":"legacy upload"}
  elif m=='layer.upload.begin': result={"upload":"fixture"}
  elif m=='layer.upload.chunk':
   received+=len(base64.b64decode(r['params']['data'])); result={"received":received}

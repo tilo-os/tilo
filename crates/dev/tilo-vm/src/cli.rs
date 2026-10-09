@@ -264,6 +264,9 @@ pub enum Command {
         /// Content hashes the target has verified; at most eight.
         #[arg(long)]
         cached_layer: Vec<String>,
+        /// Stream bounded raw chunks with a verified footer instead of base64.
+        #[arg(long)]
+        binary: bool,
     },
     /// Build the canonical matched cohort in one remote admission.
     #[command(

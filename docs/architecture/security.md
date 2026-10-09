@@ -178,6 +178,17 @@ Three properties make that a boundary rather than a convention:
 - **The allowlist is matched against the host *name*,** taken from the SOCKS request, before that name is resolved. So a rotating CDN works, a DNS record that changes mid-session is just two resolutions, and no address is ever pinned.
 - **An address literal never satisfies a hostname entry.** Otherwise an app could resolve an allowed name itself and then ask for the address — and anyone controlling a DNS answer would turn a name-scoped grant into an any-host grant.
 
+**One grant grammar, two backends.** A `NetHost` grant means the same thing to every sandbox that reads it. `collab_types::caps::NetHostPattern` is the only parser and `collab_types::caps::EgressPolicy` the only policy: `*` is every host; `example.com` is that host; `.example.com` (spelled `*.example.com` too, normalised on read, never a glob) is the domain and every name under it; names compare lower-case without a trailing dot. An IP literal is not a host: it is refused when written, and a stored one is ignored with a warning, so it narrows and never widens. `decide_capability` (`host_covers`), the launcher's gate and `tilo-egress` all read it, and `crates/collab/collab-types/tests/net_host_vectors.txt` is checked against each of them on its production path. What differs per sandbox is only the backend:
+
+| Sandbox | Backend | Named hosts | `*` |
+|---|---|---|---|
+| App (`launcher`) | Empty netns + the gate (`netgate.rs`) | Gate matches the name, resolves after policy; device-local only for an exact name | `--share-net`: the host network, its loopback included |
+| Windows capsule (`compat-service`) | The same gate | As apps | `--share-net`, as apps |
+| Windows guest (`windows-vm::guest_network`) | Lease-scoped HTTP `CONNECT` relay over the gate's connect path | As apps | Every host through the relay |
+| Environment, build (`ush`, `env-tools`) | Own netns + DNS stub + nftables (`tilo-egress`) | Stub answers granted names; nftables admits only answered addresses | Own namespace, no filter: the internet, not this device's loopback |
+
+The `*` row is the one deliberate difference. Moving an app's `*` behind a gate in allow-all mode would make it match an environment's, but it would break first-party apps that depend on the host network: Music and Mail (manifest `net.mode = "host"`) take OAuth redirects on a loopback listener (`tilo-oauth`) that the host's browser must reach, and the gate carries TCP only, so QUIC and other UDP stop working. It would also make a `*` grant narrower than no grant at all for a `host` manifest. `launcher::netgate`'s `a_star_grant_keeps_the_host_network_for_apps_deliberately` pins the decision.
+
 DNS is treated as egress. An app with no grant reaches no resolver; an app with an allowlist needs none, because the gate resolves on its behalf after the name has passed the policy. So an app cannot make the gate resolve a name it was not allowed to reach, and cannot signal through query contents because it emits no query.
 
 This needs no privilege and no kernel feature `bwrap` does not already require. Address-based `nftables` rules would not preserve hostname-scoped policy and would require `CAP_NET_ADMIN`, which the launcher does not have.

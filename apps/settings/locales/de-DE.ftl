@@ -1423,7 +1423,7 @@ perm-kind-action = App-Aktion
 perm-verb-rw = lesen und schreiben
 perm-verb-ro = nur lesen
 perm-any-host = Jeder Host
-perm-action-detail = „{ $action }“ in { $app } nutzen
+perm-action-detail = „{ $action }“ auf { $resource } in { $app } nutzen
 perm-expiry-always = Immer
 perm-expiry-temp = Vorübergehend
 perm-expiry-logout = Bis zur Abmeldung
@@ -2104,3 +2104,17 @@ perm-read-disconnected = Die Verbindung zur Datenschutzabfrage wurde getrennt.
 perm-read-preview = Datenschutz- und Sicherheitsstatus des Geräts ist in dieser Vorschau nicht verfügbar.
 
 perm-read-refreshing = Der Datenschutzstatus dieses Geräts wird aktualisiert. Die folgenden Werte stammen aus der vorherigen Beobachtung.
+# Gemeinsame Anzeigeanordnung, unabhängig von der Eingabeberechtigung.
+display-shared-title = Deine gemeinsame Anzeigeanordnung
+display-shared-description = Anzeigen behalten die Anordnung ihres Geräts. Einbindung und Reihenfolge folgen dir auf andere Geräte; die Fernsteuerung benötigt eine separate Berechtigung.
+display-shared-include = In die gemeinsame Anordnung aufnehmen
+display-shared-order = Anzeigennummer
+display-shared-read-only = Die gemeinsame Anzeigeübersicht ist schreibgeschützt.
+display-shared-unavailable = Diese Anzeige wird nicht mehr erkannt.
+display-shared-stale = Die Anordnung wurde geändert. Aktualisiere diese Anzeige und versuche es erneut.
+display-shared-order-invalid = Wähle eine Anzeigennummer aus der aktuellen Liste.
+display-shared-save-failed = Die Anordnung konnte nicht gespeichert werden: { $error }
+display-shared-saved = Gemeinsame Anzeigeanordnung gespeichert.
+display-shared-move-stale = Das Gerät hat seine Position bestätigt, aber die gemeinsame Anordnung wurde geändert. Aktualisiere sie und versuche es erneut.
+display-shared-auto-input = Automatische Eingabe von deinen Geräten erlauben
+display-shared-auto-description = Solange eine Anzeige dieses Geräts eingebunden ist, dürfen deine registrierten Geräte es steuern, wenn sie online sind. Kontinuität und Anzeige/Eingabe müssen ebenfalls aktiviert sein. Abgelehnte Geräte bleiben abgelehnt. Diese Auswahl gilt nur hier.

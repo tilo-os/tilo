@@ -683,16 +683,6 @@ async fn prefetch_namespace_thumbnails(
     Ok(())
 }
 
-/// The namespace's current generation: its Automerge heads, which change
-/// with every change (reading them commits any open transaction). Cheap,
-/// unlike hashing a full save of the document.
-fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
-    namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .heads()
-}
-
 /// The policy the network planes serve through, or `None` for an
 /// unenforced mount — same opt-out as [`crate::QuickFS`]: a mount
 /// without `--acl` states no policy, and inventing one here would deny a
@@ -2242,9 +2232,9 @@ impl Workspace {
             // prompt retry after a transient exchange failure.
             (None, Some(local_rx))
         };
-        // Anti-entropy backstop: periodically pull+merge peers' full docs and
-        // resolve conflicts, so a missed gossip delta or a mid-join window
-        // can't leave a peer permanently diverged.
+        // Anti-entropy backstop: periodically exchange namespace changes and
+        // records with every peer and resolve conflicts, so a missed delta
+        // or a mid-join window can't leave a peer permanently diverged.
         tasks.push(AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
             endpoint,
             namespace: namespace.clone(),
@@ -2778,6 +2768,13 @@ fn record_replica_observation(
 
 /// How often every peer is reconciled without a change or announcement.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
+/// Peers one pass exchanges with at once.
+const PASS_CONCURRENCY: usize = 8;
+/// How long a pass waits for one peer's exchange once it has begun. The
+/// exchange is not cancelled (that could stop between a durable record and
+/// its projection); it finishes on its own and holds its slot, and its peer
+/// is not started again until it has. The pass moves on without it.
+const PEER_DEADLINE: Duration = Duration::from_secs(20);
 
 /// One peer's share of a reconciliation pass.
 struct PeerPass<'a> {
@@ -2938,40 +2935,11 @@ impl PeerPass<'_> {
                 }
                 Err(_) => {}
             }
-        } else if self.read_only {
-            // Read-only peers pull a full snapshot and never upload local
-            // changes. It is merged only from a peer this device's policy
-            // lets read the whole workspace, bound to this workspace.
-            let doc = match fetch_remote_doc(
-                self.endpoint,
-                peer.clone(),
-                self.identity,
-                self.workspace_id,
-                self.policy,
-            )
-            .await
-            {
-                Ok(doc) => doc,
-                Err(error) => {
-                    if !self.identity.partitioned() {
-                        eprintln!("namespace pull from {} failed: {error:#}", peer.id);
-                    }
-                    return self.per_request_records(peer, changed).await;
-                }
-            };
-            let before_merge = namespace_generation(self.namespace);
-            let resolution = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .merge_remote_and_resolve(&doc)
-                .unwrap_or_default();
-            // A clean merge commonly needs no conflict-resolution delta;
-            // compare the document generation so its previews are still
-            // scheduled on a fresh collaborator.
-            changed |= before_merge != namespace_generation(self.namespace);
-            self.broadcast(resolution).await;
         }
+        // A read-only device takes namespace changes only over a session,
+        // as the changes beyond its own heads ([`session::pull_namespace`]).
+        // A peer without the session protocol is never asked for its whole
+        // document on every pass; it serves this device records only.
         self.per_request_records(peer, changed).await
     }
 
@@ -3016,6 +2984,174 @@ impl PeerPass<'_> {
             .await;
         }
         changed
+    }
+}
+
+/// What every peer exchange of the reconciliation loop works on. Owned, so
+/// an exchange can outlive the pass that stopped waiting for it.
+struct PassShared {
+    endpoint: Endpoint,
+    namespace: Arc<Mutex<Namespace>>,
+    hydrator: Arc<Hydrator>,
+    sender: Option<GossipSender>,
+    identity: FsTransportIdentity,
+    policy: PeerPolicy,
+    workspace_id: uuid::Uuid,
+    records: Option<RecordPlane>,
+    sessions: Arc<SessionPool>,
+    /// This device may write the whole workspace.
+    may_write: bool,
+}
+
+/// What one pass does with each peer.
+#[derive(Clone, Copy, Debug)]
+struct PassPlan {
+    /// Tell the peer first that this device published changes, so it pulls
+    /// them without waiting for its own timer.
+    announce: bool,
+    reconcile: crate::record_materializer::ReconcileScope,
+}
+
+impl PassShared {
+    /// One peer's share of a pass: the announcement if `plan` asks for it,
+    /// then every exchange over the peer's session, or through the
+    /// per-request protocols when it speaks no session. Returns whether
+    /// namespace or records changed.
+    async fn exchange(&self, peer: EndpointAddr, plan: PassPlan) -> bool {
+        let session = match self.sessions.get(&peer).await {
+            Ok(session) => session,
+            Err(error) => {
+                if !self.identity.partitioned() {
+                    eprintln!("no session with {}: {error:#}", peer.id);
+                }
+                return false;
+            }
+        };
+        let remote_may_write = self.policy.is_none()
+            || self
+                .identity
+                .certified_peer_for_device(*peer.id.as_bytes())
+                .is_some_and(|remote| {
+                    authenticated_peer_may_write_whole_workspace(&self.policy, &remote)
+                });
+        let context = PeerPass {
+            endpoint: &self.endpoint,
+            namespace: &self.namespace,
+            hydrator: &self.hydrator,
+            sender: self.sender.as_ref(),
+            identity: &self.identity,
+            policy: &self.policy,
+            workspace_id: self.workspace_id,
+            records: self.records.as_ref(),
+            exchange_namespace: self.may_write && remote_may_write,
+            read_only: !self.may_write,
+            reconcile: plan.reconcile,
+        };
+        let Some(session) = session else {
+            // The peer speaks only the per-request protocols.
+            return context.per_request(peer).await;
+        };
+        if plan.announce
+            && let Err(error) = session::announce(&self.sessions, &session).await
+        {
+            eprintln!("announcing to {} failed: {error:#}", session.addr.id);
+        }
+        let changed = context.over_session(&self.sessions, &session).await;
+        if session.is_closed() {
+            // The next pass connects afresh.
+            self.sessions.forget(&session).await;
+        }
+        changed
+    }
+}
+
+/// Runs each pass's peer exchanges concurrently: at most
+/// [`PASS_CONCURRENCY`] at once, at most one per peer at a time, and each
+/// waited for at most `deadline`, so one unreachable or stalled peer holds
+/// back neither the others nor the pass.
+struct PeerExchanges {
+    shared: Arc<PassShared>,
+    slots: Arc<tokio::sync::Semaphore>,
+    /// Peers with an exchange in progress, possibly from an earlier pass.
+    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
+    /// Set by an exchange that changed namespace or records; taken by the
+    /// pass that next looks, which covers exchanges that outlived their
+    /// own pass.
+    changed: Arc<std::sync::atomic::AtomicBool>,
+    deadline: Duration,
+}
+
+/// A peer's place in [`PeerExchanges::busy`], given back when its exchange
+/// ends however it ends.
+struct BusyPeer {
+    busy: Arc<Mutex<HashSet<iroh_base::PublicKey>>>,
+    peer: iroh_base::PublicKey,
+}
+
+impl Drop for BusyPeer {
+    fn drop(&mut self) {
+        self.busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.peer);
+    }
+}
+
+impl PeerExchanges {
+    fn new(shared: PassShared, deadline: Duration) -> Self {
+        Self {
+            shared: Arc::new(shared),
+            slots: Arc::new(tokio::sync::Semaphore::new(PASS_CONCURRENCY)),
+            busy: Arc::new(Mutex::new(HashSet::new())),
+            changed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            deadline,
+        }
+    }
+
+    /// One pass over `peers`, skipping any still exchanging since an
+    /// earlier pass. Returns whether namespace or records changed since the
+    /// previous pass looked.
+    async fn run(&self, peers: Vec<EndpointAddr>, plan: PassPlan) -> bool {
+        let started: Vec<_> = peers
+            .into_iter()
+            .filter_map(|peer| {
+                let claimed = self
+                    .busy
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(peer.id);
+                claimed.then(|| {
+                    let busy = BusyPeer {
+                        busy: Arc::clone(&self.busy),
+                        peer: peer.id,
+                    };
+                    self.start(peer, busy, plan)
+                })
+            })
+            .collect();
+        futures_util::future::join_all(started).await;
+        self.changed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Starts the exchange with `peer` once a slot is free, and waits for it
+    /// at most the deadline.
+    async fn start(&self, peer: EndpointAddr, busy: BusyPeer, plan: PassPlan) {
+        let Ok(slot) = Arc::clone(&self.slots).acquire_owned().await else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        let changed = Arc::clone(&self.changed);
+        let exchange = tokio::spawn(async move {
+            if shared.exchange(peer, plan).await {
+                changed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            drop(busy);
+            drop(slot);
+        });
+        // On timeout the task carries on detached; dropping its handle does
+        // not abort it.
+        let _ = tokio::time::timeout(self.deadline, exchange).await;
     }
 }
 
@@ -3088,6 +3224,21 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     } = reconcile;
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
+    let exchanges = PeerExchanges::new(
+        PassShared {
+            endpoint,
+            namespace: namespace.clone(),
+            hydrator: hydrator.clone(),
+            sender: sender.clone(),
+            identity: identity.clone(),
+            policy,
+            workspace_id,
+            records: records.clone(),
+            sessions,
+            may_write,
+        },
+        PEER_DEADLINE,
+    );
     let mut pending_thumbnails = HashMap::new();
     // `mount` bootstraps a namespace before this task starts, so schedule its
     // previews once even if the first anti-entropy exchange is clean.
@@ -3126,69 +3277,28 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
             hydrator.add_peer(peer);
         }
         let known_peers = hydrator.known_peers();
+        let peer_count = known_peers.len();
         // Peers pull what this device just published without waiting for
-        // their own timer, or for this pass: announce first, opening the
-        // session this pass then uses.
-        if local_change {
-            for peer in &known_peers {
-                let Ok(Some(session)) = sessions.get(peer).await else {
-                    continue;
-                };
-                if let Err(error) = session::announce(&sessions, &session).await {
-                    eprintln!("announcing to {} failed: {error:#}", session.addr.id);
-                }
-            }
-        }
-        let mut namespace_changed = false;
-        for peer in known_peers {
-            let remote_may_write = policy.is_none()
-                || identity
-                    .certified_peer_for_device(*peer.id.as_bytes())
-                    .is_some_and(|remote| {
-                        authenticated_peer_may_write_whole_workspace(&policy, &remote)
-                    });
-            let context = PeerPass {
-                endpoint: &endpoint,
-                namespace: &namespace,
-                hydrator: &hydrator,
-                sender: sender.as_ref(),
-                identity: &identity,
-                policy: &policy,
-                workspace_id,
-                records: records.as_ref(),
-                exchange_namespace: may_write && remote_may_write,
-                read_only: !may_write,
-                // Namespace changes can also arrive through a peer's own
-                // exchange with this device; timer passes heal whatever
-                // they placed.
-                reconcile: if first_pass {
-                    crate::record_materializer::ReconcileScope::Everything
-                } else if timer {
-                    crate::record_materializer::ReconcileScope::Unplaced
-                } else {
-                    crate::record_materializer::ReconcileScope::Touched
-                },
-            };
-            match sessions.get(&peer).await {
-                Ok(Some(session)) => {
-                    namespace_changed |= context.over_session(&sessions, &session).await;
-                    if session.is_closed() {
-                        // The next pass connects afresh.
-                        sessions.forget(&session).await;
-                    }
-                }
-                // The peer speaks only the per-request protocols.
-                Ok(None) => namespace_changed |= context.per_request(peer).await,
-                Err(error) if !identity.partitioned() => {
-                    eprintln!("no session with {}: {error:#}", peer.id);
-                }
-                Err(_) => {}
-            }
-        }
+        // their own timer, or for this pass: each is announced to first, on
+        // the session its exchange then uses.
+        let plan = PassPlan {
+            announce: local_change,
+            // Namespace changes can also arrive through a peer's own
+            // exchange with this device; timer passes heal whatever they
+            // placed.
+            reconcile: if first_pass {
+                crate::record_materializer::ReconcileScope::Everything
+            } else if timer {
+                crate::record_materializer::ReconcileScope::Unplaced
+            } else {
+                crate::record_materializer::ReconcileScope::Touched
+            },
+        };
+        let namespace_changed = exchanges.run(known_peers, plan).await;
         first_pass = false;
         if trace {
             eprintln!(
-                "  sync pass exchanged with every peer in {} ms (changed {namespace_changed})",
+                "  sync pass over {peer_count} peer(s) took {} ms (changed {namespace_changed})",
                 pass_started.elapsed().as_millis()
             );
         }

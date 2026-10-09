@@ -316,7 +316,7 @@ impl StatePeer {
                 &policy,
                 &route.app,
                 &route.record,
-                &document.doc,
+                &*document.doc,
             )
             .map_err(err)?;
         }

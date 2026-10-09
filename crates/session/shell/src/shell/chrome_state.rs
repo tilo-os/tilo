@@ -450,15 +450,9 @@ impl Default for QuickSettingsState {
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
             privacy: os_actions::get_privacy_status(),
-            night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
-                .unwrap_or(false),
+            night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             rotation_available: os_actions::has_accelerometer(),
-            rotation_lock: settings_store::bool_at(
-                &settings_store::load(),
-                "display",
-                "rotation_lock",
-            )
-            .unwrap_or(false),
+            rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
