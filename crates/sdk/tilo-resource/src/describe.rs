@@ -72,9 +72,12 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
                 }
                 located.value = get(doc, &obj, key);
             }
-            (Shape::Collection(item), Segment::Item(id)) => {
-                let entry = map_at(doc, &obj, id.as_str());
-                let value = entry.as_ref().and_then(|entry| get(doc, entry, "v"));
+            (Shape::Collection(item) | Shape::Keyed(item), Segment::Item(id)) => {
+                let value = if matches!(shape, Shape::Keyed(_)) {
+                    get(doc, &obj, id.as_str())
+                } else {
+                    map_at(doc, &obj, id.as_str()).and_then(|entry| get(doc, &entry, "v"))
+                };
                 let label = match &value {
                     Some((Value::Object(ObjType::Map), map)) => label_of(doc, *item, map),
                     _ => None,
@@ -210,9 +213,10 @@ pub(crate) fn verb(
     ));
     // The item: an argument naming an item of one of the collections.
     for field in shape.fields() {
-        let Shape::Collection(item) = field.shape else {
+        let (Shape::Collection(item) | Shape::Keyed(item)) = field.shape else {
             continue;
         };
+        let keyed = matches!(field.shape, Shape::Keyed(_));
         let Some(collection) = map_at(doc, &ROOT, field.key) else {
             continue;
         };
@@ -221,7 +225,12 @@ pub(crate) fn verb(
                 continue;
             };
             if let Some(entry) = map_at(doc, &collection, candidate) {
-                let label = map_at(doc, &entry, "v")
+                let value = if keyed {
+                    Some(entry)
+                } else {
+                    map_at(doc, &entry, "v")
+                };
+                let label = value
                     .and_then(|map| label_of(doc, *item, &map))
                     .unwrap_or_else(|| candidate.to_owned());
                 return Some(described.on(candidate, label));

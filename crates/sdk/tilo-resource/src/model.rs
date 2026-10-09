@@ -256,6 +256,17 @@ pub trait Model: Sized {
         edit_whole::<Self>(doc, slot, path, op)
     }
 
+    /// The field edits that turn `self` into `after`, at `path` below the
+    /// record: what a surface that edited a local copy submits. The default
+    /// sets the value whole when it changed; containers and records edit
+    /// only what differs, item by item and field by field.
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        let value = after.to_json();
+        if self.to_json() != value {
+            out.push(crate::Edit::new(path.to_vec(), EditOp::Set { value }));
+        }
+    }
+
     /// Run every `#[model(check)]` invariant of this value and the values
     /// inside it.
     ///
@@ -524,6 +535,53 @@ macro_rules! leaf_paths {
     };
 }
 pub(crate) use crate::leaf_paths;
+
+/// Implements [`Model`] (and [`Settable`]) for serde types stored whole as
+/// one JSON string, last writer wins: values with no meaningful concurrent
+/// merge (a tone curve, a keyframe track). The types need `Serialize`,
+/// `Deserialize` and `Default` (the value of an absent slot).
+#[macro_export]
+macro_rules! json_model {
+    ($($ty:ty),* $(,)?) => {$(
+        impl $crate::Settable for $ty {}
+        impl $crate::Model for $ty {
+            $crate::leaf_paths!();
+            fn to_json(&self) -> $crate::__private::serde_json::Value {
+                $crate::__private::serde_json::to_value(self)
+                    .unwrap_or($crate::__private::serde_json::Value::Null)
+            }
+            fn from_json(
+                value: &$crate::__private::serde_json::Value,
+            ) -> ::core::result::Result<Self, $crate::ModelError> {
+                if value.is_null() {
+                    return ::core::result::Result::Ok(<Self as ::core::default::Default>::default());
+                }
+                $crate::__private::serde_json::from_value(value.clone())
+                    .map_err(|error| $crate::ModelError::invalid(error.to_string()))
+            }
+            fn load(
+                doc: &$crate::Doc,
+                value: &$crate::__private::Value<'_>,
+                id: &$crate::__private::ObjId,
+            ) -> ::core::result::Result<Self, $crate::ModelError> {
+                let $crate::Json(inner) = <$crate::Json<Self> as $crate::Model>::load(doc, value, id)?;
+                ::core::result::Result::Ok(inner)
+            }
+            fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
+                ::core::result::Result::Ok(<Self as ::core::default::Default>::default())
+            }
+            fn store(
+                &self,
+                doc: &mut $crate::Doc,
+                slot: $crate::Slot<'_>,
+            ) -> ::core::result::Result<(), $crate::ModelError> {
+                let text = $crate::__private::serde_json::to_string(self)
+                    .map_err(|error| $crate::ModelError::invalid(error.to_string()))?;
+                slot.put_scalar(doc, $crate::__private::ScalarValue::Str(text.into()))
+            }
+        }
+    )*};
+}
 
 fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     match value {
@@ -910,6 +968,18 @@ impl<T: Model> Model for Option<T> {
     fn check(&self) -> Result<(), Refusal> {
         self.as_ref().map_or(Ok(()), Model::check)
     }
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        match (self, after) {
+            (Some(before), Some(next)) => before.diff(next, path, out),
+            (None, None) => {}
+            _ => out.push(crate::Edit::new(
+                path.to_vec(),
+                EditOp::Set {
+                    value: after.to_json(),
+                },
+            )),
+        }
+    }
     fn label(&self) -> Option<String> {
         self.as_ref().and_then(Model::label)
     }
@@ -1006,6 +1076,9 @@ impl<T: Model> Model for Box<T> {
     }
     fn check(&self) -> Result<(), Refusal> {
         (**self).check()
+    }
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        (**self).diff(after, path, out);
     }
     fn label(&self) -> Option<String> {
         (**self).label()
@@ -1208,6 +1281,31 @@ impl<T: Model> Model for BTreeMap<String, T> {
             None => Some(self),
             Some((Segment::Key(key), rest)) => self.get(key)?.get_at(rest),
             Some(_) => None,
+        }
+    }
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        for (key, before) in self {
+            let mut at = path.to_vec();
+            at.push(Segment::Key(key.clone()));
+            match after.get(key) {
+                Some(next) => before.diff(next, &at, out),
+                None => out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::RemoveKey { key: key.clone() },
+                )),
+            }
+        }
+        for (key, next) in after {
+            if !self.contains_key(key) {
+                let mut at = path.to_vec();
+                at.push(Segment::Key(key.clone()));
+                out.push(crate::Edit::new(
+                    at,
+                    EditOp::Set {
+                        value: next.to_json(),
+                    },
+                ));
+            }
         }
     }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {

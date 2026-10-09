@@ -9,6 +9,8 @@ pub mod evolution;
 pub mod golden_path;
 #[path = "incremental.rs"]
 pub mod incremental;
+#[path = "keyed.rs"]
+pub mod keyed;
 #[path = "kinds.rs"]
 pub mod kinds;
 #[path = "paths.rs"]

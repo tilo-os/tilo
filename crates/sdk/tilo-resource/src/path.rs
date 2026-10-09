@@ -128,6 +128,19 @@ impl<R, T> Path<R, T> {
         self.segments.starts_with(&other.segments)
     }
 
+    /// The field edits that turn `before`, the value at this path, into
+    /// `after`: what a surface that edited a local copy submits, field by
+    /// field and item by item ([`Model::diff`]).
+    #[must_use]
+    pub fn edits(&self, before: &T, after: &T) -> Vec<Edit<R>>
+    where
+        T: Model,
+    {
+        let mut out = Vec::new();
+        before.diff(after, &self.segments, &mut out);
+        out
+    }
+
     /// The edit `op` at this path.
     #[must_use]
     pub fn edit(&self, op: EditOp) -> Edit<R> {

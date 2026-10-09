@@ -167,6 +167,15 @@ fn restore_node(shape: Shape) -> HistoryRestoreNode {
             None,
         ),
         Shape::Record(_) | Shape::Value => whole,
+        Shape::Keyed(item) => overlay(
+            Vec::new(),
+            Some(Box::leak(Box::new(HistoryMapEntries {
+                key_limit_bytes: 1024,
+                node: restore_node(*item),
+                membership: HistoryMembership::TargetAuthoritative,
+                on_create: PreservedOnCreate::Omit,
+            }))),
+        ),
         Shape::Collection(item) => {
             let entry = overlay(
                 vec![

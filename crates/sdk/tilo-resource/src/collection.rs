@@ -535,6 +535,44 @@ impl<T: Model> Model for Collection<T> {
         }
     }
 
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        for (id, before) in self.iter() {
+            match after.get(id) {
+                Some(next) => {
+                    let mut at = path.to_vec();
+                    at.push(Segment::Item(id.clone()));
+                    before.diff(next, &at, out);
+                }
+                None => out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::RemoveItem { id: id.clone() },
+                )),
+            }
+        }
+        for (index, (id, next)) in after.iter().enumerate() {
+            if self.contains(id) {
+                if self.position(id) != Some(index) {
+                    out.push(crate::Edit::new(
+                        path.to_vec(),
+                        EditOp::MoveTo {
+                            id: id.clone(),
+                            at: index,
+                        },
+                    ));
+                }
+            } else {
+                out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::InsertItem {
+                        id: Some(id.clone()),
+                        at: index,
+                        value: next.to_json(),
+                    },
+                ));
+            }
+        }
+    }
+
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if !matches!(value, Value::Object(ObjType::Map)) {
             return Err(ModelError::shape("a collection"));

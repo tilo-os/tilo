@@ -389,6 +389,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     let mut op_continuable_arms = Vec::new();
     let mut op_lands_arms = Vec::new();
     let mut op_describe_arms = Vec::new();
+    let mut diffs = Vec::new();
     let mut op_schemas = Vec::new();
     let mut collection_names = Vec::new();
     let mut item_label_arms = Vec::new();
@@ -441,6 +442,13 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         op_continuable_arms.push(quote!(#key => <#ty as #krate::Model>::op_continuable(rest, op),));
         op_lands_arms.push(quote!(#key => #krate::Model::op_lands(&self.#ident, rest, op),));
         op_describe_arms.push(quote!(#key => <#ty as #krate::Model>::op_describe(rest, op),));
+        if !readonly {
+            diffs.push(quote! {
+                let mut at = path.to_vec();
+                at.push(#krate::Segment::Field(::std::string::String::from(#key)));
+                #krate::Model::diff(&self.#ident, &after.#ident, &at, out);
+            });
+        }
         op_schemas.push(quote! {
             <#ty as #krate::Model>::op_schemas(&::std::format!("{prefix}{}.", #key), out);
         });
@@ -686,6 +694,16 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                     }
                     _ => ::core::option::Option::None,
                 }
+            }
+
+            fn diff<__E>(
+                &self,
+                after: &Self,
+                path: &[#krate::Segment],
+                out: &mut ::std::vec::Vec<#krate::Edit<__E>>,
+            ) {
+                let _ = (after, path, &out);
+                #(#diffs)*
             }
 
             fn op_describe(

@@ -103,6 +103,16 @@ impl Model for Counter {
             other => Err(ModelError::unsupported(other)),
         }
     }
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        if self.0 != after.0 {
+            out.push(crate::Edit::new(
+                path.to_vec(),
+                EditOp::Add {
+                    by: after.0.saturating_sub(self.0),
+                },
+            ));
+        }
+    }
 }
 
 /// The key an element of a [`Set`] is stored under: its JSON form, a string
@@ -287,6 +297,28 @@ impl<T: Model> Model for Set<T> {
             self.elements.values().try_for_each(Model::check)?;
         }
         Ok(())
+    }
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        for (key, value) in &self.elements {
+            if !after.elements.contains_key(key) {
+                out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::Remove {
+                        value: value.to_json(),
+                    },
+                ));
+            }
+        }
+        for (key, value) in &after.elements {
+            if !self.elements.contains_key(key) {
+                out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::Insert {
+                        value: value.to_json(),
+                    },
+                ));
+            }
+        }
     }
     fn collect_text(&self, out: &mut Vec<String>) {
         for value in self.elements.values() {
@@ -594,6 +626,61 @@ fn grid_map(doc: &mut Doc, slot: Slot<'_>) -> Result<ObjId, ModelError> {
 impl<T: Model> Model for Grid<T> {
     const CHECKS: bool = T::CHECKS;
     crate::model::leaf_paths!();
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        let edit = |op| crate::Edit::new(path.to_vec(), op);
+        for row in self.rows() {
+            if !after.rows.contains(row) {
+                out.push(edit(EditOp::RemoveRow { id: row.clone() }));
+            }
+        }
+        for column in self.columns() {
+            if !after.columns.contains(column) {
+                out.push(edit(EditOp::RemoveColumn { id: column.clone() }));
+            }
+        }
+        for (at, row) in after.rows().enumerate() {
+            if !self.rows.contains(row) {
+                out.push(edit(EditOp::InsertRow {
+                    id: Some(row.clone()),
+                    at,
+                }));
+            }
+        }
+        for (at, column) in after.columns().enumerate() {
+            if !self.columns.contains(column) {
+                out.push(edit(EditOp::InsertColumn {
+                    id: Some(column.clone()),
+                    at,
+                }));
+            }
+        }
+        for (row, column, value) in after.cells() {
+            match self.cell(&row, &column) {
+                Some(before) => {
+                    let mut at = path.to_vec();
+                    at.push(Segment::Cell { row, column });
+                    before.diff(value, &at, out);
+                }
+                None => out.push(edit(EditOp::SetCell {
+                    row,
+                    column,
+                    value: Some(value.to_json()),
+                })),
+            }
+        }
+        for (row, column, _) in self.cells() {
+            if after.rows.contains(&row)
+                && after.columns.contains(&column)
+                && after.cell(&row, &column).is_none()
+            {
+                out.push(edit(EditOp::SetCell {
+                    row,
+                    column,
+                    value: None,
+                }));
+            }
+        }
+    }
     fn op_coalesces(
         path: &[Segment],
         previous: &serde_json::Value,
@@ -1046,5 +1133,21 @@ impl<T: Model> Model for Outbox<T> {
     }
     fn check(&self) -> Result<(), Refusal> {
         self.entries.check()
+    }
+    /// Entries are queued by verbs; an edit only settles them.
+    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
+        for (id, entry) in after.entries.iter() {
+            if let (Some(outcome), Some(before)) = (&entry.settled, self.entries.get(id))
+                && before.settled.as_ref() != Some(outcome)
+            {
+                out.push(crate::Edit::new(
+                    path.to_vec(),
+                    EditOp::Settle {
+                        id: id.clone(),
+                        outcome: outcome.clone(),
+                    },
+                ));
+            }
+        }
     }
 }

@@ -1032,7 +1032,7 @@ fn locate<T: Model + 'static, I: 'static>(
                     .get_at(prefix)
                     .is_some_and(|at| std::ptr::eq(std::ptr::from_ref(at).cast::<u8>(), target)),
                 tilo_resource::Shape::Record(_) => walk(value, field.shape, prefix, target),
-                tilo_resource::Shape::Value => false,
+                tilo_resource::Shape::Value | tilo_resource::Shape::Keyed(_) => false,
             };
             if found {
                 return true;
