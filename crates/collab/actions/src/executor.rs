@@ -125,8 +125,10 @@ fn envelope_for(
             undo,
             redo: encoded.clone(),
         });
+    // The redo is the action itself, which the envelope carries anyway:
+    // only what undo adds counts against the budget.
     if let Some(compensation) = &compensation
-        && serde_json::to_vec(compensation)
+        && serde_json::to_vec(&compensation.undo)
             .map_err(ActionError::Encode)?
             .len()
             > 128 * 1024
