@@ -443,13 +443,13 @@ fn write_history_requests(received: &mpsc::Receiver<HistoryWrite>) {
         for request in std::iter::once(first).chain(received.try_iter()) {
             match request {
                 HistoryWrite::Save { path, key, values } => {
-                    let index = match files.iter().position(|(known, _)| *known == path) {
-                        Some(index) => index,
-                        None => {
+                    let index = files
+                        .iter()
+                        .position(|(known, _)| *known == path)
+                        .unwrap_or_else(|| {
                             files.push((path, Vec::new()));
                             files.len().saturating_sub(1)
-                        }
-                    };
+                        });
                     if let Some((_, maps)) = files.get_mut(index) {
                         maps.retain(|(known, _)| *known != key);
                         maps.push((key, values));
