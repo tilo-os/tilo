@@ -79,12 +79,20 @@ fn an_inserted_image_leaves_and_returns_inside_its_exported_note() {
     let asset = format!("asset:{}", blake3::hash(IMAGE).to_hex());
 
     recorder.respond_to_pick(PortalOutcome::Opened(image));
-    app.effect(&NotesEffect::InsertImage { page }).unwrap();
+    app.effect_on(
+        &notes::actions::page_resource_id(page),
+        &NotesEffect::InsertImage { page },
+    )
+    .unwrap();
     app.settle();
     assert_eq!(body(&app, page), ["Intro", &format!("![photo]({asset})")]);
 
     recorder.respond_to_pick(PortalOutcome::Opened(exported.clone()));
-    app.effect(&NotesEffect::ExportMarkdown { page }).unwrap();
+    app.effect_on(
+        &notes::actions::page_resource_id(page),
+        &NotesEffect::ExportMarkdown { page },
+    )
+    .unwrap();
     let markdown = std::fs::read_to_string(&exported).expect("the chosen file was written");
     assert!(markdown.starts_with("Intro\n"), "{markdown}");
     assert!(
@@ -126,7 +134,13 @@ fn a_chosen_file_that_is_no_image_is_refused() {
     let (mut app, page) = with_note("Guide", "Intro");
 
     recorder.respond_to_pick(PortalOutcome::Opened(text));
-    assert!(app.effect(&NotesEffect::InsertImage { page }).is_err());
+    assert!(
+        app.effect_on(
+            &notes::actions::page_resource_id(page),
+            &NotesEffect::InsertImage { page }
+        )
+        .is_err()
+    );
     assert_eq!(body(&app, page), ["Intro"]);
 }
 
@@ -136,12 +150,20 @@ fn copying_a_note_link_copies_its_current_title() {
     let _host = ui::host::enter(&services);
     let (mut app, page) = with_note("Welcome", "Hello");
 
-    app.effect(&NotesEffect::CopyLink { page }).unwrap();
+    app.effect_on(
+        &notes::actions::page_resource_id(page),
+        &NotesEffect::CopyLink { page },
+    )
+    .unwrap();
     assert_eq!(ui::clipboard_paste().as_deref(), Some("[[Welcome]]"));
 
     let gone = notes::PageId::new_v4();
     assert!(
-        app.effect(&NotesEffect::CopyLink { page: gone }).is_err(),
+        app.effect_on(
+            &notes::actions::page_resource_id(gone),
+            &NotesEffect::CopyLink { page: gone }
+        )
+        .is_err(),
         "a note that does not exist copies nothing"
     );
     assert_eq!(ui::clipboard_paste().as_deref(), Some("[[Welcome]]"));
@@ -205,4 +227,50 @@ fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
         .expect("the text became a note");
     assert_eq!(body(&app, page), ["Ship it"], "its title is not repeated");
     assert_eq!(shown(&mut app), Some(page));
+}
+
+/// What acts on one note is offered on that note, and opening a note or a
+/// tag on the item too; the notebook keeps only what is not about one note.
+#[test]
+fn a_notes_own_effects_are_offered_on_the_note() {
+    let (mut app, page) = with_note("Guide", "Intro");
+    let surface = app.agent_surface();
+    let rows = surface.as_array().unwrap();
+    let on = |resource: &str, action: &str| {
+        rows.iter()
+            .any(|row| row["resource"] == resource && row["action"] == action)
+    };
+    let note = notes::actions::page_resource_id(page);
+    for effect in [
+        "copy-link",
+        "export-markdown",
+        "insert-image",
+        "open-note",
+        "reveal-block-range",
+    ] {
+        assert!(on(&note, effect), "`{effect}` is on the note: {surface}");
+    }
+    for effect in [
+        "copy-link",
+        "export-markdown",
+        "insert-image",
+        "reveal-block-range",
+    ] {
+        assert!(
+            !on("notes.notebook", effect),
+            "`{effect}` is the note's, not the notebook's"
+        );
+    }
+    let opened = app
+        .agent_surface()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["resource"] == note.as_str() && row["action"] == "open-note")
+        .map(|row| row["params"].clone())
+        .unwrap();
+    assert!(
+        !opened.to_string().contains("\"page\""),
+        "the note is bound, not asked: {opened}"
+    );
 }

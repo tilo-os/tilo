@@ -3428,11 +3428,10 @@ mod tests {
         });
         let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
         for (start, end, unit) in [(3, 4, "Chars"), (3, 5, "Bytes")] {
-            app.call(
+            app.call_on(
+                &crate::actions::page_resource_id(page),
                 "reveal-block-range",
-                serde_json::json!({
-                    "page": page, "block": block, "start": start, "end": end, "unit": unit,
-                }),
+                serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit }),
             )
             .unwrap();
             app.settle();
@@ -3456,11 +3455,10 @@ mod tests {
             (0, 1, "Pixels"),
         ] {
             assert!(
-                app.call(
+                app.call_on(
+                    &crate::actions::page_resource_id(page),
                     "reveal-block-range",
-                    serde_json::json!({
-                        "page": page, "block": block, "start": start, "end": end, "unit": unit,
-                    })
+                    serde_json::json!({ "block": block, "start": start, "end": end, "unit": unit })
                 )
                 .is_err()
             );
