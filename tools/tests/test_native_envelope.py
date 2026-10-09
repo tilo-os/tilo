@@ -34,7 +34,7 @@ class NativeEnvelope(unittest.TestCase):
     def fixture(self, directory: Path) -> dict:
         for name, value in {"memory.max": str(22 * 1024**3), "memory.current": "4096",
                             "memory.peak": "8192", "memory.events": "max 0\noom 0\noom_kill 0\n",
-                            "cpu.max": "2400000 100000"}.items():
+                            "cpu.max": "2400000 100000", "memory.swap.max": "0"}.items():
             (directory / name).write_text(value + "\n")
         return {**os.environ, "TILO_CGROUP_MEMORY_PATH": str(directory)}
 
@@ -54,6 +54,7 @@ class NativeEnvelope(unittest.TestCase):
 
     def test_absent_or_different_subject_cannot_pass(self):
         cases = {"memory.max": [None, "max", str(36 * 1024**3)],
+                 "memory.swap.max": [None, "max", "1"],
                  "cpu.max": [None, "max 100000", "600000 100000", "0 0"],
                  "memory.peak": [None, "unavailable"],
                  "memory.events": [None, "oom 0\noom_kill 0"]}
@@ -112,7 +113,7 @@ class NativeEnvelope(unittest.TestCase):
             self.assertEqual(measured[name], body, name)
         self.assertIn("EXPECTED_ARCH: aarch64", measured["Verify native Linux SDK runner architecture"])
         self.assertIn('bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"', measured["Verify native Linux SDK runner architecture"])
-        self.assertIn("options: --memory=${{ needs.builder.outputs.memory }}g --cpus=24", job(diagnostic, "sdk"))
+        self.assertIn("options: --memory=${{ needs.builder.outputs.memory }}g --memory-swap=${{ needs.builder.outputs.memory }}g --cpus=24", job(diagnostic, "sdk"))
         self.assertIn("runs-on: runner-large-arm64", job(diagnostic, "sdk"))
         self.assertIn("22|36)", job(diagnostic, "builder"))
         self.assertIn("exit 2", job(diagnostic, "builder"))

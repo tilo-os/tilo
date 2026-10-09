@@ -63,7 +63,7 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
-      options: --memory=${{ needs.builder.outputs.memory }}g --cpus=24
+      options: --memory=${{ needs.builder.outputs.memory }}g --memory-swap=${{ needs.builder.outputs.memory }}g --cpus=24
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

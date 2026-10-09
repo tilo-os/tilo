@@ -15,6 +15,7 @@ def observe() -> dict:
     record = cgroup_memory.snapshot()
     directory = cgroup_memory.current_cgroup()
     record["cpu.max"] = (directory / "cpu.max").read_text().strip() if directory else None
+    record["memory.swap.max"] = (directory / "memory.swap.max").read_text().strip() if directory else None
     return record
 
 
@@ -23,6 +24,8 @@ def validate(record: dict, memory_gib: int, cpus: int) -> None:
         raise ValueError("cannot observe the job's cgroup identity")
     if record.get("memory.max") != str(memory_gib * 1024**3):
         raise ValueError("the actual memory limit differs from the requested envelope")
+    if record.get("memory.swap.max") != "0":
+        raise ValueError("the actual envelope must prohibit swap")
     quota, period = (record.get("cpu.max") or "").split()
     if quota == "max" or int(period) <= 0 or int(quota) <= 0 or int(quota) != cpus * int(period):
         raise ValueError("the actual CPU quota differs from the requested envelope")
