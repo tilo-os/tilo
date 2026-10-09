@@ -108,6 +108,8 @@ OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
 # Every app below links this exact runtime build and names it.
 runtime_version=$(<"$out/work/runtime-version")
 runtime_id="tilo-runtime/$runtime_version"
+"$repo_root/os/scripts/verify-runtime-bundle-closure.sh" \
+    "$out/runtime/tilo-runtime/$runtime_version" "${app_binaries[@]}"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
