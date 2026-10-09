@@ -630,6 +630,8 @@ pub struct ShellOverlayHost {
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
     /// the curve let the close flush both scanouts on every remaining paint.
     workspace_switch_until: Option<Instant>,
+    /// Times each switch from its chord to its first and resting frames.
+    workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// The workspace root was just rebuilt and has not been encoded yet.
     /// A clip would replay the previous workspace, so that one frame is dense.
     content_rebuild_owes_scene: bool,
@@ -2034,6 +2036,27 @@ impl ShellOverlayHost {
         self.app_actions.as_ref()?.next_invocation_change()
     }
 
+    /// Settles on the next change to any app invocation or publication, for
+    /// a control listing waiting to settle. `None` before the broker
+    /// attaches.
+    pub fn next_listing_change(&self) -> Option<tilo_actions::remote::Pending<()>> {
+        self.app_actions.as_ref()?.next_listing_change()
+    }
+
+    /// The attached broker's invocation and publication generations.
+    pub fn app_action_generation(&self) -> Option<(u64, u64)> {
+        self.app_actions
+            .as_ref()
+            .map(|actions| actions.change_generation())
+    }
+
+    /// Whether a listing for `args`, read right after
+    /// [`Self::action_catalog_query`], is final: `false` while an index build
+    /// or an app directory page that would change it is still owed.
+    pub fn action_listing_complete(&self, args: &crate::shell::search::QueryArgs<'_>) -> bool {
+        !self.search_registry.indexes_settling(args)
+    }
+
     pub(crate) fn attach_task_review(
         &mut self,
         review: crate::shell::task_review::NativeTaskReview,
@@ -2319,6 +2342,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
             workspace_switch_until: None,
+            workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
@@ -3391,11 +3415,21 @@ impl ShellOverlayHost {
     /// Call on the chord, not only from `update`: demand is sampled first.
     pub(crate) fn start_workspace_switch_frames(&mut self) {
         let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
+        let now = Instant::now();
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch
             .set_open(true, duration, ui::Curve::EaseOut);
-        self.workspace_switch_until = Instant::now().checked_add(duration);
+        self.workspace_switch_until = now.checked_add(duration);
+        self.workspace_switch_latency.chord(now);
         self.request_compositor_transition_paints();
+    }
+
+    /// The switch latency tracker, which the frame loop tells about the
+    /// frames it queues and retires (`WORKSPACE-SWITCH`).
+    pub(crate) fn workspace_switch_latency_mut(
+        &mut self,
+    ) -> &mut crate::compositor::switch_latency::SwitchLatency {
+        &mut self.workspace_switch_latency
     }
 
     /// Whether this frame is one display's content clip. The combined
@@ -7949,6 +7983,7 @@ impl ShellOverlayHost {
                 context: None,
                 confirmation: None,
                 revision: None,
+                wait_ms: None,
             },
         );
         self.pending_launchpad_actions

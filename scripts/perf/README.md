@@ -25,6 +25,14 @@ executable stand-alone; the higher-level flow is described below.
   already-built binaries and an existing app store, so it does not build an
   RPM or image.
 
+- `latency_bench.py` — the nightly `latency` KPI group: a headless compositor
+  times 600 pointer moves (input to finished frame, from the frame trace) and
+  100 workspace switches (the compositor's `WORKSPACE-SWITCH` lines: chord to
+  first frame, to the resting frame, dropped intervals), and writes records.
+  `device_latency_bench.py` is its weekly hardware counterpart (kernel input to
+  KMS presentation, through `tilo-vm`); see
+  [reference hardware](../../docs/benchmarks/reference-hardware.md).
+
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
   given dir) for shell + terminal + file-explorer + tilo-relay + fs +
   tilo-install, emit a `{name: bytes}` JSON blob on stdout.

@@ -5057,20 +5057,8 @@ mod tests {
     fn esc_event() -> WindowEvent {
         named_key(NamedKey::Escape)
     }
-    fn named_key(k: NamedKey) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Named(k),
-            None,
-            ElementState::Pressed,
-        ))
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            Key::Character(s.into()),
-            Some(s.into()),
-            ElementState::Pressed,
-        ))
-    }
+    use ui::synthetic_input::char_key;
+    use ui::synthetic_input::named_key;
 
     /// Route `ev` to the app through the tree it was last laid out in (a
     /// bare node before any layout).

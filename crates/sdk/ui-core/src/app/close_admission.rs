@@ -343,9 +343,7 @@ impl App {
                     .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::RemoteAction {
-                        message: tilo_actions::remote::RemoteActionMessage::Observe {
-                            invocation: id,
-                        },
+                        message: tilo_actions::remote::RemoteActionMessage::observe(id),
                     },
                 );
             }

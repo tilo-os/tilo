@@ -1,7 +1,9 @@
 //! Side-by-side v2 live transport. State embeds the frozen v1 envelope; private
 //! frames never enter the v1 codec or durable relay store.
 #![allow(missing_docs)]
-use crate::peer_actions::{DirectedAction, MAX_PRIVATE_BYTES, UnavailableReason};
+use crate::peer_actions::{
+    DirectedAction, MAX_PRIVATE_BYTES, SignedDirectedAction, UnavailableReason,
+};
 use serde::{Deserialize, Serialize};
 use tilo_actions::InvocationId;
 use tilo_relay_client::frame::FrameError;
@@ -10,6 +12,12 @@ use uuid::Uuid;
 
 /// Tilo v2 transport with agent reads; the envelope codec is shared with v1.
 pub const ALPN_AGENT_READS_V1: &[u8] = b"tilo-relay/3";
+
+/// [`ALPN_AGENT_READS_V1`] whose private actions may be signed by their source
+/// device: a client on it may send [`EnvelopeV2::SignedDirected`] and the host
+/// may deliver [`EnvelopeV2::CertifiedSignedDelivered`]. Neither variant is
+/// ever written to a session on the older protocol, whose decoder lacks them.
+pub const ALPN_SIGNED_ACTIONS_V1: &[u8] = b"tilo-relay/4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActionCapability {
@@ -55,6 +63,17 @@ pub enum EnvelopeV2 {
         action: DirectedAction,
         source_certificate: Vec<u8>,
     },
+    /// A private action its source device signed. Sent only on
+    /// [`ALPN_SIGNED_ACTIONS_V1`]; the host checks the signature against the
+    /// authenticated session's device and routes it like [`Self::Directed`].
+    SignedDirected(SignedDirectedAction),
+    /// [`Self::CertifiedDelivered`] carrying the source's signed bytes
+    /// unchanged. Written only to [`ALPN_SIGNED_ACTIONS_V1`] sessions; the
+    /// target verifies the signature against the certificate's device key.
+    CertifiedSignedDelivered {
+        action: SignedDirectedAction,
+        source_certificate: Vec<u8>,
+    },
 }
 
 impl EnvelopeV2 {
@@ -81,7 +100,11 @@ pub fn encode(envelope: &EnvelopeV2) -> Result<Vec<u8>, postcard::Error> {
     };
     // Delivered appends a certified 32-byte root; reserve it at ingress so a
     // legal Directed frame cannot disconnect its target during re-encoding.
-    let reserved = usize::from(matches!(envelope, EnvelopeV2::Directed(_))).saturating_mul(32);
+    let reserved = usize::from(matches!(
+        envelope,
+        EnvelopeV2::Directed(_) | EnvelopeV2::SignedDirected(_)
+    ))
+    .saturating_mul(32);
     if payload.len().saturating_add(reserved) > limit {
         return Err(postcard::Error::SerializeBufferFull);
     }

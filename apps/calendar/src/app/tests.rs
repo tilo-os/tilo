@@ -2479,12 +2479,12 @@ impl Harness {
 
     /// Press a single character through the real keyboard path.
     fn type_char(&mut self, ch: &str) {
-        self.dispatch(&char_press(ch));
+        self.dispatch(&char_key(ch));
     }
 
     /// Press a named key (arrows, etc.) through the real keyboard path.
     fn press_named(&mut self, named: winit::keyboard::NamedKey) {
-        self.dispatch(&named_press(named));
+        self.dispatch(&named_key(named));
     }
 
     /// Centre of the first hit rect carrying an action matching `pred`.
@@ -2676,20 +2676,8 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
     }
 }
 
-fn char_press(ch: &str) -> winit::event::WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Character(ch.into()),
-        Some(ch.into()),
-        ElementState::Pressed,
-    ))
-}
-fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
-    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Named(named),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use ui::synthetic_input::char_key;
+use ui::synthetic_input::named_key;
 
 // --- per-calendar visibility actually filters the views ----------------
 

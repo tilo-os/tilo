@@ -47,6 +47,7 @@ use ed25519_dalek::SigningKey;
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::{CatalogueFactory, HostEndpoint};
+use crate::participant::SharedDesktop;
 use crate::participant::actions::{RECORD_PROVIDER, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
@@ -357,7 +358,10 @@ impl RoomActions {
                 }
                 answer.map(respond)
             }
-            RemoteActionMessage::Invoke(request) => {
+            RemoteActionMessage::Invoke(mut request) => {
+                // Answered at admission: a wait is ignored, as an older host
+                // would, and is no part of the remembered request.
+                request.wait_ms = None;
                 let invocation = request.invocation;
                 let receipt = |status| {
                     Pending::ready(RemoteActionMessage::Receipt(InvocationReceipt {
@@ -373,7 +377,7 @@ impl RoomActions {
                 {
                     let mut ledger = self.ledger();
                     if let Some(entry) = ledger.entries.get(&invocation) {
-                        if entry.caller != *caller || entry.request != request {
+                        if entry.caller != *caller || !entry.request.same_invocation(&request) {
                             return Some(receipt(ReceiptStatus::Rejected {
                                 error: ActionHostError::InvocationConflict,
                             }));
@@ -400,7 +404,7 @@ impl RoomActions {
                 }
                 answer.map(RemoteActionMessage::Receipt)
             }
-            RemoteActionMessage::Observe { invocation } => {
+            RemoteActionMessage::Observe { invocation, .. } => {
                 let state = self
                     .ledger()
                     .owned(caller, &invocation)
@@ -473,7 +477,7 @@ impl HostActions {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
             RemoteActionMessage::Invoke(request) => request.target.provider == AGENTS_PROVIDER,
-            RemoteActionMessage::Observe { invocation }
+            RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => !self.rooms.owns(caller, invocation),
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
@@ -508,6 +512,8 @@ struct RoomState {
     records: BTreeMap<DocumentRoute, Vec<Change>>,
     /// When each record last changed, as a position in that order.
     changed: HashMap<DocumentRoute, usize>,
+    /// The records open on the room's shared desktop.
+    on_desktop: HashSet<String>,
     revision: usize,
 }
 
@@ -520,6 +526,9 @@ struct Room {
     ready: bool,
     /// Every change the member opened or wrote, in order.
     log: Vec<(DocumentRoute, Change)>,
+    /// The shared desktop of the room the log names first, merged as its
+    /// changes arrive; they are admitted only through the isolate.
+    desktop: SharedDesktop,
 }
 
 impl Room {
@@ -550,6 +559,7 @@ impl Room {
             wake,
             ready: false,
             log: Vec::new(),
+            desktop: SharedDesktop::new(),
         })
     }
 
@@ -572,6 +582,13 @@ impl Room {
                     };
                     let bytes = bytes_of(&mutation);
                     let digest = change_digest(&document.author, &bytes);
+                    let room = self
+                        .log
+                        .first()
+                        .map_or(&document.route.cluster_id, |(first, _)| &first.cluster_id);
+                    if document.route == crate::participant::desktop_route(room) {
+                        self.desktop.receive(bytes.clone());
+                    }
                     self.log.push((document.route, (digest, bytes)));
                 }
                 _ => {}
@@ -769,6 +786,7 @@ impl Worker {
                 .push(change.clone());
         }
         state.revision = room.log.len();
+        state.on_desktop.clone_from(room.desktop.tabs());
         for (route, mounted) in &mut self.mounted {
             let Some(changes) = state.records.get(route) else {
                 continue;
@@ -838,19 +856,7 @@ impl Worker {
     /// Records of the room an app of the catalogue opens: those on the
     /// shared desktop first, then the most recently changed.
     fn records(&self, state: &RoomState) -> Vec<DocumentRoute> {
-        let on_desktop = state
-            .room
-            .as_deref()
-            .and_then(|room| state.records.get(&crate::participant::desktop_route(room)))
-            .map(|changes| {
-                use tilo_automerge::ApplyIncoming as _;
-                let mut desktop = automerge::AutoCommit::new();
-                for (_, bytes) in changes {
-                    let _ = desktop.load_incoming(bytes);
-                }
-                crate::participant::desktop_records(&desktop)
-            })
-            .unwrap_or_default();
+        let on_desktop = &state.on_desktop;
         let mut routes: Vec<DocumentRoute> = state
             .records
             .keys()

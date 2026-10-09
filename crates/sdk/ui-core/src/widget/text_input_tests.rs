@@ -242,7 +242,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
             drive(
                 &mut ti,
                 &mut doc,
-                &named_key_event(NamedKey::ArrowRight),
+                &named_key(NamedKey::ArrowRight),
                 mods(false, false),
             );
         }
@@ -264,7 +264,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(
@@ -275,7 +275,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "visual Right returns to the RTL start");
@@ -284,7 +284,7 @@ fn caret_respects_graphemes_and_visual_bidi_order() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert!(ti.cursor_pos() < text.len());
@@ -717,12 +717,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        assert!(drive(
-            &mut ti,
-            &mut doc,
-            &char_key_event("b"),
-            mods(false, false),
-        ));
+        assert!(drive(&mut ti, &mut doc, &char_key("b"), mods(false, false),));
         assert_eq!(&*changes.borrow(), &["ab"]);
 
         // A non-edit event must not repeat the prior notification even though
@@ -730,7 +725,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(&*changes.borrow(), &["ab"]);
@@ -760,7 +755,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, false),
         );
         assert_eq!(&*changes.borrow(), &["ab", "a漢b"]);
@@ -1023,7 +1018,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
-        let event = char_key_event("x");
+        let event = char_key("x");
         ti.handle_event(
             &event,
             &mut crate::widget::EventCtx {
@@ -1047,7 +1042,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
         let mut handled = false;
         on.handle_event(
-            &char_key_event("x"),
+            &char_key("x"),
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
@@ -1147,13 +1142,7 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
     }
 }
 
-fn char_key_event(s: &str) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-        Key::Character(winit::keyboard::SmolStr::new(s)),
-        Some(winit::keyboard::SmolStr::new(s)),
-        ElementState::Pressed,
-    ))
-}
+use crate::synthetic_input::char_key;
 
 /// Sends `CursorMoved` first so `last_mouse_pos`/`is_hovered` are set, matching real input order.
 #[cfg(test)]
@@ -1836,8 +1825,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut ti = TextInput::local().with_initial_value("hello world");
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false)); // select all
-        drive(&mut ti, &mut doc, &char_key_event("Z"), mods(false, false)); // type over it
+        drive(&mut ti, &mut doc, &char_key("a"), mods(true, false)); // select all
+        drive(&mut ti, &mut doc, &char_key("Z"), mods(false, false)); // type over it
         assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
     }
 
@@ -1851,7 +1840,7 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         // insert it verbatim rather than reconstructing ASCII from a physical
         // key, which would lose Shift and German/AltGr punctuation.
         for text in ["A", "Ä", "@", "?"] {
-            drive(&mut ti, &mut doc, &char_key_event(text), mods(false, false));
+            drive(&mut ti, &mut doc, &char_key(text), mods(false, false));
         }
         assert_eq!(ti.value(), "AÄ@?");
     }
@@ -1861,8 +1850,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut doc = AutoCommit::new();
         let mut backspace = TextInput::local().with_initial_value("abcd");
         backspace.set_focus(true);
-        let first = named_key_event(NamedKey::Backspace);
-        let mut repeat = named_key_event(NamedKey::Backspace);
+        let first = named_key(NamedKey::Backspace);
+        let mut repeat = named_key(NamedKey::Backspace);
         if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
             event.repeat = true;
         }
@@ -1877,8 +1866,8 @@ fn editing_primitives_splice_replace_filter_and_repeat() {
         let mut delete = TextInput::local().with_initial_value("abcd");
         delete.set_focus(true);
         delete.set_cursor_pos(0);
-        let first = named_key_event(NamedKey::Delete);
-        let mut repeat = named_key_event(NamedKey::Delete);
+        let first = named_key(NamedKey::Delete);
+        let mut repeat = named_key(NamedKey::Delete);
         if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
             event.repeat = true;
         }
@@ -2000,7 +1989,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
@@ -2026,15 +2015,15 @@ fn a_secret_never_reaches_the_clipboard() {
             ti.set_focus(true);
             let mut doc = AutoCommit::new();
 
-            drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("a"), mods(true, false));
             assert_eq!(ti.selected_str(), Some("s3cr3t"), "Select All still works");
-            drive(&mut ti, &mut doc, &char_key_event("c"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("c"), mods(true, false));
             assert_eq!(
                 clipboard().as_deref(),
                 Some("before"),
                 "revealed: {revealed}"
             );
-            drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("x"), mods(true, false));
             assert_eq!(
                 clipboard().as_deref(),
                 Some("before"),
@@ -2074,7 +2063,7 @@ fn a_secret_never_reaches_the_clipboard() {
             }
             ti.set_focus(true);
             let mut doc = AutoCommit::new();
-            drive(&mut ti, &mut doc, &char_key_event("v"), mods(true, false));
+            drive(&mut ti, &mut doc, &char_key("v"), mods(true, false));
             assert_eq!(ti.value(), "hunter2");
         }
     }
@@ -2401,13 +2390,7 @@ fn command_mods() -> Modifiers {
     Modifiers::from(ModifiersState::SUPER)
 }
 
-fn named_key_event(k: NamedKey) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-        Key::Named(k),
-        None,
-        ElementState::Pressed,
-    ))
-}
+use crate::synthetic_input::named_key;
 
 use crate::synthetic_input::cursor_moved;
 use crate::synthetic_input::mouse_press;
@@ -2548,7 +2531,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(drive(
             &mut input,
             &mut doc,
-            &char_key_event("!"),
+            &char_key("!"),
             mods(false, false)
         ));
         assert_eq!(input.value(), "before!", "optimistic text remains visible");
@@ -2960,7 +2943,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, true)
         ));
         assert_eq!(
@@ -2971,14 +2954,14 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(false, true),
         );
         assert_eq!(ti.selection_range(), Some((3, 5)));
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(false, true),
         );
         assert_eq!(
@@ -2998,7 +2981,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(
@@ -3010,14 +2993,14 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 12, "ctrl+Right again → start of 'foo'");
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 6, "ctrl+Left walks back a word");
@@ -3033,7 +3016,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowLeft),
+            &named_key(NamedKey::ArrowLeft),
             mods(true, false),
         );
         assert_eq!(
@@ -3047,7 +3030,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, false),
         );
         assert_eq!(
@@ -3068,7 +3051,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, true),
         );
         assert_eq!(
@@ -3079,7 +3062,7 @@ fn arrow_keys_move_and_extend_by_char_and_word() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowRight),
+            &named_key(NamedKey::ArrowRight),
             mods(true, true),
         );
         assert_eq!(
@@ -3102,7 +3085,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 11, "End → end of field");
@@ -3110,7 +3093,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "Home → start of field");
@@ -3118,7 +3101,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, true),
         );
         assert_eq!(
@@ -3130,7 +3113,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, true),
         );
         assert_eq!(
@@ -3149,7 +3132,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(true, false),
         );
         assert_eq!(ti.cursor_pos(), 0, "Ctrl+Home reaches document start");
@@ -3157,7 +3140,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(true, true),
         );
         assert_eq!(
@@ -3170,7 +3153,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(true, true),
         );
         assert_eq!(
@@ -3186,14 +3169,14 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+        drive(&mut ti, &mut doc, &char_key("a"), mods(true, false));
         assert_eq!(
             ti.selection_range(),
             Some((0, 11)),
             "ctrl+A selects everything"
         );
 
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+        drive(&mut ti, &mut doc, &char_key("x"), mods(true, false));
         assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
         assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
     }
@@ -3204,7 +3187,7 @@ fn home_end_and_select_all_shortcuts_move_extend_and_cut() {
         ti.set_focus(true);
         let mut doc = AutoCommit::new();
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), command_mods());
+        drive(&mut ti, &mut doc, &char_key("a"), command_mods());
         assert_eq!(ti.selection_range(), Some((0, ti.value().len())));
     }
 }
@@ -3445,7 +3428,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, false)
         ));
         assert_eq!(ti.value(), "a\nb", "Enter inserted a newline at the caret");
@@ -3466,7 +3449,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, false)
         ));
         assert_eq!(
@@ -3486,7 +3469,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ml,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, true),
         ); // Shift+Enter
         assert_eq!(
@@ -3506,7 +3489,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Backspace),
+            &named_key(NamedKey::Backspace),
             mods(false, false),
         );
         assert_eq!(
@@ -3525,7 +3508,7 @@ fn multiline_enter_backspace_and_copy_handle_newlines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, true),
         ); // Shift+Down
         let (s, e) = ti
@@ -3555,7 +3538,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowUp),
+            &named_key(NamedKey::ArrowUp),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 0, "Up moved to row 0");
@@ -3563,7 +3546,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(
@@ -3574,7 +3557,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 2, "Down reached row 2");
@@ -3589,7 +3572,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(
@@ -3601,7 +3584,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         let row = shaped_row(&ti, ti.cursor_pos());
@@ -3621,7 +3604,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Home),
+            &named_key(NamedKey::Home),
             mods(false, false),
         );
         assert_eq!(
@@ -3632,7 +3615,7 @@ fn multiline_vertical_and_line_edge_navigation_follows_visual_lines() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::End),
+            &named_key(NamedKey::End),
             mods(false, false),
         );
         assert_eq!(
@@ -3671,7 +3654,7 @@ fn multiline_wraps_at_unicode_line_breaks() {
         drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::ArrowDown),
+            &named_key(NamedKey::ArrowDown),
             mods(false, false),
         );
         assert_eq!(shaped_row(&ti, ti.cursor_pos()), 1, "Down entered row 1");
@@ -3747,7 +3730,7 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
     assert!(drive(
         &mut input,
         &mut doc,
-        &char_key_event("!"),
+        &char_key("!"),
         mods(false, false)
     ));
     assert_eq!(input.value(), "draft!");
@@ -4225,7 +4208,7 @@ fn submit_accessory_and_span_highlighting() {
         assert!(drive(
             &mut ti,
             &mut doc,
-            &named_key_event(NamedKey::Enter),
+            &named_key(NamedKey::Enter),
             mods(false, false)
         ));
         assert_eq!(seen.borrow().as_slice(), ["https://tilo.so"]);
@@ -4470,12 +4453,7 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
         .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
     input.set_focus(true);
     let mut document = AutoCommit::new();
-    drive(
-        &mut input,
-        &mut document,
-        &char_key_event("v"),
-        mods(true, false),
-    );
+    drive(&mut input, &mut document, &char_key("v"), mods(true, false));
     assert_eq!(input.value(), "a");
     clipboard
         .0
@@ -4492,12 +4470,7 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
     assert_eq!(&*changes.borrow(), &["abc"]);
 
     for change in 0..3 {
-        drive(
-            &mut input,
-            &mut document,
-            &char_key_event("v"),
-            mods(true, false),
-        );
+        drive(&mut input, &mut document, &char_key("v"), mods(true, false));
         let reply = clipboard.0.lock().unwrap().take().unwrap();
         match change {
             0 => {
@@ -4587,7 +4560,7 @@ fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
         assert!(drive(
             &mut input,
             &mut doc,
-            &char_key_event(key),
+            &char_key(key),
             Modifiers::default()
         ));
         typing_frame(&mut input, &mut tr, &theme);

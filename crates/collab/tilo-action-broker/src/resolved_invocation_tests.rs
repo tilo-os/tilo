@@ -515,6 +515,7 @@ async fn a_directory_invoke_naming_no_revision_resolves_the_directory_as_it_is_n
                 confirmation: None,
                 revision: Some(String::new()),
                 on_behalf_of: None,
+                wait_ms: None,
             };
             assert!(matches!(
                 fixture
