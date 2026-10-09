@@ -253,6 +253,9 @@ pub struct LiveAppActionsProvider {
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
     directory_query: RefCell<Option<String>>,
+    directory_failures:
+        RefCell<HashMap<DirectoryCacheKey, crate::shell::search::QueryIncompleteReason>>,
+    directory_source_unavailable: Cell<bool>,
     resource_kinds: Vec<ResourceKind>,
     directory_invalidations: Rc<RefCell<HashSet<DirectoryCacheKey>>>,
     directory_epoch: AtomicU64,
@@ -466,6 +469,8 @@ impl LiveAppActionsProvider {
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
             directory_query: RefCell::new(None),
+            directory_failures: RefCell::new(HashMap::new()),
+            directory_source_unavailable: Cell::new(false),
             resource_kinds: vec![
                 ResourceKind::Action,
                 ResourceKind::Custom("action-job".into()),
@@ -795,7 +800,7 @@ impl LiveAppActionsProvider {
 
     fn poll_directory_pages_at(&self, now: Instant) {
         let mut ready = Vec::new();
-        let mut expired = false;
+        let mut retry_needed = false;
         self.directory_pending.borrow_mut().retain(|key, pending| {
             // The UI may have been idle after the reply arrived. The deadline
             // bounds unanswered work, not how soon a completed page is read.
@@ -804,23 +809,57 @@ impl LiveAppActionsProvider {
                     ready.push((key.clone(), page, pending.initial_page));
                     false
                 }
-                PendingPoll::Ready(_) | PendingPoll::Abandoned => false,
+                PendingPoll::Ready(Err(error)) => {
+                    retry_needed = true;
+                    self.directory_failures.borrow_mut().insert(
+                        key.clone(),
+                        match error {
+                            ActionHostError::Unavailable { .. } => {
+                                crate::shell::search::QueryIncompleteReason::Unavailable
+                            }
+                            _ => crate::shell::search::QueryIncompleteReason::Refused,
+                        },
+                    );
+                    false
+                }
+                PendingPoll::Ready(Ok(_)) => {
+                    retry_needed = true;
+                    self.directory_failures.borrow_mut().insert(
+                        key.clone(),
+                        crate::shell::search::QueryIncompleteReason::StaleCursor,
+                    );
+                    false
+                }
+                PendingPoll::Abandoned => {
+                    retry_needed = true;
+                    self.directory_failures.borrow_mut().insert(
+                        key.clone(),
+                        crate::shell::search::QueryIncompleteReason::Unavailable,
+                    );
+                    false
+                }
                 PendingPoll::Waiting if pending.deadline <= now => {
-                    expired = true;
+                    retry_needed = true;
+                    self.directory_failures.borrow_mut().insert(
+                        key.clone(),
+                        crate::shell::search::QueryIncompleteReason::TimedOut,
+                    );
                     false
                 }
                 PendingPoll::Waiting => true,
             }
         });
-        if expired {
-            // An empty projection must not prevent another bounded request
-            // after a stalled directory ticket has been cancelled.
+        if retry_needed {
+            // Failed, stale and abandoned replies are not exhausted directories.
+            // Retire the projection so the next observation requests a fresh
+            // authorized page rather than treating cached emptiness as complete.
             self.auxiliary_snapshot.borrow_mut().take();
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !ready.is_empty() {
             let mut pages = self.directory_pages.borrow_mut();
             for (key, page, initial_page) in ready {
+                self.directory_failures.borrow_mut().remove(&key);
                 // A continuation only needs the page named by its opaque
                 // cursor.  Superseded pages for this same route/query can be
                 // dropped immediately; this bounds a 100k-row remote source
@@ -860,6 +899,7 @@ impl LiveAppActionsProvider {
             return;
         }
         *current = Some(next.clone());
+        self.directory_failures.borrow_mut().clear();
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
         // grow this UI cache or revive an old query's results.
@@ -1417,6 +1457,7 @@ impl LiveAppActionsProvider {
         #[cfg(test)]
         self.directory_query_probe.replace(Some(query.clone()));
         let Ok(session) = self.action_sessions.open(cluster_id, Some(actor)) else {
+            self.directory_source_unavailable.set(true);
             return;
         };
         self.directory_pending.borrow_mut().insert(
@@ -1441,6 +1482,7 @@ impl LiveAppActionsProvider {
         &self,
         chrome: &crate::shell::chrome_state::ChromeState,
     ) -> (Vec<ActionDirectoryRoot>, String) {
+        self.directory_source_unavailable.set(false);
         let mut roots = Vec::new();
         let mut revision = String::new();
         let workspace_rooms = chrome
@@ -1454,6 +1496,7 @@ impl LiveAppActionsProvider {
             let room = workspace_room.to_string();
             let expected = chrome.local_user_for_room(&workspace_room);
             let Ok(session) = self.action_sessions.open(&room, Some(&expected)) else {
+                self.directory_source_unavailable.set(true);
                 continue;
             };
             let mut providers = session.query(CatalogueQuery {
@@ -1462,6 +1505,7 @@ impl LiveAppActionsProvider {
             });
             // Listing publishers is answered from memory, never an app.
             let PendingPoll::Ready(Ok(page)) = providers.poll_ready() else {
+                self.directory_source_unavailable.set(true);
                 continue;
             };
             revision = page.revision;
@@ -2308,6 +2352,25 @@ impl SearchProvider for LiveAppActionsProvider {
             .filter(|result| result.id == id)
     }
 
+    fn begin_catalogue_query(&self) {
+        self.directory_failures.borrow_mut().clear();
+        self.directory_source_unavailable.set(false);
+    }
+
+    fn query_incomplete_reason(&self) -> Option<crate::shell::search::QueryIncompleteReason> {
+        if let Some(reason) = self.directory_failures.borrow().values().copied().next() {
+            Some(reason)
+        } else if self.directory_source_unavailable.get() {
+            Some(crate::shell::search::QueryIncompleteReason::Unavailable)
+        } else if !self.directory_pending.borrow().is_empty()
+            || self.surface_build.borrow().is_some()
+        {
+            Some(crate::shell::search::QueryIncompleteReason::Pending)
+        } else {
+            None
+        }
+    }
+
     fn refresh_search_index(&self, ctx: &SearchContext<'_>) {
         self.refresh_local_snapshot(ctx);
         self.poll_directory_pages();
@@ -2744,6 +2807,129 @@ mod tests {
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
             output: tilo_actions::ActionOutput::default(),
         }
+    }
+
+    #[test]
+    fn catalogue_failed_directory_retries_without_false_exhaustion() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, SearchRegistry};
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room
+            .to_string();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.notes".into(),
+            cluster_id: room,
+            record_id: "notes-fixture".into(),
+        }]);
+        let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
+            broker.clone(),
+        ));
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(SearchScope::All),
+            ..context("", &state, &doc)
+        };
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let cold = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(!cold.completion().complete);
+        for _ in 0..3 {
+            let key = provider
+                .directory_pending
+                .borrow()
+                .keys()
+                .next()
+                .cloned()
+                .expect("actual directory retry");
+            let (sender, receiver) = pending();
+            provider
+                .directory_pending
+                .borrow_mut()
+                .get_mut(&key)
+                .unwrap()
+                .receiver = receiver;
+            sender.complete(Err(ActionHostError::NotPermitted));
+            let failed = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            assert!(
+                !failed.completion().complete,
+                "refusal must not become complete emptiness"
+            );
+            assert!(failed.completion().incomplete.iter().any(
+                |source| source.reason == crate::shell::search::QueryIncompleteReason::Refused
+            ));
+        }
+        let key = provider
+            .directory_pending
+            .borrow()
+            .keys()
+            .next()
+            .cloned()
+            .expect("retry after refusal");
+        let (sender, receiver) = pending();
+        provider
+            .directory_pending
+            .borrow_mut()
+            .get_mut(&key)
+            .unwrap()
+            .receiver = receiver;
+        sender.complete(Ok(page(Vec::new(), Vec::new())));
+        let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(
+            ready.completion().complete,
+            "successful exhausted page restores completion"
+        );
+    }
+
+    #[test]
+    fn directory_completion_retains_actual_pending_and_refused_reply() {
+        use crate::shell::search::QueryIncompleteReason;
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
+        let (sender, receiver) = pending();
+        provider.directory_pending.borrow_mut().insert(
+            (9, "actor".into(), String::new(), Vec::new()),
+            PendingDirectoryPage {
+                receiver,
+                deadline: Instant::now() + Duration::from_secs(1),
+                initial_page: true,
+            },
+        );
+        assert_eq!(
+            provider.query_incomplete_reason(),
+            Some(QueryIncompleteReason::Pending)
+        );
+        sender.complete(Err(ActionHostError::NotPermitted));
+        provider.poll_directory_pages();
+        assert_eq!(
+            provider.query_incomplete_reason(),
+            Some(QueryIncompleteReason::Refused)
+        );
+        assert!(provider.directory_pending.borrow().is_empty());
     }
 
     #[test]
