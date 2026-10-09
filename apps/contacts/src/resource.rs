@@ -14,8 +14,7 @@ use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{
-    self, ActionCx, Derived, Edit, Effect as _, Id, Invoke, Keyed, Model, Refusal, SearchEntry,
-    Set, resource,
+    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, Refusal, SearchEntry, Set, resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
