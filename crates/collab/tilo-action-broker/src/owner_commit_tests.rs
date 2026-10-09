@@ -1434,7 +1434,7 @@ mod owner_commit_tests {
                     assert_eq!(query.unwrap().rows.len(), 1);
                     assert!(matches!(
                         resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found(_)
+                        runtime_collab::ActionDirectoryResolution::Found { .. }
                     ));
                 }
                 *authority.certificate.lock().unwrap() = Some(cert.clone());

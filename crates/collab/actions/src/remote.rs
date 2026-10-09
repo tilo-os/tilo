@@ -302,6 +302,14 @@ pub struct RemoteActionTarget {
     pub address: ActionAddress,
 }
 
+/// Why a host refuses a directory action that asks for confirmation when
+/// the request names no revision: the confirmation covers the action as the
+/// person was shown it, which only that revision identifies. A caller that
+/// confirms on its own policy rather than a person's reads the current
+/// revision and retries.
+pub const CONFIRMED_ACTION_NEEDS_REVISION: &str =
+    "a confirmed action needs the revision it was shown at";
+
 /// What an invocation carries for the action's declared input.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum InvokeArgument {
@@ -350,6 +358,13 @@ pub struct InvokeRequest {
     /// The catalogue revision the caller chose the target from, for a
     /// provider whose actions are resolved live at that revision. A host
     /// refuses a target that no longer exists at it rather than guessing.
+    ///
+    /// Omitted, a directory target resolves against the directory as it is
+    /// now, and the admission is bound to the revision the provider
+    /// resolved it at: an executing host still refuses the action once the
+    /// directory moved on before it ran. An action whose contract asks for
+    /// confirmation needs the revision it was shown at; without one the
+    /// host refuses with [`CONFIRMED_ACTION_NEEDS_REVISION`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     /// The live invocation this request continues: an edit an effect
