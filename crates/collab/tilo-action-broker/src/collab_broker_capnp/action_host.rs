@@ -303,6 +303,42 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     }
 }
 
+pub(super) fn validate_published_argument(
+    action: &PublishedAction,
+    argument: Option<&str>,
+) -> Result<(), String> {
+    match argument {
+        None => tilo_actions::ActionArgs::bind(
+            &action.params,
+            std::iter::empty::<(String, tilo_actions::ArgValue)>(),
+        )
+        .map(|_| ())
+        .map_err(|_| {
+            "action_invalid_arguments: the arguments do not match the published contract".into()
+        }),
+        Some(argument) if argument.starts_with(tilo_actions::ARGUMENTS_JSON_PREFIX) => {
+            if action.params.is_empty() {
+                return Err(
+                    "action_invalid_arguments: the published action takes no arguments".into(),
+                );
+            }
+            let object = argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                .and_then(|value| value.as_object().cloned())
+                .ok_or("action_invalid_arguments: expected a typed argument object")?;
+            tilo_actions::ActionArgs::bind_json(&action.params, &object)
+                .map(|_| ())
+                .map_err(|_| {
+                    "action_invalid_arguments: the arguments do not match the published contract"
+                        .into()
+                })
+        }
+        Some(_) if matches!(&action.input, PublishedInput::Text { .. }) => Ok(()),
+        Some(_) => Err("action_invalid_arguments: expected typed arguments".into()),
+    }
+}
+
 fn runtime_fresh_binding(binding: &FreshActionBinding) -> runtime_collab::FreshActionBinding {
     let descriptor = &binding.descriptor;
     runtime_collab::FreshActionBinding {
@@ -403,6 +439,10 @@ fn refusal(reason: String) -> ActionHostError {
         || reason.contains("confirmation is required")
     {
         ActionHostError::ConfirmationRequired
+    } else if let Some(reason) = reason.strip_prefix("action_invalid_arguments: ") {
+        ActionHostError::InvalidRequest {
+            reason: reason.to_owned(),
+        }
     } else if reason.contains("not allowed") {
         ActionHostError::NotPermitted
     } else if reason.contains("no longer publishes")
@@ -1763,11 +1803,12 @@ impl CapnpBrokerState {
             }
             _ => return Err(ActionHostError::UnknownAction),
         };
-        if let Some(expected) = &request.fresh_binding
-            && (resolved.revision.is_empty()
-                || directory_fresh_binding(&row).as_ref() != Some(expected))
-        {
-            return Err(ActionHostError::UnknownAction);
+        if let Some(expected) = &request.fresh_binding {
+            let current =
+                directory_fresh_binding(&row).map_err(|_| ActionHostError::UnknownAction)?;
+            if resolved.revision.is_empty() || current.as_ref() != Some(expected) {
+                return Err(ActionHostError::UnknownAction);
+            }
         }
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
@@ -2894,21 +2935,23 @@ fn action_row(provider: String, app_id: &str, action: ActionDescriptor) -> Catal
 fn directory_row(
     root: &ActionDirectoryRoot,
     row: &runtime_collab::ActionDirectoryRow,
-) -> Option<CatalogueRow> {
-    let fresh_binding = row
-        .fresh_binding
-        .as_ref()
-        .and_then(|_| directory_fresh_binding(row));
+) -> Result<CatalogueRow, ActionHostError> {
+    let fresh_binding =
+        directory_fresh_binding(row).map_err(|_| ActionHostError::InvalidRequest {
+            reason: "the action directory returned a malformed fresh binding".into(),
+        })?;
     let action = if row.action.is_some() {
         Some(if let Some(binding) = &fresh_binding {
             binding.descriptor.clone()
         } else {
-            descriptor(&published_directory_action(row).ok()?)
+            descriptor(
+                &published_directory_action(row).map_err(|_| ActionHostError::UnknownAction)?,
+            )
         })
     } else {
         None
     };
-    Some(CatalogueRow {
+    Ok(CatalogueRow {
         provider: root.peer_id.to_string(),
         app_id: root.app_id.clone(),
         parent_resource: row.parent_resource.clone(),
@@ -2926,27 +2969,44 @@ fn directory_row(
 }
 
 /// Convert the owner's complete current binding without reconstructing the
-/// execution locus that legacy directory rows do not publish. Missing or
-/// malformed fresh metadata simply leaves the row revision-bound.
-fn directory_fresh_binding(row: &runtime_collab::ActionDirectoryRow) -> Option<FreshActionBinding> {
-    let binding = row.fresh_binding.as_ref()?;
-    if row.descriptor.as_ref()? != &binding.descriptor {
-        return None;
+/// execution locus that legacy directory rows do not publish.
+///
+/// Absence is the legitimate revision-bound form. Once an owner places a
+/// fresh binding on the wire, every part must be exact and bounded; malformed
+/// presence is refused rather than silently losing the caller's freshness
+/// requirement.
+pub(super) fn directory_fresh_binding(
+    row: &runtime_collab::ActionDirectoryRow,
+) -> Result<Option<FreshActionBinding>, capnp::Error> {
+    let Some(binding) = row.fresh_binding.as_ref() else {
+        return Ok(None);
+    };
+    let malformed = || capnp::Error::failed("malformed fresh action directory binding".into());
+    if row.descriptor.as_ref() != Some(&binding.descriptor) {
+        return Err(malformed());
     }
-    let offered = published_directory_action(row).ok()?;
-    let locus = serde_json::from_str::<ExecutionLocus>(&binding.locus).ok()?;
+    if let Some(operation_type) = &binding.operation_type {
+        super::validate_directory_identifier(
+            operation_type,
+            "fresh operation type",
+            super::DIRECTORY_MAX_IDENTIFIER_BYTES,
+            true,
+        )?;
+    }
+    let offered = published_directory_action(row).map_err(|_| malformed())?;
+    let locus = serde_json::from_str::<ExecutionLocus>(&binding.locus).map_err(|_| malformed())?;
     let mut descriptor = descriptor(&offered);
     descriptor.locus = locus;
     if descriptor.semantic_identity.is_none()
         || descriptor.address.resource != row.resource
-        || descriptor.address.action != row.action.as_deref()?
+        || descriptor.address.action != row.action.as_deref().ok_or_else(malformed)?
     {
-        return None;
+        return Err(malformed());
     }
-    Some(FreshActionBinding {
+    Ok(Some(FreshActionBinding {
         descriptor,
         operation_type: binding.operation_type.clone(),
-    })
+    }))
 }
 
 fn directory_page(
@@ -2960,8 +3020,8 @@ fn directory_page(
             rows: page
                 .rows
                 .iter()
-                .filter_map(|row| directory_row(root, row))
-                .collect(),
+                .map(|row| directory_row(root, row))
+                .collect::<Result<Vec<_>, _>>()?,
             revision: page.revision,
             providers: Vec::new(),
             next_cursor: page.next_cursor,
@@ -2985,7 +3045,7 @@ fn directory_page(
                         });
                     };
                     revision.clone_into(&mut page.revision);
-                    page.rows.extend(directory_row(root, &row));
+                    page.rows.push(directory_row(root, &row)?);
                 }
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
                     page.stale_cursor = true;
@@ -3150,6 +3210,23 @@ mod workspace_task_provider_tests {
                         .is_none(),
                     "a non-directory fresh binding must not reserve or dispatch an invocation"
                 );
+                let mut missing_required = request.clone();
+                missing_required.invocation = tilo_actions::InvocationId::new();
+                missing_required.argument = tilo_actions::remote::InvokeArgument::None;
+                assert!(matches!(
+                    state
+                        .action_invoke(&caller, None, None, &missing_required)
+                        .poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Err(
+                        ActionHostError::InvalidRequest { .. }
+                    ))
+                ));
+                assert!(
+                    state
+                        .remote_job(&caller, &missing_required.invocation)
+                        .is_none(),
+                    "a missing required argument cannot reserve an invocation"
+                );
                 let mut pending = state.action_invoke(&caller, None, None, &request);
                 let receipt = loop {
                     if let tilo_actions::remote::PendingPoll::Ready(result) = pending.poll_ready() {
@@ -3174,6 +3251,63 @@ mod workspace_task_provider_tests {
                     panic!("owner-backed read-current-tasks must succeed")
                 };
                 assert_eq!(output.value.unwrap()["generation"], 7);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn published_text_input_reaches_the_production_dispatch_path() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (_fanout, state, provider, caller) = task_provider_fixture();
+                let peer = *state
+                    .workspace_task_peers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .expect("fixture publishes one owner service");
+                let mut surfaces = state.surfaces.lock().unwrap();
+                let surface = surfaces.get_mut(&peer).expect("owner surface remains live");
+                let mut text_action = surface
+                    .actions
+                    .iter()
+                    .find(|action| {
+                        action.resource == "desktop:tasks" && action.action == "read-current-tasks"
+                    })
+                    .expect("fixture publishes its task reader")
+                    .clone();
+                text_action.action = "text-probe".into();
+                text_action.action_label = "Text probe".into();
+                text_action.params.clear();
+                text_action.input = super::super::PublishedInput::Text {
+                    prompt: "Input".into(),
+                    placeholder: String::new(),
+                    wants_content: false,
+                };
+                surface.actions.push(text_action);
+                drop(surfaces);
+
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider,
+                        address: tilo_actions::ActionAddress::new("desktop:tasks", "text-probe"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Text("hello".into()),
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    fresh_binding: None,
+                    on_behalf_of: None,
+                };
+                assert!(matches!(
+                    state
+                        .action_invoke(&caller, None, None, &request)
+                        .poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Ok(_))
+                ));
+                assert!(state.remote_job(&caller, &request.invocation).is_some());
             })
             .await;
     }

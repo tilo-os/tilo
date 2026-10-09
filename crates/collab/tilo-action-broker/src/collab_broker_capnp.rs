@@ -1259,6 +1259,18 @@ struct TaskSubscription {
     agent_id: String,
     cluster_id: String,
     tx: mpsc::UnboundedSender<TaskRunEnvelope>,
+    subscription: uuid::Uuid,
+    custody: TaskSubscriptionCustody,
+}
+
+#[derive(Clone, Debug)]
+enum TaskSubscriptionCustody {
+    Admitted {
+        route: CrdtRoute,
+        identity: Box<AdmittedJoinIdentity>,
+    },
+    #[cfg(test)]
+    Fixture,
 }
 
 #[derive(Clone)]
@@ -1267,6 +1279,7 @@ struct EnrolledTaskSubscription {
     cluster_id: String,
     facts: launcher::managed::ChannelProcessFacts,
     tx: mpsc::UnboundedSender<runtime_collab::EnrolledTaskEnvelope>,
+    subscription: uuid::Uuid,
     runs: HashMap<String, EnrolledTaskRun>,
 }
 
@@ -3144,6 +3157,7 @@ pub struct CapnpBrokerState {
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     enrolled_task_subscribers: Mutex<HashMap<u64, EnrolledTaskSubscription>>,
+    task_availability_generation: tokio::sync::watch::Sender<u64>,
     managed_workers: Mutex<HashMap<u64, launcher::managed::VerifiedManagedProcess>>,
     /// Serialize delivery decisions through the owner acknowledgement. This is
     /// not execution authority: the owner still admits every exact `StartRun`.
@@ -3348,8 +3362,31 @@ impl CapnpBrokerState {
         clear!(self.workspace_task_peers);
         clear!(self.confirmation_grants);
         clear!(self.cancellation_requests);
-        clear!(self.task_subscribers);
-        clear!(self.enrolled_task_subscribers);
+        let legacy_changed = match self.task_subscribers.lock() {
+            Ok(mut subscribers) => {
+                let changed = !subscribers.is_empty();
+                subscribers.clear();
+                changed
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().clear();
+                true
+            }
+        };
+        let enrolled_changed = match self.enrolled_task_subscribers.lock() {
+            Ok(mut subscribers) => {
+                let changed = !subscribers.is_empty();
+                subscribers.clear();
+                changed
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().clear();
+                true
+            }
+        };
+        if legacy_changed || enrolled_changed {
+            self.task_availability_changed();
+        }
         clear!(self.managed_workers);
         clear!(self.pending_task_runs);
         clear!(self.workers);
@@ -3495,22 +3532,8 @@ impl CapnpBrokerState {
         room: &str,
         agent: &str,
     ) -> Result<launcher::managed::ChannelProcessFacts, String> {
-        let process = self
-            .managed_workers
-            .lock()
-            .map_err(|_| "managed worker registry unavailable")?
-            .get(&peer)
-            .cloned()
-            .ok_or("agent has no actual managed process custody")?;
-        let facts = process.facts()?;
-        if facts.binding.room != room
-            || facts.binding.agent != agent
-            || facts.binding.app != launcher::managed::WORKSPACE_AGENT_PACKAGE_ID
-            || !self.agent_is_active_member(room, agent)?
-        {
-            return Err("managed agent custody belongs to another current route".into());
-        }
-        Ok(facts)
+        self.observed_managed_agent_facts(peer, room, agent)?
+            .ok_or_else(|| "managed agent custody belongs to another current route".into())
     }
     fn connect_local_worker_registered(
         &self,
@@ -4065,6 +4088,7 @@ impl CapnpBrokerState {
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
                 task_subscribers: Mutex::new(HashMap::new()),
                 enrolled_task_subscribers: Mutex::new(HashMap::new()),
+                task_availability_generation: tokio::sync::watch::Sender::new(0),
                 managed_workers: Mutex::new(HashMap::new()),
                 task_delivery_order: AsyncMutex::new(()),
                 enrolled_report_order: AsyncMutex::new(()),
@@ -5429,6 +5453,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
+        action_host::validate_published_argument(&offered.1, argument)?;
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
@@ -6248,25 +6273,22 @@ impl CapnpBrokerState {
                 ("Agent entered execution".to_string(), None, false)
             }
             runtime_collab::TaskRunUpdate::Progress { message } => (
-                format!("Agent progress · {}", bounded_task_message(&message)?),
+                format!("Agent progress: {}", bounded_task_message(&message)?),
                 None,
                 false,
             ),
             runtime_collab::TaskRunUpdate::Succeeded { message } => (
-                format!("Agent completed · {}", bounded_task_message(&message)?),
+                format!("Agent completed: {}", bounded_task_message(&message)?),
                 Some(WorkspaceTaskStatus::Done),
                 true,
             ),
             runtime_collab::TaskRunUpdate::Failed { message } => (
-                format!(
-                    "Agent needs attention · {}",
-                    bounded_task_message(&message)?
-                ),
+                format!("Agent needs attention: {}", bounded_task_message(&message)?),
                 Some(WorkspaceTaskStatus::Waiting),
                 true,
             ),
             runtime_collab::TaskRunUpdate::Cancelled { message } => (
-                format!("Agent cancelled · {}", bounded_task_message(&message)?),
+                format!("Agent cancelled: {}", bounded_task_message(&message)?),
                 Some(WorkspaceTaskStatus::Cancelled),
                 true,
             ),
@@ -6478,11 +6500,16 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
-        if let Ok(mut subscribers) = self.task_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
-        if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
-            subscribers.remove(&peer_id);
+        let task_availability_changed = self
+            .task_subscribers
+            .lock()
+            .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some())
+            | self
+                .enrolled_task_subscribers
+                .lock()
+                .is_ok_and(|mut subscribers| subscribers.remove(&peer_id).is_some());
+        if task_availability_changed {
+            self.task_availability_changed();
         }
         if let Ok(mut workers) = self.managed_workers.lock() {
             workers.remove(&peer_id);
@@ -9877,12 +9904,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
+        let Some(agent_id) = current.agent_id.clone() else {
             return Promise::err(capnp::Error::failed(
                 "only an admitted delegated agent may subscribe to task runs".into(),
             ));
         };
         let (tx, rx) = mpsc::unbounded_channel();
+        let subscription = uuid::Uuid::new_v4();
         if let Ok(mut subscribers) = self.state.task_subscribers.lock() {
             subscribers.insert(
                 self.peer_id,
@@ -9890,6 +9918,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                     agent_id: agent_id.clone(),
                     cluster_id: self.route().cluster_id,
                     tx,
+                    subscription,
+                    custody: TaskSubscriptionCustody::Admitted {
+                        route: self.route(),
+                        identity: Box::new(current),
+                    },
                 },
             );
         } else {
@@ -9897,7 +9930,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "task subscription registry unavailable".into(),
             ));
         }
+        self.state.task_availability_changed();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
+            state: Arc::clone(&self.state),
+            peer: self.peer_id,
+            subscription,
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
                 self.peer_id,
@@ -9944,7 +9981,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let peer = self.peer_id;
         let host_guard = HostWorkerReadGuard::for_channel(&state, peer, &self.verified_identity);
         Promise::from_future(async move {
-            let rx = state
+            let (rx, subscription) = state
                 .install_enrolled_task_subscription(peer, agent, facts)
                 .await
                 .map_err(capnp::Error::failed)?;
@@ -9952,6 +9989,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 capnp_rpc::new_client(EnrolledTaskStreamServer {
                     state,
                     peer,
+                    subscription,
                     host_guard,
                     rx: Rc::new(AsyncMutex::new(rx)),
                 });
@@ -11109,6 +11147,7 @@ fn permits_directory_row(
         DIRECTORY_MAX_LABEL_BYTES,
         true,
     )?;
+    let _ = action_host::directory_fresh_binding(row)?;
     match (&row.action, &row.descriptor) {
         (Some(action), Some(descriptor)) => {
             validate_directory_identifier(action, "action", DIRECTORY_MAX_IDENTIFIER_BYTES, true)?;
@@ -12034,14 +12073,32 @@ impl Drop for InvocationStreamServer {
 }
 
 struct TaskRunStreamServer {
+    state: Arc<CapnpBrokerState>,
+    peer: u64,
+    subscription: uuid::Uuid,
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
 }
 struct EnrolledTaskStreamServer {
     state: Arc<CapnpBrokerState>,
     peer: u64,
+    subscription: uuid::Uuid,
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<runtime_collab::EnrolledTaskEnvelope>>>,
+}
+
+impl Drop for TaskRunStreamServer {
+    fn drop(&mut self) {
+        self.state
+            .close_legacy_task_subscription(self.peer, self.subscription);
+    }
+}
+
+impl Drop for EnrolledTaskStreamServer {
+    fn drop(&mut self) {
+        self.state
+            .close_enrolled_subscription(self.peer, self.subscription);
+    }
 }
 
 struct ActionCatalogueStreamServer {
@@ -13646,6 +13703,9 @@ pub mod tests {
     use ed25519_dalek::Signer as _;
     #[cfg(test)]
     use ed25519_dalek::SigningKey;
+
+    #[cfg(test)]
+    include!("collab_broker_capnp/fresh_binding_tests.rs");
 
     /// Prepare an owned test directory for the production broker's socket check.
     ///
@@ -15790,6 +15850,7 @@ pub mod tests {
     struct ParticipantJoinFixture {
         state: Arc<CapnpBrokerState>,
         fanout: Arc<FanoutState>,
+        membership: WorkspaceTreeHandle,
         client: runtime_collab::CollabClient,
         presentation: Vec<u8>,
         route: CrdtRoute,
@@ -15818,11 +15879,12 @@ pub mod tests {
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
             let fanout = Arc::new(FanoutState::new());
+            let membership = tree.shared();
             let (state, bridge_rx) = CapnpBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 PeerPublisher::disabled(),
-                Some(tree.shared()),
+                Some(membership.clone()),
                 Some(Arc::new(vec![device.verifying_key().to_bytes()])),
             );
             let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
@@ -15846,12 +15908,109 @@ pub mod tests {
             Self {
                 state,
                 fanout,
+                membership,
                 client: runtime_collab::CollabClient::from_raw(raw),
                 presentation,
                 route,
                 principal,
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn signed_agent_task_availability_is_exact_and_revoked_live() {
+        let fixture = ParticipantJoinFixture::new(&["scribe".into()]);
+        let mut changes = fixture.state.task_availability_changes();
+        let channel = fixture
+            .client
+            .join_channel_as_kind(
+                &fixture.route.channel_key(),
+                &fixture.presentation,
+                "scribe",
+                "agent",
+                "",
+            )
+            .await
+            .expect("the signed Agent joins its exact room");
+        let _stream = channel
+            .subscribe_task_runs()
+            .await
+            .expect("the admitted Agent opens the production task stream");
+        assert!(
+            changes.has_changed().unwrap(),
+            "the production subscription wakes a subscribe-before-query observer"
+        );
+        let _generation = *changes.borrow_and_update();
+
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(&fixture.route.cluster_id, "scribe"),
+            Ok(true)
+        );
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(&fixture.route.cluster_id, "another-agent"),
+            Ok(false)
+        );
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(&uuid::Uuid::new_v4().to_string(), "scribe"),
+            Ok(false)
+        );
+
+        fixture.membership.write().workspaces[0]
+            .capabilities
+            .clear();
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(&fixture.route.cluster_id, "scribe"),
+            Ok(false),
+            "an open transport does not preserve revoked Agent authority"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn valid_signed_candidate_wins_over_a_poisoned_unrelated_lane() {
+        let fixture = ParticipantJoinFixture::new(&["scribe".into()]);
+        let channel = fixture
+            .client
+            .join_channel_as_kind(
+                &fixture.route.channel_key(),
+                &fixture.presentation,
+                "scribe",
+                "agent",
+                "",
+            )
+            .await
+            .expect("the signed Agent joins its exact room");
+        let _stream = channel
+            .subscribe_task_runs()
+            .await
+            .expect("the admitted Agent opens the production task stream");
+        let poisoned = Arc::clone(&fixture.state);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = poisoned.enrolled_task_subscribers.lock().unwrap();
+            panic!("poison only the unrelated enrolled lane");
+        }));
+
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(&fixture.route.cluster_id, "scribe"),
+            Ok(true),
+            "one valid signed legacy candidate wins over an unavailable enrolled lane"
+        );
+        assert!(
+            fixture
+                .state
+                .agent_task_availability(&fixture.route.cluster_id, "another-agent")
+                .is_err(),
+            "without a valid exact candidate, a poisoned lane is unknown rather than unavailable"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

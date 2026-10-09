@@ -41,6 +41,15 @@ pub(super) struct OriginalInvocationData {
     execution: Option<tilo_actions::remote::ExecutionLease>,
     semantic: Option<tilo_actions::ResourceSemanticIdentity>,
 }
+
+enum InspectionPrincipal {
+    Person {
+        certificate: tilo_user_identity::DeviceCert,
+        foreign_restriction: bool,
+    },
+    Agent(String),
+}
+
 impl OriginalInvocationData {
     pub(super) fn is_addressed_message(&self) -> bool {
         self.route.app_id == "so.tilo.chat"
@@ -334,6 +343,143 @@ impl OriginalInvocationData {
             return Err("owner invocation original binding changed".into());
         }
         self.current_person_certificate(state)
+    }
+
+    /// Revalidate an immutable View request from either an admitted person or
+    /// Agent immediately before a broker-owned inspection answers it.
+    pub(super) fn revalidate_participant_inspection(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        envelope: &super::InvocationEnvelope,
+    ) -> Result<(), String> {
+        if self.route.cluster_id != room
+            || self.request.wire_id != envelope.id
+            || self.request.invocation != envelope.invocation
+            || self.request.address.resource != envelope.resource
+            || self.request.address.action != envelope.action
+            || self.request.argument != envelope.argument
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("owner invocation original binding changed".into());
+        }
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let principal = self.current_inspection_principal(state, room)?;
+        let tree = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .ok_or("original invocation workspace unavailable")?;
+        let seconds = now / 1_000_000_000;
+        let actor = match principal {
+            InspectionPrincipal::Agent(agent) => {
+                workspace
+                    .role_of_agent_in_room_at(&agent, room, seconds)
+                    .ok_or("original agent membership expired")?;
+                Actor::agent(agent).in_room(room.to_owned())
+            }
+            InspectionPrincipal::Person {
+                certificate,
+                foreign_restriction,
+            } => {
+                let mut person = state.certified_person(room, &certificate);
+                person.capped |= super::cap_applies_in(
+                    state.certificate_authority.get().map(AsRef::as_ref),
+                    room,
+                    foreign_restriction,
+                    Some(&certificate.device_public_key),
+                );
+                person.policy_in(workspace, seconds)
+            }
+        };
+        let verb = match self.spec.contract.permission {
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+        };
+        if verb.is_some_and(|verb| {
+            workspace.decide_at(
+                &actor,
+                &ResourceRef::Action {
+                    app: self.route.app_id.clone(),
+                    resource: self.request.address.resource.clone(),
+                    action: self.request.address.action.clone(),
+                },
+                verb,
+                seconds,
+            ) != CapDecision::Allow
+        }) {
+            return Err("original invocation caller is no longer authorized".into());
+        }
+        Ok(())
+    }
+
+    fn current_inspection_principal(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+    ) -> Result<InspectionPrincipal, String> {
+        Ok(match &self.caller {
+            InvocationCaller::NativePerson {
+                room: caller_room,
+                certificate,
+                ..
+            } => {
+                if caller_room != room {
+                    return Err("original native caller route changed".into());
+                }
+                state.current_native_person(room, certificate)?;
+                InspectionPrincipal::Person {
+                    certificate: certificate.clone(),
+                    foreign_restriction: false,
+                }
+            }
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => {
+                let admitted = state.current_action_caller(caller)?;
+                if let Some(agent) = admitted.agent_id {
+                    InspectionPrincipal::Agent(agent)
+                } else {
+                    InspectionPrincipal::Person {
+                        certificate: admitted
+                            .certificate
+                            .ok_or("original person certificate unavailable")?,
+                        foreign_restriction: *foreign_restriction,
+                    }
+                }
+            }
+            InvocationCaller::Local { route, admitted } => {
+                if route != &self.route {
+                    return Err("original local caller route changed".into());
+                }
+                let admitted = state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+                if let Some(agent) = admitted.agent_id {
+                    InspectionPrincipal::Agent(agent)
+                } else {
+                    InspectionPrincipal::Person {
+                        certificate: admitted
+                            .certificate
+                            .ok_or("original person certificate unavailable")?,
+                        foreign_restriction: false,
+                    }
+                }
+            }
+        })
     }
 
     pub(super) fn permits_launch_in(&self, room: &str) -> bool {

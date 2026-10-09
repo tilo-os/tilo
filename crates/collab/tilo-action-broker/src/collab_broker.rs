@@ -371,6 +371,30 @@ impl AppActionBroker {
             .unwrap_or(false)
     }
 
+    /// Observe whether an exact room Agent has a current authenticated task
+    /// consumer. A healthy absence is `Ok(false)`; inability to observe
+    /// current authority or custody is an error.
+    ///
+    /// # Errors
+    /// The broker, subscriber registry, workspace authority, or process
+    /// custody cannot currently be observed.
+    pub fn agent_task_availability(&self, room: &str, agent: &str) -> Result<bool, String> {
+        self.state
+            .while_live(|state| state.agent_task_availability(room, agent))
+    }
+
+    /// Subscribe before calling [`Self::agent_task_availability`] so a
+    /// topology change racing that snapshot remains observable.
+    ///
+    /// # Errors
+    /// The broker has stopped accepting observations.
+    pub fn agent_task_availability_changes(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, String> {
+        self.state
+            .while_live(|state| Ok(state.task_availability_changes()))
+    }
+
     /// Admit one exact-record live interaction from a currently pinned host.
     ///
     /// The capability is owner-minted and revalidates here. The interaction's

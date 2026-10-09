@@ -75,6 +75,157 @@ fn reported_execution_phase(
 }
 
 impl CapnpBrokerState {
+    pub(super) fn task_availability_changed(&self) {
+        self.task_availability_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+
+    pub(crate) fn task_availability_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.task_availability_generation.subscribe()
+    }
+
+    /// Observe an exact Agent's current task-consumer availability.
+    /// Registry and authority observation failures remain distinct from a
+    /// healthy absence.
+    pub(crate) fn agent_task_availability(&self, room: &str, agent: &str) -> Result<bool, String> {
+        let mut observation_error = None;
+        let legacy = if let Ok(subscribers) = self.task_subscribers.lock() {
+            subscribers
+                .iter()
+                .filter(|(_, subscriber)| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == agent
+                        && !subscriber.tx.is_closed()
+                })
+                .map(|(peer, subscriber)| (*peer, subscriber.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            observation_error = Some("task subscription registry unavailable".to_string());
+            Vec::new()
+        };
+        let enrolled = if let Ok(subscribers) = self.enrolled_task_subscribers.lock() {
+            subscribers
+                .iter()
+                .filter(|(_, subscriber)| {
+                    subscriber.cluster_id == room
+                        && subscriber.agent_id == agent
+                        && !subscriber.tx.is_closed()
+                })
+                .map(|(peer, subscriber)| (*peer, subscriber.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            observation_error
+                .get_or_insert_with(|| "enrolled task subscription registry unavailable".into());
+            Vec::new()
+        };
+
+        if legacy.is_empty() && enrolled.is_empty() {
+            return observation_error.map_or(Ok(false), Err);
+        }
+        if !self.agent_is_active_member(room, agent)? {
+            return Ok(false);
+        }
+
+        for (peer, subscriber) in enrolled {
+            match self.enrolled_candidate_is_available(peer, room, agent, &subscriber) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    observation_error.get_or_insert(error);
+                }
+            }
+        }
+        for (peer, subscriber) in legacy {
+            match self.legacy_candidate_is_available(peer, room, agent, &subscriber) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    observation_error.get_or_insert(error);
+                }
+            }
+        }
+        observation_error.map_or(Ok(false), Err)
+    }
+
+    fn enrolled_candidate_is_available(
+        &self,
+        peer: u64,
+        room: &str,
+        agent: &str,
+        candidate: &super::EnrolledTaskSubscription,
+    ) -> Result<bool, String> {
+        if self.observed_managed_agent_facts(peer, room, agent)? != Some(candidate.facts.clone()) {
+            return Ok(false);
+        }
+        Ok(self
+            .enrolled_task_subscribers
+            .lock()
+            .map_err(|_| "enrolled task subscription registry unavailable")?
+            .get(&peer)
+            .is_some_and(|current| {
+                current.subscription == candidate.subscription
+                    && current.facts == candidate.facts
+                    && !current.tx.is_closed()
+            }))
+    }
+
+    fn legacy_candidate_is_available(
+        &self,
+        peer: u64,
+        room: &str,
+        agent: &str,
+        candidate: &super::TaskSubscription,
+    ) -> Result<bool, String> {
+        let (route, identity) = match &candidate.custody {
+            super::TaskSubscriptionCustody::Admitted { route, identity } => (route, identity),
+            #[cfg(test)]
+            super::TaskSubscriptionCustody::Fixture => return Ok(false),
+        };
+        if route.cluster_id != room || identity.agent_id.as_deref() != Some(agent) {
+            return Ok(false);
+        }
+        let current = self
+            .revalidate_admission(route, identity)
+            .map_err(|error| error.to_string())?;
+        if current.agent_id.as_deref() != Some(agent) {
+            return Ok(false);
+        }
+        Ok(self
+            .task_subscribers
+            .lock()
+            .map_err(|_| "task subscription registry unavailable")?
+            .get(&peer)
+            .is_some_and(|retained| {
+                retained.subscription == candidate.subscription && !retained.tx.is_closed()
+            }))
+    }
+
+    pub(super) fn observed_managed_agent_facts(
+        &self,
+        peer: u64,
+        room: &str,
+        agent: &str,
+    ) -> Result<Option<launcher::managed::ChannelProcessFacts>, String> {
+        let process = self
+            .managed_workers
+            .lock()
+            .map_err(|_| "managed worker registry unavailable")?
+            .get(&peer)
+            .cloned();
+        let Some(process) = process else {
+            return Ok(None);
+        };
+        let facts = process.facts()?;
+        if facts.binding.room != room
+            || facts.binding.agent != agent
+            || facts.binding.app != launcher::managed::WORKSPACE_AGENT_PACKAGE_ID
+            || !self.agent_is_active_member(room, agent)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(facts))
+    }
+
     pub(crate) fn managed_agent_session_is_ready(
         &self,
         room: &str,
@@ -568,8 +719,13 @@ impl CapnpBrokerState {
         peer: u64,
         agent: String,
         facts: launcher::managed::ChannelProcessFacts,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<runtime_collab::EnrolledTaskEnvelope>, String>
-    {
+    ) -> Result<
+        (
+            tokio::sync::mpsc::UnboundedReceiver<runtime_collab::EnrolledTaskEnvelope>,
+            uuid::Uuid,
+        ),
+        String,
+    > {
         let room = facts.binding.room.clone();
         self.services
             .workspace_tasks
@@ -580,6 +736,7 @@ impl CapnpBrokerState {
             return Err("managed process facts changed before subscription".into());
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscription = uuid::Uuid::new_v4();
         self.enrolled_task_subscribers
             .lock()
             .map_err(|_| "enrolled task subscription registry unavailable")?
@@ -590,16 +747,16 @@ impl CapnpBrokerState {
                     cluster_id: room.clone(),
                     facts,
                     tx,
+                    subscription,
                     runs: std::collections::HashMap::new(),
                 },
             );
+        self.task_availability_changed();
         if let Err(error) = self.dispatch_queued_workspace_task(&room, &agent).await {
-            if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
-                subscribers.remove(&peer);
-            }
+            self.close_enrolled_subscription(peer, subscription);
             return Err(error);
         }
-        Ok(rx)
+        Ok((rx, subscription))
     }
 
     pub(super) fn revalidate_enrolled_peer(&self, peer: u64) -> Result<(), String> {
@@ -622,9 +779,40 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    pub(super) fn close_enrolled_subscription(&self, peer: u64) {
-        if let Ok(mut subscribers) = self.enrolled_task_subscribers.lock() {
-            subscribers.remove(&peer);
+    pub(super) fn close_enrolled_subscription(&self, peer: u64, subscription: uuid::Uuid) {
+        let removed = self
+            .enrolled_task_subscribers
+            .lock()
+            .is_ok_and(|mut subscribers| {
+                if subscribers
+                    .get(&peer)
+                    .is_some_and(|current| current.subscription == subscription)
+                {
+                    subscribers.remove(&peer);
+                    true
+                } else {
+                    false
+                }
+            });
+        if removed {
+            self.task_availability_changed();
+        }
+    }
+
+    pub(super) fn close_legacy_task_subscription(&self, peer: u64, subscription: uuid::Uuid) {
+        let removed = self.task_subscribers.lock().is_ok_and(|mut subscribers| {
+            if subscribers
+                .get(&peer)
+                .is_some_and(|current| current.subscription == subscription)
+            {
+                subscribers.remove(&peer);
+                true
+            } else {
+                false
+            }
+        });
+        if removed {
+            self.task_availability_changed();
         }
     }
 
@@ -669,7 +857,14 @@ impl CapnpBrokerState {
             self.abandon_undelivered_workspace_task(room, &task, epoch, service.as_ref())
                 .await?;
         }
-        self.close_enrolled_subscription(peer);
+        let subscription = self
+            .enrolled_task_subscribers
+            .lock()
+            .ok()
+            .and_then(|subscribers| subscribers.get(&peer).map(|value| value.subscription));
+        if let Some(subscription) = subscription {
+            self.close_enrolled_subscription(peer, subscription);
+        }
         if let Ok(mut pending) = self.pending_task_runs.lock() {
             pending.retain(|_, run| run.peer_id != peer);
         }
@@ -2318,6 +2513,8 @@ mod tests {
                 agent_id: "scribe".into(),
                 cluster_id: tilo_joined_room::testing::ROOM.into(),
                 tx,
+                subscription: uuid::Uuid::new_v4(),
+                custody: super::super::TaskSubscriptionCustody::Fixture,
             },
         );
         NativeRunFixture {
@@ -2327,6 +2524,59 @@ mod tests {
             receiver,
             caller,
         }
+    }
+
+    #[test]
+    fn task_availability_watch_changes_only_for_the_exact_retained_subscription() {
+        let fixture = native_run_fixture();
+        let retained = fixture.state.task_subscribers.lock().unwrap()[&71].subscription;
+        let mut changes = fixture.state.task_availability_changes();
+        assert!(!changes.has_changed().unwrap());
+
+        fixture
+            .state
+            .close_legacy_task_subscription(71, uuid::Uuid::new_v4());
+        assert!(
+            !changes.has_changed().unwrap(),
+            "an old stream cannot retire its replacement"
+        );
+
+        fixture.state.close_legacy_task_subscription(71, retained);
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(
+            fixture
+                .state
+                .agent_task_availability(tilo_joined_room::testing::ROOM, "scribe"),
+            Ok(false),
+            "a healthy registry with no exact subscriber is unavailable, not unknown"
+        );
+        let _generation = *changes.borrow_and_update();
+        fixture.state.close_legacy_task_subscription(71, retained);
+        assert!(
+            !changes.has_changed().unwrap(),
+            "a no-op cleanup does not create an idle repaint edge"
+        );
+        drop(fixture);
+    }
+
+    #[test]
+    fn task_availability_facade_closes_and_wakes_on_broker_stop() {
+        let fixture = native_run_fixture();
+        let broker =
+            crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&fixture.state));
+        let changes = broker.agent_task_availability_changes().unwrap();
+
+        fixture.state.stop();
+
+        assert!(changes.has_changed().unwrap());
+        assert!(
+            broker
+                .agent_task_availability(tilo_joined_room::testing::ROOM, "scribe")
+                .is_err(),
+            "stopped observation is unknown, not a healthy unavailable Agent"
+        );
+        drop(broker);
+        drop(fixture);
     }
 
     fn envelope(
@@ -3111,6 +3361,7 @@ mod tests {
                 cluster_id: room.into(),
                 facts,
                 tx,
+                subscription: uuid::Uuid::new_v4(),
                 runs: std::collections::HashMap::from([(
                     envelope.message_id.clone(),
                     super::super::EnrolledTaskRun {
@@ -3455,6 +3706,8 @@ mod tests {
                 agent_id: "scribe".into(),
                 cluster_id: room.into(),
                 tx,
+                subscription: uuid::Uuid::new_v4(),
+                custody: super::super::TaskSubscriptionCustody::Fixture,
             },
         );
         receiver
