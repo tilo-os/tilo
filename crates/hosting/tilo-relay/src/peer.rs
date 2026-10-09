@@ -27,7 +27,9 @@ use crate::store::bounded::WorkLimit;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
-use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
+use tilo_delivery_protocol::peer_actions::{
+    ActionMessage, DirectedAction, SignedDirectedAction, UnavailableReason,
+};
 use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 
 /// Maximum live fan-out backlog per connected peer. Deltas are durable before
@@ -302,6 +304,9 @@ struct SessionCtx<'a> {
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     v2: bool,
+    /// The session negotiated `ALPN_SIGNED_ACTIONS_V1`: it may receive
+    /// `CertifiedSignedDelivered`. Older sessions never see that variant.
+    signed_actions: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,
@@ -415,7 +420,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, false).await
+    run_peer_version(peer, connection, read, write, ctx, false, false).await
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -435,7 +440,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, false, closed).await
+    run_peer_stream(peer, read, write, ctx, false, false, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -445,12 +450,22 @@ pub(crate) async fn run_peer_version<R, W>(
     write: W,
     ctx: PeerContext,
     v2: bool,
+    signed_actions: bool,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, v2, connection.closed()).await
+    run_peer_stream(
+        peer,
+        read,
+        write,
+        ctx,
+        v2,
+        signed_actions,
+        connection.closed(),
+    )
+    .await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -468,6 +483,7 @@ async fn run_peer_stream<R, W>(
     mut write: W,
     ctx: PeerContext,
     v2: bool,
+    signed_actions: bool,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -521,6 +537,7 @@ where
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
         v2,
+        signed_actions,
         private_tx: &private_tx,
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),
@@ -937,8 +954,10 @@ fn private_may_overtake<'a>(
             && active_control.is_none()
             && queued.all(|frame| control_room(frame).is_none());
     }
-    let EnvelopeV2::Directed(action) = frame else {
-        return false;
+    let action = match frame {
+        EnvelopeV2::Directed(action) => action,
+        EnvelopeV2::SignedDirected(signed) => signed.action(),
+        _ => return false,
     };
     let Ok(room) = crate::room_workspace_id(&action.room.to_string()) else {
         return false;
@@ -6256,10 +6275,6 @@ pub(crate) struct ActionTarget {
     tx: mpsc::Sender<PrivateOutbound>,
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "both variants are large wire frames of similar size; boxing either only adds an allocation per private frame"
-)]
 pub(crate) enum PrivateOutbound {
     Reply(EnvelopeV2),
     Delivery(PrivateDelivery),
@@ -6269,6 +6284,9 @@ pub(crate) enum PrivateOutbound {
 pub(crate) struct PrivateDelivery {
     certified: bool,
     action: DirectedAction,
+    /// The source device's signature over `action`, forwarded unchanged.
+    /// Boxed so a queued reply is not as large as a signed delivery.
+    signed: Option<Box<SignedDirectedAction>>,
     source: AuthenticatedPeer,
     source_tx: mpsc::Sender<Envelope>,
     reply: mpsc::Sender<PrivateOutbound>,
@@ -6468,6 +6486,21 @@ async fn handle_private(
             let reason = route_private(&action, peer, session).await?;
             Ok(reason.map(|reason| EnvelopeV2::unavailable(&action, reason)))
         }
+        // The relay forwards the source's signed bytes; it never signs. A
+        // signature that is not this session's device's is refused here, so
+        // it cannot reach (and close) the target's attachment.
+        EnvelopeV2::SignedDirected(signed) => {
+            let action = signed.action();
+            if signed.verify(&peer.device_public_key).is_err() {
+                private_phase(action, "route_rejected_signature");
+                return Ok(Some(EnvelopeV2::unavailable(
+                    action,
+                    UnavailableReason::NotAuthorised,
+                )));
+            }
+            let reason = route_private_signed(action, Some(&signed), peer, session).await?;
+            Ok(reason.map(|reason| EnvelopeV2::unavailable(action, reason)))
+        }
         // Peers may send private results only inside a source-bound Directed
         // frame. Relay control responses can never be forged by a peer.
         _ => Err(PeerError::Protocol(
@@ -6544,6 +6577,17 @@ impl Drop for DeliveryAuthorizationTrace<'_> {
 
 async fn route_private(
     action: &DirectedAction,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<UnavailableReason>, PeerError> {
+    route_private_signed(action, None, peer, session).await
+}
+
+/// Route `action`, carrying the source's verified signature over it when
+/// there is one so a target that negotiated signed actions receives it.
+async fn route_private_signed(
+    action: &DirectedAction,
+    signed: Option<&SignedDirectedAction>,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<Option<UnavailableReason>, PeerError> {
@@ -6625,6 +6669,7 @@ async fn route_private(
     private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
         action: action.clone(),
+        signed: signed.cloned().map(Box::new),
         source: peer.clone(),
         source_tx: session.outbound.clone(),
         reply: session.private_tx.clone(),
@@ -6656,10 +6701,21 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
     match authorize_delivery(delivery, recipient, session).await {
         Ok(()) => {
             let frame = if delivery.certified {
-                EnvelopeV2::CertifiedDelivered {
-                    action: delivery.action.clone(),
-                    source_certificate: serde_json::to_vec(&delivery.source.cert)
-                        .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?,
+                let source_certificate = serde_json::to_vec(&delivery.source.cert)
+                    .map_err(|_| PeerError::Protocol("certificate encoding failed".into()))?;
+                match &delivery.signed {
+                    // Only a session that negotiated signed actions can decode
+                    // them; an older target gets the unsigned frame it knows.
+                    Some(signed) if session.signed_actions => {
+                        EnvelopeV2::CertifiedSignedDelivered {
+                            action: SignedDirectedAction::clone(signed),
+                            source_certificate,
+                        }
+                    }
+                    _ => EnvelopeV2::CertifiedDelivered {
+                        action: delivery.action.clone(),
+                        source_certificate,
+                    },
                 }
             } else {
                 EnvelopeV2::Delivered {
@@ -7833,6 +7889,7 @@ mod private_transport_tests {
                 compactor: None,
             },
             true,
+            false,
             std::future::pending::<()>(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
@@ -8738,6 +8795,7 @@ mod private_transport_tests {
             server_write,
             ctx,
             true,
+            false,
             std::future::pending::<()>(),
         ));
         let mut reader = SessionReader::new(replies, true);
@@ -8873,6 +8931,7 @@ mod private_transport_tests {
                 write,
                 ctx,
                 true,
+                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -9372,6 +9431,7 @@ mod private_transport_tests {
                     compactor: None,
                 },
                 true,
+                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -9786,6 +9846,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: false,
+            signed_actions: false,
             private_tx: &private,
             revocations: &revocations,
             live_bridge: None,
@@ -10006,6 +10067,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -10131,6 +10193,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -10281,6 +10344,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: false,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -10409,6 +10473,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -10518,6 +10583,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &source_disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &source_private,
             revocations: &revocations,
             live_bridge: None,
@@ -10731,6 +10797,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            signed_actions: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -11103,6 +11170,7 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &bdis,
             v2: false,
+            signed_actions: false,
             private_tx: &ptx,
             revocations: &revocations,
             live_bridge: None,
