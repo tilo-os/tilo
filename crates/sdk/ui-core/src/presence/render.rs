@@ -1273,6 +1273,9 @@ pub fn draw_peer_presence(
 /// presence: on-screen peers get a dot + pill, off-screen peers get an edge
 /// mist. `viewport` is the visible rect in the same (logical) space as
 /// cursor positions.
+///
+/// Returns the bounds, in scene coordinates, of everything painted (see
+/// [`draw_peer_cursors`]), so the frame damages only those.
 pub fn draw_remote_presence(
     scene: &mut Scene,
     transform: Affine,
@@ -1280,9 +1283,10 @@ pub fn draw_remote_presence(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
-) {
+) -> Vec<Rect> {
+    let mut painted = Vec::new();
     if presence.remote_cursors.is_empty() {
-        return;
+        return painted;
     }
     // Split first, draw after: the on-screen peers are laid out together
     // so their names cannot land on top of each other.
@@ -1306,6 +1310,9 @@ pub fn draw_remote_presence(
         let peer = peer_of(presence, cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
+                // Drawn untransformed, inside the band (as in
+                // `draw_peer_presence`).
+                painted.push(mist_band_rect(viewport, &mist).inflate(FADE_EDGE, FADE_EDGE));
                 draw_edge_mist(
                     scene,
                     text_renderer,
@@ -1319,7 +1326,15 @@ pub fn draw_remote_presence(
             None => on_screen.push(peer),
         }
     }
-    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
+    painted.extend(draw_peer_cursors(
+        scene,
+        transform,
+        viewport,
+        text_renderer,
+        theme,
+        &on_screen,
+    ));
+    painted
 }
 
 #[cfg(test)]
