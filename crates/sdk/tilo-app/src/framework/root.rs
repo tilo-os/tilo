@@ -1270,6 +1270,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+        self.effects.apply_settlements(edits);
         self.content.settle(edits, path);
     }
 

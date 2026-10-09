@@ -627,8 +627,7 @@ mod tests {
         let playlist = app.state().playlist("pl_morning").cloned().unwrap();
         let ids = playlist.track_ids();
         let surface = app.surface_mut::<MusicApp>();
-        // Rows nested in another row (an input under the recommendations'
-        // settings, a song in a playlist) are bound when resolved by id.
+        // What each row offers follows what it shows.
         let inputs: Vec<&str> = surface
             .row_edits("music.recommendation-input:likes")
             .iter()
@@ -662,6 +661,116 @@ mod tests {
                 .is_empty(),
             "a song the playlist does not hold offers nothing"
         );
+    }
+
+    /// A playlist's row renames it, sets its cover and adds a song of the
+    /// library at its end, each asking for its value.
+    #[test]
+    fn playlist_rows_rename_cover_and_add_songs() {
+        let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
+        let morning = crate::actions::playlist_resource_id("pl_morning");
+        app.call_on(
+            &morning,
+            "rename",
+            serde_json::json!({ "name": "Slow start" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().playlist("pl_morning").unwrap().name,
+            "Slow start"
+        );
+        app.call_on(
+            &morning,
+            "add-track",
+            serde_json::json!({ "track": "music.track:tk_a1" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state()
+                .playlist("pl_morning")
+                .unwrap()
+                .track_ids()
+                .last(),
+            Some(&"tk_a1".to_owned())
+        );
+        assert!(
+            app.call_on(
+                &morning,
+                "add-track",
+                serde_json::json!({ "track": "tk_gone" })
+            )
+            .is_err(),
+            "only a song of the library is added"
+        );
+        assert!(
+            app.call_on(
+                &morning,
+                "set-cover-url",
+                serde_json::json!({ "cover": "file:///tmp/cover.png" })
+            )
+            .is_err(),
+            "a cover is portable"
+        );
+        app.call_on(
+            &morning,
+            "set-cover-url",
+            serde_json::json!({ "cover": "https://example.test/cover.png" }),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().playlist("pl_morning").unwrap().cover,
+            "https://example.test/cover.png"
+        );
+    }
+
+    /// An agent reaches the edits of rows shown inside other rows through
+    /// the published tree: a song of a playlist moves and comes out, an
+    /// input of the recommendations switches.
+    #[test]
+    fn nested_rows_offer_their_edits_in_the_published_tree() {
+        let mut app = TestApp::<MusicShell>::capture(Some("sidebar")).unwrap();
+        let ids = app.state().playlist("pl_morning").unwrap().track_ids();
+        let row = |track: &str| crate::actions::playlist_track_resource_id("pl_morning", track);
+        let published = app.harness().resources();
+        let first = tilo_actions::flatten(&published)
+            .into_iter()
+            .filter(|flat| flat.resource_id.as_str() == row(&ids[0]))
+            .map(|flat| flat.action.id.clone())
+            .collect::<Vec<_>>();
+        for offered in ["remove", "move-down"] {
+            assert!(
+                first.iter().any(|id| id == offered),
+                "{offered} in {first:?}"
+            );
+        }
+
+        app.call_on(&row(&ids[0]), "move-down", serde_json::json!({}))
+            .unwrap();
+        let moved = app.state().playlist("pl_morning").unwrap().track_ids();
+        assert_eq!(
+            (moved[0].as_str(), moved[1].as_str()),
+            (ids[1].as_str(), ids[0].as_str())
+        );
+        app.call_on(&row(&ids[0]), "move-up", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(app.state().playlist("pl_morning").unwrap().track_ids(), ids);
+        app.call_on(&row(&ids[1]), "remove", serde_json::json!({}))
+            .unwrap();
+        let left = app.state().playlist("pl_morning").unwrap().track_ids();
+        assert!(!left.contains(&ids[1]), "the song came out of the playlist");
+        assert!(
+            app.state().tracks.contains_key(&ids[1]),
+            "and stays in the library"
+        );
+
+        let likes = app.state().recommendations.likes;
+        app.call_on(
+            "music.recommendation-input:likes",
+            "set-input",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        assert_eq!(app.state().recommendations.likes, !likes);
     }
 
     #[test]

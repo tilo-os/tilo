@@ -162,7 +162,7 @@ pub use resource::{
     with_origin_clock,
 };
 pub use schema::JsonSchema;
-pub use shape::{FieldShape, Shape};
+pub use shape::{FieldShape, Shape, StoredText, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};

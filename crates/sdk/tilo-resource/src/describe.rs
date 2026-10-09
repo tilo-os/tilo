@@ -47,29 +47,20 @@ fn label_of(doc: &Doc, shape: Shape, obj: &ObjId) -> Option<String> {
     parts.sort_by_key(|field| field.label_part);
     let joined: Vec<String> = parts
         .iter()
-        .filter_map(|field| field_text(doc, obj, field.key))
+        .filter_map(|field| field_text(doc, obj, field))
         .collect();
     if !joined.is_empty() {
         return Some(joined.join(" "));
     }
     let field = shape.fields().iter().find(|field| field.label)?;
-    field_text(doc, obj, field.key)
+    field_text(doc, obj, field)
 }
 
-/// The first line of the text stored at `key` of the map `obj`.
-fn field_text(doc: &Doc, obj: &ObjId, key: &str) -> Option<String> {
-    let text = match get(doc, obj, key)? {
-        (Value::Object(ObjType::Text), id) => doc.text(&id).ok()?,
-        (Value::Scalar(scalar), _) => match scalar.as_ref() {
-            ScalarValue::Str(text) => text.to_string(),
-            _ => return None,
-        },
-        _ => return None,
-    };
-    text.lines()
-        .next()
-        .map(|line| line.trim().to_owned())
-        .filter(|line| !line.is_empty())
+/// The first line of the text `field` holds in the map `obj`, read as its
+/// type stores it (a rich text's first paragraph too).
+fn field_text(doc: &Doc, obj: &ObjId, field: &crate::FieldShape) -> Option<String> {
+    let (value, id) = get(doc, obj, field.key)?;
+    (field.text)(doc, &value, &id)
 }
 
 fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
@@ -365,31 +356,56 @@ pub(crate) fn verb(
         }
     }
     let described = Described::new(Did::verb(ActionKey::new("", kind, id), plain));
-    // The item: an argument naming an item of one of the collections.
+    // The item: the innermost item the id arguments name, through the
+    // record's collections and those inside their items (a slide's
+    // element).
+    let ids: Vec<&str> = args
+        .values()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    Some(match item_named(doc, shape, &ROOT, &ids) {
+        Some((id, label)) => {
+            let label = label.unwrap_or_else(|| id.clone());
+            described.on(id, label)
+        }
+        None => described,
+    })
+}
+
+/// The innermost item `ids` name among the collections of the record of
+/// shape `shape` stored in `obj`, and inside that item's own collections:
+/// its id and label.
+fn item_named(
+    doc: &Doc,
+    shape: Shape,
+    obj: &ObjId,
+    ids: &[&str],
+) -> Option<(String, Option<String>)> {
     for field in shape.fields() {
         let (Shape::Collection(item) | Shape::Keyed(item)) = field.shape else {
             continue;
         };
         let keyed = matches!(field.shape, Shape::Keyed(_));
-        let Some(collection) = map_at(doc, &ROOT, field.key) else {
+        let Some(collection) = map_at(doc, obj, field.key) else {
             continue;
         };
-        for value in args.values() {
-            let Some(candidate) = value.as_str() else {
+        for candidate in ids {
+            let Some(entry) = map_at(doc, &collection, candidate) else {
                 continue;
             };
-            if let Some(entry) = map_at(doc, &collection, candidate) {
-                let value = if keyed {
-                    Some(entry)
-                } else {
-                    map_at(doc, &entry, "v")
-                };
-                let label = value
-                    .and_then(|map| label_of(doc, *item, &map))
-                    .unwrap_or_else(|| candidate.to_owned());
-                return Some(described.on(candidate, label));
-            }
+            let value = if keyed {
+                Some(entry)
+            } else {
+                map_at(doc, &entry, "v")
+            };
+            let inner = value
+                .as_ref()
+                .and_then(|map| item_named(doc, *item, map, ids));
+            return inner.or_else(|| {
+                let label = value.and_then(|map| label_of(doc, *item, &map));
+                Some(((*candidate).to_owned(), label))
+            });
         }
     }
-    Some(described)
+    None
 }

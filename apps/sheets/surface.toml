@@ -69,7 +69,6 @@ type = "ChartKind"
 [[resources.fields]]
 owner = "chart"
 path = "sheets.*.charts.*.area"
-readonly = true
 stored = "record"
 title = "Range"
 type = "Area"

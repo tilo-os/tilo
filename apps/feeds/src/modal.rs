@@ -32,8 +32,6 @@ pub enum ModalIntent {
     AddFolder,
     /// Rename an existing feed.
     RenameFeed { feed_id: Id },
-    /// Confirm unsubscribing from a feed. No text input.
-    Unsubscribe { feed_id: Id },
     /// Replace the selected article's comma-separated tags.
     EditArticleTags { article_id: Id },
 }

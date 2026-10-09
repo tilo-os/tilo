@@ -30,6 +30,7 @@ sheets-sheet-cells = Edited the cells of { $item }
 sheets-workbook-sheets = Rearranged the sheets
 sheets-chart-title = Retitled a chart to { $new }
 sheets-chart-kind = Changed a chart's type
+sheets-chart-area = Charted other cells
 sheets-comment-body = Edited a comment
 sheets-comment-resolved = { $new ->
     [true] Resolved a comment

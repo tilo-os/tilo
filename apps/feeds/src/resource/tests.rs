@@ -443,6 +443,29 @@ fn sample_app() -> TestApp<FeedsShell> {
     app
 }
 
+/// Unsubscribing from a feed's menu is confirmed by the host, once: the
+/// window asks nothing of its own, and the feed and its articles go only
+/// when the person agreed.
+#[test]
+fn unsubscribing_from_the_menu_is_confirmed_by_the_host() {
+    let mut app = sample_app();
+    let feed = app.state().feeds.ids().next().unwrap().clone();
+    // What the window's own Edits are lent for: an unsubscribe applies
+    // nothing now, it goes to the host to be confirmed.
+    let mut unused = automerge::AutoCommit::new();
+    app.surface_mut::<FeedsApp>().core_mut().apply_menu_action(
+        crate::app::MenuAction::Unsubscribe(feed.clone()),
+        &mut ui::widget::Edits::lend(&mut unused),
+    );
+    assert!(app.surface_mut::<FeedsApp>().modal.is_none());
+    assert!(app.state().feeds.contains(&feed), "not until confirmed");
+    assert!(app.confirm_asked().is_some(), "the host asks first");
+    let library = app.state();
+    assert!(!library.feeds.contains(&feed));
+    assert!(!library.articles.values().any(|x| x.feed_id == feed));
+    assert!(app.confirm_asked().is_none(), "asked once");
+}
+
 /// Opening the app writes nothing: there is no library to show.
 #[test]
 fn opening_writes_nothing() {
